@@ -254,19 +254,19 @@ Evidence: paths and output facts to record
   - Verify: handshake golden test.
   - Evidence: bytes or fixture hash.
 
-- [ ] T033 Negotiate supported worker version
+- [x] T033 Negotiate supported worker version
   - Depends on: T032
   - Outcome: server selects version within initial matrix and records negotiated features.
   - Red: version table tests fail.
   - Verify: version negotiation tests.
   - Evidence: accepted boundaries.
 
-- [ ] T034 Reject unsupported worker version
+- [x] T034 Reject below-minimum negotiated worker version
   - Depends on: T033
-  - Outcome: unsupported old/new versions fail deterministically.
-  - Red: server continues after mismatch.
-  - Verify: version rejection tests.
-  - Evidence: errors for both boundaries.
+  - Outcome: negotiated versions below Telchar's minimum fail deterministically; newer client versions negotiate down to Telchar's maximum, matching pinned Nix behavior.
+  - Red: server continues after below-minimum negotiation.
+  - Verify: version rejection and down-negotiation tests.
+  - Evidence: rejected lower boundary and negotiated upper boundary. Successful negotiation is not a compatibility or support claim for untested Nix releases.
 
 - [ ] T035 Complete pinned-client stdio handshake
   - Depends on: T033

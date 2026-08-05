@@ -2,9 +2,37 @@
 
 pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
 pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
+pub const MINIMUM_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 18);
+pub const LATEST_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 
 pub fn protocol_name() -> &'static str {
     "Nix worker protocol"
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct WorkerVersion {
+    major: u8,
+    minor: u8,
+}
+
+impl WorkerVersion {
+    pub const fn new(major: u8, minor: u8) -> Self {
+        Self { major, minor }
+    }
+
+    pub const fn to_wire(self) -> u64 {
+        ((self.major as u64) << 8) | self.minor as u64
+    }
+
+    pub const fn from_wire(value: u64) -> Self {
+        Self::new(((value & 0xff00) >> 8) as u8, (value & 0x00ff) as u8)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NegotiatedWorkerVersion {
+    pub version: WorkerVersion,
+    pub features: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +68,29 @@ pub fn read_client_worker_magic(input: &mut &[u8]) -> Result<(), ProtocolError> 
     } else {
         Err(ProtocolError::VersionMismatch)
     }
+}
+
+pub fn negotiate_worker_version(
+    client_version: WorkerVersion,
+    client_features: &[String],
+    server_features: &[String],
+) -> Result<NegotiatedWorkerVersion, ProtocolError> {
+    let version = client_version.min(LATEST_WORKER_VERSION);
+    if version < MINIMUM_WORKER_VERSION {
+        return Err(ProtocolError::VersionMismatch);
+    }
+
+    let features = if version >= WorkerVersion::new(1, 38) {
+        client_features
+            .iter()
+            .filter(|feature| server_features.contains(feature))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(NegotiatedWorkerVersion { version, features })
 }
 
 pub fn write_worker_integer(output: &mut Vec<u8>, value: u64) {
@@ -90,9 +141,10 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        CLIENT_WORKER_MAGIC, ProtocolError, SERVER_WORKER_MAGIC, protocol_name,
-        read_client_worker_magic, read_worker_byte_string, read_worker_integer,
-        write_server_worker_magic, write_worker_byte_string, write_worker_integer,
+        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, ProtocolError,
+        SERVER_WORKER_MAGIC, WorkerVersion, protocol_name, read_client_worker_magic,
+        read_worker_byte_string, read_worker_integer, write_server_worker_magic,
+        write_worker_byte_string, write_worker_integer,
     };
 
     #[test]
@@ -230,6 +282,43 @@ mod tests {
 
         assert_eq!(SERVER_WORKER_MAGIC, 0x6478_696f);
         assert_eq!(output, b"oixd\0\0\0\0");
+    }
+
+    #[test]
+    fn negotiates_supported_worker_versions_and_features() {
+        let client_features = vec!["one".to_owned(), "two".to_owned()];
+        let server_features = vec!["two".to_owned(), "three".to_owned()];
+
+        let below_minimum = super::negotiate_worker_version(WorkerVersion::new(1, 17), &[], &[]);
+        let minimum = super::negotiate_worker_version(MINIMUM_WORKER_VERSION, &[], &[]).unwrap();
+        let supported =
+            super::negotiate_worker_version(WorkerVersion::new(1, 30), &[], &[]).unwrap();
+        let maximum = super::negotiate_worker_version(
+            LATEST_WORKER_VERSION,
+            &client_features,
+            &server_features,
+        )
+        .unwrap();
+        let newer_same_major = super::negotiate_worker_version(
+            WorkerVersion::new(1, 39),
+            &client_features,
+            &server_features,
+        )
+        .unwrap();
+        let newer_major = super::negotiate_worker_version(
+            WorkerVersion::new(2, 18),
+            &client_features,
+            &server_features,
+        )
+        .unwrap();
+
+        assert_eq!(below_minimum, Err(ProtocolError::VersionMismatch));
+        assert_eq!(minimum.version, MINIMUM_WORKER_VERSION);
+        assert_eq!(supported.version, WorkerVersion::new(1, 30));
+        assert_eq!(maximum.version, LATEST_WORKER_VERSION);
+        assert_eq!(maximum.features, vec!["two"]);
+        assert_eq!(newer_same_major.version, LATEST_WORKER_VERSION);
+        assert_eq!(newer_major.version, LATEST_WORKER_VERSION);
     }
 
     proptest! {
