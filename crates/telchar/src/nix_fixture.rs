@@ -14,6 +14,7 @@ pub enum TrustMode {
 
 pub struct NixDaemon {
     child: Child,
+    environment: BTreeMap<&'static str, String>,
     socket_path: PathBuf,
 }
 
@@ -119,18 +120,21 @@ impl NixFixture {
     pub fn start_daemon(&self, mode: TrustMode) -> io::Result<NixDaemon> {
         let user = fixture_user()?;
         if user == "root" {
-            return Err(io::Error::other("fixture daemon requires a non-root client user"));
+            return Err(io::Error::other(
+                "fixture daemon requires a non-root client user",
+            ));
         }
         let trusted_users = match mode {
             TrustMode::Trusted => user,
             TrustMode::Untrusted => "root".to_owned(),
         };
         let config = format!(
-            "{}\nallowed-users = *\nbuild-users-group =\nsandbox = false\ntrusted-users = {trusted_users}\n",
+            "{}\nallowed-users = *\nbuild-users-group =\nsandbox = false\ntrusted-users = {trusted_users}\nsubstituters =\nbuild-hook =\n",
             fs::read_to_string(&self.config_path)?
         );
+        let environment = self.daemon_environment(config);
         let mut child = Command::new("nix-daemon")
-            .envs(self.daemon_environment(config))
+            .envs(&environment)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
@@ -144,6 +148,7 @@ impl NixFixture {
                 );
                 return Ok(NixDaemon {
                     child,
+                    environment,
                     socket_path: self.socket_path.clone(),
                 });
             }
@@ -162,7 +167,7 @@ impl NixFixture {
         ))
     }
 
-    pub fn environment(&self) -> BTreeMap<&str, String> {
+    pub fn environment(&self) -> BTreeMap<&'static str, String> {
         BTreeMap::from([
             (
                 "NIX_CONFIG",
@@ -173,11 +178,15 @@ impl NixFixture {
             ("NIX_STATE_DIR", self.state_dir.display().to_string()),
             ("NIX_LOG_DIR", self.log_dir.display().to_string()),
             ("NIX_CONF_DIR", self.config_dir.display().to_string()),
-            ("NIX_DAEMON_SOCKET_PATH", self.socket_path.display().to_string()),
+            (
+                "NIX_DAEMON_SOCKET_PATH",
+                self.socket_path.display().to_string(),
+            ),
+            ("NIX_USER_CONF_FILES", "/dev/null".to_owned()),
         ])
     }
 
-    fn daemon_environment(&self, config: String) -> BTreeMap<&str, String> {
+    fn daemon_environment(&self, config: String) -> BTreeMap<&'static str, String> {
         let mut environment = self.environment();
         environment.insert("NIX_CONFIG", config);
         environment
@@ -211,6 +220,7 @@ impl NixDaemon {
 
     pub fn trusted(&mut self) -> io::Result<bool> {
         let output = Command::new("nix")
+            .envs(&self.environment)
             .args(["--store", &self.store_url(), "store", "info", "--json"])
             .output()?;
         if !output.status.success() {
@@ -224,6 +234,38 @@ impl NixDaemon {
                 "fixture daemon did not report trust status",
             )),
         }
+    }
+
+    /// Runs the fixture's fixed input-addressed build through this daemon only.
+    pub fn build_classic_derivation(&mut self) -> io::Result<PathBuf> {
+        let expression = "derivation { name = \"telchar-classic-fixture\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf telchar-classic-fixture > \\\"$out\\\"\" ]; }";
+        let output = Command::new("nix")
+            .envs(&self.environment)
+            .args([
+                "--store",
+                &self.store_url(),
+                "build",
+                "--impure",
+                "--expr",
+                expression,
+                "--no-link",
+                "--print-out-paths",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("fixture daemon classic build failed"));
+        }
+        let path = String::from_utf8(output.stdout).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "fixture output is not UTF-8")
+        })?;
+        let path = path.trim();
+        if path.is_empty() || path.contains('\n') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fixture daemon did not report exactly one output path",
+            ));
+        }
+        Ok(PathBuf::from(path))
     }
 
     pub fn stop(&mut self) -> io::Result<()> {

@@ -14,6 +14,7 @@ private_key_path="$root/client-key"
 mkdir -p "$state_dir" "$store_dir" "$log_dir" "$config_dir" "$socket_dir" "$temp_dir"
 cat >"$config_path" <<EOF
 build-users-group =
+experimental-features = nix-command
 state-dir = $state_dir
 temp-dir = $temp_dir
 warn-dirty = false

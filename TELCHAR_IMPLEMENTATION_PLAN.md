@@ -305,7 +305,7 @@ Evidence: paths and output facts to record
 
 ### Concrete classic-build fixture expansion
 
-- [ ] T036D Define exact trusted and untrusted classic fixtures
+- [x] T036D Define exact trusted and untrusted classic fixtures
   - Depends on: T011, T036C
   - Outcome: fixture contract fixes stock-client command, deterministic input-addressed derivation, local-build prohibition, trust configuration, daemon/socket topology, store isolation, expected output, and cleanup for one trusted and one untrusted remote-build case.
   - Red: fixture checklist contains an unspecified command, input, trust boundary, topology edge, or proof that the client did not build locally.

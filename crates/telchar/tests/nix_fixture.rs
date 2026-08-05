@@ -41,11 +41,38 @@ fn fixture_owned_daemon_reports_explicit_trust_modes_without_host_store_access()
         let fixture = NixFixture::create().expect("fixture creates");
         let mut daemon = fixture.start_daemon(mode).expect("fixture daemon starts");
 
-        assert_eq!(daemon.trusted().expect("daemon reports trust"), expected_trust);
+        assert_eq!(
+            daemon.trusted().expect("daemon reports trust"),
+            expected_trust
+        );
         assert!(daemon.store_url().starts_with("unix://"));
         assert!(daemon.socket_path().starts_with(fixture.root()));
         assert!(fixture.store_dir().starts_with(fixture.root()));
         assert_ne!(fixture.store_dir(), std::path::Path::new("/nix/store"));
+
+        daemon.stop().expect("fixture daemon stops");
+        fixture.cleanup().expect("fixture cleans up");
+    }
+}
+
+#[test]
+fn fixture_owned_daemon_builds_the_fixed_classic_derivation_in_both_trust_modes() {
+    for (mode, expected_trust) in [(TrustMode::Trusted, true), (TrustMode::Untrusted, false)] {
+        let fixture = NixFixture::create().expect("fixture creates");
+        let mut daemon = fixture.start_daemon(mode).expect("fixture daemon starts");
+
+        assert_eq!(
+            daemon.trusted().expect("daemon reports trust"),
+            expected_trust
+        );
+        let output = daemon
+            .build_classic_derivation()
+            .expect("fixture daemon builds classic derivation");
+        assert!(output.starts_with(fixture.store_dir()));
+        assert_eq!(
+            std::fs::read(&output).expect("fixture output reads"),
+            b"telchar-classic-fixture"
+        );
 
         daemon.stop().expect("fixture daemon stops");
         fixture.cleanup().expect("fixture cleans up");
