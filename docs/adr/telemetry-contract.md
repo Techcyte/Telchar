@@ -12,8 +12,8 @@ Telchar must make operational behavior observable from its first application pat
 - Telchar exports structured logs, metrics, and distributed traces through OTLP over gRPC.
 - The Telchar service crate exclusively owns telemetry configuration, subscriber installation, OpenTelemetry providers, OTLP exporters, batching, queue limits, export timeouts, flushing, and shutdown. `nix-worker-protocol` may emit `tracing` spans and events, but it must not configure exporters or depend on OpenTelemetry SDK or exporter crates.
 - Telemetry initializes before application events are emitted. Shutdown flushes providers within configured bounds.
-- OTLP endpoint, transport security, headers or credential references, enablement, batching, queue capacity, export timeout, resource attributes, and local formatter enablement are configuration.
-- A local human-readable `tracing` formatter is independently configurable for development and emergency diagnosis.
+- OTLP endpoint, transport security, headers or credential references, enablement, batching, queue capacity, export timeout, and resource attributes are configuration.
+- Every application `tracing` event is exported through OTLP and written locally. Local log lines use `<time> trace_id=<trace_id> <level> <message>`. Non-error events write to standard output; error events write to standard error.
 - Every signal includes configured service and resource attributes. Long-lived and boundary-crossing work emits a span, event, metric, or the appropriate combination.
 - Each request has a stable request ID. Request IDs are bounded domain correlation fields propagated through Telchar work; they do not replace OpenTelemetry trace or span IDs.
 - Metric attributes use bounded, low-cardinality values. Raw requester identities, credentials, store contents, source names, arbitrary derivation strings, and unbounded error text must not become metric attributes. Sensitive fields are redacted consistently from logs, spans, and exporter errors.
@@ -24,4 +24,4 @@ Telchar must make operational behavior observable from its first application pat
 
 Every implementation task adds telemetry at its boundary rather than treating observability as follow-up work. The service crate gains OpenTelemetry dependencies and lifecycle responsibility; the protocol crate retains a lightweight `tracing`-only boundary.
 
-Operators can enable readable local diagnostics independently of remote export. Remote collector outages may lose bounded telemetry but cannot compromise request processing or shutdown.
+Operators receive readable local diagnostics alongside remote export. Remote collector outages may lose bounded telemetry but cannot compromise request processing or shutdown.

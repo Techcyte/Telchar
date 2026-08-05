@@ -1,8 +1,7 @@
 mod telemetry;
 
 fn main() {
-    let local_format = std::env::var_os("TELCHAR_LOCAL_FORMAT").is_some();
-    let telemetry = telemetry::Telemetry::initialize(local_format)
+    let telemetry = telemetry::Telemetry::initialize()
         .expect("telemetry configuration must initialize before application work");
 
     tracing::info!(event = "application.started", "application started");
@@ -17,6 +16,9 @@ fn main() {
             .u64_counter("telchar.smoke.events")
             .build()
             .add(1, &[]);
+        if std::env::var_os("TELCHAR_SMOKE_ERROR").is_some() {
+            tracing::error!(event = "smoke.error", request_id = %request_id, "smoke error");
+        }
     }
     println!("{}", nix_worker_protocol::protocol_name());
 
