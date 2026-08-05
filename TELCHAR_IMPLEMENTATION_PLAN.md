@@ -45,7 +45,7 @@ Evidence: paths and output facts to record
   - Verify: repository documentation consistency check.
   - Evidence: ADR path and resolved contradictions.
 
-- [ ] T002 Add Nix flake inputs
+- [x] T002 Add Nix flake inputs
   - Depends on: T001
   - Outcome: `flake.nix` and `flake.lock` pin nixpkgs and expose the exact initial Nix package.
   - Red: clean checkout lacks a reproducible Nix package version.
