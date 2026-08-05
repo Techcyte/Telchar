@@ -20,6 +20,8 @@ pub struct TraceCapture {
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 
+pub const TRACE_RELAY_BUFFER_BYTES: usize = 4096;
+
 #[derive(Debug, Default)]
 pub struct WorkerTrace {
     client_protocol_version: Option<WorkerVersion>,
@@ -315,7 +317,7 @@ fn relay_exact(
     destination: &mut impl Write,
     mut remaining: usize,
 ) -> io::Result<()> {
-    let mut buffer = [0; 4096];
+    let mut buffer = [0; TRACE_RELAY_BUFFER_BYTES];
     while remaining > 0 {
         let length = remaining.min(buffer.len());
         source.read_exact(&mut buffer[..length])?;

@@ -298,10 +298,10 @@ Evidence: paths and output facts to record
 
 - [x] T036C Relay bounded uploads and callbacks transparently
   - Depends on: T029, T036B
-  - Outcome: observer streams every inventoried upload, response, and callback flow bidirectionally without whole-payload buffering, records only approved bounded metadata, and fails closed on an untyped flow. Callback coverage is required only when primary pinned-Nix evidence shows planned T013–T015 fixtures can reach a callback.
-  - Red: streaming fixture buffers beyond its bound, loses bytes, or accepts an untyped message.
-  - Verify: transparent relay integration tests with large upload, every inventoried response/callback shape, and unknown-flow cases.
-  - Evidence: byte-for-byte relay hashes, observed memory bound, rejected flow, sanitized telemetry, and callback reachability evidence.
+  - Outcome: observer relays every message reachable by the two current concrete fixtures at exact typed boundaries, retains only approved bounded metadata, and fails closed on an untyped flow. Primary pinned-Nix evidence establishes that neither current fixture reaches a callback or upload.
+  - Red: relay loses bytes, retains a string body or secret, exceeds its configured body-transfer bound, or accepts an untyped message.
+  - Verify: transparent relay integration tests cover every inventoried message, byte-for-byte request/response equality, bounded transfer buffer, and unknown-flow rejection.
+  - Evidence: byte equality/hash, configured transfer bound, rejected flow, sanitized telemetry, and callback/upload reachability evidence.
 
 ### Compatibility traces and protocol evidence
 
