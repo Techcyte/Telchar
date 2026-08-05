@@ -247,7 +247,7 @@ Evidence: paths and output facts to record
   - Verify: handshake magic tests.
   - Evidence: accepted and rejected values.
 
-- [ ] T032 Emit server worker magic
+- [x] T032 Emit server worker magic
   - Depends on: T031
   - Outcome: server writes exact response expected by pinned Nix.
   - Red: golden handshake output differs.

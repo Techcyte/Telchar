@@ -46,6 +46,10 @@ pub fn write_worker_integer(output: &mut Vec<u8>, value: u64) {
     output.extend_from_slice(&value.to_le_bytes());
 }
 
+pub fn write_server_worker_magic(output: &mut Vec<u8>) {
+    write_worker_integer(output, SERVER_WORKER_MAGIC);
+}
+
 pub fn read_worker_byte_string(
     input: &mut &[u8],
     maximum_length: usize,
@@ -86,9 +90,9 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        CLIENT_WORKER_MAGIC, ProtocolError, protocol_name, read_client_worker_magic,
-        read_worker_byte_string, read_worker_integer, write_worker_byte_string,
-        write_worker_integer,
+        CLIENT_WORKER_MAGIC, ProtocolError, SERVER_WORKER_MAGIC, protocol_name,
+        read_client_worker_magic, read_worker_byte_string, read_worker_integer,
+        write_server_worker_magic, write_worker_byte_string, write_worker_integer,
     };
 
     #[test]
@@ -216,6 +220,16 @@ mod tests {
             read_client_worker_magic(&mut rejected),
             Err(ProtocolError::VersionMismatch)
         );
+    }
+
+    #[test]
+    fn writes_the_pinned_server_worker_magic() {
+        let mut output = Vec::new();
+
+        write_server_worker_magic(&mut output);
+
+        assert_eq!(SERVER_WORKER_MAGIC, 0x6478_696f);
+        assert_eq!(output, b"oixd\0\0\0\0");
     }
 
     proptest! {
