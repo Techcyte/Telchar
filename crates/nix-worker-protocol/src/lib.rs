@@ -71,6 +71,9 @@ pub fn write_worker_byte_string(output: &mut Vec<u8>, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
     use super::{
         ProtocolError, protocol_name, read_worker_byte_string, read_worker_integer,
         write_worker_byte_string, write_worker_integer,
@@ -187,5 +190,22 @@ mod tests {
         assert_eq!(empty, b"\0\0\0\0\0\0\0\0");
         assert_eq!(ordinary, b"\x03\0\0\0\0\0\0\0abc\0\0\0\0\0");
         assert_eq!(padded, b"\x09\0\0\0\0\0\0\0abcdefghi\0\0\0\0\0\0\0");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, rng_seed: RngSeed::Fixed(0x5445_4c43_4841_5230), .. ProptestConfig::default() })]
+
+        #[test]
+        fn primitive_parsers_never_panic_and_respect_limits(input in proptest::collection::vec(any::<u8>(), 0..1024), maximum_length in 0usize..128) {
+            let mut integer_input = input.as_slice();
+            let mut byte_string_input = input.as_slice();
+
+            let _ = read_worker_integer(&mut integer_input);
+            let result = read_worker_byte_string(&mut byte_string_input, maximum_length);
+
+            if let Ok(value) = result {
+                prop_assert!(value.len() <= maximum_length);
+            }
+        }
     }
 }

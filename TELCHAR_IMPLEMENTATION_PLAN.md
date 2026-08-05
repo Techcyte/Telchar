@@ -226,7 +226,7 @@ Evidence: paths and output facts to record
   - Verify: encoding golden tests.
   - Evidence: fixture hashes or bytes.
 
-- [ ] T029 Add parser property tests
+- [x] T029 Add parser property tests
   - Depends on: T024, T026, T027
   - Outcome: arbitrary primitive input never panics and respects allocation limits.
   - Red: property test exposes an unhandled case.
