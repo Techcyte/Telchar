@@ -38,7 +38,7 @@ Evidence: paths and output facts to record
 
 ### Repository policy and tooling
 
-- [ ] T001 Record initial supported deployment assumptions
+- [x] T001 Record initial supported deployment assumptions
   - Depends on: none
   - Outcome: ADR records Linux-first, single-active daemon, OpenSSH forced-command frontend, PostgreSQL, TOML configuration, dedicated gateway host system store, and mutually trusted authenticated client store domain. It states that database interchangeability is not an initial goal.
   - Red: list contradictions between ADR and `telchar-design.md`.
