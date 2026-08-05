@@ -205,7 +205,7 @@ Evidence: paths and output facts to record
   - Verify: byte-string tests.
   - Evidence: empty, ordinary, and padded cases.
 
-- [ ] T026 Reject oversized worker byte string
+- [x] T026 Reject oversized worker byte string
   - Depends on: T025
   - Outcome: declared length above configured maximum fails before allocation.
   - Red: oversize test observes attempted acceptance.
