@@ -94,7 +94,7 @@ Evidence: paths and output facts to record
   - Verify: `nix flake check`.
   - Evidence: aggregate output summary.
 
-- [ ] T009 Document development commands
+- [x] T009 Document development commands
   - Depends on: T008
   - Outcome: README links design and plan, states project status and trust boundary, and documents exact bootstrap/check commands.
   - Red: documentation checklist identifies missing commands or assumptions.
