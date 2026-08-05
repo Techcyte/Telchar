@@ -154,7 +154,7 @@ Evidence: paths and output facts to record
   - Verify: fixture setup/teardown test.
   - Evidence: created paths and post-test absence.
 
-- [x] T012 Add worker-protocol trace capture fixture
+- [-] T012 Add worker-protocol trace capture fixture
   - Depends on: T010, T011
   - Outcome: a transparent test peer captures operation codes and protocol metadata from pinned stock Nix without storing secrets.
   - Red: trace assertion fails before capture is wired.
