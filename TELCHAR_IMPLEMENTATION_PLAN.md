@@ -80,7 +80,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo clippy --all-targets --all-features -- -D warnings`.
   - Evidence: failing and passing summaries.
 
-- [ ] T007 Add unit-test command
+- [x] T007 Add unit-test command
   - Depends on: T003
   - Outcome: canonical unit-test command runs from flake environment with pristine output.
   - Red: one failing skeleton test demonstrates harness operation.
