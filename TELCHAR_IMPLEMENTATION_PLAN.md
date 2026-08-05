@@ -240,7 +240,7 @@ Evidence: paths and output facts to record
   - Verify: short deterministic fuzz smoke run.
   - Evidence: command and no-crash summary.
 
-- [ ] T031 Parse client worker magic
+- [x] T031 Parse client worker magic
   - Depends on: T028
   - Outcome: server accepts exact pinned client magic and rejects others.
   - Red: valid/invalid magic tests fail.

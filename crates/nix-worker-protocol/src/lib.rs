@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
+pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
+
 pub fn protocol_name() -> &'static str {
     "Nix worker protocol"
 }
@@ -29,6 +32,14 @@ pub fn read_worker_integer(input: &mut &[u8]) -> Result<u64, ProtocolError> {
     let mut bytes = [0; 8];
     bytes.copy_from_slice(encoded);
     Ok(u64::from_le_bytes(bytes))
+}
+
+pub fn read_client_worker_magic(input: &mut &[u8]) -> Result<(), ProtocolError> {
+    if read_worker_integer(input)? == CLIENT_WORKER_MAGIC {
+        Ok(())
+    } else {
+        Err(ProtocolError::VersionMismatch)
+    }
 }
 
 pub fn write_worker_integer(output: &mut Vec<u8>, value: u64) {
@@ -75,8 +86,9 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        ProtocolError, protocol_name, read_worker_byte_string, read_worker_integer,
-        write_worker_byte_string, write_worker_integer,
+        CLIENT_WORKER_MAGIC, ProtocolError, protocol_name, read_client_worker_magic,
+        read_worker_byte_string, read_worker_integer, write_worker_byte_string,
+        write_worker_integer,
     };
 
     #[test]
@@ -190,6 +202,20 @@ mod tests {
         assert_eq!(empty, b"\0\0\0\0\0\0\0\0");
         assert_eq!(ordinary, b"\x03\0\0\0\0\0\0\0abc\0\0\0\0\0");
         assert_eq!(padded, b"\x09\0\0\0\0\0\0\0abcdefghi\0\0\0\0\0\0\0");
+    }
+
+    #[test]
+    fn accepts_only_the_pinned_client_worker_magic() {
+        let accepted_bytes = CLIENT_WORKER_MAGIC.to_le_bytes();
+        let rejected_bytes = 0_u64.to_le_bytes();
+        let mut accepted = accepted_bytes.as_slice();
+        let mut rejected = rejected_bytes.as_slice();
+
+        assert_eq!(read_client_worker_magic(&mut accepted), Ok(()));
+        assert_eq!(
+            read_client_worker_magic(&mut rejected),
+            Err(ProtocolError::VersionMismatch)
+        );
     }
 
     proptest! {
