@@ -154,7 +154,7 @@ Evidence: paths and output facts to record
   - Verify: fixture setup/teardown test.
   - Evidence: created paths and post-test absence.
 
-- [ ] T017 Record rio-build reference revision
+- [x] T017 Record rio-build reference revision
   - Depends on: none
   - Outcome: reference record identifies exact archived upstream commit reviewed for architecture and test-category research.
   - Red: reference record lacks immutable revision.
