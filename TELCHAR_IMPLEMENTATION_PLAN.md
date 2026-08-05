@@ -131,7 +131,7 @@ Evidence: paths and output facts to record
   - Verify: unavailable/stalled collector integration tests with bounded wall clock and pristine captured output.
   - Evidence: configured bounds, measured duration, and failure signal.
 
-- [ ] T009E Export correlated OTLP smoke signals
+- [x] T009E Export correlated OTLP smoke signals
   - Depends on: T009C, T009D
   - Outcome: real test collector receives one structured log, metric point, and trace span sharing required service/resource attributes and request correlation fields.
   - Red: collector fixture lacks any signal or correlation assertion fails.
