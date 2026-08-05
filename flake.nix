@@ -31,7 +31,12 @@
       };
 
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.cargo pkgs.rustc ];
+        packages = [
+          pkgs.cargo
+          pkgs.clippy
+          pkgs.rustc
+          pkgs.rustfmt
+        ];
       };
     };
 }

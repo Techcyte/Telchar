@@ -59,7 +59,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo build --workspace --locked`.
   - Evidence: package names, dependency edge, binary path, and clean build summary.
 
-- [ ] T004 Pin Rust toolchain in development shell
+- [x] T004 Pin Rust toolchain in development shell
   - Depends on: T003
   - Outcome: flake development shell provides fixed `rustc`, `cargo`, formatter, linter, and test dependencies.
   - Red: version assertion fails outside selected toolchain.
