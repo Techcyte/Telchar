@@ -233,7 +233,7 @@ Evidence: paths and output facts to record
   - Verify: bounded property test suite.
   - Evidence: cases and seed policy.
 
-- [ ] T030 Add parser fuzz target
+- [x] T030 Add parser fuzz target
   - Depends on: T029
   - Outcome: fuzz target covers primitive framing and has documented bounded smoke command.
   - Red: target absent from fuzz manifest.

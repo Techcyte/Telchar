@@ -5,5 +5,8 @@
 !.ralph/P002-baseline-tooling.md
 
 /target/
+/crates/nix-worker-protocol/fuzz/target/
+/crates/nix-worker-protocol/fuzz/corpus/primitive_framing/*
+!/crates/nix-worker-protocol/fuzz/corpus/primitive_framing/empty
 /result
 /result-*

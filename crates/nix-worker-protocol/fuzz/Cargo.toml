@@ -1,0 +1,21 @@
+[package]
+name = "nix-worker-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nix-worker-protocol = { path = ".." }
+
+[[bin]]
+name = "primitive_framing"
+path = "fuzz_targets/primitive_framing.rs"
+test = false
+doc = false
+bench = false
