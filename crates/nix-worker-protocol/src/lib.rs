@@ -136,6 +136,161 @@ pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, Proto
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureSetOptions {
+    pub override_count: u64,
+    pub string_lengths: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureHandshake {
+    pub version: WorkerVersion,
+    pub feature_lengths: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureServerHandshakeInfo {
+    pub daemon_version_length: Option<u64>,
+    pub trust_status: Option<u64>,
+}
+
+pub fn read_fixture_client_handshake(input: &mut &[u8]) -> Result<FixtureHandshake, ProtocolError> {
+    if read_worker_integer(input)? != CLIENT_WORKER_MAGIC {
+        return Err(ProtocolError::VersionMismatch);
+    }
+    read_fixture_handshake_version(input)
+}
+
+pub fn read_fixture_server_handshake(input: &mut &[u8]) -> Result<FixtureHandshake, ProtocolError> {
+    if read_worker_integer(input)? != SERVER_WORKER_MAGIC {
+        return Err(ProtocolError::VersionMismatch);
+    }
+    read_fixture_handshake_version(input)
+}
+
+fn read_fixture_handshake_version(input: &mut &[u8]) -> Result<FixtureHandshake, ProtocolError> {
+    let version = WorkerVersion::from_wire(read_worker_integer(input)?);
+    let feature_lengths = if version >= FEATURE_NEGOTIATION_VERSION {
+        read_fixture_string_lengths(input, 64, 1_024)?
+    } else {
+        Vec::new()
+    };
+    Ok(FixtureHandshake {
+        version,
+        feature_lengths,
+    })
+}
+
+pub fn read_fixture_client_post_handshake(
+    input: &mut &[u8],
+    version: WorkerVersion,
+) -> Result<(), ProtocolError> {
+    if version >= WorkerVersion::new(1, 14) && read_worker_integer(input)? != 0 {
+        read_worker_integer(input)?;
+    }
+    if version >= WorkerVersion::new(1, 11) {
+        read_worker_integer(input)?;
+    }
+    Ok(())
+}
+
+pub fn read_fixture_server_handshake_info(
+    input: &mut &[u8],
+    version: WorkerVersion,
+) -> Result<FixtureServerHandshakeInfo, ProtocolError> {
+    let daemon_version_length = if version >= WorkerVersion::new(1, 33) {
+        Some(read_fixture_string_length(input, 1_024)?)
+    } else {
+        None
+    };
+    let trust_status = if version >= WorkerVersion::new(1, 35) {
+        let status = read_worker_integer(input)?;
+        if status > 2 {
+            return Err(ProtocolError::InternalFailure);
+        }
+        Some(status)
+    } else {
+        None
+    };
+    Ok(FixtureServerHandshakeInfo {
+        daemon_version_length,
+        trust_status,
+    })
+}
+
+pub fn read_fixture_terminal_frame(input: &mut &[u8]) -> Result<(), ProtocolError> {
+    if read_worker_integer(input)? == STDERR_LAST {
+        Ok(())
+    } else {
+        Err(ProtocolError::UnsupportedOperation)
+    }
+}
+
+pub fn read_fixture_set_options(input: &mut &[u8]) -> Result<FixtureSetOptions, ProtocolError> {
+    if read_worker_operation(input)? != WorkerOperation::SetOptions {
+        return Err(ProtocolError::UnsupportedOperation);
+    }
+
+    for _ in 0..12 {
+        read_worker_integer(input)?;
+    }
+
+    let override_count = read_worker_integer(input)?;
+    if override_count > 256 {
+        return Err(ProtocolError::SizeLimit);
+    }
+
+    let mut string_lengths = Vec::with_capacity((override_count * 2) as usize);
+    for _ in 0..override_count {
+        for _ in 0..2 {
+            string_lengths.push(read_fixture_string_length(input, 16_384)?);
+        }
+    }
+
+    Ok(FixtureSetOptions {
+        override_count,
+        string_lengths,
+    })
+}
+
+fn read_fixture_string_lengths(
+    input: &mut &[u8],
+    maximum_count: u64,
+    maximum_length: u64,
+) -> Result<Vec<u64>, ProtocolError> {
+    let count = read_worker_integer(input)?;
+    if count > maximum_count {
+        return Err(ProtocolError::SizeLimit);
+    }
+    (0..count)
+        .map(|_| read_fixture_string_length(input, maximum_length))
+        .collect()
+}
+
+fn read_fixture_string_length(
+    input: &mut &[u8],
+    maximum_length: u64,
+) -> Result<u64, ProtocolError> {
+    let length = read_worker_integer(input)?;
+    if length > maximum_length {
+        return Err(ProtocolError::SizeLimit);
+    }
+    let length = usize::try_from(length).map_err(|_| ProtocolError::SizeLimit)?;
+    let padding_length = (8 - length % 8) % 8;
+    let framed_length = length
+        .checked_add(padding_length)
+        .ok_or(ProtocolError::SizeLimit)?;
+    if input.len() < framed_length {
+        return Err(ProtocolError::Truncated);
+    }
+    let (framed, remaining) = input.split_at(framed_length);
+    if framed[length..].iter().any(|byte| *byte != 0) {
+        return Err(ProtocolError::InternalFailure);
+    }
+    *input = remaining;
+    Ok(length as u64)
+}
+
 pub fn read_worker_integer(input: &mut &[u8]) -> Result<u64, ProtocolError> {
     if input.is_empty() {
         return Err(ProtocolError::CleanEof);
@@ -356,10 +511,12 @@ mod tests {
 
     use super::{
         CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, ProtocolError,
-        SERVER_WORKER_MAGIC, WorkerOperation, WorkerVersion, protocol_name,
-        read_client_worker_magic, read_worker_byte_string, read_worker_integer,
-        read_worker_operation, write_server_worker_magic, write_worker_byte_string,
-        write_worker_integer,
+        SERVER_WORKER_MAGIC, STDERR_LAST, WorkerOperation, WorkerVersion, protocol_name,
+        read_client_worker_magic, read_fixture_client_handshake,
+        read_fixture_client_post_handshake, read_fixture_server_handshake_info,
+        read_fixture_set_options, read_fixture_terminal_frame, read_worker_byte_string,
+        read_worker_integer, read_worker_operation, write_server_worker_magic,
+        write_worker_byte_string, write_worker_integer,
     };
 
     #[test]
@@ -497,6 +654,76 @@ mod tests {
 
         assert_eq!(SERVER_WORKER_MAGIC, 0x6478_696f);
         assert_eq!(output, b"oixd\0\0\0\0");
+    }
+
+    #[test]
+    fn parses_typed_fixture_handshake_messages_without_retaining_strings() {
+        let mut client = Vec::new();
+        write_worker_integer(&mut client, CLIENT_WORKER_MAGIC);
+        write_worker_integer(&mut client, LATEST_WORKER_VERSION.to_wire());
+        write_worker_integer(&mut client, 1);
+        write_worker_byte_string(&mut client, b"secret-feature");
+        let mut client = client.as_slice();
+
+        let handshake = read_fixture_client_handshake(&mut client).unwrap();
+        assert_eq!(handshake.version, LATEST_WORKER_VERSION);
+        assert_eq!(handshake.feature_lengths, vec![14]);
+        assert!(client.is_empty());
+
+        let mut server = Vec::new();
+        write_worker_integer(&mut server, SERVER_WORKER_MAGIC);
+        write_worker_integer(&mut server, LATEST_WORKER_VERSION.to_wire());
+        write_worker_integer(&mut server, 1);
+        write_worker_byte_string(&mut server, b"secret-server-feature");
+        let mut server = server.as_slice();
+        let handshake = super::read_fixture_server_handshake(&mut server).unwrap();
+        assert_eq!(handshake.version, LATEST_WORKER_VERSION);
+        assert_eq!(handshake.feature_lengths, vec![21]);
+        assert!(server.is_empty());
+
+        let mut server_info = Vec::new();
+        write_worker_byte_string(&mut server_info, b"secret-daemon-version");
+        write_worker_integer(&mut server_info, 0);
+        write_worker_integer(&mut server_info, STDERR_LAST);
+        let mut server_info = server_info.as_slice();
+
+        assert_eq!(
+            read_fixture_server_handshake_info(&mut server_info, LATEST_WORKER_VERSION)
+                .unwrap()
+                .daemon_version_length,
+            Some(21)
+        );
+        read_fixture_terminal_frame(&mut server_info).unwrap();
+        assert!(server_info.is_empty());
+
+        let mut post_handshake = Vec::new();
+        write_worker_integer(&mut post_handshake, 0);
+        write_worker_integer(&mut post_handshake, 0);
+        let mut post_handshake = post_handshake.as_slice();
+        read_fixture_client_post_handshake(&mut post_handshake, LATEST_WORKER_VERSION).unwrap();
+        assert!(post_handshake.is_empty());
+    }
+
+    #[test]
+    fn parses_typed_fixture_set_options_without_retaining_strings() {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, 19);
+        for value in 0..12 {
+            write_worker_integer(&mut input, value);
+        }
+        write_worker_integer(&mut input, 1);
+        write_worker_byte_string(&mut input, b"secret-name");
+        write_worker_byte_string(&mut input, b"secret-value");
+        let mut input = input.as_slice();
+
+        assert_eq!(
+            read_fixture_set_options(&mut input),
+            Ok(super::FixtureSetOptions {
+                override_count: 1,
+                string_lengths: vec![11, 12],
+            })
+        );
+        assert!(input.is_empty());
     }
 
     #[test]

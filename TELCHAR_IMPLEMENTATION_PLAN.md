@@ -289,7 +289,7 @@ Evidence: paths and output facts to record
   - Verify: observer coverage manifest validator.
   - Evidence: operation/message list, protocol-version conditions, primary source references, and explicit unsupported flows.
 
-- [ ] T036B Parse typed fixture-flow messages
+- [x] T036B Parse typed fixture-flow messages
   - Depends on: T025, T028, T036A
   - Outcome: `nix-worker-protocol` can parse and relay every inventoried fixture-flow message with exact operation boundaries while retaining no secret or payload body in trace records.
   - Red: golden fixtures fail before typed message parsers exist.
