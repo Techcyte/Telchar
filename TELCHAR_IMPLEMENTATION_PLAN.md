@@ -177,7 +177,7 @@ Evidence: paths and output facts to record
 
 ### Protocol observation prerequisites
 
-- [ ] T022 Define protocol error model
+- [x] T022 Define protocol error model
   - Depends on: T019
   - Outcome: internal errors distinguish clean EOF, truncation, size limit, unsupported operation, version mismatch, store failure, and internal failure.
   - Red: table-driven tests fail before variants exist.
