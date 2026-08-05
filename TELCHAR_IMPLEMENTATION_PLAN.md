@@ -73,7 +73,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo fmt --check`.
   - Evidence: failing and passing summaries.
 
-- [ ] T006 Add lint check
+- [x] T006 Add lint check
   - Depends on: T004
   - Outcome: canonical Clippy command treats warnings as failures.
   - Red: lint fixture proves command detects a warning.
