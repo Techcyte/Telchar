@@ -147,7 +147,7 @@ Evidence: paths and output facts to record
   - Verify: matrix validation script.
   - Evidence: exact pinned version and matrix rows.
 
-- [ ] T011 Create real-Nix test fixture shell
+- [x] T011 Create real-Nix test fixture shell
   - Depends on: T002, T009E
   - Outcome: fixture creates isolated client state, keys, configuration, temporary directories, and deterministic cleanup.
   - Red: fixture self-test detects leaked state before cleanup is implemented.

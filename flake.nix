@@ -63,6 +63,7 @@
 
       devShells.${system}.default = pkgs.mkShell {
         packages = [
+          pkgs.openssh
           pkgs.cargo
           pkgs.clippy
           pkgs.rustc
