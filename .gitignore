@@ -1,0 +1,4 @@
+# Ralph runtime state is globally ignored; track only prepared task briefs.
+!.ralph/
+.ralph/*
+!.ralph/T001-deployment-assumptions.md

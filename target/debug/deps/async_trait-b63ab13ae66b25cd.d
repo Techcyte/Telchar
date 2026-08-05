@@ -1,0 +1,12 @@
+/home/travis/dev/Work/Telchar/target/debug/deps/async_trait-b63ab13ae66b25cd.d: /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lib.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/args.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/bound.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/expand.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lifetime.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/parse.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/receiver.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/verbatim.rs
+
+/home/travis/dev/Work/Telchar/target/debug/deps/libasync_trait-b63ab13ae66b25cd.so: /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lib.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/args.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/bound.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/expand.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lifetime.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/parse.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/receiver.rs /home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/verbatim.rs
+
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lib.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/args.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/bound.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/expand.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/lifetime.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/parse.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/receiver.rs:
+/home/travis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/src/verbatim.rs:
