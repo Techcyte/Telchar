@@ -854,11 +854,34 @@ Nomad job restart and reschedule policies must be explicit. Telchar remains the 
 
 ## Observability
 
-Telchar should provide structured logs and Prometheus-compatible metrics.
+Observability is a bootstrap requirement, not a later operational feature. Telchar uses the Rust `tracing` ecosystem for application instrumentation and OpenTelemetry for collection and export. Every application component must emit correlated telemetry from its first implementation rather than adding instrumentation after behavior is complete.
+
+The service supports OTLP export for all three signals:
+
+- Structured logs.
+- Metrics.
+- Distributed traces.
+
+The initial exporter supports OTLP over gRPC. Endpoint, transport security, headers or credential references, batching, queue bounds, export timeout, resource attributes, and enablement are configuration. OTLP exporter failure must not crash or block the build gateway indefinitely; failures are bounded, locally observable, and accounted for without recursive telemetry loops. A local human-readable `tracing` formatter may be enabled independently for development and emergency diagnosis.
+
+Telchar does not build a second logging or metrics framework beside `tracing` and OpenTelemetry. Code uses `tracing` spans and events for structured execution context and the OpenTelemetry metrics API for instruments. Exporter wiring remains in the Telchar service crate; `nix-worker-protocol` may depend on `tracing` for spans and events but must not configure exporters or depend on the OpenTelemetry SDK.
+
+All long-lived and boundary-crossing operations require spans or metrics as appropriate, including:
+
+- SSH connection and protocol session lifecycle.
+- Worker-protocol handshake, operation dispatch, framing failure, and bounded transfer.
+- Admission decisions and quota rejection.
+- Queue selection and backend ranking.
+- Request, attachment, and execution-attempt state transitions.
+- PostgreSQL state operations and recovery reconciliation.
+- Input staging, execution, log collection, output verification, and delivery.
+- Static SSH and Nomad backend submission, polling, cancellation, and collection.
+- Cache lookup and publication.
+- Administrative actions and shutdown.
 
 Useful metrics include:
 
-- Accepted, rejected, queued, running, completed, and failed requests.
+- Accepted, rejected, queued, dispatching, backend-pending, running, collecting, completed, and failed requests.
 - Queue wait duration.
 - Execution duration.
 - Input staging and output collection duration.
@@ -869,15 +892,20 @@ Useful metrics include:
 - Per-identity quota rejections without exposing high-cardinality raw identity labels.
 - Detached and cancelled requests.
 - Retry counts and reasons.
+- Telemetry queue saturation, dropped data, and exporter failures.
 
-Every request should have a stable request ID propagated into:
+Every request has a stable request ID and every execution has stable attempt and backend execution IDs. These identifiers are recorded as bounded span/event fields and propagated into:
 
-- Gateway logs.
-- Scheduler state.
+- Gateway spans and logs.
+- Scheduler and PostgreSQL state.
 - Backend execution metadata.
 - Nomad job or allocation metadata.
-- SSH execution logs.
+- SSH execution spans and logs.
 - Cache publication work.
+
+Trace context is propagated across Telchar-controlled process and network boundaries where the transport permits authenticated metadata. Request IDs remain domain identifiers and do not replace trace and span IDs. Raw requester identities, credentials, store contents, source names, arbitrary derivation strings, and unbounded error text must not become metric labels. Sensitive fields are redacted consistently from logs, spans, and exporter errors.
+
+Tests use a real OTLP collector fixture or protocol-compatible test collector to prove logs, metrics, and traces can be exported and correlated. Unit tests may use in-memory OpenTelemetry exporters for narrow behavior, but acceptance tests must exercise encoded OTLP traffic. Telemetry assertions capture expected exporter errors so passing test output remains pristine.
 
 An administrative CLI or API should eventually support:
 

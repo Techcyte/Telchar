@@ -101,17 +101,54 @@ Evidence: paths and output facts to record
   - Verify: run every documented command from clean shell.
   - Evidence: README paths and command results.
 
+### Bootstrap observability
+
+- [ ] T009A Define telemetry contract
+  - Depends on: T009
+  - Outcome: ADR defines `tracing` instrumentation, OpenTelemetry logs/metrics/traces, OTLP gRPC export, local formatting, resource attributes, correlation fields, cardinality/redaction policy, bounded failure behavior, and exporter ownership in the Telchar service crate.
+  - Red: design or dependency review finds an application path with no signal/correlation policy or permits exporter setup inside `nix-worker-protocol`.
+  - Verify: telemetry-contract documentation check.
+  - Evidence: ADR path and resolved contradictions.
+
+- [ ] T009B Add tracing and OpenTelemetry dependencies
+  - Depends on: T009A
+  - Outcome: workspace pins compatible `tracing`, subscriber, OpenTelemetry API/SDK, OTLP exporter, logs, metrics, and trace dependencies; `nix-worker-protocol` may use `tracing` but cannot depend on exporter SDK crates.
+  - Red: workspace dependency-boundary test reports missing signal support or exporter dependency in protocol crate.
+  - Verify: `nix develop -c cargo check --workspace --all-features --locked` plus dependency-boundary test.
+  - Evidence: versions, enabled features, and crate dependency graph.
+
+- [ ] T009C Initialize telemetry before application work
+  - Depends on: T009B
+  - Outcome: Telchar installs `tracing` subscriber and OpenTelemetry providers before emitting application events, configures OTLP gRPC logs/metrics/traces plus optional local formatting, and flushes providers during shutdown.
+  - Red: startup test captures application event before telemetry initialization or shutdown loses buffered telemetry.
+  - Verify: telemetry lifecycle integration tests.
+  - Evidence: startup order, shutdown flush, and captured signals.
+
+- [ ] T009D Bound telemetry exporter failure
+  - Depends on: T009C
+  - Outcome: unreachable or slow OTLP endpoint cannot crash Telchar, block startup indefinitely, recurse through exporter errors, or exceed configured queue/timeout bounds.
+  - Red: controlled unavailable collector causes hang, panic, unbounded retry, or recursive error output.
+  - Verify: unavailable/stalled collector integration tests with bounded wall clock and pristine captured output.
+  - Evidence: configured bounds, measured duration, and failure signal.
+
+- [ ] T009E Export correlated OTLP smoke signals
+  - Depends on: T009C, T009D
+  - Outcome: real test collector receives one structured log, metric point, and trace span sharing required service/resource attributes and request correlation fields.
+  - Red: collector fixture lacks any signal or correlation assertion fails.
+  - Verify: encoded OTLP gRPC smoke integration test.
+  - Evidence: collector fixture, signal assertions, trace/span IDs, and request ID.
+
 ### Compatibility and provenance baseline
 
 - [ ] T010 Record initial Nix compatibility matrix
-  - Depends on: T002
+  - Depends on: T002, T009E
   - Outcome: versioned document names pinned Nix version, Lix deferred status, expected worker-protocol range, trust modes, derivation classes, and support states.
   - Red: matrix completeness test or script reports missing cells.
   - Verify: matrix validation script.
   - Evidence: exact pinned version and matrix rows.
 
 - [ ] T011 Create real-Nix test fixture shell
-  - Depends on: T002
+  - Depends on: T002, T009E
   - Outcome: fixture creates isolated client state, keys, configuration, temporary directories, and deterministic cleanup.
   - Red: fixture self-test detects leaked state before cleanup is implemented.
   - Verify: fixture setup/teardown test.
@@ -183,8 +220,8 @@ Evidence: paths and output facts to record
 ### Gate 0 acceptance
 
 - [ ] T021 Verify Gate 0 from clean checkout
-  - Depends on: T008, T009, T010, T016, T018, T020
-  - Outcome: clean checkout enters dev shell, reports pinned versions, passes baseline checks, validates compatibility records and provenance.
+  - Depends on: T008, T009, T009E, T010, T016, T018, T020
+  - Outcome: clean checkout enters dev shell, reports pinned versions, passes baseline checks, exports correlated OTLP smoke signals, and validates compatibility records and provenance.
   - Red: gate script reports any missing artifact.
   - Verify: `nix flake check` plus repository gate script.
   - Evidence: exact commands and clean output summary.
@@ -1180,26 +1217,26 @@ Evidence: paths and output facts to record
   - Verify: CLI cancellation integration test.
   - Evidence: actor/reason/state.
 
-- [ ] T147 Emit structured request lifecycle logs
-  - Depends on: T107, T108
-  - Outcome: logs include stable request/session/attempt/backend IDs and transition, excluding raw high-cardinality secrets.
-  - Red: log assertion misses correlation fields.
-  - Verify: lifecycle log test.
-  - Evidence: captured sanitized events.
+- [ ] T147 Instrument request lifecycle telemetry
+  - Depends on: T009E, T107, T108
+  - Outcome: tracing spans and structured events cover session/request/attachment/attempt transitions with stable request/session/attempt/backend IDs, trace context, duration, result classification, and redacted bounded fields.
+  - Red: OTLP log/trace assertion misses a lifecycle transition or correlation field.
+  - Verify: lifecycle OTLP log and trace integration test.
+  - Evidence: captured sanitized events, spans, and correlation values.
 
-- [ ] T148 Export low-cardinality request metrics
-  - Depends on: T120, T124
-  - Outcome: accepted/rejected/queued/active/completed/failed counts and durations expose bounded labels.
-  - Red: metric test reports missing series or raw identity label.
-  - Verify: metrics scrape test.
-  - Evidence: series names and labels.
+- [ ] T148 Export low-cardinality request metrics through OTLP
+  - Depends on: T009E, T120, T124
+  - Outcome: accepted/rejected/queued/dispatching/pending/running/collecting/completed/failed counts and durations export through OTLP with bounded attributes.
+  - Red: collector test reports missing metric or raw identity/high-cardinality attribute.
+  - Verify: OTLP metrics collector test.
+  - Evidence: instrument names, units, and attributes.
 
-- [ ] T149 Export backend and transfer metrics
-  - Depends on: T069, T132
-  - Outcome: transfer bytes/durations and backend state/failures expose bounded labels.
-  - Red: metrics test fails.
-  - Verify: metrics scrape test.
-  - Evidence: series names and labels.
+- [ ] T149 Instrument backend and transfer telemetry
+  - Depends on: T009E, T069, T132
+  - Outcome: spans, events, and OTLP metrics cover transfer bytes/durations, backend selection, submission, state, cancellation, collection, and infrastructure failures with bounded attributes.
+  - Red: collector test lacks a backend/transfer signal or exposes prohibited attribute.
+  - Verify: backend/transfer OTLP logs, metrics, and traces integration test.
+  - Evidence: signal names, spans, and bounded attributes.
 
 - [ ] T150 Audit requester and administrative actions
   - Depends on: T114, T142, T146
@@ -1765,12 +1802,12 @@ Evidence: paths and output facts to record
 
 ### Autoscaling and drain evidence
 
-- [ ] T226 Export pending Nomad demand metric
-  - Depends on: T211
-  - Outcome: bounded metric reports submitted pending demand by approved capability class.
-  - Red: metric absent or uses request identity label.
-  - Verify: metrics scrape test.
-  - Evidence: series and labels.
+- [ ] T226 Export pending Nomad demand metric through OTLP
+  - Depends on: T009E, T211
+  - Outcome: bounded OTLP metric reports submitted pending demand by approved capability class and links operational traces without request identity attributes.
+  - Red: collector test lacks the metric or exposes request identity/high-cardinality attributes.
+  - Verify: Nomad demand OTLP metrics collector test.
+  - Evidence: instrument name, unit, and attributes.
 
 - [ ] T227 Prove pending job runs when eligible node appears
   - Depends on: T211, T212
@@ -1936,12 +1973,12 @@ Evidence: paths and output facts to record
   - Verify: restart publication test.
   - Evidence: attempt history and cache output.
 
-- [ ] T249 Export cache metrics
-  - Depends on: T233, T243, T246
-  - Outcome: hit/miss/timeout/error/publication outcomes expose bounded labels.
-  - Red: metrics test fails or leaks URL/identity labels.
-  - Verify: cache metrics scrape test.
-  - Evidence: series and labels.
+- [ ] T249 Export cache telemetry through OTLP
+  - Depends on: T009E, T233, T243, T246
+  - Outcome: cache lookup/publication spans, structured events, and OTLP metrics cover hit/miss/timeout/error/publication outcomes with bounded attributes.
+  - Red: collector test misses a cache signal or leaks URL/identity attributes.
+  - Verify: cache OTLP logs, metrics, and traces integration test.
+  - Evidence: instruments, spans, events, and allowed attributes.
 
 ### Gate 8 acceptance
 
@@ -2132,7 +2169,7 @@ Evidence: paths and output facts to record
 
 - [ ] T275 Add NixOS module for single-active deployment
   - Depends on: T251, T255, T274
-  - Outcome: module configures daemon, PostgreSQL connection/credentials, local IPC, service user, state directory, metrics, and OpenSSH forced command without broad shell access. PostgreSQL may be local or external but remains a required service.
+  - Outcome: module configures daemon, PostgreSQL connection/credentials, local IPC, service user, state directory, OTLP endpoint/security/credential references, local telemetry formatting, resource attributes, and OpenSSH forced command without broad shell access. PostgreSQL and the OTLP collector may be local or external according to deployment configuration.
   - Red: NixOS VM module test fails.
   - Verify: module evaluation and VM test.
   - Evidence: service and sshd assertions.
