@@ -1,9 +1,15 @@
 #![forbid(unsafe_code)]
 
+use std::io::{self, Read, Write};
+
 pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
 pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
 pub const MINIMUM_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 18);
 pub const LATEST_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
+pub const FEATURE_NEGOTIATION_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
+pub const STDERR_LAST: u64 = 0x616c_7473;
+const MAXIMUM_HANDSHAKE_FEATURES: usize = 64;
+const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: usize = 1024;
 
 pub fn protocol_name() -> &'static str {
     "Nix worker protocol"
@@ -91,6 +97,130 @@ pub fn negotiate_worker_version(
     };
 
     Ok(NegotiatedWorkerVersion { version, features })
+}
+
+pub fn perform_server_handshake<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    server_features: &[String],
+) -> io::Result<NegotiatedWorkerVersion> {
+    if read_worker_integer_from(input)? != CLIENT_WORKER_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker handshake magic mismatch",
+        ));
+    }
+
+    write_worker_integer_to(output, SERVER_WORKER_MAGIC)?;
+    write_worker_integer_to(output, LATEST_WORKER_VERSION.to_wire())?;
+    output.flush()?;
+
+    let client_version = WorkerVersion::from_wire(read_worker_integer_from(input)?);
+    let client_features =
+        if client_version.min(LATEST_WORKER_VERSION) >= FEATURE_NEGOTIATION_VERSION {
+            read_worker_strings_from(input)?
+        } else {
+            Vec::new()
+        };
+    let negotiated = negotiate_worker_version(client_version, &client_features, server_features)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unsupported worker version"))?;
+
+    if negotiated.version >= FEATURE_NEGOTIATION_VERSION {
+        write_worker_strings_to(output, server_features)?;
+        output.flush()?;
+    }
+
+    Ok(negotiated)
+}
+
+pub fn complete_server_post_handshake<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    version: WorkerVersion,
+    daemon_version: &str,
+) -> io::Result<()> {
+    if version >= WorkerVersion::new(1, 14) && read_worker_integer_from(input)? != 0 {
+        read_worker_integer_from(input)?;
+    }
+    if version >= WorkerVersion::new(1, 11) {
+        read_worker_integer_from(input)?;
+    }
+    if version >= WorkerVersion::new(1, 33) {
+        write_worker_byte_string_to(output, daemon_version.as_bytes())?;
+    }
+    if version >= WorkerVersion::new(1, 35) {
+        write_worker_integer_to(output, 0)?;
+    }
+    write_worker_integer_to(output, STDERR_LAST)?;
+    output.flush()
+}
+
+fn read_worker_integer_from(input: &mut impl Read) -> io::Result<u64> {
+    let mut bytes = [0; 8];
+    input.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_worker_byte_string_from(
+    input: &mut impl Read,
+    maximum_length: usize,
+) -> io::Result<Vec<u8>> {
+    let length = usize::try_from(read_worker_integer_from(input)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "worker string exceeds limit"))?;
+    if length > maximum_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker string exceeds limit",
+        ));
+    }
+    let padding_length = (8 - length % 8) % 8;
+    let mut framed = vec![0; length + padding_length];
+    input.read_exact(&mut framed)?;
+    if framed[length..].iter().any(|byte| *byte != 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker string padding is not zero",
+        ));
+    }
+    framed.truncate(length);
+    Ok(framed)
+}
+
+fn read_worker_strings_from(input: &mut impl Read) -> io::Result<Vec<String>> {
+    let count = usize::try_from(read_worker_integer_from(input)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many worker features"))?;
+    if count > MAXIMUM_HANDSHAKE_FEATURES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many worker features",
+        ));
+    }
+    (0..count)
+        .map(|_| {
+            let feature = read_worker_byte_string_from(input, MAXIMUM_HANDSHAKE_FEATURE_LENGTH)?;
+            String::from_utf8(feature).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "worker feature is not UTF-8")
+            })
+        })
+        .collect()
+}
+
+fn write_worker_integer_to(output: &mut impl Write, value: u64) -> io::Result<()> {
+    output.write_all(&value.to_le_bytes())
+}
+
+fn write_worker_byte_string_to(output: &mut impl Write, value: &[u8]) -> io::Result<()> {
+    write_worker_integer_to(output, value.len() as u64)?;
+    output.write_all(value)?;
+    output.write_all(&[0; 7][..(8 - value.len() % 8) % 8])
+}
+
+fn write_worker_strings_to(output: &mut impl Write, values: &[String]) -> io::Result<()> {
+    write_worker_integer_to(output, values.len() as u64)?;
+    for value in values {
+        write_worker_byte_string_to(output, value.as_bytes())?;
+    }
+    Ok(())
 }
 
 pub fn write_worker_integer(output: &mut Vec<u8>, value: u64) {

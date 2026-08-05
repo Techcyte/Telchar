@@ -1,6 +1,13 @@
 mod telemetry;
 
+use std::io;
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("serve-stdio") {
+        serve_stdio();
+        return;
+    }
+
     let telemetry = telemetry::Telemetry::initialize()
         .expect("telemetry configuration must initialize before application work");
 
@@ -23,4 +30,24 @@ fn main() {
     println!("{}", nix_worker_protocol::protocol_name());
 
     telemetry.shutdown();
+}
+
+fn serve_stdio() {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+
+    let result = nix_worker_protocol::perform_server_handshake(&mut input, &mut output, &[])
+        .and_then(|negotiated| {
+            nix_worker_protocol::complete_server_post_handshake(
+                &mut input,
+                &mut output,
+                negotiated.version,
+                "telchar",
+            )
+        });
+    if let Err(error) = result {
+        eprintln!("telchar serve-stdio: {error}");
+    }
 }

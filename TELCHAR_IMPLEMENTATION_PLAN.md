@@ -268,7 +268,7 @@ Evidence: paths and output facts to record
   - Verify: version rejection and down-negotiation tests.
   - Evidence: rejected lower boundary and negotiated upper boundary. Successful negotiation is not a compatibility or support claim for untested Nix releases.
 
-- [ ] T035 Complete pinned-client stdio handshake
+- [x] T035 Complete pinned-client stdio handshake
   - Depends on: T033
   - Outcome: real pinned Nix completes handshake against `telchar serve-stdio`.
   - Red: real-client integration test fails at handshake.
