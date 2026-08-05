@@ -2,6 +2,7 @@
 .ralph/
 .ralph/*
 .ralph/*.md
+!.ralph/P002-baseline-tooling.md
 
 /target/
 /result
