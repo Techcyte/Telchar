@@ -275,7 +275,7 @@ Evidence: paths and output facts to record
   - Verify: direct stdio integration command.
   - Evidence: client version, negotiated protocol, clean server exit.
 
-- [ ] T036 Parse worker operation code
+- [x] T036 Parse worker operation code
   - Depends on: T035
   - Outcome: reusable protocol code parses operation codes using primary Nix constants without assuming request boundaries from raw byte chunks.
   - Red: operation-code fixture is unrecognized.

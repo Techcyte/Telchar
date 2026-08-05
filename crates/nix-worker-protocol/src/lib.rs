@@ -52,6 +52,90 @@ pub enum ProtocolError {
     InternalFailure,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerOperation {
+    IsValidPath,
+    QueryReferrers,
+    AddToStore,
+    AddTextToStore,
+    BuildPaths,
+    EnsurePath,
+    AddTempRoot,
+    AddIndirectRoot,
+    SyncWithGc,
+    FindRoots,
+    QueryDeriver,
+    SetOptions,
+    CollectGarbage,
+    QuerySubstitutablePathInfo,
+    QueryDerivationOutputs,
+    QueryAllValidPaths,
+    QueryPathInfo,
+    QueryDerivationOutputNames,
+    QueryPathFromHashPart,
+    QuerySubstitutablePathInfos,
+    QueryValidPaths,
+    QuerySubstitutablePaths,
+    QueryValidDerivers,
+    OptimiseStore,
+    VerifyStore,
+    BuildDerivation,
+    AddSignatures,
+    NarFromPath,
+    AddToStoreNar,
+    QueryMissing,
+    QueryDerivationOutputMap,
+    RegisterDrvOutput,
+    QueryRealisation,
+    AddMultipleToStore,
+    AddBuildLog,
+    BuildPathsWithResults,
+    AddPermRoot,
+}
+
+pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, ProtocolError> {
+    match read_worker_integer(input)? {
+        1 => Ok(WorkerOperation::IsValidPath),
+        6 => Ok(WorkerOperation::QueryReferrers),
+        7 => Ok(WorkerOperation::AddToStore),
+        8 => Ok(WorkerOperation::AddTextToStore),
+        9 => Ok(WorkerOperation::BuildPaths),
+        10 => Ok(WorkerOperation::EnsurePath),
+        11 => Ok(WorkerOperation::AddTempRoot),
+        12 => Ok(WorkerOperation::AddIndirectRoot),
+        13 => Ok(WorkerOperation::SyncWithGc),
+        14 => Ok(WorkerOperation::FindRoots),
+        18 => Ok(WorkerOperation::QueryDeriver),
+        19 => Ok(WorkerOperation::SetOptions),
+        20 => Ok(WorkerOperation::CollectGarbage),
+        21 => Ok(WorkerOperation::QuerySubstitutablePathInfo),
+        22 => Ok(WorkerOperation::QueryDerivationOutputs),
+        23 => Ok(WorkerOperation::QueryAllValidPaths),
+        26 => Ok(WorkerOperation::QueryPathInfo),
+        28 => Ok(WorkerOperation::QueryDerivationOutputNames),
+        29 => Ok(WorkerOperation::QueryPathFromHashPart),
+        30 => Ok(WorkerOperation::QuerySubstitutablePathInfos),
+        31 => Ok(WorkerOperation::QueryValidPaths),
+        32 => Ok(WorkerOperation::QuerySubstitutablePaths),
+        33 => Ok(WorkerOperation::QueryValidDerivers),
+        34 => Ok(WorkerOperation::OptimiseStore),
+        35 => Ok(WorkerOperation::VerifyStore),
+        36 => Ok(WorkerOperation::BuildDerivation),
+        37 => Ok(WorkerOperation::AddSignatures),
+        38 => Ok(WorkerOperation::NarFromPath),
+        39 => Ok(WorkerOperation::AddToStoreNar),
+        40 => Ok(WorkerOperation::QueryMissing),
+        41 => Ok(WorkerOperation::QueryDerivationOutputMap),
+        42 => Ok(WorkerOperation::RegisterDrvOutput),
+        43 => Ok(WorkerOperation::QueryRealisation),
+        44 => Ok(WorkerOperation::AddMultipleToStore),
+        45 => Ok(WorkerOperation::AddBuildLog),
+        46 => Ok(WorkerOperation::BuildPathsWithResults),
+        47 => Ok(WorkerOperation::AddPermRoot),
+        _ => Err(ProtocolError::UnsupportedOperation),
+    }
+}
+
 pub fn read_worker_integer(input: &mut &[u8]) -> Result<u64, ProtocolError> {
     if input.is_empty() {
         return Err(ProtocolError::CleanEof);
@@ -272,9 +356,10 @@ mod tests {
 
     use super::{
         CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, ProtocolError,
-        SERVER_WORKER_MAGIC, WorkerVersion, protocol_name, read_client_worker_magic,
-        read_worker_byte_string, read_worker_integer, write_server_worker_magic,
-        write_worker_byte_string, write_worker_integer,
+        SERVER_WORKER_MAGIC, WorkerOperation, WorkerVersion, protocol_name,
+        read_client_worker_magic, read_worker_byte_string, read_worker_integer,
+        read_worker_operation, write_server_worker_magic, write_worker_byte_string,
+        write_worker_integer,
     };
 
     #[test]
@@ -412,6 +497,21 @@ mod tests {
 
         assert_eq!(SERVER_WORKER_MAGIC, 0x6478_696f);
         assert_eq!(output, b"oixd\0\0\0\0");
+    }
+
+    #[test]
+    fn parses_pinned_worker_operation_codes_at_typed_boundaries() {
+        let mut set_options = &19_u64.to_le_bytes()[..];
+        let mut build_paths_with_results = &46_u64.to_le_bytes()[..];
+
+        assert_eq!(
+            read_worker_operation(&mut set_options),
+            Ok(WorkerOperation::SetOptions)
+        );
+        assert_eq!(
+            read_worker_operation(&mut build_paths_with_results),
+            Ok(WorkerOperation::BuildPathsWithResults)
+        );
     }
 
     #[test]
