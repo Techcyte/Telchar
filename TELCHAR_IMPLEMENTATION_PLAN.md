@@ -1,6 +1,6 @@
 # Telchar Implementation Plan
 
-**Status:** Planned; implementation not started
+**Status:** In progress
 
 This plan decomposes Telchar into Ralph-compatible tasks. Each task is intended to produce one small, reviewable behavior or one recorded architecture decision. Work must follow task order and gate dependencies.
 
@@ -154,41 +154,6 @@ Evidence: paths and output facts to record
   - Verify: fixture setup/teardown test.
   - Evidence: created paths and post-test absence.
 
-- [-] T012 Add worker-protocol trace capture fixture
-  - Depends on: T010, T011
-  - Outcome: a transparent test peer captures operation codes and protocol metadata from pinned stock Nix without storing secrets.
-  - Red: trace assertion fails before capture is wired.
-  - Verify: real-client trace command.
-  - Evidence: sanitized trace artifact.
-
-- [ ] T013 Capture trusted classic derivation trace
-  - Depends on: T012
-  - Outcome: record handshake and operation sequence for trusted classic input-addressed remote build.
-  - Red: compatibility matrix cell lacks evidence.
-  - Verify: rerun trace fixture for cell.
-  - Evidence: protocol version, trust result, operation sequence.
-
-- [ ] T014 Capture untrusted classic derivation trace
-  - Depends on: T012
-  - Outcome: record whether pinned Nix uses `BuildDerivation`, `BuildPathsWithResults`, or another operation.
-  - Red: compatibility matrix cell lacks evidence.
-  - Verify: rerun untrusted trace fixture.
-  - Evidence: operation sequence and trust negotiation.
-
-- [ ] T015 Capture content-addressed derivation trace
-  - Depends on: T012
-  - Outcome: record operation and result semantics for one supported content-addressed build or explicitly defer it.
-  - Red: compatibility matrix CA cell unresolved.
-  - Verify: rerun CA fixture or matrix deferral validation.
-  - Evidence: trace or explicit unsupported decision.
-
-- [ ] T016 Define initial worker-operation allowlist
-  - Depends on: T013, T014, T015
-  - Outcome: document required, optional, recognized-rejected, and unknown operation behavior.
-  - Red: captured trace contains unclassified operation.
-  - Verify: classifier script over trace artifacts.
-  - Evidence: zero unclassified operations.
-
 - [ ] T017 Record rio-build reference revision
   - Depends on: none
   - Outcome: reference record identifies exact archived upstream commit reviewed for architecture and test-category research.
@@ -210,28 +175,10 @@ Evidence: paths and output facts to record
   - Verify: workspace dependency-boundary test.
   - Evidence: allowed responsibilities and forbidden dependency checks.
 
-- [ ] T020 Inventory independent protocol behaviors
-  - Depends on: T016, T018, T019
-  - Outcome: every required behavior maps to captured traffic, primary Nix source/documentation references, and an independent implementation/test task; Rio contributes only architecture or test-category notes.
-  - Red: required behavior depends on Rio implementation details or lacks primary evidence.
-  - Verify: protocol evidence inventory cross-check script.
-  - Evidence: per-behavior evidence sources and task mapping.
-
-### Gate 0 acceptance
-
-- [ ] T021 Verify Gate 0 from clean checkout
-  - Depends on: T008, T009, T009E, T010, T016, T018, T020
-  - Outcome: clean checkout enters dev shell, reports pinned versions, passes baseline checks, exports correlated OTLP smoke signals, and validates compatibility records and provenance.
-  - Red: gate script reports any missing artifact.
-  - Verify: `nix flake check` plus repository gate script.
-  - Evidence: exact commands and clean output summary.
-
-## Gate 1 — Stdio worker-protocol proof
-
-### Framing safety
+### Protocol observation prerequisites
 
 - [ ] T022 Define protocol error model
-  - Depends on: T021
+  - Depends on: T019
   - Outcome: internal errors distinguish clean EOF, truncation, size limit, unsupported operation, version mismatch, store failure, and internal failure.
   - Red: table-driven tests fail before variants exist.
   - Verify: narrow protocol error tests.
@@ -293,8 +240,6 @@ Evidence: paths and output facts to record
   - Verify: short deterministic fuzz smoke run.
   - Evidence: command and no-crash summary.
 
-### Handshake and operation dispatch
-
 - [ ] T031 Parse client worker magic
   - Depends on: T028
   - Outcome: server accepts exact pinned client magic and rejects others.
@@ -330,15 +275,130 @@ Evidence: paths and output facts to record
   - Verify: direct stdio integration command.
   - Evidence: client version, negotiated protocol, clean server exit.
 
-- [ ] T036 Parse one operation code
+- [ ] T036 Parse worker operation code
   - Depends on: T035
-  - Outcome: dispatcher identifies a captured required operation.
-  - Red: operation fixture is unrecognized.
-  - Verify: dispatcher unit test.
-  - Evidence: operation code and name.
+  - Outcome: reusable protocol code parses operation codes using primary Nix constants without assuming request boundaries from raw byte chunks.
+  - Red: operation-code fixture is unrecognized.
+  - Verify: operation-code parser unit test.
+  - Evidence: tested operation codes and primary source references.
+
+- [ ] T036A Inventory typed fixture-flow requests
+  - Depends on: T011, T019, T036
+  - Outcome: versioned manifest maps every request, response, callback, and upload flow reachable by the compatibility fixtures to exact primary Nix serializers and bounded protocol types.
+  - Red: fixture-flow inventory reports an unknown or unbounded message shape.
+  - Verify: observer coverage manifest validator.
+  - Evidence: operation/message list, protocol-version conditions, primary source references, and explicit unsupported flows.
+
+- [ ] T036B Parse typed fixture-flow messages
+  - Depends on: T025, T028, T036A
+  - Outcome: `nix-worker-protocol` can parse and relay every inventoried fixture-flow message with exact operation boundaries while retaining no secret or payload body in trace records.
+  - Red: golden fixtures fail before typed message parsers exist.
+  - Verify: typed observer parser golden tests.
+  - Evidence: per-message fixtures, bounds, and retained metadata fields.
+
+- [ ] T036C Relay bounded uploads and callbacks transparently
+  - Depends on: T029, T036B
+  - Outcome: observer streams inventoried uploads, responses, and callbacks bidirectionally without whole-payload buffering, records only approved bounded metadata, and fails closed on an untyped flow.
+  - Red: streaming fixture buffers beyond its bound, loses bytes, or accepts an untyped message.
+  - Verify: transparent relay integration tests with large upload, callback, and unknown-flow cases.
+  - Evidence: byte-for-byte relay hashes, observed memory bound, rejected flow, and sanitized telemetry.
+
+### Compatibility traces and protocol evidence
+
+- [ ] T012 Add worker-protocol trace capture fixture
+  - Depends on: T011, T036C
+  - Outcome: a transparent typed test peer relays pinned stock-Nix traffic while capturing operation codes and bounded protocol metadata without storing secrets or payload bodies.
+  - Red: real-client trace assertion fails before the typed observer is wired.
+  - Verify: real-client transparent trace command.
+  - Evidence: sanitized trace artifact and proof that every observed request used a typed boundary parser.
+
+- [ ] T013 Capture trusted classic derivation trace
+  - Depends on: T012
+  - Outcome: record handshake and operation sequence for trusted classic input-addressed remote build.
+  - Red: compatibility matrix cell lacks evidence.
+  - Verify: rerun trace fixture for cell.
+  - Evidence: protocol version, trust result, operation sequence.
+
+- [ ] T014 Capture untrusted classic derivation trace
+  - Depends on: T012
+  - Outcome: record whether pinned Nix uses `BuildDerivation`, `BuildPathsWithResults`, or another operation.
+  - Red: compatibility matrix cell lacks evidence.
+  - Verify: rerun untrusted trace fixture.
+  - Evidence: operation sequence and trust negotiation.
+
+- [ ] T015 Capture content-addressed derivation trace
+  - Depends on: T012
+  - Outcome: record operation and result semantics for one supported content-addressed build or explicitly defer it.
+  - Red: compatibility matrix CA cell unresolved.
+  - Verify: rerun CA fixture or matrix deferral validation.
+  - Evidence: trace or explicit unsupported decision.
+
+- [ ] T016 Define initial worker-operation allowlist
+  - Depends on: T013, T014, T015
+  - Outcome: document required, optional, recognized-rejected, and unknown operation behavior.
+  - Red: captured trace contains unclassified operation.
+  - Verify: classifier script over trace artifacts.
+  - Evidence: zero unclassified operations.
+
+- [ ] T020 Inventory independent protocol behaviors
+  - Depends on: T016, T018, T019
+  - Outcome: every required behavior maps to captured traffic, primary Nix source/documentation references, and an independent implementation/test task; Rio contributes only architecture or test-category notes.
+  - Red: required behavior depends on Rio implementation details or lacks primary evidence.
+  - Verify: protocol evidence inventory cross-check script.
+  - Evidence: per-behavior evidence sources and task mapping.
+
+### Gate 0 acceptance
+
+- [ ] T021 Verify Gate 0 from clean checkout
+  - Depends on: T008, T009, T009E, T010, T016, T018, T020
+  - Outcome: clean checkout enters dev shell, reports pinned versions, passes baseline checks, exports correlated OTLP smoke signals, and validates compatibility records and provenance.
+  - Red: gate script reports any missing artifact.
+  - Verify: `nix flake check` plus repository gate script.
+  - Evidence: exact commands and clean output summary.
+
+### Reusable NixOS integration harness
+
+- [ ] T021A Define reusable `nixosTest` topology contract
+  - Depends on: T021
+  - Outcome: ADR defines authoritative multi-machine integration topology, machine roles, shared helpers, service readiness, test artifacts, secrets handling, and when specialized tests extend rather than duplicate the harness.
+  - Red: integration inventory finds an external boundary with no machine role, readiness rule, or artifact policy.
+  - Verify: NixOS test-topology contract check.
+  - Evidence: topology diagram, extension points, and mapped future integration tasks.
+
+- [ ] T021B Add reusable `nixosTest` library
+  - Depends on: T021A
+  - Outcome: flake exports shared NixOS test modules/helpers for Telchar packaging, stock-Nix clients, networking, OpenSSH, OTLP collection, machine startup, and failure artifact capture.
+  - Red: minimal test cannot instantiate two machines through shared helpers.
+  - Verify: evaluate minimal multi-machine `nixosTest`.
+  - Evidence: exported test attribute, machine definitions, and evaluation result.
+
+- [ ] T021C Add baseline client-gateway integration smoke test
+  - Depends on: T021B
+  - Outcome: authoritative `nixosTest` boots separate client and gateway machines, runs the packaged Telchar service, reaches it over the declared network boundary, and captures correlated OTLP startup telemetry.
+  - Red: smoke test fails before service, networking, readiness, and collector wiring are complete.
+  - Verify: flake NixOS smoke-test command.
+  - Evidence: machine topology, service readiness, network assertion, and correlated telemetry artifact.
+
+- [ ] T021D Preserve deterministic NixOS test failure artifacts
+  - Depends on: T021C
+  - Outcome: failed integration tests retain bounded service journals, machine state, OTLP records, and driver output while successful tests clean temporary state and emit pristine output.
+  - Red: controlled failure loses diagnostics, leaks secrets, or leaves unmanaged state.
+  - Verify: controlled-failure artifact and cleanup test.
+  - Evidence: artifact paths, redaction assertions, and cleanup proof.
+
+- [ ] T021E Wire NixOS smoke test into repository gates
+  - Depends on: T021C, T021D
+  - Outcome: flake checks expose a rerunnable authoritative integration target, and future real-component fixtures extend the shared `nixosTest` harness instead of creating parallel orchestration systems.
+  - Red: aggregate validation omits the smoke test or fixture policy permits duplicate harnesses.
+  - Verify: `nix flake check` plus direct NixOS smoke-test command.
+  - Evidence: flake attributes, aggregate output, direct command, and runtime summary.
+
+## Gate 1 — Stdio worker-protocol proof
+
+### Post-capture dispatch safety
 
 - [ ] T037 Reject unknown operation code
-  - Depends on: T036
+  - Depends on: T016, T021E, T036
   - Outcome: unknown code produces deterministic Nix-compatible error framing.
   - Red: client sees EOF or panic.
   - Verify: unknown-operation integration test.
@@ -823,12 +883,12 @@ Evidence: paths and output facts to record
   - Verify: detached retention/cleanup test.
   - Evidence: timed/state-based lease transitions.
 
-- [ ] T094 Add NixOS VM vertical fixture
-  - Depends on: T088, T089
-  - Outcome: repository provisions stock client, OpenSSH ingress, daemon, gateway store, and local executor in reproducible VM test.
-  - Red: VM test fails before fixture is complete.
-  - Verify: flake VM test command.
-  - Evidence: VM topology and output proof.
+- [ ] T094 Extend NixOS vertical integration fixture
+  - Depends on: T021E, T088, T089
+  - Outcome: shared `nixosTest` harness provisions stock client, OpenSSH ingress, daemon, gateway store, and local executor as a reproducible end-to-end topology.
+  - Red: vertical NixOS test fails before the shared fixture extension is complete.
+  - Verify: flake NixOS vertical-test command.
+  - Evidence: reused harness modules, VM topology, and output proof.
 
 ### Gate 3 acceptance
 

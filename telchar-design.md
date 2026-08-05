@@ -142,6 +142,8 @@ It must not depend on Telchar identity, admission, scheduling, PostgreSQL state,
 
 Initial implementation is independent: behavior is derived from captured stock-Nix traffic, primary Nix source and documentation, and real-client compatibility tests. Rio-build and `rio-nix` may inform architecture, terminology, edge-case inventories, and test categories, but their implementation must not be copied, translated, or mechanically adapted into the initial crate. This avoids uncertain licensing provenance, unused Rio abstractions, and accidental compatibility with Rio rather than current Nix.
 
+Transparent traffic observation uses the same bounded wire primitives and typed request/response definitions as the production protocol crate. The worker protocol has no generic request envelope, so operation boundaries must never be inferred from transport read chunks or discovered by scanning arbitrary payload bytes. Before a compatibility trace is accepted, every fixture-reachable request, response, callback, and upload flow must have an exact versioned parser derived from primary Nix serializers. The observer streams payload bodies without retaining them, records only approved bounded metadata, and fails closed when it encounters an untyped flow. Nix debug output may aid diagnosis but is not compatibility evidence.
+
 Any future proposal to import Rio source requires a separate ADR, exact upstream revision, applicable license evidence, imported-file manifest, retained notices, local modification policy, and tests proving the import is preferable to the existing implementation. Import is an exception, not the default path.
 
 The crate begins inside the Telchar repository so protocol and gateway changes can remain atomic while the API is unstable. Extraction to a separate repository and publication as an external dependency may be considered only after:
@@ -1067,7 +1069,7 @@ Goal: complete a real derivation through Telchar.
 - One derivation execution.
 - Log forwarding.
 - Output verification and return.
-- Real NixOS VM integration test.
+- Real multi-machine `nixosTest` integration test built on the shared harness.
 
 Success criterion:
 
@@ -1174,6 +1176,10 @@ Use real components rather than mocks for core correctness:
 - Real remote SSH builder.
 - Real Nomad development agent for Nomad backend tests.
 - Optional real binary-cache fixture where practical.
+
+The authoritative whole-system harness is a reusable multi-machine `nixosTest` topology exported by the flake. It starts with separate stock-client and gateway machines plus an OTLP collector, shared readiness and artifact helpers, and packaged Telchar services. PostgreSQL, remote SSH builders, Nomad, and cache fixtures extend this harness as their phases arrive rather than creating unrelated orchestration systems. Specialized tests may define additional machines, but reuse service modules, networking, startup, cleanup, telemetry collection, and failure-artifact conventions.
+
+The harness must retain bounded redacted journals, driver output, machine state, and OTLP records on failure. Successful runs clean temporary state and keep output pristine. Direct component tests remain appropriate for fast protocol and state behavior; `nixosTest` is the authoritative end-to-end acceptance boundary.
 
 The primary acceptance test should prove that the client cannot build locally, submits work to Telchar, and receives a verified output produced by the selected backend.
 
