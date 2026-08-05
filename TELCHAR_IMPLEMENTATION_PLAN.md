@@ -184,7 +184,7 @@ Evidence: paths and output facts to record
   - Verify: narrow protocol error tests.
   - Evidence: tested variants.
 
-- [ ] T023 Read little-endian worker integer
+- [x] T023 Read little-endian worker integer
   - Depends on: T022
   - Outcome: parser reads one worker integer using captured protocol encoding.
   - Red: value test fails.
