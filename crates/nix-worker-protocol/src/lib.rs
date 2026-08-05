@@ -33,7 +33,7 @@ pub fn read_worker_integer(input: &mut &[u8]) -> Result<u64, ProtocolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{protocol_name, read_worker_integer, ProtocolError};
+    use super::{ProtocolError, protocol_name, read_worker_integer};
 
     #[test]
     fn reports_protocol_name() {
@@ -63,9 +63,15 @@ mod tests {
 
         assert_eq!(read_worker_integer(&mut zero), Ok(0));
         assert_eq!(read_worker_integer(&mut maximum), Ok(u64::MAX));
-        assert_eq!(
-            read_worker_integer(&mut ordinary),
-            Ok(0x0102_0304_0506_0708)
-        );
+        assert_eq!(read_worker_integer(&mut ordinary), Ok(0x0102_0304_0506_0708));
+    }
+
+    #[test]
+    fn rejects_truncated_worker_integers() {
+        let mut empty = &b""[..];
+        let mut partial = &b"\0\0\0\0\0\0\0"[..];
+
+        assert_eq!(read_worker_integer(&mut empty), Err(ProtocolError::CleanEof));
+        assert_eq!(read_worker_integer(&mut partial), Err(ProtocolError::Truncated));
     }
 }

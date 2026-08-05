@@ -191,7 +191,7 @@ Evidence: paths and output facts to record
   - Verify: primitive parser test.
   - Evidence: boundary values.
 
-- [ ] T024 Reject truncated worker integer
+- [x] T024 Reject truncated worker integer
   - Depends on: T023
   - Outcome: parser returns deterministic truncation error without panic.
   - Red: truncation test fails.
