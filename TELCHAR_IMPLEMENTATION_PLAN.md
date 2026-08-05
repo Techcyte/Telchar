@@ -168,7 +168,7 @@ Evidence: paths and output facts to record
   - Verify: independent policy review checklist.
   - Evidence: cited license signals, no-copy rule, and future import decision requirements.
 
-- [ ] T019 Define `nix-worker-protocol` crate boundary
+- [x] T019 Define `nix-worker-protocol` crate boundary
   - Depends on: T003, T018
   - Outcome: ADR and dependency check allow only reusable wire primitives, negotiation, operations, messages, activity/error frames, result types, compatibility fixtures, property tests, and fuzz targets; Telchar domain dependencies are forbidden.
   - Red: boundary test permits identity, scheduler, PostgreSQL, SSH ingress, backend, cache, or service configuration dependencies.
