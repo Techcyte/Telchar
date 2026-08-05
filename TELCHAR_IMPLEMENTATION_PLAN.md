@@ -87,7 +87,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test --lib --locked`.
   - Evidence: failing then passing test names.
 
-- [ ] T008 Add repository check aggregator
+- [x] T008 Add repository check aggregator
   - Depends on: T005, T006, T007
   - Outcome: one flake check runs formatting, lint, and unit tests.
   - Red: one constituent failure makes aggregate fail.

@@ -14,6 +14,36 @@
       source = craneLib.cleanCargoSource ./.;
     in
     {
+      checks.${system} =
+        let
+          cargoArtifacts = craneLib.buildDepsOnly {
+            src = source;
+            pname = "telchar";
+            version = "0.1.0";
+          };
+        in
+        {
+          format = craneLib.cargoFmt {
+            src = source;
+            pname = "telchar";
+            version = "0.1.0";
+          };
+          lint = craneLib.cargoClippy {
+            src = source;
+            pname = "telchar";
+            version = "0.1.0";
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
+          };
+          unit-tests = craneLib.cargoTest {
+            src = source;
+            pname = "telchar";
+            version = "0.1.0";
+            inherit cargoArtifacts;
+            cargoTestExtraArgs = "--lib";
+          };
+        };
+
       packages.${system} = {
         nix-worker-protocol = craneLib.buildPackage {
           src = source;
