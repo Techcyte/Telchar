@@ -198,7 +198,7 @@ Evidence: paths and output facts to record
   - Verify: truncation test.
   - Evidence: asserted error.
 
-- [ ] T025 Read bounded worker byte string
+- [x] T025 Read bounded worker byte string
   - Depends on: T023
   - Outcome: parser reads declared bytes and alignment padding within configured limit.
   - Red: valid string fixture fails.
