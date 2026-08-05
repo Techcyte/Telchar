@@ -140,7 +140,7 @@ Evidence: paths and output facts to record
 
 ### Compatibility and provenance baseline
 
-- [ ] T010 Record initial Nix compatibility matrix
+- [x] T010 Record initial Nix compatibility matrix
   - Depends on: T002, T009E
   - Outcome: versioned document names pinned Nix version, Lix deferred status, expected worker-protocol range, trust modes, derivation classes, and support states.
   - Red: matrix completeness test or script reports missing cells.
