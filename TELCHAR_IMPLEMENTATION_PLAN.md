@@ -282,7 +282,7 @@ Evidence: paths and output facts to record
   - Verify: operation-code parser unit test.
   - Evidence: tested operation codes and primary source references.
 
-- [ ] T036A Inventory typed fixture-flow requests
+- [x] T036A Inventory typed fixture-flow requests
   - Depends on: T011, T019, T036
   - Outcome: versioned manifest maps every request, response, callback, and upload flow reachable by the compatibility fixtures to exact primary Nix serializers and bounded protocol types.
   - Red: fixture-flow inventory reports an unknown or unbounded message shape.
