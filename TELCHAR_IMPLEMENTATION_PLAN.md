@@ -117,7 +117,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo check --workspace --all-features --locked` plus dependency-boundary test.
   - Evidence: versions, enabled features, and crate dependency graph.
 
-- [ ] T009C Initialize telemetry before application work
+- [x] T009C Initialize telemetry before application work
   - Depends on: T009B
   - Outcome: Telchar installs `tracing` subscriber and OpenTelemetry providers before emitting application events, configures OTLP gRPC logs/metrics/traces plus optional local formatting, and flushes providers during shutdown.
   - Red: startup test captures application event before telemetry initialization or shutdown loses buffered telemetry.

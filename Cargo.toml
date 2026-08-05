@@ -12,4 +12,5 @@ tracing-opentelemetry = { version = "0.33.0", default-features = false, features
 opentelemetry = { version = "0.32.0", default-features = false, features = ["logs", "metrics", "trace"] }
 opentelemetry_sdk = { version = "0.32.0", default-features = false, features = ["logs", "metrics", "rt-tokio", "trace"] }
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["grpc-tonic", "logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "0.32.0"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

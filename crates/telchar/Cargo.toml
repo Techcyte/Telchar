@@ -8,6 +8,7 @@ nix-worker-protocol = { path = "../nix-worker-protocol" }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
