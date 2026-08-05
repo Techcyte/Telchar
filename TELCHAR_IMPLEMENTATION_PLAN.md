@@ -110,7 +110,7 @@ Evidence: paths and output facts to record
   - Verify: telemetry-contract documentation check.
   - Evidence: ADR path and resolved contradictions.
 
-- [ ] T009B Add tracing and OpenTelemetry dependencies
+- [x] T009B Add tracing and OpenTelemetry dependencies
   - Depends on: T009A
   - Outcome: workspace pins compatible `tracing`, subscriber, OpenTelemetry API/SDK, OTLP exporter, logs, metrics, and trace dependencies; `nix-worker-protocol` may use `tracing` but cannot depend on exporter SDK crates.
   - Red: workspace dependency-boundary test reports missing signal support or exporter dependency in protocol crate.
