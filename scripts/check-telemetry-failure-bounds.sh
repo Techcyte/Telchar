@@ -26,7 +26,7 @@ if ! timeout 5s env OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:43171 \
 	cat "$output" >&2
 	exit 1
 fi
-elapsed=$(( $(date +%s) - start ))
+elapsed=$(($(date +%s) - start))
 
 if [ "$elapsed" -gt 4 ]; then
 	printf 'stalled collector exceeded shutdown bound: %ss\n' "$elapsed" >&2

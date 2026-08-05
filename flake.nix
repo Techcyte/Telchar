@@ -6,7 +6,8 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { nixpkgs, crane, ... }:
+  outputs =
+    { nixpkgs, crane, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
