@@ -103,7 +103,7 @@ Evidence: paths and output facts to record
 
 ### Bootstrap observability
 
-- [ ] T009A Define telemetry contract
+- [x] T009A Define telemetry contract
   - Depends on: T009
   - Outcome: ADR defines `tracing` instrumentation, OpenTelemetry logs/metrics/traces, OTLP gRPC export, local formatting, resource attributes, correlation fields, cardinality/redaction policy, bounded failure behavior, and exporter ownership in the Telchar service crate.
   - Red: design or dependency review finds an application path with no signal/correlation policy or permits exporter setup inside `nix-worker-protocol`.
