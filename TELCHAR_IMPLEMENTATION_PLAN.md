@@ -66,7 +66,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c rustc --version` and `cargo --version`.
   - Evidence: pinned versions.
 
-- [ ] T005 Add formatting check
+- [x] T005 Add formatting check
   - Depends on: T004
   - Outcome: canonical command rejects unformatted Rust.
   - Red: intentionally unformatted fixture or branch proves check fails.
