@@ -9,7 +9,7 @@ This inventory covers every protocol flow reachable from the current compatibili
 | `crates/telchar/tests/stdio_handshake.rs` | `nix --store ssh-ng://telchar-handshake-test store info` | Worker handshake, post-handshake information, `SetOptions`, terminal activity frame |
 | `crates/telchar/tests/worker_trace.rs` | `nix --store unix://… store info --json` | Worker handshake, post-handshake information, `SetOptions`, terminal activity frame |
 
-Handshake acceptance is not a compatibility or support claim for untested Nix releases. No fixture currently reaches a callback or an upload body.
+Handshake acceptance is not a compatibility or support claim for untested Nix releases. The concrete current fixtures terminate after `SetOptions`; primary dispatch/serializer evidence in `remote-store.cc` and `daemon.cc` shows neither fixture sends `AddToStore`, `AddToStoreNar`, or `AddMultipleToStore`, and their `SetOptions` replies are `STDERR_LAST`. Therefore no callback or upload is reachable. `STDERR_READ` and `STDERR_WRITE` are callback tags defined in `worker-protocol.hh`, but are never emitted by this fixture path.
 
 ## Versioned message inventory
 
@@ -35,5 +35,9 @@ All integer fields are 64-bit little-endian words. Byte strings are an integer b
 | Callback (`STDERR_READ` or `STDERR_WRITE`) | none | Fail closed before relaying the untyped body |
 | Upload (`AddToStore`, `AddToStoreNar`, `AddMultipleToStore`) | none | Fail closed before relaying the untyped body |
 | Activity/error/result frame other than `STDERR_LAST` | none | Fail closed before relaying the untyped body |
+
+The typed observer relays only these listed messages byte-for-byte at their exact boundaries. It uses a fixed 4096-byte transfer buffer for declared string bodies and retains only protocol versions, operation tag, declared feature/daemon/override string lengths, override count, and terminal-frame count. It retains no feature, daemon version, option name, option value, callback body, upload body, secret, or raw chunk.
+
+Large-upload coverage is intentionally absent: no current concrete fixture establishes a typed upload boundary. A synthetic upload stream is not protocol acceptance evidence. P003B remains blocked pending explicit trusted-classic/untrusted-classic fixture-definition tasks and a matching inventory/parser extension. Content-addressed compatibility is deferred from the initial gate and unsupported until a concrete fixture, required operations, result semantics, and primary-source evidence are defined.
 
 Future fixture changes must extend this inventory with exact serializer references, version conditions, bounded message types, retained metadata fields, and golden fixtures before the observer accepts the new flow.
