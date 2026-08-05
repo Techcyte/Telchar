@@ -124,7 +124,7 @@ Evidence: paths and output facts to record
   - Verify: telemetry lifecycle integration tests.
   - Evidence: startup order, shutdown flush, and captured signals.
 
-- [ ] T009D Bound telemetry exporter failure
+- [x] T009D Bound telemetry exporter failure
   - Depends on: T009C
   - Outcome: unreachable or slow OTLP endpoint cannot crash Telchar, block startup indefinitely, recurse through exporter errors, or exceed configured queue/timeout bounds.
   - Red: controlled unavailable collector causes hang, panic, unbounded retry, or recursive error output.

@@ -7,14 +7,22 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::logs::{
+    BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
+};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::trace::{
+    BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
+};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 const SERVICE_NAME: &str = "telchar";
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(5);
+const EXPORT_TIMEOUT: Duration = Duration::from_secs(1);
+const EXPORT_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_QUEUE_SIZE: usize = 256;
+const MAX_EXPORT_BATCH_SIZE: usize = 64;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct Telemetry {
     logger_provider: SdkLoggerProvider,
@@ -39,7 +47,17 @@ impl Telemetry {
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkTracerProvider::builder()
                     .with_resource(resource.clone())
-                    .with_batch_exporter(exporter)
+                    .with_span_processor(
+                        BatchSpanProcessor::builder(exporter)
+                            .with_batch_config(
+                                TraceBatchConfigBuilder::default()
+                                    .with_max_queue_size(MAX_QUEUE_SIZE)
+                                    .with_max_export_batch_size(MAX_EXPORT_BATCH_SIZE)
+                                    .with_scheduled_delay(EXPORT_INTERVAL)
+                                    .build(),
+                            )
+                            .build(),
+                    )
                     .build(),
             )
         })?;
@@ -51,7 +69,11 @@ impl Telemetry {
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkMeterProvider::builder()
                     .with_resource(resource.clone())
-                    .with_periodic_exporter(exporter)
+                    .with_reader(
+                        PeriodicReader::builder(exporter)
+                            .with_interval(EXPORT_INTERVAL)
+                            .build(),
+                    )
                     .build(),
             )
         })?;
@@ -63,7 +85,17 @@ impl Telemetry {
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkLoggerProvider::builder()
                     .with_resource(resource)
-                    .with_batch_exporter(exporter)
+                    .with_log_processor(
+                        BatchLogProcessor::builder(exporter)
+                            .with_batch_config(
+                                LogBatchConfigBuilder::default()
+                                    .with_max_queue_size(MAX_QUEUE_SIZE)
+                                    .with_max_export_batch_size(MAX_EXPORT_BATCH_SIZE)
+                                    .with_scheduled_delay(EXPORT_INTERVAL)
+                                    .build(),
+                            )
+                            .build(),
+                    )
                     .build(),
             )
         })?;
@@ -89,10 +121,15 @@ impl Telemetry {
     }
 
     pub fn shutdown(self) {
-        let _ = self.logger_provider.shutdown();
-        let _ = self.meter_provider.shutdown();
-        let _ = self.tracer_provider.shutdown();
-        self.runtime.shutdown_timeout(EXPORT_TIMEOUT);
+        let (completed, result) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = self.logger_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
+            let _ = self.meter_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
+            let _ = self.tracer_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
+            self.runtime.shutdown_timeout(EXPORT_TIMEOUT);
+            let _ = completed.send(());
+        });
+        let _ = result.recv_timeout(SHUTDOWN_TIMEOUT);
     }
 }
 
