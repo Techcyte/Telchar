@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "crates/nix-worker-protocol",
+  "crates/telchar",
+]
+resolver = "2"

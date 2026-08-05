@@ -2,3 +2,7 @@
 .ralph/
 .ralph/*
 .ralph/*.md
+
+/target/
+/result
+/result-*

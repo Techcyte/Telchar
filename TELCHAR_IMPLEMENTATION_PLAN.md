@@ -52,7 +52,7 @@ Evidence: paths and output facts to record
   - Verify: `nix flake metadata` and pinned `nix --version` command.
   - Evidence: locked revision and version output.
 
-- [ ] T003 Add Cargo workspace skeleton
+- [x] T003 Add Cargo workspace skeleton
   - Depends on: T002
   - Outcome: workspace contains `crates/nix-worker-protocol` library and `crates/telchar` binary; Telchar uses the protocol crate through a path dependency.
   - Red: flake check expecting both workspace packages fails before they exist.
