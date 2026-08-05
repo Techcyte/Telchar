@@ -219,7 +219,7 @@ Evidence: paths and output facts to record
   - Verify: byte-string truncation tests.
   - Evidence: payload and padding cases.
 
-- [ ] T028 Write worker integer and byte string
+- [x] T028 Write worker integer and byte string
   - Depends on: T023, T025
   - Outcome: encoder matches captured wire fixtures.
   - Red: golden-byte comparison fails.
