@@ -161,7 +161,7 @@ Evidence: paths and output facts to record
   - Verify: reference-provenance validation script.
   - Evidence: upstream URL and full commit hash.
 
-- [ ] T018 Record rio-nix licensing discrepancy and no-copy policy
+- [x] T018 Record rio-nix licensing discrepancy and no-copy policy
   - Depends on: T017
   - Outcome: ADR records conflicting license signals and establishes that initial `nix-worker-protocol` code will not copy, translate, or mechanically adapt Rio source.
   - Red: source policy permits ambiguous copying or lacks distinction between reference and implementation evidence.
