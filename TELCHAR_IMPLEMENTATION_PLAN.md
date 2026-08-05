@@ -212,7 +212,7 @@ Evidence: paths and output facts to record
   - Verify: oversize test.
   - Evidence: configured bound and asserted error.
 
-- [ ] T027 Reject truncated worker byte string
+- [x] T027 Reject truncated worker byte string
   - Depends on: T025
   - Outcome: truncated payload or padding returns deterministic error.
   - Red: truncation cases fail incorrectly.

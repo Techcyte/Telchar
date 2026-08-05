@@ -121,4 +121,13 @@ mod tests {
         assert_eq!(read_worker_byte_string(&mut input, 4), Err(ProtocolError::SizeLimit));
         assert!(input.is_empty());
     }
+
+    #[test]
+    fn rejects_truncated_worker_byte_string_payload_or_padding() {
+        let mut payload = &b"\x03\0\0\0\0\0\0\0ab"[..];
+        let mut padding = &b"\x03\0\0\0\0\0\0\0abc\0\0\0\0"[..];
+
+        assert_eq!(read_worker_byte_string(&mut payload, 3), Err(ProtocolError::Truncated));
+        assert_eq!(read_worker_byte_string(&mut padding, 3), Err(ProtocolError::Truncated));
+    }
 }
