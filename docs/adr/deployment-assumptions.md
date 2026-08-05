@@ -9,7 +9,7 @@ Telchar provides a Nix remote-builder gateway. The initial deployment needs expl
 ## Decision
 
 - Linux-first initial support.
-- Telchar operates as a single-active deployment: one daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation.
+- Telchar operates as a single-active deployment: one daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation. It acquires one stable PostgreSQL advisory lock on a dedicated lifetime connection before activating service work; contention fails startup and connection loss fences the daemon before bounded exit.
 - OpenSSH provides network-facing SSH ingress. A restricted forced command starts one `telchar serve-stdio` frontend per connection. Each frontend communicates with the daemon through authenticated local IPC.
 - PostgreSQL is the durable control-plane database. PostgreSQL does not provide multiple active schedulers or Telchar high availability.
 - Telchar accesses persistence through domain-specific state operations with explicit transaction ownership. Database interchangeability is not an initial goal.
@@ -19,7 +19,7 @@ Telchar provides a Nix remote-builder gateway. The initial deployment needs expl
 
 ## Consequences
 
-Telchar implementation assumes one active daemon and does not treat PostgreSQL as a distributed scheduler, leadership, or failover mechanism. High availability, multiple active schedulers, and distributed gateway-store coordination require a separate design.
+Telchar implementation assumes one active daemon and does not treat PostgreSQL as a distributed scheduler, leadership, or failover mechanism. The advisory lock prevents accidental split brain but does not provide automatic failover. Post-MVP active/passive high availability requires a separate design for leadership epochs, protocol-session routing, backend dispatch fencing, gateway-store availability, and failure injection. Active/active scheduling remains out of scope.
 
 The shared store domain is appropriate only for mutually trusted authenticated clients. It is not a security boundary between hostile tenants.
 

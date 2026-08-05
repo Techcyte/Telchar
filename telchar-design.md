@@ -47,7 +47,9 @@ The design review established the following initial constraints. These are imple
 
 ### Initial deployment and trust boundary
 
-The first release is single-active: one Telchar daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation. High availability requires a separate design because it changes protocol-session routing, scheduler leadership, dispatch fencing, and store topology.
+The first release is single-active: one Telchar daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation. The daemon must enforce this constraint by acquiring one stable PostgreSQL advisory lock on a dedicated lifetime connection before activating admission, scheduling, reconciliation, or mutating administrative work. A second daemon sharing the database must fail startup. Loss of the lock connection fences the daemon immediately: it stops admission and all new external or durable side effects, emits operator-visible telemetry, and exits within a bound so a replacement can perform normal restart reconciliation.
+
+This singleton lock prevents accidental split brain; it is not leader election or high availability. Active/passive failover is post-MVP work because it additionally requires leadership epochs, protocol-session routing, backend dispatch fencing, gateway-store availability on the standby, and failure-injection proof. Active/active scheduling remains out of scope.
 
 All authenticated clients in the first release belong to one mutually trusted store domain. They may be able to query or download any path present in the shared gateway store when they know its store path. Path opacity is not an authorization boundary. Hostile client multi-tenancy, per-tenant stores, and per-path client authorization are deferred.
 
@@ -83,7 +85,7 @@ Each deployment must publish a deliberate capability envelope of systems and sup
 
 The first deployment uses a dedicated gateway host or VM whose system Nix store is controlled by Telchar and not shared with unrelated host workloads. Alternate store roots remain a prototype topic until real Nix behavior proves them necessary and supportable.
 
-Every accepted build holds durable GC roots or equivalent leases for its derivation and complete required input closure. Imported outputs remain retained until result-delivery and detachment policy permit release. Asynchronous publication jobs hold independent output leases. Lease release and terminal state changes must be coordinated so garbage collection cannot invalidate queued, running, collecting, deliverable, or publishing work.
+Every accepted build holds durable GC roots or equivalent leases for its derivation and complete required input closure. Imported outputs remain retained until result-delivery and detachment policy permit release. Optional best-effort cache publication relies only on the output's ordinary post-result retention window and does not extend correctness-critical retention. Lease release and terminal state changes must be coordinated so garbage collection cannot invalidate queued, running, collecting, or deliverable work.
 
 ### Request and execution invariants
 
@@ -419,7 +421,7 @@ Telchar needs durable or reconstructable state for:
 - Output paths.
 - Audit metadata.
 
-The first implementation uses PostgreSQL as its durable control-plane database while retaining an explicit single-active Telchar daemon constraint. PostgreSQL is an infrastructure choice, not a claim of scheduler high availability. Multiple active gateways still require a separate design for leadership, protocol-session ownership, dispatch fencing, and gateway-store coordination.
+The first implementation uses PostgreSQL as its durable control-plane database while retaining an explicit single-active Telchar daemon constraint. PostgreSQL is an infrastructure choice, not a claim of scheduler high availability. One lifetime PostgreSQL advisory lock enforces singleton ownership at runtime. Losing that database session fences the daemon rather than allowing it to continue scheduling through a partition. Multiple active gateways still require a separate design for leadership epochs, protocol-session ownership, dispatch fencing, and gateway-store coordination.
 
 Persistence is encapsulated behind domain-specific state operations such as accepting a request, attaching a session, claiming runnable work, creating an attempt, recording backend submission, transitioning execution state, completing a request, acquiring store leases, and recovering incomplete attempts. Protocol, admission, scheduler, and backend code must not issue arbitrary SQL or depend on table-shaped generic repositories.
 
@@ -617,18 +619,18 @@ This preserves support for:
 
 ### Output publication
 
-Successful outputs may be published from Telchar to Attic or another cache.
+Successful outputs may be published from Telchar to Attic or another Nix-compatible cache. Publication is optional post-MVP behavior and remains an optimization.
 
-Default publication should be asynchronous:
+The initial publisher is deliberately small:
 
 1. Import and verify outputs in the gateway store.
-2. Return the result to the waiting client.
-3. Queue cache publication.
-4. Retry publication independently.
+2. Commit and return the successful result to the waiting client.
+3. If policy allows, invoke one bounded publisher command for the verified output paths.
+4. Record bounded telemetry; timeout, failure, shutdown, or restart may lose the publication attempt without changing the build outcome.
 
-Deployments may later choose required synchronous publication for selected identities or workloads, but that should not be the default.
+The publisher is disabled by default, has bounded concurrency and runtime, performs no internal retry, and creates no durable publication job or independent lease. Normal output retention gives the attempt a finite opportunity to finish. External periodic tooling or an operator may republish missed outputs.
 
-Telchar should centralize cache write credentials. Executors should normally have read access to shared caches and request-scoped access to Telchar inputs, but no organization-wide cache publication credential.
+Telchar centralizes cache write credentials. Executors should normally have read access to shared caches and request-scoped access to Telchar inputs, but no organization-wide cache publication credential. Durable publication records, leases, retries, and restart recovery require a separate post-MVP decision backed by observed lost-publication impact.
 
 ### Privacy policy
 
@@ -965,7 +967,9 @@ lookup_timeout = "3s"
 
 [cache.publisher]
 enabled = false
-mode = "async"
+command = ["attic", "push", "telchar"]
+timeout = "2m"
+max_concurrent = 2
 ```
 
 Secrets must be referenced by file or injected through service credentials, not embedded in this file.
@@ -1121,21 +1125,22 @@ stock Nix client -> Telchar -> local backend -> output returned
 - Cancellation.
 - End-to-end test against a local Nomad development cluster or isolated test environment.
 
-### Phase 7: optional cache integration
+### Optional post-MVP cache integration
 
 - Read-through substituters.
 - Executor substitution.
 - Direct Telchar fallback for missing private inputs.
-- Asynchronous output publication.
-- Cache outage tests proving builds remain functional.
+- Bounded best-effort publication of verified outputs without durable jobs or retries.
+- Cache outage and publisher-failure tests proving builds remain functional.
+- A separate measured-need decision before durable publication state, leases, retry, or restart recovery.
 
-### Phase 8: organizational hardening
+### Post-MVP organizational hardening
 
 - Group policy.
 - Priority classes.
 - Stronger isolation guidance.
 - Audit exports.
-- A separately reviewed high-availability architecture if required.
+- A separately reviewed active/passive high-availability architecture if required; active/active remains out of scope.
 - Duplicate request coalescing if justified.
 - Broader compatibility and load testing.
 

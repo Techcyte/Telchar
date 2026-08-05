@@ -296,42 +296,79 @@ Evidence: paths and output facts to record
   - Verify: typed observer parser golden tests.
   - Evidence: per-message fixtures, bounds, and retained metadata fields.
 
-- [x] T036C Relay bounded uploads and callbacks transparently
+- [x] T036C Relay current fixture flows transparently
   - Depends on: T029, T036B
-  - Outcome: observer relays every message reachable by the two current concrete fixtures at exact typed boundaries, retains only approved bounded metadata, and fails closed on an untyped flow. Primary pinned-Nix evidence establishes that neither current fixture reaches a callback or upload.
+  - Outcome: observer relays every message reachable by the two current concrete `store info` fixtures at exact typed boundaries, retains only approved bounded metadata, and fails closed on an untyped flow. Primary pinned-Nix evidence establishes that neither current fixture reaches a callback or upload.
   - Red: relay loses bytes, retains a string body or secret, exceeds its configured body-transfer bound, or accepts an untyped message.
   - Verify: transparent relay integration tests cover every inventoried message, byte-for-byte request/response equality, bounded transfer buffer, and unknown-flow rejection.
   - Evidence: byte equality/hash, configured transfer bound, rejected flow, sanitized telemetry, and callback/upload reachability evidence.
 
+### Concrete classic-build fixture expansion
+
+- [ ] T036D Define exact trusted and untrusted classic fixtures
+  - Depends on: T011, T036C
+  - Outcome: fixture contract fixes stock-client command, deterministic input-addressed derivation, local-build prohibition, trust configuration, daemon/socket topology, store isolation, expected output, and cleanup for one trusted and one untrusted remote-build case.
+  - Red: fixture checklist contains an unspecified command, input, trust boundary, topology edge, or proof that the client did not build locally.
+  - Verify: fixture-contract validator and manual command review against pinned Nix documentation.
+  - Evidence: exact commands, Nix configuration, derivation source/hash, machine/process roles, and expected success/failure observations.
+
+- [ ] T036E Discover candidate classic-build flows diagnostically
+  - Depends on: T036D
+  - Outcome: run the fixed fixtures through a disposable diagnostic capture to identify candidate operations, responses, callbacks, and uploads; diagnostic output is sanitized and explicitly cannot satisfy compatibility acceptance.
+  - Red: either fixture cannot run reproducibly or diagnostic output contains an unexplained flow or retained payload/secret.
+  - Verify: repeat each diagnostic fixture and compare bounded operation/frame classifications.
+  - Evidence: candidate flow list, repeatability result, primary Nix source locations to investigate, and explicit non-acceptance label.
+
+- [ ] T036F Extend typed inventory for classic-build fixtures
+  - Depends on: T036E
+  - Outcome: versioned manifest maps every candidate fixture flow to exact pinned-Nix serializers, version conditions, bounded protocol types, approved metadata, and fail-closed behavior.
+  - Red: inventory validator finds a candidate flow without an exact typed boundary or finite bound.
+  - Verify: observer coverage manifest validator for both classic-build fixtures.
+  - Evidence: operation/message inventory, primary source references, bounds, and unsupported flows.
+
+- [ ] T036G Parse typed classic-build messages
+  - Depends on: T025, T028, T036F
+  - Outcome: `nix-worker-protocol` parses every inventoried classic-build request, response, callback, and upload boundary without retaining payload bodies or secrets.
+  - Red: per-message golden fixtures fail or parser accepts a malformed/oversized shape.
+  - Verify: typed classic-build parser golden, truncation, and bound tests.
+  - Evidence: per-message fixtures, accepted metadata, rejected malformed cases, and allocation bounds.
+
+- [ ] T036H Relay typed classic-build flows transparently
+  - Depends on: T029, T036G
+  - Outcome: observer streams every inventoried classic-build flow bidirectionally with bounded memory, exact byte preservation, sanitized telemetry, and deterministic failure on any untyped flow.
+  - Red: relay loses bytes, buffers a complete upload, retains a body/secret, or accepts an untyped frame.
+  - Verify: trusted and untrusted relay integration tests plus large payload coverage for each inventoried streaming operation.
+  - Evidence: byte hashes, peak buffer bound, rejected unknown flow, and sanitized trace fields.
+
 ### Compatibility traces and protocol evidence
 
-- [ ] T012 Add worker-protocol trace capture fixture
-  - Depends on: T011, T036C
-  - Outcome: a transparent typed test peer relays pinned stock-Nix traffic while capturing operation codes and bounded protocol metadata without storing secrets or payload bodies.
-  - Red: real-client trace assertion fails before the typed observer is wired.
-  - Verify: real-client transparent trace command.
-  - Evidence: sanitized trace artifact and proof that every observed request used a typed boundary parser.
+- [ ] T012 Add typed classic-build trace capture fixture
+  - Depends on: T011, T036H
+  - Outcome: the transparent typed peer relays the fixed trusted and untrusted stock-Nix fixtures while capturing operation codes and bounded protocol metadata without storing secrets or payload bodies.
+  - Red: either real-client trace assertion fails before the expanded typed observer is wired.
+  - Verify: real-client trusted and untrusted transparent trace commands.
+  - Evidence: sanitized trace artifacts and proof that every observed flow used a typed boundary parser.
 
 - [ ] T013 Capture trusted classic derivation trace
   - Depends on: T012
-  - Outcome: record handshake and operation sequence for trusted classic input-addressed remote build.
-  - Red: compatibility matrix cell lacks evidence.
-  - Verify: rerun trace fixture for cell.
-  - Evidence: protocol version, trust result, operation sequence.
+  - Outcome: record handshake and operation sequence for the fixed trusted classic input-addressed remote build.
+  - Red: compatibility matrix cell lacks typed acceptance evidence.
+  - Verify: rerun trusted trace fixture.
+  - Evidence: exact fixture ID, protocol version, trust result, operation/frame sequence, and output proof.
 
 - [ ] T014 Capture untrusted classic derivation trace
   - Depends on: T012
-  - Outcome: record whether pinned Nix uses `BuildDerivation`, `BuildPathsWithResults`, or another operation.
-  - Red: compatibility matrix cell lacks evidence.
+  - Outcome: record the exact operation and response sequence used by the fixed untrusted classic input-addressed remote build.
+  - Red: compatibility matrix cell lacks typed acceptance evidence.
   - Verify: rerun untrusted trace fixture.
-  - Evidence: operation sequence and trust negotiation.
+  - Evidence: exact fixture ID, operation/frame sequence, trust negotiation, and output proof.
 
-- [ ] T015 Capture content-addressed derivation trace
-  - Depends on: T012
-  - Outcome: record operation and result semantics for one supported content-addressed build or explicitly defer it.
-  - Red: compatibility matrix CA cell unresolved.
-  - Verify: rerun CA fixture or matrix deferral validation.
-  - Evidence: trace or explicit unsupported decision.
+- [ ] T015 Defer content-addressed compatibility explicitly
+  - Depends on: T010
+  - Outcome: compatibility matrix and protocol allowlist mark content-addressed builds unsupported for MVP until a concrete fixture, required operations, result semantics, and typed observer coverage are separately designed.
+  - Red: matrix leaves content-addressed support ambiguous or implies classic fixtures cover it.
+  - Verify: compatibility matrix deferral validation.
+  - Evidence: explicit unsupported status, rationale, and future evidence prerequisites.
 
 - [ ] T016 Define initial worker-operation allowlist
   - Depends on: T013, T014, T015
@@ -945,10 +982,40 @@ Evidence: paths and output facts to record
   - Verify: immutability test.
   - Evidence: rejected mutation.
 
+### Single-active ownership enforcement
+
+- [ ] T101A Define PostgreSQL singleton ownership contract
+  - Depends on: T096
+  - Outcome: ADR/config contract fixes one stable advisory-lock key, dedicated lifetime connection ownership, startup refusal, lock-loss fencing, shutdown ordering, and operator-visible failure semantics; it explicitly does not claim high availability.
+  - Red: failure table leaves startup contention, database disconnect, reconnect, graceful shutdown, or process crash unspecified.
+  - Verify: singleton ownership contract validator.
+  - Evidence: complete transition table and selected lock-key derivation.
+
+- [ ] T101B Acquire singleton ownership before service activation
+  - Depends on: T101A
+  - Outcome: daemon acquires the fixed PostgreSQL advisory lock on a dedicated connection before opening admission, scheduling, reconciliation, or administrative mutation paths; contention fails startup cleanly.
+  - Red: two daemon processes sharing PostgreSQL both become ready.
+  - Verify: real PostgreSQL two-process startup integration test.
+  - Evidence: one ready daemon, one deterministic refusal, and structured telemetry.
+
+- [ ] T101C Fence daemon after ownership loss
+  - Depends on: T101B
+  - Outcome: loss of the lifetime lock connection atomically closes admission and prevents new scheduling, retry, cancellation, reconciliation mutation, and backend submission before bounded process exit; existing external work remains recoverable by the next owner.
+  - Red: fault injection permits any post-loss external side effect or durable mutation.
+  - Verify: terminate or proxy-drop the lock connection during queued and running fixtures and assert fenced shutdown.
+  - Evidence: no post-loss dispatch, bounded exit time, final telemetry, and recoverable attempts.
+
+- [ ] T101D Prove singleton recovery without split brain
+  - Depends on: T101C
+  - Outcome: after the first daemon is definitively stopped or fenced, a replacement acquires ownership and performs ordinary restart reconciliation without duplicate active attempts.
+  - Red: replacement starts before ownership release, or takeover duplicates backend execution.
+  - Verify: multi-daemon `nixosTest` with lock contention, forced lock loss, takeover, and reconciliation.
+  - Evidence: ownership timeline, one active owner, one backend execution per attempt, and recovered terminal state.
+
 ### State transitions and recovery
 
 - [ ] T102 Transition accepted request to queued
-  - Depends on: T098
+  - Depends on: T098, T101D
   - Outcome: transaction creates queue state only after request and leases are durable.
   - Red: partial transaction fixture exposes queued request without leases.
   - Verify: transaction fault test.
@@ -1899,7 +1966,7 @@ Evidence: paths and output facts to record
   - Verify: full isolated Nomad integration suite.
   - Evidence: exact commands and pristine output.
 
-## Gate 8 — Optional binary-cache integration
+## Optional post-MVP binary-cache integration
 
 ### Cache boundary and lookup
 
@@ -1975,86 +2042,86 @@ Evidence: paths and output facts to record
   - Verify: negative credential test.
   - Evidence: denied operation.
 
-### Asynchronous publication
+### Best-effort centralized publication
 
-- [ ] T241 Create output publication record
+- [ ] T241 Define optional publisher command contract
   - Depends on: T231, T107
-  - Outcome: successful build can enqueue durable publication job without changing build outcome.
-  - Red: publication schema/transaction test fails.
-  - Verify: real PostgreSQL publication-operation test.
-  - Evidence: request/output/policy fields.
+  - Outcome: configuration defines a disabled-by-default bounded publisher command for verified output paths, credential file references, timeout, concurrency, and allow/deny policy without durable publication state.
+  - Red: configuration permits plaintext credentials, unbounded execution, uploaded-input publication, or publication before verified success.
+  - Verify: publisher configuration and policy tests.
+  - Evidence: valid/invalid examples and approved argument/environment surface.
 
-- [ ] T242 Acquire publication output lease
-  - Depends on: T241, T075
-  - Outcome: publication job independently retains output until terminal publication state.
-  - Red: GC removes queued publication output.
-  - Verify: real GC publication lease test.
-  - Evidence: path validity and lease owner.
+- [ ] T242 Invoke publisher after verified client success
+  - Depends on: T241
+  - Outcome: Telchar starts one bounded best-effort publication attempt only after outputs are imported, verified, and the build result is committed; publication completion is not required for client success.
+  - Red: publisher runs before verification, blocks result delivery, or changes a successful build outcome.
+  - Verify: real cache fixture with ordering assertions.
+  - Evidence: client-success timestamp precedes publication completion and output appears when publisher succeeds.
 
-- [ ] T243 Publish allowed output asynchronously
+- [ ] T243 Publish only approved verified outputs
   - Depends on: T242
-  - Outcome: worker publishes policy-approved output after client success.
-  - Red: real cache fixture lacks output.
-  - Verify: asynchronous publication test.
-  - Evidence: client completion precedes publication completion.
+  - Outcome: publisher receives only policy-approved verified result paths and never client-uploaded inputs, derivations, or unrelated closure paths.
+  - Red: cache fixture receives a denied or non-output path.
+  - Verify: publication manifest privacy/policy tests.
+  - Evidence: allowed outputs and absent denied/input paths.
 
-- [ ] T244 Do not publish client-uploaded inputs
-  - Depends on: T243
-  - Outcome: publication manifest contains only approved outputs.
-  - Red: cache fixture receives source/input path.
-  - Verify: privacy negative test.
-  - Evidence: absent input paths.
+- [ ] T244 Bound publisher failure and shutdown
+  - Depends on: T242
+  - Outcome: timeout, nonzero exit, cache outage, daemon shutdown, or restart may lose the optional publication attempt but cannot mutate build success, leak credentials, hang shutdown, or create an internal retry loop.
+  - Red: failure changes request state, retries automatically, leaks a secret, or exceeds shutdown bound.
+  - Verify: stalled/failing publisher and restart tests.
+  - Evidence: preserved success, one attempt maximum, bounded termination, and sanitized error.
 
-- [ ] T245 Respect output publication policy
-  - Depends on: T243
-  - Outcome: denied identity/project/output policy creates no publication.
-  - Red: disallowed output appears in cache.
-  - Verify: policy table tests with real cache fixture.
-  - Evidence: allowed and denied cases.
-
-- [ ] T246 Retry publication independently
-  - Depends on: T243
-  - Outcome: bounded publication retry does not mutate successful build outcome.
-  - Red: outage changes request to failed or retries unboundedly.
-  - Verify: flaky-cache publication test.
-  - Evidence: request success and publication attempts.
-
-- [ ] T247 Release publication lease after terminal publication
-  - Depends on: T242, T246
-  - Outcome: success or exhausted failure releases lease according to retention policy.
-  - Red: lease leaks or releases before retry ends.
-  - Verify: publication lifecycle test.
-  - Evidence: state/root transitions.
-
-- [ ] T248 Recover queued publication after daemon restart
-  - Depends on: T241, T243
-  - Outcome: restart resumes publication without duplicate harmful side effects.
-  - Red: job is lost or duplicated unexpectedly.
-  - Verify: restart publication test.
-  - Evidence: attempt history and cache output.
-
-- [ ] T249 Export cache telemetry through OTLP
-  - Depends on: T009E, T233, T243, T246
-  - Outcome: cache lookup/publication spans, structured events, and OTLP metrics cover hit/miss/timeout/error/publication outcomes with bounded attributes.
-  - Red: collector test misses a cache signal or leaks URL/identity attributes.
+- [ ] T245 Export bounded cache telemetry through OTLP
+  - Depends on: T009E, T233, T242, T244
+  - Outcome: lookup and best-effort publication spans, events, and metrics cover hit/miss/timeout/error/publication outcomes with bounded attributes and no URL, path, or identity cardinality.
+  - Red: collector test misses a signal or exposes sensitive/high-cardinality attributes.
   - Verify: cache OTLP logs, metrics, and traces integration test.
   - Evidence: instruments, spans, events, and allowed attributes.
 
-### Gate 8 acceptance
+### Optional cache acceptance
 
-- [ ] T250 Verify Gate 8 optional cache
-  - Depends on: T234, T235, T236, T237, T239, T240, T244, T245, T246, T247, T248, T249
-  - Outcome: cache improves hits and publication while outage/miss/private inputs preserve direct correctness path.
-  - Red: gate script reports missing outage/privacy evidence.
+- [ ] T246 Verify optional cache lookup and publication
+  - Depends on: T234, T235, T236, T237, T239, T240, T243, T244, T245
+  - Outcome: cache improves hits and may publish verified outputs while miss, outage, private input, publication failure, and restart preserve the direct correctness path.
+  - Red: suite finds cache-dependent correctness or publication credential exposure.
   - Verify: full real-cache integration suite.
   - Evidence: exact commands and pristine output.
+
+- [ ] T247 Design durable publication only if required
+  - Depends on: T246
+  - Outcome: post-MVP decision uses measured lost-publication rate and operator impact to accept or reject durable publication records, leases, retries, and restart recovery.
+  - Red: proposal adds durable machinery without telemetry-backed need or complete retention/recovery semantics.
+  - Verify: architecture decision checklist.
+  - Evidence: measured need, accepted design, or explicit continued deferral.
+
+- [ ] T248 Implement durable publication state if approved
+  - Depends on: T247
+  - Outcome: conditional post-MVP task implements only the separately approved durable design; otherwise remains deferred.
+  - Red: implementation begins without approved T247 decision.
+  - Verify: approved design's PostgreSQL, lease, retry, and restart suite.
+  - Evidence: decision reference and lifecycle tests, or explicit deferral.
+
+- [ ] T249 Verify durable publication recovery if approved
+  - Depends on: T248
+  - Outcome: conditional post-MVP gate proves approved durable publication semantics without changing build correctness; otherwise remains deferred.
+  - Red: approved implementation loses work, leaks leases, duplicates harmful effects, or mutates build outcomes.
+  - Verify: approved recovery and failure-injection suite.
+  - Evidence: lifecycle report or explicit deferral.
+
+- [ ] T250 Close optional cache phase
+  - Depends on: T246
+  - Outcome: records best-effort cache support status and leaves T247–T249 explicitly deferred unless separately approved.
+  - Red: compatibility or release documentation implies durable publication guarantees that were not implemented.
+  - Verify: optional-cache documentation and gate consistency check.
+  - Evidence: supported behavior, limitations, and deferred durable guarantees.
 
 ## Gate 9 — Release hardening
 
 ### Configuration and service behavior
 
 - [ ] T251 Parse complete server configuration
-  - Depends on: T250
+  - Depends on: T230
   - Outcome: server, quota, state, backend, transfer, logging, metrics, and cache sections compose into validated startup config.
   - Red: complete config fixture fails.
   - Verify: configuration integration tests.
@@ -2154,14 +2221,14 @@ Evidence: paths and output facts to record
   - Evidence: retained/deleted rows and transaction boundary.
 
 - [ ] T265 Run dependency and source-provenance audit
-  - Depends on: T250
+  - Depends on: T274
   - Outcome: repository records allowed dependency licenses, confirms `nix-worker-protocol` source provenance, and validates notices for any separately approved future import.
   - Red: audit reports unknown/disallowed package, untracked copied source, or missing notice.
   - Verify: reproducible license and provenance audit command.
   - Evidence: report path and zero unresolved findings.
 
 - [ ] T266 Run dependency vulnerability audit
-  - Depends on: T250
+  - Depends on: T274
   - Outcome: reproducible Rust/Nix dependency audit has no unresolved applicable critical/high findings.
   - Red: audit fixture or current graph reports findings.
   - Verify: documented audit command.
@@ -2170,7 +2237,7 @@ Evidence: paths and output facts to record
 ### Compatibility and load
 
 - [ ] T267 Re-run pinned Nix compatibility matrix
-  - Depends on: T250, T258
+  - Depends on: T258
   - Outcome: every supported matrix cell has passing real-client evidence.
   - Red: matrix validator finds stale/missing result.
   - Verify: compatibility suite.
@@ -2212,8 +2279,8 @@ Evidence: paths and output facts to record
   - Evidence: peak resource use.
 
 - [ ] T273 Soak-test restart reconciliation
-  - Depends on: T198, T224, T248
-  - Outcome: repeated daemon restarts during mixed backend/cache activity produce no duplicate active attempts or lost terminal records.
+  - Depends on: T198, T224, T101D
+  - Outcome: repeated daemon restarts and singleton takeovers during mixed backend activity produce no duplicate active attempts, simultaneous owners, or lost terminal records.
   - Red: soak invariant checker finds violation.
   - Verify: bounded restart soak command.
   - Evidence: iterations and zero invariant failures.
@@ -2221,15 +2288,15 @@ Evidence: paths and output facts to record
 ### Packaging and operations
 
 - [ ] T274 Build reproducible Telchar package
-  - Depends on: T250
+  - Depends on: T257
   - Outcome: flake produces versioned daemon/CLI artifact from clean checkout.
   - Red: package build fails or embeds dirty state.
   - Verify: `nix build` package target twice and compare declared reproducibility evidence.
   - Evidence: store paths/hashes.
 
 - [ ] T275 Add NixOS module for single-active deployment
-  - Depends on: T251, T255, T274
-  - Outcome: module configures daemon, PostgreSQL connection/credentials, local IPC, service user, state directory, OTLP endpoint/security/credential references, local telemetry formatting, resource attributes, and OpenSSH forced command without broad shell access. PostgreSQL and the OTLP collector may be local or external according to deployment configuration.
+  - Depends on: T101D, T251, T255, T274
+  - Outcome: module configures daemon, PostgreSQL connection/credentials, singleton-lock behavior, local IPC, service user, state directory, OTLP endpoint/security/credential references, local telemetry formatting, resource attributes, and OpenSSH forced command without broad shell access. PostgreSQL and the OTLP collector may be local or external according to deployment configuration.
   - Red: NixOS VM module test fails.
   - Verify: module evaluation and VM test.
   - Evidence: service and sshd assertions.
@@ -2256,14 +2323,14 @@ Evidence: paths and output facts to record
   - Evidence: exact documented assumptions.
 
 - [ ] T279 Document disaster recovery
-  - Depends on: T256, T276
-  - Outcome: runbook covers PostgreSQL backup/restore, point-in-time assumptions, gateway-store coordination, ambiguous attempts, backend reconciliation, and publication recovery.
+  - Depends on: T101D, T256, T276
+  - Outcome: runbook covers PostgreSQL backup/restore, point-in-time assumptions, singleton ownership recovery, gateway-store coordination, ambiguous attempts, backend reconciliation, and optional best-effort publication loss.
   - Red: tabletop checklist exposes missing recovery step.
   - Verify: scripted PostgreSQL backup/restore rehearsal against the gateway-store fixture.
   - Evidence: restored state and reconciled work.
 
 - [ ] T280 Add release verification script
-  - Depends on: T265, T266, T267, T270, T271, T272, T273, T274, T275, T276
+  - Depends on: T101D, T265, T266, T267, T270, T271, T272, T273, T274, T275, T276
   - Outcome: one external-monitor command runs all mandatory release checks or clearly orchestrates documented privileged suites.
   - Red: script reports missing suite/artifact.
   - Verify: release verification command from fresh shell.
@@ -2273,7 +2340,7 @@ Evidence: paths and output facts to record
 
 - [ ] T281 Verify release candidate
   - Depends on: T280, T277, T278, T279
-  - Outcome: pinned supported client builds through local, static SSH, and Nomad backends; optional cache failure is harmless; security, load, restart, packaging, and documentation gates pass.
+  - Outcome: pinned supported client builds through local, static SSH, and Nomad backends; singleton ownership, security, load, restart, packaging, and documentation gates pass. Optional cache work is not required for MVP release.
   - Red: release checklist reports any unresolved blocker or dirty output.
   - Verify: release verification script and documented privileged integration commands.
   - Evidence: immutable report paths, versions, commands, and residual limitations.
@@ -2282,9 +2349,10 @@ Evidence: paths and output facts to record
 
 These items require separate design review before implementation and are not hidden inside the tasks above:
 
-- Multiple active Telchar gateways or scheduler high availability.
+- Active/passive high availability before MVP. A future design may add controlled failover only after defining leadership epochs, immediate lock-loss fencing, protocol-session routing, backend dispatch fencing, gateway-store availability, ambiguous-submission recovery, and failure-injection acceptance. Active/active scheduling remains out of scope.
 - Supporting a durable database other than PostgreSQL.
-- Multiple active scheduler ownership and distributed dispatch fencing.
+- Multiple active scheduler ownership and distributed dispatch fencing; PostgreSQL singleton ownership intentionally permits only one active daemon.
+- Durable cache publication records, independent publication leases, automatic retry, and restart recovery unless T247 is separately approved from measured operational need.
 - Hostile client multi-tenancy or per-path client authorization.
 - Per-tenant gateway stores.
 - Reproducible-build consensus or cryptographic provenance for classic input-addressed outputs.
