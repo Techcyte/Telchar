@@ -1,8 +1,8 @@
 use telchar::identity::{IdentityInput, normalize_requester};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, RequesterMetadata, StreamAttachment};
+use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, RequesterMetadata};
 
 #[test]
-fn envelope_round_trips_authenticated_metadata_and_attachment() {
+fn envelope_round_trips_authenticated_metadata_and_session() {
     let envelope = IpcEnvelope {
         version: IPC_VERSION,
         requester: RequesterMetadata {
@@ -11,7 +11,6 @@ fn envelope_round_trips_authenticated_metadata_and_attachment() {
             quota_subject: "team-build".into(),
         },
         session_id: "session-001".into(),
-        attachment: StreamAttachment { id: 42 },
         error: Some(IpcError {
             code: "protocol-rejected".into(),
             message: "unsupported operation".into(),
@@ -39,7 +38,6 @@ fn maximum_normalized_requester_fits_the_ipc_envelope() {
         version: IPC_VERSION,
         requester: metadata,
         session_id: "session".into(),
-        attachment: StreamAttachment { id: 1 },
         error: None,
     };
 
@@ -57,7 +55,6 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
             quota_subject: "quota".into(),
         },
         session_id: "session".into(),
-        attachment: StreamAttachment { id: 1 },
         error: None,
     }
     .encode()
@@ -73,7 +70,6 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
             quota_subject: "quota".into(),
         },
         session_id: "session".into(),
-        attachment: StreamAttachment { id: 1 },
         error: Some(IpcError {
             code: "error".into(),
             message: "x".repeat(4097),

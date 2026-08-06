@@ -1,10 +1,28 @@
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::time::Duration;
 
 use crate::identity::Requester;
 
 pub const MAX_FRONTEND_BUFFER_BYTES: usize = 16 * 1024;
+
+pub fn copy_bounded(mut source: impl Read, mut destination: impl Write) -> io::Result<RelayStats> {
+    let mut buffer = [0; MAX_FRONTEND_BUFFER_BYTES];
+    let mut maximum_buffered_bytes = 0;
+    loop {
+        let received = source.read(&mut buffer)?;
+        if received == 0 {
+            destination.flush()?;
+            return Ok(RelayStats {
+                maximum_buffered_bytes,
+            });
+        }
+        maximum_buffered_bytes = maximum_buffered_bytes.max(received);
+        destination.write_all(&buffer[..received])?;
+        destination.flush()?;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayStats {
@@ -17,24 +35,14 @@ pub fn relay_bounded(
 ) -> io::Result<RelayStats> {
     let _span =
         tracing::info_span!("ipc.stream.relay", buffer_bytes = MAX_FRONTEND_BUFFER_BYTES).entered();
-    let mut buffer = [0; MAX_FRONTEND_BUFFER_BYTES];
-    let mut maximum_buffered_bytes = 0;
-    loop {
-        let received = source.read(&mut buffer)?;
-        if received == 0 {
-            destination.shutdown(std::net::Shutdown::Write)?;
-            tracing::info!(
-                event = "ipc.stream.relay.completed",
-                maximum_buffered_bytes,
-                "bounded IPC stream relay completed"
-            );
-            return Ok(RelayStats {
-                maximum_buffered_bytes,
-            });
-        }
-        maximum_buffered_bytes = maximum_buffered_bytes.max(received);
-        destination.write_all(&buffer[..received])?;
-    }
+    let stats = copy_bounded(&mut source, &mut destination)?;
+    destination.shutdown(std::net::Shutdown::Write)?;
+    tracing::info!(
+        event = "ipc.stream.relay.completed",
+        maximum_buffered_bytes = stats.maximum_buffered_bytes,
+        "bounded IPC stream relay completed"
+    );
+    Ok(stats)
 }
 
 pub struct IpcListener {
@@ -57,10 +65,19 @@ impl IpcListener {
     }
 
     pub fn accept(&self) -> io::Result<IpcConnection> {
+        self.accept_with_envelope_timeout(Duration::from_secs(5))
+    }
+
+    pub fn accept_with_envelope_timeout(
+        &self,
+        envelope_timeout: Duration,
+    ) -> io::Result<IpcConnection> {
         let _span = tracing::info_span!("ipc.connection.accept").entered();
         let (mut stream, _) = self.listener.accept()?;
         authorize_peer(&stream, self.expected_uid)?;
-        let envelope = Self::receive_envelope(&mut stream)?;
+        stream.set_read_timeout(Some(envelope_timeout))?;
+        let envelope = Self::receive_envelope(&mut stream).map_err(classify_envelope_error)?;
+        stream.set_read_timeout(None)?;
         let peer_pid = peer_pid(&stream)?;
         tracing::info!(
             event = "ipc.connection.accepted",
@@ -176,11 +193,6 @@ impl TryFrom<&Requester> for RequesterMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamAttachment {
-    pub id: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpcError {
     pub code: String,
     pub message: String,
@@ -191,7 +203,6 @@ pub struct IpcEnvelope {
     pub version: u16,
     pub requester: RequesterMetadata,
     pub session_id: String,
-    pub attachment: StreamAttachment,
     pub error: Option<IpcError>,
 }
 
@@ -220,7 +231,6 @@ impl IpcEnvelope {
             MAX_IPC_CREDENTIAL_ID_BYTES,
         )?;
         write_string(&mut output, &self.session_id, MAX_IPC_COMPONENT_BYTES)?;
-        output.extend_from_slice(&self.attachment.id.to_le_bytes());
         match &self.error {
             Some(error) => {
                 output.push(1);
@@ -254,7 +264,6 @@ impl IpcEnvelope {
             quota_subject: reader.string(MAX_IPC_CREDENTIAL_ID_BYTES)?,
         };
         let session_id = reader.string(MAX_IPC_COMPONENT_BYTES)?;
-        let attachment = StreamAttachment { id: reader.u64()? };
         let error = match reader.byte()? {
             0 => None,
             1 => Some(IpcError {
@@ -270,7 +279,6 @@ impl IpcEnvelope {
             version,
             requester,
             session_id,
-            attachment,
             error,
         })
     }
@@ -320,12 +328,6 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    fn u64(&mut self) -> io::Result<u64> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().expect("length checked"),
-        ))
-    }
-
     fn string(&mut self, maximum: usize) -> io::Result<String> {
         let length = usize::from(self.u16()?);
         if length == 0 || length > maximum {
@@ -333,6 +335,18 @@ impl<'a> Reader<'a> {
         }
         String::from_utf8(self.take(length)?.to_vec())
             .map_err(|_| invalid("IPC string is not UTF-8"))
+    }
+}
+
+fn classify_envelope_error(error: io::Error) -> io::Error {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ) {
+        tracing::warn!(event = "ipc.envelope.rejected", reason = "timeout");
+        io::Error::new(io::ErrorKind::TimedOut, "IPC envelope timed out")
+    } else {
+        error
     }
 }
 

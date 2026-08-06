@@ -6,9 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC,
-};
+use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
 
 #[test]
 fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
@@ -38,9 +36,9 @@ fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
     write_word(&mut input, 0);
     write_word(&mut input, 0);
     input.flush().expect("post-handshake flushes");
-    assert_eq!(read_word(&mut output), 0);
     assert_eq!(read_string(&mut output), b"telchar");
     assert_eq!(read_word(&mut output), 0);
+    assert_eq!(read_word(&mut output), nix_worker_protocol::STDERR_LAST);
 
     drop(input);
     assert!(frontend.wait().expect("frontend exits").success());
@@ -59,8 +57,10 @@ fn daemon_rejects_oversized_and_stalled_envelopes_before_worker_protocol() {
 
     let stalled = Fixture::start_with_timeout(40);
     let mut stream = UnixStream::connect(&stalled.socket).expect("raw frontend connects");
-    stream.write_all(&8_u32.to_le_bytes()).expect("length writes");
-    stream.write_all(&[b'T']).expect("partial envelope writes");
+    stream
+        .write_all(&8_u32.to_le_bytes())
+        .expect("length writes");
+    stream.write_all(b"T").expect("partial envelope writes");
     stalled.finish_with_failure();
 }
 
@@ -131,7 +131,10 @@ fn wait_for_socket(path: &Path, daemon: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !path.exists() {
         assert!(Instant::now() < deadline, "daemon socket was not created");
-        assert!(daemon.try_wait().expect("daemon status").is_none(), "daemon exited before binding");
+        assert!(
+            daemon.try_wait().expect("daemon status").is_none(),
+            "daemon exited before binding"
+        );
         thread::sleep(Duration::from_millis(5));
     }
 }
@@ -169,9 +172,7 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> std::process::Out
 }
 
 fn write_word(output: &mut impl Write, value: u64) {
-    output
-        .write_all(&value.to_le_bytes())
-        .expect("word writes");
+    output.write_all(&value.to_le_bytes()).expect("word writes");
 }
 
 fn read_word(input: &mut impl Read) -> u64 {
