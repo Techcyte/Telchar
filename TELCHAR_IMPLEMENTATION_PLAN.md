@@ -409,7 +409,7 @@ Evidence: paths and output facts to record
   - Verify: evaluate minimal multi-machine `nixosTest`.
   - Evidence: exported test attribute, machine definitions, and evaluation result.
 
-- [ ] T021C Add baseline client-gateway integration smoke test
+- [x] T021C Add baseline client-gateway integration smoke test
   - Depends on: T021B
   - Outcome: authoritative `nixosTest` boots separate client and gateway machines, completes the packaged Telchar systemd oneshot service, asserts virtual-network topology independently, and captures correlated OTLP startup telemetry. Real client-to-Telchar protocol reachability remains assigned to Gate 2 OpenSSH integration tasks.
   - Red: smoke test fails before service, networking, readiness, and collector wiring are complete.

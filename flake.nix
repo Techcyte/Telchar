@@ -7,7 +7,12 @@
   };
 
   outputs =
-    { self, nixpkgs, crane, ... }:
+    {
+      self,
+      nixpkgs,
+      crane,
+      ...
+    }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -54,8 +59,25 @@
               name = "telchar-nixos-test-library";
               testScript = ''
                 start_all()
-                stock_client.succeed("test \"$(cat /etc/telchar-test-role)\" = stock-client")
-                gateway.succeed("test \"$(cat /etc/telchar-test-role)\" = gateway")
+              '';
+            };
+          nixos-smoke =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+            in
+            harness.mkTest {
+              name = "telchar-nixos-smoke";
+              includeCollector = true;
+              testScript = ''
+                start_all()
+                otlp_collector.wait_for_open_port(4317)
+                gateway.succeed("systemctl restart telchar.service")
+                gateway.wait_for_unit("telchar.service")
+                stock_client.succeed("ping -c 1 gateway")
+                otlp_collector.succeed("test -s /var/lib/telchar-otlp/records.json")
               '';
             };
         };
@@ -72,6 +94,7 @@
           pname = "telchar";
           version = "0.1.0";
           cargoExtraArgs = "-p telchar";
+          cargoTestExtraArgs = "--lib";
         };
         default = pkgs.nix;
       };
