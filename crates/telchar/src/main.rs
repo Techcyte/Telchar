@@ -1,3 +1,4 @@
+mod stdio_transport;
 mod telemetry;
 
 use std::io::{self, Write};
@@ -35,22 +36,27 @@ fn main() {
 fn serve_stdio() {
     let telemetry = telemetry::Telemetry::initialize()
         .expect("telemetry configuration must initialize before application work");
-    let stdin = io::stdin();
+    let input = std::fs::File::open("/dev/stdin").expect("standard input is available");
     let stdout = io::stdout();
-    let mut input = stdin.lock();
+    let limits = nix_worker_protocol::ProtocolSessionLimits::DEFAULT;
+    let input = stdio_transport::StdioInput::new(input, limits.incomplete_message_idle_timeout);
     let mut output = stdout.lock();
+    let mut reader = nix_worker_protocol::WorkerReader::new(input, limits);
 
-    let result = nix_worker_protocol::perform_server_handshake(&mut input, &mut output, &[])
+    let result = reader
+        .perform_server_handshake(&mut output, &[])
         .and_then(|negotiated| {
-            nix_worker_protocol::complete_server_post_handshake(
-                &mut input,
-                &mut output,
-                negotiated.version,
-                "telchar",
-            )
+            reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")
         })
-        .and_then(|_| nix_worker_protocol::read_worker_operation_from(&mut input));
+        .and_then(|_| reader.read_operation());
     match result {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            tracing::error!(
+                event = "worker.session.timed_out",
+                timeout_seconds = limits.incomplete_message_idle_timeout.as_secs(),
+                "worker protocol session timed out"
+            );
+        }
         Err(_) => reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation"),
         Ok(operation) if !operation.is_fixture_allowed() => {
             reject_worker_operation(&mut output, "recognized-unsupported", "unsupported worker operation");

@@ -455,14 +455,14 @@ Evidence: paths and output facts to record
   - Verify: protocol-session-limits contract check.
   - Evidence: allocation scope, defaults, decoder ownership, timeout semantics, transport ownership, and clean failure behavior.
 
-- [ ] T039 Bound per-session protocol allocations
+- [x] T039 Bound per-session protocol allocations
   - Depends on: T038A
   - Outcome: one session-owned `WorkerReader<R>` rejects decoded metadata whose concurrently retained heap capacity would exceed the configured 16 MiB default, charging with checked arithmetic before allocation and releasing charge when metadata is no longer retained; streamed payload bodies remain outside this budget and fixture-only non-retaining slice observers remain separate.
   - Red: a sequence whose concurrently retained decoded metadata exceeds the budget succeeds, or released metadata continues consuming budget.
   - Verify: session-budget and charge-release tests.
   - Evidence: configured budget, accounting transitions, rejection point, and streamed-payload exclusion.
 
-- [ ] T040 Bound protocol session idle time
+- [x] T040 Bound protocol session idle time
   - Depends on: T038A
   - Outcome: the Telchar transport closes a session with `io::ErrorKind::TimedOut` after the configured 30-second default without forward progress inside an incomplete typed message, resets the deadline on input progress, and leaves complete-boundary idle sessions unaffected.
   - Red: stalled partial input hangs, progress fails to reset the deadline, a complete-boundary idle session expires, or resources leak.

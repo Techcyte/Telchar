@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 
 use std::io::{self, Read, Write};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
 
 pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
 pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
@@ -15,6 +20,81 @@ pub const STDERR_STOP_ACTIVITY: u64 = 0x5354_4f50;
 pub const STDERR_RESULT: u64 = 0x5253_4c54;
 const MAXIMUM_HANDSHAKE_FEATURES: usize = 64;
 const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtocolSessionLimits {
+    pub maximum_retained_metadata_bytes: usize,
+    pub incomplete_message_idle_timeout: Duration,
+}
+
+impl ProtocolSessionLimits {
+    pub const DEFAULT: Self = Self::new(16 * 1024 * 1024, Duration::from_secs(30));
+
+    pub const fn new(
+        maximum_retained_metadata_bytes: usize,
+        incomplete_message_idle_timeout: Duration,
+    ) -> Self {
+        Self {
+            maximum_retained_metadata_bytes,
+            incomplete_message_idle_timeout,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionAllocationBudget {
+    retained_bytes: Arc<AtomicUsize>,
+    maximum_retained_bytes: usize,
+}
+
+impl SessionAllocationBudget {
+    pub fn new(limits: ProtocolSessionLimits) -> Self {
+        Self {
+            retained_bytes: Arc::new(AtomicUsize::new(0)),
+            maximum_retained_bytes: limits.maximum_retained_metadata_bytes,
+        }
+    }
+
+    pub fn charge(&self, bytes: usize) -> Result<SessionAllocationCharge, ProtocolError> {
+        let mut retained_bytes = self.retained_bytes.load(Ordering::Acquire);
+        loop {
+            let updated_bytes = retained_bytes
+                .checked_add(bytes)
+                .filter(|updated_bytes| *updated_bytes <= self.maximum_retained_bytes)
+                .ok_or(ProtocolError::SizeLimit)?;
+            match self.retained_bytes.compare_exchange_weak(
+                retained_bytes,
+                updated_bytes,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(SessionAllocationCharge {
+                        retained_bytes: Arc::clone(&self.retained_bytes),
+                        bytes,
+                    });
+                }
+                Err(actual_bytes) => retained_bytes = actual_bytes,
+            }
+        }
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.retained_bytes.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug)]
+pub struct SessionAllocationCharge {
+    retained_bytes: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl Drop for SessionAllocationCharge {
+    fn drop(&mut self) {
+        self.retained_bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
 
 pub fn protocol_name() -> &'static str {
     "Nix worker protocol"
@@ -40,11 +120,20 @@ impl WorkerVersion {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct NegotiatedWorkerVersion {
     pub version: WorkerVersion,
     pub features: Vec<String>,
+    _feature_charge: Option<SessionAllocationCharges>,
 }
+
+impl PartialEq for NegotiatedWorkerVersion {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.features == other.features
+    }
+}
+
+impl Eq for NegotiatedWorkerVersion {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtocolError {
@@ -725,63 +814,134 @@ pub fn negotiate_worker_version(
         Vec::new()
     };
 
-    Ok(NegotiatedWorkerVersion { version, features })
+    Ok(NegotiatedWorkerVersion {
+        version,
+        features,
+        _feature_charge: None,
+    })
 }
 
-pub fn perform_server_handshake<R: Read, W: Write>(
-    input: &mut R,
-    output: &mut W,
-    server_features: &[String],
-) -> io::Result<NegotiatedWorkerVersion> {
-    if read_worker_integer_from(input)? != CLIENT_WORKER_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "worker handshake magic mismatch",
-        ));
+pub trait WorkerInput: Read {
+    fn complete_message(&mut self) {}
+}
+
+impl WorkerInput for &[u8] {}
+
+impl<R: WorkerInput + ?Sized> WorkerInput for &mut R {
+    fn complete_message(&mut self) {
+        (**self).complete_message();
+    }
+}
+
+pub struct WorkerReader<R> {
+    input: R,
+    budget: SessionAllocationBudget,
+}
+
+impl<R: WorkerInput> WorkerReader<R> {
+    pub fn new(input: R, limits: ProtocolSessionLimits) -> Self {
+        Self {
+            input,
+            budget: SessionAllocationBudget::new(limits),
+        }
     }
 
-    write_worker_integer_to(output, SERVER_WORKER_MAGIC)?;
-    write_worker_integer_to(output, LATEST_WORKER_VERSION.to_wire())?;
-    output.flush()?;
+    pub fn retained_metadata_bytes(&self) -> usize {
+        self.budget.retained_bytes()
+    }
 
-    let client_version = WorkerVersion::from_wire(read_worker_integer_from(input)?);
-    let client_features =
-        if client_version.min(LATEST_WORKER_VERSION) >= FEATURE_NEGOTIATION_VERSION {
-            read_worker_strings_from(input)?
-        } else {
-            Vec::new()
-        };
-    let negotiated = negotiate_worker_version(client_version, &client_features, server_features)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unsupported worker version"))?;
+    pub fn perform_server_handshake<W: Write>(
+        &mut self,
+        output: &mut W,
+        server_features: &[String],
+    ) -> io::Result<NegotiatedWorkerVersion> {
+        if self.read_integer()? != CLIENT_WORKER_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "worker handshake magic mismatch",
+            ));
+        }
 
-    if negotiated.version >= FEATURE_NEGOTIATION_VERSION {
-        write_worker_strings_to(output, server_features)?;
+        write_worker_integer_to(output, SERVER_WORKER_MAGIC)?;
+        write_worker_integer_to(output, LATEST_WORKER_VERSION.to_wire())?;
         output.flush()?;
+
+        let client_version = WorkerVersion::from_wire(self.read_integer()?);
+        let client_features =
+            if client_version.min(LATEST_WORKER_VERSION) >= FEATURE_NEGOTIATION_VERSION {
+                Some(self.read_strings()?)
+            } else {
+                None
+            };
+        let negotiated = negotiate_worker_version_with_budget(
+            client_version,
+            client_features
+                .as_ref()
+                .map(|features| features.values.as_slice())
+                .unwrap_or_default(),
+            server_features,
+            &self.budget,
+        )
+        .map_err(|error| match error {
+            ProtocolError::SizeLimit => io::Error::new(
+                io::ErrorKind::InvalidData,
+                "worker metadata exceeds session limit",
+            ),
+            _ => io::Error::new(io::ErrorKind::InvalidData, "unsupported worker version"),
+        })?;
+        drop(client_features);
+
+        if negotiated.version >= FEATURE_NEGOTIATION_VERSION {
+            write_worker_strings_to(output, server_features)?;
+            output.flush()?;
+        }
+
+        self.input.complete_message();
+        Ok(negotiated)
     }
 
-    Ok(negotiated)
-}
+    pub fn complete_server_post_handshake<W: Write>(
+        &mut self,
+        output: &mut W,
+        version: WorkerVersion,
+        daemon_version: &str,
+    ) -> io::Result<()> {
+        if version >= WorkerVersion::new(1, 14) && self.read_integer()? != 0 {
+            self.read_integer()?;
+        }
+        if version >= WorkerVersion::new(1, 11) {
+            self.read_integer()?;
+        }
+        if version >= WorkerVersion::new(1, 33) {
+            write_worker_byte_string_to(output, daemon_version.as_bytes())?;
+        }
+        if version >= WorkerVersion::new(1, 35) {
+            write_worker_integer_to(output, 0)?;
+        }
+        write_worker_integer_to(output, STDERR_LAST)?;
+        output.flush()?;
+        self.input.complete_message();
+        Ok(())
+    }
 
-pub fn complete_server_post_handshake<R: Read, W: Write>(
-    input: &mut R,
-    output: &mut W,
-    version: WorkerVersion,
-    daemon_version: &str,
-) -> io::Result<()> {
-    if version >= WorkerVersion::new(1, 14) && read_worker_integer_from(input)? != 0 {
-        read_worker_integer_from(input)?;
+    pub fn read_operation(&mut self) -> io::Result<WorkerOperation> {
+        let operation = worker_operation_from_code(self.read_integer()?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))?;
+        self.input.complete_message();
+        Ok(operation)
     }
-    if version >= WorkerVersion::new(1, 11) {
-        read_worker_integer_from(input)?;
+
+    pub fn into_inner(self) -> R {
+        self.input
     }
-    if version >= WorkerVersion::new(1, 33) {
-        write_worker_byte_string_to(output, daemon_version.as_bytes())?;
+
+    fn read_integer(&mut self) -> io::Result<u64> {
+        read_worker_integer_from(&mut self.input)
     }
-    if version >= WorkerVersion::new(1, 35) {
-        write_worker_integer_to(output, 0)?;
+
+    fn read_strings(&mut self) -> io::Result<DecodedWorkerStrings> {
+        read_worker_strings_from(&mut self.input, &self.budget)
     }
-    write_worker_integer_to(output, STDERR_LAST)?;
-    output.flush()
 }
 
 fn read_worker_integer_from(input: &mut impl Read) -> io::Result<u64> {
@@ -790,10 +950,111 @@ fn read_worker_integer_from(input: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn read_worker_byte_string_from(
+fn negotiate_worker_version_with_budget(
+    client_version: WorkerVersion,
+    client_features: &[String],
+    server_features: &[String],
+    budget: &SessionAllocationBudget,
+) -> Result<NegotiatedWorkerVersion, ProtocolError> {
+    let version = client_version.min(LATEST_WORKER_VERSION);
+    if version < MINIMUM_WORKER_VERSION {
+        return Err(ProtocolError::VersionMismatch);
+    }
+
+    let feature_count = client_features
+        .iter()
+        .filter(|feature| server_features.contains(feature))
+        .count();
+    let feature_capacity = feature_count
+        .checked_mul(std::mem::size_of::<String>())
+        .ok_or(ProtocolError::SizeLimit)?;
+    let feature_charge = budget.charge(feature_capacity)?;
+    let mut features = Vec::with_capacity(feature_count);
+    let mut feature_charges = Vec::with_capacity(feature_count);
+    for feature in client_features
+        .iter()
+        .filter(|feature| server_features.contains(feature))
+    {
+        let charge = budget.charge(feature.capacity())?;
+        features.push(feature.clone());
+        feature_charges.push(charge);
+    }
+    let metadata_charge = SessionAllocationCharges {
+        _collection_charge: feature_charge,
+        _value_charges: feature_charges,
+    };
+    Ok(NegotiatedWorkerVersion {
+        version,
+        features,
+        _feature_charge: Some(metadata_charge),
+    })
+}
+
+#[derive(Debug)]
+struct SessionAllocationCharges {
+    _collection_charge: SessionAllocationCharge,
+    _value_charges: Vec<SessionAllocationCharge>,
+}
+
+#[derive(Debug)]
+struct DecodedWorkerStrings {
+    values: Vec<String>,
+    _collection_charge: SessionAllocationCharge,
+    _value_charges: Vec<SessionAllocationCharge>,
+}
+
+fn read_worker_strings_from(
+    input: &mut impl Read,
+    budget: &SessionAllocationBudget,
+) -> io::Result<DecodedWorkerStrings> {
+    let count = usize::try_from(read_worker_integer_from(input)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many worker features"))?;
+    if count > MAXIMUM_HANDSHAKE_FEATURES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many worker features",
+        ));
+    }
+    let collection_capacity = count
+        .checked_mul(std::mem::size_of::<String>())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "worker metadata exceeds session limit",
+            )
+        })?;
+    let collection_charge = budget.charge(collection_capacity).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker metadata exceeds session limit",
+        )
+    })?;
+    let mut values = Vec::with_capacity(count);
+    let mut value_charges = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (feature, charge) = read_worker_byte_string_with_charge_from(
+            input,
+            MAXIMUM_HANDSHAKE_FEATURE_LENGTH,
+            budget,
+        )?;
+        let feature = String::from_utf8(feature).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "worker feature is not UTF-8")
+        })?;
+        values.push(feature);
+        value_charges.push(charge);
+    }
+    Ok(DecodedWorkerStrings {
+        values,
+        _collection_charge: collection_charge,
+        _value_charges: value_charges,
+    })
+}
+
+fn read_worker_byte_string_with_charge_from(
     input: &mut impl Read,
     maximum_length: usize,
-) -> io::Result<Vec<u8>> {
+    budget: &SessionAllocationBudget,
+) -> io::Result<(Vec<u8>, SessionAllocationCharge)> {
     let length = usize::try_from(read_worker_integer_from(input)?)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "worker string exceeds limit"))?;
     if length > maximum_length {
@@ -803,7 +1064,16 @@ fn read_worker_byte_string_from(
         ));
     }
     let padding_length = (8 - length % 8) % 8;
-    let mut framed = vec![0; length + padding_length];
+    let framed_length = length
+        .checked_add(padding_length)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "worker string exceeds limit"))?;
+    let charge = budget.charge(framed_length).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker metadata exceeds session limit",
+        )
+    })?;
+    let mut framed = vec![0; framed_length];
     input.read_exact(&mut framed)?;
     if framed[length..].iter().any(|byte| *byte != 0) {
         return Err(io::Error::new(
@@ -812,26 +1082,7 @@ fn read_worker_byte_string_from(
         ));
     }
     framed.truncate(length);
-    Ok(framed)
-}
-
-fn read_worker_strings_from(input: &mut impl Read) -> io::Result<Vec<String>> {
-    let count = usize::try_from(read_worker_integer_from(input)?)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many worker features"))?;
-    if count > MAXIMUM_HANDSHAKE_FEATURES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "too many worker features",
-        ));
-    }
-    (0..count)
-        .map(|_| {
-            let feature = read_worker_byte_string_from(input, MAXIMUM_HANDSHAKE_FEATURE_LENGTH)?;
-            String::from_utf8(feature).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "worker feature is not UTF-8")
-            })
-        })
-        .collect()
+    Ok((framed, charge))
 }
 
 fn write_worker_integer_to(output: &mut impl Write, value: u64) -> io::Result<()> {
@@ -900,13 +1151,13 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, ProtocolError,
-        SERVER_WORKER_MAGIC, STDERR_LAST, WorkerOperation, WorkerVersion, protocol_name,
-        read_client_worker_magic, read_fixture_client_handshake,
+        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
         read_fixture_client_post_handshake, read_fixture_server_handshake_info,
         read_fixture_set_options, read_fixture_terminal_frame, read_worker_byte_string,
         read_worker_integer, read_worker_operation, write_server_worker_magic,
-        write_worker_byte_string, write_worker_integer,
+        write_worker_byte_string, write_worker_integer, ProtocolError, ProtocolSessionLimits,
+        SessionAllocationBudget, WorkerOperation, WorkerReader, WorkerVersion, CLIENT_WORKER_MAGIC,
+        LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
     };
 
     #[test]
@@ -927,6 +1178,84 @@ mod tests {
         ];
 
         assert_eq!(cases.len(), 7);
+    }
+
+    #[test]
+    fn session_allocation_budget_releases_metadata_charges() {
+        let limits = ProtocolSessionLimits::new(8, std::time::Duration::from_secs(1));
+        let budget = SessionAllocationBudget::new(limits);
+
+        let Ok(first) = budget.charge(8) else {
+            panic!("first charge fits");
+        };
+        assert_eq!(budget.retained_bytes(), 8);
+        assert!(matches!(budget.charge(1), Err(ProtocolError::SizeLimit)));
+        drop(first);
+        assert_eq!(budget.retained_bytes(), 0);
+        let Ok(second) = budget.charge(8) else {
+            panic!("released capacity is reusable");
+        };
+        drop(second);
+    }
+
+    #[test]
+    fn session_limit_rejects_handshake_metadata_before_allocation() {
+        let input = worker_handshake_with_feature(b"feature");
+        let mut input = input.as_slice();
+        let mut output = Vec::new();
+        let limits = ProtocolSessionLimits::new(23, std::time::Duration::from_secs(1));
+        let mut reader = WorkerReader::new(&mut input, limits);
+        let error = reader
+            .perform_server_handshake(&mut output, &[])
+            .expect_err("metadata above the session limit is rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "worker metadata exceeds session limit");
+        assert_eq!(reader.retained_metadata_bytes(), 0);
+    }
+
+    #[test]
+    fn negotiated_handshake_metadata_releases_its_session_charge() {
+        let input = worker_handshake_with_feature(b"feature");
+        let mut input = input.as_slice();
+        let mut output = Vec::new();
+        let limits = ProtocolSessionLimits::new(64, std::time::Duration::from_secs(1));
+        let mut reader = WorkerReader::new(&mut input, limits);
+        let Ok(negotiated) = reader.perform_server_handshake(&mut output, &["feature".to_owned()])
+        else {
+            panic!("handshake metadata fits");
+        };
+
+        assert!(reader.retained_metadata_bytes() > 0);
+        drop(negotiated);
+        assert_eq!(reader.retained_metadata_bytes(), 0);
+    }
+
+    fn worker_handshake_with_feature(feature: &[u8]) -> Vec<u8> {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, CLIENT_WORKER_MAGIC);
+        write_worker_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
+        write_worker_integer(&mut input, 1);
+        write_worker_byte_string(&mut input, feature);
+        input
+    }
+
+    #[test]
+    fn worker_reader_uses_one_budget_for_live_metadata() {
+        let input = worker_handshake_with_feature(b"feature");
+        let mut input = input.as_slice();
+        let mut output = Vec::new();
+        let limits = ProtocolSessionLimits::new(64, std::time::Duration::from_secs(1));
+        let mut reader = WorkerReader::new(&mut input, limits);
+
+        let Ok(negotiated) = reader.perform_server_handshake(&mut output, &["feature".to_owned()])
+        else {
+            panic!("handshake metadata fits");
+        };
+
+        assert!(reader.retained_metadata_bytes() > 0);
+        drop(negotiated);
+        assert_eq!(reader.retained_metadata_bytes(), 0);
     }
 
     #[test]

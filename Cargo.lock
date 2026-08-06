@@ -853,6 +853,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "rustix",
  "tokio",
  "tokio-stream",
  "tonic",
