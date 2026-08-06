@@ -4,7 +4,7 @@ use std::os::fd::AsFd;
 use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
-use rustix::event::{poll, PollFd, PollFlags, Timespec};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 pub struct StdioInput<R> {
     input: R,
@@ -97,21 +97,22 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
     use std::sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc,
     };
     use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{StdioInput, TestInput};
     use nix_worker_protocol::{
-        ProtocolSessionLimits, WorkerInput, WorkerReader, CLIENT_WORKER_MAGIC,
-        LATEST_WORKER_VERSION,
+        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, ProtocolSessionLimits, WorkerInput,
+        WorkerReader,
     };
     use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
     use tracing_subscriber::layer::Context;
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::Layer;
 
     #[test]
     fn incomplete_input_times_out_without_leaking_the_reader() {
