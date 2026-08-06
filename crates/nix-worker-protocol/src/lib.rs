@@ -18,6 +18,9 @@ pub const STDERR_ERROR: u64 = 0x6378_7470;
 pub const STDERR_START_ACTIVITY: u64 = 0x5354_5254;
 pub const STDERR_STOP_ACTIVITY: u64 = 0x5354_4f50;
 pub const STDERR_RESULT: u64 = 0x5253_4c54;
+pub const MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES: usize = 16 * 1024;
+pub const MAXIMUM_STRUCTURED_FRAME_FIELDS: usize = 64;
+pub const MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES: usize = 4 * 1024;
 const MAXIMUM_HANDSHAKE_FEATURES: usize = 64;
 const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: usize = 1024;
 
@@ -303,6 +306,12 @@ pub enum StderrFrame {
 /// protocol wire format, matching the behaviour of stock `nix-daemon --stdio`
 /// as observed in captured traffic.
 pub fn write_stderr_frame(output: &mut impl Write, frame: StderrFrame) -> io::Result<()> {
+    validate_stderr_frame(&frame).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "structured frame exceeds limit",
+        )
+    })?;
     match frame {
         StderrFrame::Next { message } => {
             write_worker_integer_to(output, STDERR_NEXT)?;
@@ -383,6 +392,33 @@ pub fn write_stderr_frame(output: &mut impl Write, frame: StderrFrame) -> io::Re
         StderrFrame::Last => {
             write_worker_integer_to(output, STDERR_LAST)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_stderr_frame(frame: &StderrFrame) -> Result<(), ProtocolError> {
+    let (message, fields) = match frame {
+        StderrFrame::Next { message } => {
+            if message.len() > MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES {
+                return Err(ProtocolError::SizeLimit);
+            }
+            return Ok(());
+        }
+        StderrFrame::StartActivity { message, fields } => (Some(message), fields),
+        StderrFrame::StopActivity | StderrFrame::Last => return Ok(()),
+        StderrFrame::Result { fields } => (None, fields),
+    };
+    if message.is_some_and(|message| message.len() > MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)
+        || fields.len() > MAXIMUM_STRUCTURED_FRAME_FIELDS
+        || fields.iter().any(|field| {
+            field.name.len() > MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES
+                || field
+                    .value
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)
+        })
+    {
+        return Err(ProtocolError::SizeLimit);
     }
     Ok(())
 }
@@ -2215,6 +2251,33 @@ mod tests {
             }
             other => panic!("expected Next, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn rejects_oversized_structured_stderr_frames() {
+        let mut output = Vec::new();
+        let message = vec![b'm'; 16 * 1024 + 1];
+
+        let error = write_stderr_frame(&mut output, StderrFrame::Next { message })
+            .expect_err("oversized structured frame is rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn rejects_oversized_structured_activity_metadata() {
+        let mut output = Vec::new();
+        let fields = vec![ActivityField {
+            name: vec![b'n'; 4 * 1024 + 1],
+            value: None,
+        }];
+
+        let error = write_stderr_frame(&mut output, StderrFrame::Result { fields })
+            .expect_err("oversized activity metadata is rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(output.is_empty());
     }
 
     #[test]
