@@ -76,14 +76,12 @@ fn run_frontend() -> io::Result<()> {
     IpcListener::send_envelope(&mut daemon, &envelope)?;
 
     let mut request = daemon.try_clone()?;
-    let request_relay = std::thread::spawn(move || -> io::Result<()> {
-        telchar::ipc::copy_bounded(io::stdin().lock(), &mut request)?;
-        request.shutdown(std::net::Shutdown::Write)
+    std::thread::spawn(move || {
+        if telchar::ipc::copy_bounded(io::stdin().lock(), &mut request).is_ok() {
+            let _ = request.shutdown(std::net::Shutdown::Write);
+        }
     });
     telchar::ipc::copy_bounded(daemon, io::stdout().lock())?;
-    request_relay
-        .join()
-        .map_err(|_| io::Error::other("frontend request relay panicked"))??;
     Ok(())
 }
 
@@ -114,6 +112,23 @@ fn run_daemon() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
+    let once = std::env::args().any(|argument| argument == "--once");
+    loop {
+        let result = serve_connection(&listener, envelope_timeout);
+        if once {
+            return result;
+        }
+        if let Err(error) = result {
+            tracing::warn!(
+                event = "ipc.daemon.session_failed",
+                reason = error_reason(&error),
+                "frontend session failed"
+            );
+        }
+    }
+}
+
+fn serve_connection(listener: &IpcListener, envelope_timeout: Duration) -> io::Result<()> {
     let mut connection = listener.accept_with_envelope_timeout(envelope_timeout)?;
     tracing::info!(
         event = "ipc.daemon.session_started",

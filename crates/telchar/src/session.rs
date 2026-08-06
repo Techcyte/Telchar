@@ -62,11 +62,33 @@ pub fn run_worker_session(
     loop {
         match reader.read_operation() {
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::TimedOut => return Err(error),
-            Err(_) => return reject(&mut output, "unknown worker operation"),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                tracing::error!(
+                    event = "worker.session.timed_out",
+                    "worker protocol session timed out"
+                );
+                return Ok(());
+            }
+            Err(_) => {
+                return reject(&mut output, "unknown-operation", "unknown worker operation");
+            }
             Ok(WorkerOperation::SetOptions) => {
-                if reader.complete_set_options().is_err() {
-                    return reject(&mut output, "invalid SetOptions request");
+                match reader.complete_set_options() {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                        tracing::error!(
+                            event = "worker.session.timed_out",
+                            "worker protocol session timed out"
+                        );
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-set-options",
+                            "invalid SetOptions request",
+                        );
+                    }
                 }
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
                 output.flush()?;
@@ -76,14 +98,29 @@ pub fn run_worker_session(
                 );
             }
             Ok(operation) if !operation.is_fixture_allowed() => {
-                return reject(&mut output, "unsupported worker operation");
+                return reject(
+                    &mut output,
+                    "recognized-unsupported",
+                    "unsupported worker operation",
+                );
             }
-            Ok(_) => return reject(&mut output, "unsupported worker operation"),
+            Ok(_) => {
+                return reject(
+                    &mut output,
+                    "recognized-unimplemented",
+                    "unsupported worker operation",
+                );
+            }
         }
     }
 }
 
-fn reject(output: &mut impl Write, message: &str) -> io::Result<()> {
+fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result<()> {
+    tracing::error!(
+        event = "worker.operation.rejected",
+        rejection,
+        "worker operation rejected"
+    );
     nix_worker_protocol::write_worker_error(output, message)?;
     output.flush()
 }

@@ -1,6 +1,9 @@
+use std::fs;
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
@@ -8,13 +11,8 @@ use nix_worker_protocol::{
 
 #[test]
 fn live_set_options_request_returns_terminal_frame() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
-        .arg("serve-stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Telchar starts");
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
 
     write_integer(&mut input, CLIENT_WORKER_MAGIC);
@@ -50,13 +48,7 @@ fn live_set_options_request_returns_terminal_frame() {
     );
 
     assert!(child.wait().expect("Telchar exits").success());
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("server stderr")
-        .read_to_string(&mut stderr)
-        .expect("server stderr reads");
+    let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.set_options.completed"),
         "missing local SetOptions telemetry: {stderr}"
@@ -65,14 +57,8 @@ fn live_set_options_request_returns_terminal_frame() {
 
 #[test]
 fn partial_set_options_times_out_after_operation_and_cleans_up() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
-        .arg("serve-stdio")
-        .env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", "40")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Telchar starts");
+    let mut fixture = FrontendFixture::spawn(Some(40));
+    let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     write_integer(&mut input, CLIENT_WORKER_MAGIC);
     write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
@@ -91,30 +77,18 @@ fn partial_set_options_times_out_after_operation_and_cleans_up() {
     write_integer(&mut input, 19);
     input.flush().expect("operation flushes");
     let started = std::time::Instant::now();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("server stderr")
-        .read_to_string(&mut stderr)
-        .expect("server stderr reads");
     let elapsed = started.elapsed();
     let status = child.wait().expect("Telchar exits");
     assert!(elapsed < Duration::from_secs(1));
     assert!(status.success());
+    let stderr = fixture.finish();
     assert!(stderr.contains("worker.session.timed_out"), "{stderr}");
 }
 
 #[test]
 fn partial_set_options_progress_resets_deadline() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
-        .arg("serve-stdio")
-        .env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", "40")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Telchar starts");
+    let mut fixture = FrontendFixture::spawn(Some(40));
+    let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     write_integer(&mut input, CLIENT_WORKER_MAGIC);
     write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
@@ -142,6 +116,7 @@ fn partial_set_options_progress_resets_deadline() {
     assert_eq!(read_integer(&mut output), STDERR_LAST);
     drop(input);
     assert!(child.wait().expect("Telchar exits").success());
+    fixture.finish();
 }
 
 #[test]
@@ -163,14 +138,93 @@ struct OperationResponse {
     rejection: &'static str,
 }
 
+struct FrontendFixture {
+    root: PathBuf,
+    frontend: Child,
+    daemon: Child,
+}
+
+impl FrontendFixture {
+    fn spawn(worker_timeout_ms: Option<u64>) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "telchar-operation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time follows epoch")
+                .as_nanos()
+        ));
+        fs::create_dir(&root).expect("fixture root creates");
+        let socket = root.join("daemon.sock");
+        let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+        daemon_command
+            .args([
+                "daemon",
+                "--socket",
+                socket.to_str().expect("UTF-8 socket path"),
+                "--frontend-uid",
+                &rustix::process::getuid().as_raw().to_string(),
+                "--once",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        if let Some(timeout) = worker_timeout_ms {
+            daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
+        }
+        let mut daemon = daemon_command.spawn().expect("daemon starts");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !socket.exists() {
+            assert!(Instant::now() < deadline, "daemon socket was not created");
+            assert!(
+                daemon.try_wait().expect("daemon status").is_none(),
+                "daemon exited before binding"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+        command
+            .arg("serve-stdio")
+            .env("TELCHAR_IPC_SOCKET", &socket)
+            .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(timeout) = worker_timeout_ms {
+            command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
+        }
+        let frontend = command.spawn().expect("frontend starts");
+        Self {
+            root,
+            frontend,
+            daemon,
+        }
+    }
+
+    fn finish(mut self) -> String {
+        let mut frontend_stderr = String::new();
+        self.frontend
+            .stderr
+            .take()
+            .expect("frontend stderr")
+            .read_to_string(&mut frontend_stderr)
+            .expect("frontend stderr reads");
+        let daemon_output = self.daemon.wait_with_output().expect("daemon exits");
+        let _ = fs::remove_dir_all(self.root);
+        assert!(
+            daemon_output.status.success(),
+            "daemon failed: {daemon_output:?}"
+        );
+        format!(
+            "{frontend_stderr}{}",
+            String::from_utf8_lossy(&daemon_output.stderr)
+        )
+    }
+}
+
 fn send_operation(operation: u64) -> OperationResponse {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
-        .arg("serve-stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Telchar starts");
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
 
@@ -209,13 +263,7 @@ fn send_operation(operation: u64) -> OperationResponse {
 
     let status = child.wait().expect("Telchar exits");
     assert!(status.success(), "Telchar failed: {status}");
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("server stderr")
-        .read_to_string(&mut stderr)
-        .expect("stderr reads");
+    let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.operation.rejected"),
         "missing structured rejection event: {stderr}"
