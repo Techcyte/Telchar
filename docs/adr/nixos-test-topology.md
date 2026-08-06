@@ -16,11 +16,11 @@ The baseline topology is:
 stock-client -- virtual network --> gateway -- OTLP/gRPC --> otlp-collector
 ```
 
-- `stock-client` is an unmodified NixOS Nix client. It starts independently and reaches Telchar over the virtual network.
-- `gateway` runs the packaged Telchar service, owns its gateway-store configuration, and exposes only declared network services.
+- `stock-client` is an unmodified NixOS Nix client. It starts independently on the virtual network.
+- `gateway` runs the packaged Telchar systemd oneshot service and owns its gateway-store configuration.
 - `otlp-collector` is a real or protocol-compatible OTLP gRPC collector. It stores bounded test records for correlated logs, metrics, and traces.
 
-The client reaches the gateway only through the declared virtual network boundary. The packaged `telchar` system service owns service startup. Test-driver commands do not start the binary directly. Readiness requires the gateway service to be active and its health endpoint to answer over the virtual network. A protocol-compatible OTLP gRPC collector receives correlated startup logs, metrics, and traces.
+The virtual-network topology is asserted independently from Telchar protocol reachability. The packaged `telchar` systemd oneshot service owns startup. Test-driver commands do not start the binary directly. Baseline readiness requires the packaged Telchar systemd oneshot service to complete successfully and correlated OTLP startup telemetry to reach the collector. Real client-to-Telchar protocol reachability remains assigned to Gate 2 OpenSSH integration tasks.
 
 The shared NixOS test library exports modules and helpers for Telchar packaging, stock-Nix client configuration, virtual networking, OpenSSH, OTLP collection, startup and readiness, cleanup, and artifacts. Tests compose those helpers rather than duplicating machine setup.
 
