@@ -574,8 +574,15 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/Cargo.toml`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_auth.rs`, `docs/adr/local-ipc-peer-authentication.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: `b49778fe` (`feat: authenticate local IPC peers`).
 
-- [x] T052 Connect `serve-stdio` frontend to daemon
-  - Depends on: T051
+- [ ] T051A Resolve local IPC attachment lifecycle
+  - Depends on: T046, T051
+  - Outcome: reviewed decision defines attachment issuance, authenticated-peer and session binding, one-time consumption, replay rejection, and bounded expiry without trusting frontend-selected identifiers.
+  - Red: accepted threat model and implementation disagree about who issues and validates attachment identifiers.
+  - Verify: decision validator plus replay, unknown-attachment, session-mismatch, and peer-mismatch acceptance-test definitions.
+  - Evidence: accepted ADR and immutable negative-test contract.
+
+- [ ] T052 Connect `serve-stdio` frontend to daemon
+  - Depends on: T051A
   - Outcome: frontend forwards one protocol stream to daemon without owning scheduler or database state.
   - Red: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` failed first because `IpcListener` was absent; the first implementation test also caught an incorrect PID assertion.
   - Verify: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` exits `0` (`1 passed`).
@@ -583,7 +590,7 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_frontend.rs`, `docs/adr/local-ipc-frontend-attachment.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: `05118b09` (`feat: attach frontend streams over local IPC`).
 
-- [x] T053 Bound frontend buffering
+- [ ] T053 Bound frontend buffering
   - Depends on: T052
   - Outcome: slow daemon or client cannot cause unbounded frontend memory.
   - Red: `nix develop -c cargo test -p telchar --test ipc_buffer --locked` failed because bounded relay API and buffer constant were absent.

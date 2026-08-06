@@ -9,7 +9,8 @@ The forced-command frontend sends one bounded, versioned envelope to the daemon 
 - Magic: `TIPC`.
 - Version: little-endian `u16`; supported version is `1`.
 - Strings: non-empty UTF-8, little-endian `u16` byte length.
-- Requester components and session ID: maximum 256 bytes each.
+- Audit subject, configured quota subject, and session ID: maximum 256 bytes each.
+- Normalized credential ID and credential-ID quota fallback: maximum 1024 bytes each; the larger bound covers length-prefixed certificate identities whose authenticated components are individually bounded to 256 bytes.
 - Error code: maximum 256 bytes.
 - Error message: maximum 4096 bytes.
 - Complete encoded envelope: maximum 16 KiB.
@@ -21,4 +22,4 @@ The daemon must authenticate the local peer independently of this envelope. Enve
 
 ## Verification
 
-`crates/telchar/tests/ipc_schema.rs` proves round-trip preservation, version rejection, and bounded error data. Constants in `crates/telchar/src/ipc.rs` are the authoritative supported version and size bounds.
+`crates/telchar/tests/ipc_schema.rs` proves round-trip preservation, version rejection, bounded error data, and checked conversion of maximum valid normalized requester identities. Constants in `crates/telchar/src/ipc.rs` are the authoritative supported version and size bounds.
