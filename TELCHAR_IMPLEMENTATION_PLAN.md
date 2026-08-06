@@ -402,7 +402,7 @@ Evidence: paths and output facts to record
   - Verify: NixOS test-topology contract check.
   - Evidence: topology diagram, extension points, and mapped future integration tasks.
 
-- [ ] T021B Add reusable `nixosTest` library
+- [x] T021B Add reusable `nixosTest` library
   - Depends on: T021A
   - Outcome: flake exports shared NixOS test modules/helpers for Telchar packaging, stock-Nix clients, networking, OpenSSH, OTLP collection, machine startup, and failure artifact capture.
   - Red: minimal test cannot instantiate two machines through shared helpers.

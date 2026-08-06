@@ -7,7 +7,7 @@
   };
 
   outputs =
-    { nixpkgs, crane, ... }:
+    { self, nixpkgs, crane, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -43,6 +43,21 @@
             inherit cargoArtifacts;
             cargoTestExtraArgs = "--lib";
           };
+          nixos-test-library =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+            in
+            harness.mkTest {
+              name = "telchar-nixos-test-library";
+              testScript = ''
+                start_all()
+                stock_client.succeed("test \"$(cat /etc/telchar-test-role)\" = stock-client")
+                gateway.succeed("test \"$(cat /etc/telchar-test-role)\" = gateway")
+              '';
+            };
         };
 
       packages.${system} = {
