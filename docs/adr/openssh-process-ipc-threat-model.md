@@ -47,6 +47,10 @@ IPC messages are versioned and length-bounded. One authenticated Unix connection
 | Source address is treated as identity | Source address is audit/emergency context only; credential and quota subjects derive from authenticated identity | Network attribution can be affected by trusted proxy topology |
 | Telemetry leaks credentials or unbounded request data | Use established `tracing`/OTLP path, bounded low-cardinality attributes, redaction policy, and spans at IPC boundary | Diagnostic detail remains intentionally limited |
 
+## Implementation status
+
+The current public-key frontend carries credential, audit, and quota subjects over IPC. Certificate metadata and source-address context are represented by requester normalization but are not yet carried by the IPC schema; certificate ingress remains deferred, and source-address propagation requires an explicit schema task before any audit claim depends on it. The daemon receives normalized metadata and validates its bounded schema and authenticated local peer; mapping policy and durable requester records remain later daemon-owned work.
+
 ## Security invariants
 
 1. Authentication occurs before worker-protocol work is accepted.

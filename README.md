@@ -131,8 +131,8 @@ OpenSSH supplies authenticated credential information. Telchar normalizes it int
 - Credential ID.
 - Audit subject.
 - Quota subject.
-- Certificate issuer and principals, when present.
-- Source-address metadata.
+- Certificate issuer and principals, when support is separately implemented.
+- Source-address metadata, when the IPC schema is extended to carry it.
 
 Source address is audit context, not primary identity. Authorized keys and OpenSSH user certificates may map into the same policy model without coupling scheduling to a particular certificate issuer.
 

@@ -654,7 +654,7 @@ Evidence: paths and output facts to record
 
 - [ ] T060 Ignore client-supplied identity environment
   - Depends on: T049, T054
-  - Outcome: spoofed environment cannot alter normalized requester.
+  - Outcome: spoofed environment cannot alter normalized requester; the accepted public-key path carries credential/audit/quota metadata through IPC, while source-address and any future certificate metadata require explicit authenticated schema coverage before use.
   - Red: spoof fixture changes requester.
   - Verify: identity spoof integration test.
   - Evidence: trusted requester remains unchanged.
