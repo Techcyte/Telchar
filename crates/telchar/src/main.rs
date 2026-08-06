@@ -47,39 +47,58 @@ fn serve_stdio() {
         .perform_server_handshake(&mut output, &[])
         .and_then(|negotiated| {
             reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")
-        })
-        .and_then(|_| reader.read_operation());
-    match result {
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
-        Err(_) => {
-            reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation")
-        }
-        Ok(nix_worker_protocol::WorkerOperation::SetOptions) => {
-            let set_options = tracing::info_span!("worker.set_options");
-            let _entered = set_options.enter();
-            if reader.complete_set_options().is_err() {
-                reject_worker_operation(
-                    &mut output,
-                    "invalid-set-options",
-                    "invalid SetOptions request",
-                );
-            } else {
-                let _ = output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes());
-                let _ = output.flush();
-                tracing::info!(
-                    event = "worker.set_options.completed",
-                    "SetOptions request completed"
-                );
+        });
+    if result.is_err() {
+        reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation");
+    } else {
+        loop {
+            match reader.read_operation() {
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => break,
+                Err(_) => {
+                    reject_worker_operation(
+                        &mut output,
+                        "unknown-operation",
+                        "unknown worker operation",
+                    );
+                    break;
+                }
+                Ok(nix_worker_protocol::WorkerOperation::SetOptions) => {
+                    let set_options = tracing::info_span!("worker.set_options");
+                    let _entered = set_options.enter();
+                    if reader.complete_set_options().is_err() {
+                        reject_worker_operation(
+                            &mut output,
+                            "invalid-set-options",
+                            "invalid SetOptions request",
+                        );
+                        break;
+                    }
+                    let _ = output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes());
+                    let _ = output.flush();
+                    tracing::info!(
+                        event = "worker.set_options.completed",
+                        "SetOptions request completed"
+                    );
+                }
+                Ok(operation) if !operation.is_fixture_allowed() => {
+                    reject_worker_operation(
+                        &mut output,
+                        "recognized-unsupported",
+                        "unsupported worker operation",
+                    );
+                    break;
+                }
+                Ok(_) => {
+                    reject_worker_operation(
+                        &mut output,
+                        "recognized-unimplemented",
+                        "unsupported worker operation",
+                    );
+                    break;
+                }
             }
         }
-        Ok(operation) if !operation.is_fixture_allowed() => {
-            reject_worker_operation(
-                &mut output,
-                "recognized-unsupported",
-                "unsupported worker operation",
-            );
-        }
-        Ok(_) => {}
     }
 
     telemetry.shutdown();

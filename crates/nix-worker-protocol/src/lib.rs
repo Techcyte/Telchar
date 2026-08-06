@@ -1335,9 +1335,9 @@ mod tests {
     use super::{
         ActivityField, CLIENT_WORKER_MAGIC, FixtureStderrFrame, LATEST_WORKER_VERSION,
         MINIMUM_WORKER_VERSION, ProtocolError, ProtocolSessionLimits, SERVER_WORKER_MAGIC,
-        STDERR_ERROR, STDERR_LAST, STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY,
-        STDERR_STOP_ACTIVITY, SessionAllocationBudget, StderrFrame, WorkerOperation, WorkerReader,
-        WorkerVersion, protocol_name, read_client_worker_magic, read_fixture_client_handshake,
+        STDERR_LAST, STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY,
+        SessionAllocationBudget, StderrFrame, WorkerOperation, WorkerReader, WorkerVersion,
+        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
         read_fixture_client_post_handshake, read_fixture_server_handshake_info,
         read_fixture_set_options, read_fixture_stderr_frame, read_fixture_terminal_frame,
         read_worker_byte_string, read_worker_integer, read_worker_operation,
@@ -2117,7 +2117,7 @@ mod tests {
     #[test]
     fn writes_stderr_next_frame_with_message() {
         let mut output = Vec::new();
-        write_stderr_frame(
+        let _ = write_stderr_frame(
             &mut output,
             StderrFrame::Next {
                 message: b"building derivation\0".to_vec(),
@@ -2136,7 +2136,7 @@ mod tests {
     #[test]
     fn writes_stderr_last_frame() {
         let mut output = Vec::new();
-        write_stderr_frame(&mut output, StderrFrame::Last);
+        let _ = write_stderr_frame(&mut output, StderrFrame::Last);
 
         assert_eq!(&output[..8], &STDERR_LAST.to_le_bytes());
         assert_eq!(output.len(), 8);
@@ -2145,7 +2145,7 @@ mod tests {
     #[test]
     fn writes_stderr_stop_activity_frame() {
         let mut output = Vec::new();
-        write_stderr_frame(&mut output, StderrFrame::StopActivity);
+        let _ = write_stderr_frame(&mut output, StderrFrame::StopActivity);
 
         assert_eq!(&output[0..8], &STDERR_STOP_ACTIVITY.to_le_bytes());
         // StopActivity has one trailing u64 (operation code)
@@ -2165,7 +2165,7 @@ mod tests {
                 value: Some(b"paths\0".to_vec()),
             },
         ];
-        write_stderr_frame(
+        let _ = write_stderr_frame(
             &mut output,
             StderrFrame::StartActivity {
                 message: b"starting build\0".to_vec(),
@@ -2190,7 +2190,7 @@ mod tests {
                 value: Some(b"result\0".to_vec()),
             },
         ];
-        write_stderr_frame(&mut output, StderrFrame::Result { fields });
+        let _ = write_stderr_frame(&mut output, StderrFrame::Result { fields });
 
         // STDERR_RESULT tag
         assert_eq!(&output[0..8], &STDERR_RESULT.to_le_bytes());
@@ -2199,7 +2199,7 @@ mod tests {
     #[test]
     fn round_trip_stderr_next_frame() {
         let mut encoded = Vec::new();
-        write_stderr_frame(
+        let _ = write_stderr_frame(
             &mut encoded,
             StderrFrame::Next {
                 message: b"round-trip test\0".to_vec(),
@@ -2220,7 +2220,7 @@ mod tests {
     #[test]
     fn round_trip_stderr_last_frame() {
         let mut encoded = Vec::new();
-        write_stderr_frame(&mut encoded, StderrFrame::Last);
+        let _ = write_stderr_frame(&mut encoded, StderrFrame::Last);
 
         let mut decoded = encoded.as_slice();
         let frame = read_fixture_stderr_frame(&mut decoded).unwrap();
@@ -2231,7 +2231,7 @@ mod tests {
     #[test]
     fn round_trip_stderr_stop_activity_frame() {
         let mut encoded = Vec::new();
-        write_stderr_frame(&mut encoded, StderrFrame::StopActivity);
+        let _ = write_stderr_frame(&mut encoded, StderrFrame::StopActivity);
 
         let mut decoded = encoded.as_slice();
         let frame = read_fixture_stderr_frame(&mut decoded).unwrap();
@@ -2252,7 +2252,7 @@ mod tests {
                 value: Some(b"paths\0".to_vec()),
             },
         ];
-        write_stderr_frame(
+        let _ = write_stderr_frame(
             &mut encoded,
             StderrFrame::StartActivity {
                 message: b"build start\0".to_vec(),
@@ -2284,7 +2284,7 @@ mod tests {
                 value: Some(b"success\0".to_vec()),
             },
         ];
-        write_stderr_frame(&mut encoded, StderrFrame::Result { fields });
+        let _ = write_stderr_frame(&mut encoded, StderrFrame::Result { fields });
 
         let mut decoded = encoded.as_slice();
         let frame = read_fixture_stderr_frame(&mut decoded).unwrap();
