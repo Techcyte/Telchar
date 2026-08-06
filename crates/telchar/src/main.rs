@@ -1,6 +1,8 @@
 mod telemetry;
 
+use std::fs::Permissions;
 use std::io;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -103,33 +105,39 @@ fn daemon() {
 fn run_daemon() -> io::Result<()> {
     let socket = daemon_socket_argument()?;
     let expected_uid = daemon_uid_argument()?;
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
+    prepare_socket_path(&socket)?;
     let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
+    let socket_guard = SocketGuard(socket);
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
+    if once {
+        return serve_connection(&listener, envelope_timeout);
+    }
     loop {
-        let result = serve_connection(&listener, envelope_timeout);
-        if once {
-            return result;
-        }
-        if let Err(error) = result {
-            tracing::warn!(
-                event = "ipc.daemon.session_failed",
-                reason = error_reason(&error),
-                "frontend session failed"
-            );
-        }
+        let connection = listener.accept_pending()?;
+        std::thread::spawn(move || {
+            let result = connection
+                .receive_envelope(envelope_timeout)
+                .and_then(serve_accepted_connection);
+            if let Err(error) = result {
+                tracing::warn!(
+                    event = "ipc.daemon.session_failed",
+                    reason = error_reason(&error),
+                    "frontend session failed"
+                );
+            }
+        });
+        let _ = &socket_guard;
     }
 }
 
 fn serve_connection(listener: &IpcListener, envelope_timeout: Duration) -> io::Result<()> {
-    let mut connection = listener.accept_with_envelope_timeout(envelope_timeout)?;
+    serve_accepted_connection(listener.accept_with_envelope_timeout(envelope_timeout)?)
+}
+
+fn serve_accepted_connection(mut connection: telchar::ipc::IpcConnection) -> io::Result<()> {
     tracing::info!(
         event = "ipc.daemon.session_started",
         "authenticated frontend session started"
@@ -140,6 +148,31 @@ fn serve_connection(listener: &IpcListener, envelope_timeout: Duration) -> io::R
         connection.stream_mut().try_clone()?,
         protocol_session_limits(),
     )
+}
+
+fn prepare_socket_path(socket: &std::path::Path) -> io::Result<()> {
+    let parent = socket
+        .parent()
+        .ok_or_else(|| invalid("daemon socket requires a parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    std::fs::set_permissions(parent, Permissions::from_mode(0o700))?;
+    match std::fs::symlink_metadata(socket) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "daemon socket path exists and is not a socket",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+struct SocketGuard(PathBuf);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn protocol_session_limits() -> nix_worker_protocol::ProtocolSessionLimits {

@@ -104,7 +104,10 @@ fn daemon_secures_socket_path_and_cleans_up_after_once() {
     complete_handshake(&mut frontend);
     let socket = fixture.socket.clone();
     fixture.finish_successfully();
-    assert!(!socket.exists(), "daemon socket remains after normal shutdown");
+    assert!(
+        !socket.exists(),
+        "daemon socket remains after normal shutdown"
+    );
 }
 
 #[test]

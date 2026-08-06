@@ -56,6 +56,11 @@ pub struct IpcConnection {
     peer_pid: u32,
 }
 
+pub struct PendingIpcConnection {
+    stream: UnixStream,
+    peer_pid: u32,
+}
+
 impl IpcListener {
     pub fn from_listener(listener: UnixListener, expected_uid: u32) -> Self {
         Self {
@@ -72,22 +77,15 @@ impl IpcListener {
         &self,
         envelope_timeout: Duration,
     ) -> io::Result<IpcConnection> {
+        self.accept_pending()?.receive_envelope(envelope_timeout)
+    }
+
+    pub fn accept_pending(&self) -> io::Result<PendingIpcConnection> {
         let _span = tracing::info_span!("ipc.connection.accept").entered();
-        let (mut stream, _) = self.listener.accept()?;
+        let (stream, _) = self.listener.accept()?;
         authorize_peer(&stream, self.expected_uid)?;
-        stream.set_read_timeout(Some(envelope_timeout))?;
-        let envelope = Self::receive_envelope(&mut stream).map_err(classify_envelope_error)?;
-        stream.set_read_timeout(None)?;
         let peer_pid = peer_pid(&stream)?;
-        tracing::info!(
-            event = "ipc.connection.accepted",
-            "local IPC connection accepted"
-        );
-        Ok(IpcConnection {
-            stream,
-            envelope,
-            peer_pid,
-        })
+        Ok(PendingIpcConnection { stream, peer_pid })
     }
 
     pub fn send_envelope(stream: &mut UnixStream, envelope: &IpcEnvelope) -> io::Result<()> {
@@ -108,6 +106,24 @@ impl IpcListener {
         let mut encoded = vec![0; length];
         stream.read_exact(&mut encoded)?;
         IpcEnvelope::decode(&encoded)
+    }
+}
+
+impl PendingIpcConnection {
+    pub fn receive_envelope(mut self, envelope_timeout: Duration) -> io::Result<IpcConnection> {
+        self.stream.set_read_timeout(Some(envelope_timeout))?;
+        let envelope =
+            IpcListener::receive_envelope(&mut self.stream).map_err(classify_envelope_error)?;
+        self.stream.set_read_timeout(None)?;
+        tracing::info!(
+            event = "ipc.connection.accepted",
+            "local IPC connection accepted"
+        );
+        Ok(IpcConnection {
+            stream: self.stream,
+            envelope,
+            peer_pid: self.peer_pid,
+        })
     }
 }
 
