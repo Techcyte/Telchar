@@ -6,6 +6,29 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
+fn arbitrary_ssh_command_is_replaced_by_forced_command() {
+    let fixture = Fixture::start();
+    let output = fixture
+        .ssh_command()
+        .arg("arbitrary-command")
+        .output()
+        .expect("SSH command runs");
+
+    assert!(
+        !output
+            .stdout
+            .windows(b"arbitrary-command".len())
+            .any(|window| window == b"arbitrary-command")
+    );
+    assert!(
+        fs::read_to_string(fixture.root.join("forced-command-output"))
+            .expect("forced command evidence reads")
+            .contains("original_command=arbitrary-command")
+    );
+    fixture.finish();
+}
+
+#[test]
 fn pinned_nix_completes_handshake_through_real_openssh_and_daemon() {
     let fixture = Fixture::start();
     let output = fixture
@@ -107,12 +130,13 @@ impl Fixture {
         .nth(1)
         .expect("fingerprint exists")
         .to_owned();
-        let port = 20000 + (std::process::id() % 20000);
+        let port = 20000 + (unique_suffix() % 20000) as u16;
         let forced = root.join("forced-command.sh");
         fs::write(
             &forced,
             format!(
-                "#!/bin/sh\nexec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                "#!/bin/sh\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}\nexec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                root.join("forced-command-output").display(),
                 socket.display(),
                 fingerprint,
                 binary.display()
@@ -164,6 +188,19 @@ impl Fixture {
             sshd: sshd_child,
             nix,
         }
+    }
+
+    fn ssh_command(&self) -> Command {
+        let mut command = Command::new(command_path("ssh"));
+        command.args([
+            "-F",
+            self.root
+                .join("ssh_config")
+                .to_str()
+                .expect("UTF-8 SSH config"),
+            "telchar-openssh-test",
+        ]);
+        command
     }
 
     fn nix_command(&self) -> Command {
