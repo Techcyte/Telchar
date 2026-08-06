@@ -377,7 +377,7 @@ Evidence: paths and output facts to record
   - Verify: classifier script over trace artifacts.
   - Evidence: zero unclassified operations.
 
-- [ ] T020 Inventory independent protocol behaviors
+- [x] T020 Inventory independent protocol behaviors
   - Depends on: T016, T018, T019
   - Outcome: every required behavior maps to captured traffic, primary Nix source/documentation references, and an independent implementation/test task; Rio contributes only architecture or test-category notes.
   - Red: required behavior depends on Rio implementation details or lacks primary evidence.
