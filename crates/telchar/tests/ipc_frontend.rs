@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 
-use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, StreamAttachment, IPC_VERSION};
+use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata, StreamAttachment};
 
 fn envelope() -> IpcEnvelope {
     IpcEnvelope {
