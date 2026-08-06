@@ -467,7 +467,7 @@ Evidence: paths and output facts to record
   - Outcome: the Telchar transport closes a session with `io::ErrorKind::TimedOut` after the configured 30-second default without forward progress inside an incomplete typed message, resets the deadline on input progress, and leaves complete-boundary idle sessions unaffected.
   - Red: stalled partial input hangs, progress fails to reset the deadline, a complete-boundary idle session expires, or resources leak.
   - Verify: injected-short-timeout integration tests with bounded wall clock and cleanup assertions.
-  - Evidence: configured duration, progress reset, boundary behavior, telemetry, and cleanup assertion.
+  - Evidence: configured duration, first-byte boundary, progress reset, boundary behavior, telemetry, and descriptor cleanup assertion.
 
 ### Independent protocol behavior
 
