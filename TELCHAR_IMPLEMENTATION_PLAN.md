@@ -448,19 +448,26 @@ Evidence: paths and output facts to record
   - Verify: unsupported-operation test.
   - Evidence: operation and asserted error class.
 
+- [x] T038A Define protocol session resource limits
+  - Depends on: T026, T035, T038
+  - Outcome: ADR defines a typed `ProtocolSessionLimits` contract with a 16 MiB maximum for concurrently retained decoded metadata, streamed-payload exclusion, checked pre-allocation charging and release, and a 30-second progress-reset idle deadline for incomplete typed messages enforced by the Telchar transport layer.
+  - Red: contract validator finds an unspecified accounting edge, timeout boundary, configuration owner, or cleanup behavior.
+  - Verify: protocol-session-limits contract check.
+  - Evidence: allocation scope, defaults, timeout semantics, transport ownership, and clean failure behavior.
+
 - [ ] T039 Bound per-session protocol allocations
-  - Depends on: T026, T036
-  - Outcome: session cumulative allocation budget rejects excess input.
-  - Red: sequence exceeding budget succeeds.
-  - Verify: session-budget test.
-  - Evidence: budget and rejection point.
+  - Depends on: T038A
+  - Outcome: session rejects decoded metadata whose concurrently retained heap capacity would exceed the configured 16 MiB default, charging with checked arithmetic before allocation and releasing charge when metadata is no longer retained; streamed payload bodies remain outside this budget.
+  - Red: a sequence whose concurrently retained decoded metadata exceeds the budget succeeds, or released metadata continues consuming budget.
+  - Verify: session-budget and charge-release tests.
+  - Evidence: configured budget, accounting transitions, rejection point, and streamed-payload exclusion.
 
 - [ ] T040 Bound protocol session idle time
-  - Depends on: T035
-  - Outcome: stalled partial request ends with configured timeout and clean resources.
-  - Red: integration test hangs or leaks process.
-  - Verify: timeout test with bounded wall clock.
-  - Evidence: duration and cleanup assertion.
+  - Depends on: T038A
+  - Outcome: the Telchar transport closes a session with `io::ErrorKind::TimedOut` after the configured 30-second default without forward progress inside an incomplete typed message, resets the deadline on input progress, and leaves complete-boundary idle sessions unaffected.
+  - Red: stalled partial input hangs, progress fails to reset the deadline, a complete-boundary idle session expires, or resources leak.
+  - Verify: injected-short-timeout integration tests with bounded wall clock and cleanup assertions.
+  - Evidence: configured duration, progress reset, boundary behavior, telemetry, and cleanup assertion.
 
 ### Independent protocol behavior
 
