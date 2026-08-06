@@ -258,6 +258,12 @@ pub fn read_worker_operation_from(input: &mut impl Read) -> io::Result<WorkerOpe
 }
 
 pub fn write_worker_error(output: &mut impl Write, message: &str) -> io::Result<()> {
+    if message.len() > MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "structured frame exceeds limit",
+        ));
+    }
     write_worker_integer_to(output, STDERR_ERROR)?;
     write_worker_byte_string_to(output, b"Error")?;
     write_worker_integer_to(output, 0)?;
@@ -267,15 +273,10 @@ pub fn write_worker_error(output: &mut impl Write, message: &str) -> io::Result<
     write_worker_integer_to(output, 0)
 }
 
-/// A single activity or result field emitted during a build.
-///
-/// Type `Name` (0) carries a key; type `Value` (1) carries the corresponding
-/// string value. Both are stored as raw bytes so the writer can emit exactly
-/// what the protocol expects without extra allocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActivityField {
-    pub name: Vec<u8>,
-    pub value: Option<Vec<u8>>,
+pub enum ActivityField {
+    Integer(i64),
+    String(Vec<u8>),
 }
 
 /// A structured stderr frame emitted by the worker during a build operation.
@@ -285,18 +286,25 @@ pub struct ActivityField {
 /// wire format defined by the stock `nix-daemon --stdio` implementation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StderrFrame {
-    /// A continuation message on the stderr stream.
-    Next { message: Vec<u8> },
-    /// Marks the start of a new activity phase (e.g. "copying paths").
+    Next {
+        message: Vec<u8>,
+    },
     StartActivity {
+        activity_id: u64,
+        verbosity: u64,
+        activity_type: u64,
         message: Vec<u8>,
         fields: Vec<ActivityField>,
+        parent_activity_id: u64,
     },
-    /// Marks the end of an activity phase.
-    StopActivity,
-    /// Emits result data for the current operation.
-    Result { fields: Vec<ActivityField> },
-    /// Terminal frame signalling session completion.
+    StopActivity {
+        activity_id: u64,
+    },
+    Result {
+        activity_id: u64,
+        result_type: u64,
+        fields: Vec<ActivityField>,
+    },
     Last,
 }
 
@@ -317,80 +325,55 @@ pub fn write_stderr_frame(output: &mut impl Write, frame: StderrFrame) -> io::Re
             write_worker_integer_to(output, STDERR_NEXT)?;
             write_worker_byte_string_to(output, &message)?;
         }
-        StderrFrame::StartActivity { message, fields } => {
+        StderrFrame::StartActivity {
+            activity_id,
+            verbosity,
+            activity_type,
+            message,
+            fields,
+            parent_activity_id,
+        } => {
             write_worker_integer_to(output, STDERR_START_ACTIVITY)?;
-            // operation code (always 0 for activity frames)
-            write_worker_integer_to(output, 0)?;
-            // field entry count (Name=1 entry per field, Value adds another)
-            let field_entry_count: usize = fields
-                .iter()
-                .map(|f| if f.value.is_some() { 2 } else { 1 })
-                .sum();
-            write_worker_integer_to(output, field_entry_count as u64)?;
-            // version (always 3 for StartActivity)
-            write_worker_integer_to(output, 3)?;
-            // message
+            write_worker_integer_to(output, activity_id)?;
+            write_worker_integer_to(output, verbosity)?;
+            write_worker_integer_to(output, activity_type)?;
             write_worker_byte_string_to(output, &message)?;
-            // activity field entry count
-            write_worker_integer_to(output, field_entry_count as u64)?;
-            // activity fields: type 0 = Name (length only), type 1 = Value (byte string)
-            for field in &fields {
-                match &field.value {
-                    Some(value) => {
-                        // Name field (type 0) — wire format stores length, not payload
-                        write_worker_integer_to(output, 0)?;
-                        write_worker_integer_to(output, field.name.len() as u64)?;
-                        // Value field (type 1)
-                        write_worker_integer_to(output, 1)?;
-                        write_worker_byte_string_to(output, value)?;
-                    }
-                    None => {
-                        // Name-only field (type 0 with no value)
-                        write_worker_integer_to(output, 0)?;
-                        write_worker_integer_to(output, field.name.len() as u64)?;
-                    }
-                }
-            }
-            // trailing zero
-            write_worker_integer_to(output, 0)?;
+            write_activity_fields(output, &fields)?;
+            write_worker_integer_to(output, parent_activity_id)?;
         }
-        StderrFrame::StopActivity => {
+        StderrFrame::StopActivity { activity_id } => {
             write_worker_integer_to(output, STDERR_STOP_ACTIVITY)?;
-            // operation code (always 0)
-            write_worker_integer_to(output, 0)?;
+            write_worker_integer_to(output, activity_id)?;
         }
-        StderrFrame::Result { fields } => {
+        StderrFrame::Result {
+            activity_id,
+            result_type,
+            fields,
+        } => {
             write_worker_integer_to(output, STDERR_RESULT)?;
-            // field entry count (Name=1 entry per field, Value adds another)
-            let field_entry_count: usize = fields
-                .iter()
-                .map(|f| if f.value.is_some() { 2 } else { 1 })
-                .sum();
-            write_worker_integer_to(output, field_entry_count as u64)?;
-            // version (always 1 for Result)
-            write_worker_integer_to(output, 1)?;
-            // result field entry count
-            write_worker_integer_to(output, field_entry_count as u64)?;
-            // result fields: type 0 = Name (length only), type 1 = Value (byte string)
-            for field in &fields {
-                match &field.value {
-                    Some(value) => {
-                        write_worker_integer_to(output, 0)?;
-                        write_worker_integer_to(output, field.name.len() as u64)?;
-                        write_worker_integer_to(output, 1)?;
-                        write_worker_byte_string_to(output, value)?;
-                    }
-                    None => {
-                        write_worker_integer_to(output, 0)?;
-                        write_worker_integer_to(output, field.name.len() as u64)?;
-                    }
-                }
-            }
-            // trailing zero
-            write_worker_integer_to(output, 0)?;
+            write_worker_integer_to(output, activity_id)?;
+            write_worker_integer_to(output, result_type)?;
+            write_activity_fields(output, &fields)?;
         }
         StderrFrame::Last => {
             write_worker_integer_to(output, STDERR_LAST)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_activity_fields(output: &mut impl Write, fields: &[ActivityField]) -> io::Result<()> {
+    write_worker_integer_to(output, fields.len() as u64)?;
+    for field in fields {
+        match field {
+            ActivityField::Integer(value) => {
+                write_worker_integer_to(output, 0)?;
+                write_worker_integer_to(output, *value as u64)?;
+            }
+            ActivityField::String(value) => {
+                write_worker_integer_to(output, 1)?;
+                write_worker_byte_string_to(output, value)?;
+            }
         }
     }
     Ok(())
@@ -404,18 +387,16 @@ fn validate_stderr_frame(frame: &StderrFrame) -> Result<(), ProtocolError> {
             }
             return Ok(());
         }
-        StderrFrame::StartActivity { message, fields } => (Some(message), fields),
-        StderrFrame::StopActivity | StderrFrame::Last => return Ok(()),
-        StderrFrame::Result { fields } => (None, fields),
+        StderrFrame::StartActivity {
+            message, fields, ..
+        } => (Some(message), fields),
+        StderrFrame::StopActivity { .. } | StderrFrame::Last => return Ok(()),
+        StderrFrame::Result { fields, .. } => (None, fields),
     };
     if message.is_some_and(|message| message.len() > MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)
         || fields.len() > MAXIMUM_STRUCTURED_FRAME_FIELDS
         || fields.iter().any(|field| {
-            field.name.len() > MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES
-                || field
-                    .value
-                    .as_ref()
-                    .is_some_and(|value| value.len() > MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)
+            matches!(field, ActivityField::String(value) if value.len() > MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)
         })
     {
         return Err(ProtocolError::SizeLimit);
@@ -1084,10 +1065,8 @@ impl<R: WorkerInput> WorkerReader<R> {
     }
 
     pub fn read_operation(&mut self) -> io::Result<WorkerOperation> {
-        let operation = worker_operation_from_code(self.read_integer()?)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))?;
-        self.input.complete_message();
-        Ok(operation)
+        worker_operation_from_code(self.read_integer()?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))
     }
 
     pub fn complete_set_options(&mut self) -> io::Result<()> {
@@ -1370,15 +1349,15 @@ mod tests {
 
     use super::{
         ActivityField, CLIENT_WORKER_MAGIC, FixtureStderrFrame, LATEST_WORKER_VERSION,
-        MINIMUM_WORKER_VERSION, ProtocolError, ProtocolSessionLimits, SERVER_WORKER_MAGIC,
-        STDERR_LAST, STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY,
-        SessionAllocationBudget, StderrFrame, WorkerOperation, WorkerReader, WorkerVersion,
-        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
-        read_fixture_client_post_handshake, read_fixture_server_handshake_info,
-        read_fixture_set_options, read_fixture_stderr_frame, read_fixture_terminal_frame,
-        read_worker_byte_string, read_worker_integer, read_worker_operation,
-        write_server_worker_magic, write_stderr_frame, write_worker_byte_string,
-        write_worker_integer,
+        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, MINIMUM_WORKER_VERSION, ProtocolError,
+        ProtocolSessionLimits, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT, STDERR_RESULT,
+        STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY, SessionAllocationBudget, StderrFrame,
+        WorkerOperation, WorkerReader, WorkerVersion, protocol_name, read_client_worker_magic,
+        read_fixture_client_handshake, read_fixture_client_post_handshake,
+        read_fixture_server_handshake_info, read_fixture_set_options, read_fixture_stderr_frame,
+        read_fixture_terminal_frame, read_worker_byte_string, read_worker_integer,
+        read_worker_operation, write_server_worker_magic, write_stderr_frame,
+        write_worker_byte_string, write_worker_integer,
     };
 
     #[test]
@@ -2181,55 +2160,72 @@ mod tests {
     #[test]
     fn writes_stderr_stop_activity_frame() {
         let mut output = Vec::new();
-        let _ = write_stderr_frame(&mut output, StderrFrame::StopActivity);
+        let _ = write_stderr_frame(&mut output, StderrFrame::StopActivity { activity_id: 1 });
 
         assert_eq!(&output[0..8], &STDERR_STOP_ACTIVITY.to_le_bytes());
-        // StopActivity has one trailing u64 (operation code)
-        assert_eq!(u64::from_le_bytes(output[8..16].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(output[8..16].try_into().unwrap()), 1);
     }
 
     #[test]
     fn writes_stderr_start_activity_frame_with_fields() {
         let mut output = Vec::new();
         let fields = vec![
-            ActivityField {
-                name: b"copying\0".to_vec(),
-                value: None,
-            },
-            ActivityField {
-                name: Vec::new(),
-                value: Some(b"paths\0".to_vec()),
-            },
+            ActivityField::String(b"copying\0".to_vec()),
+            ActivityField::Integer(42),
         ];
         let _ = write_stderr_frame(
             &mut output,
             StderrFrame::StartActivity {
+                activity_id: 1,
+                verbosity: 2,
+                activity_type: 3,
                 message: b"starting build\0".to_vec(),
                 fields,
+                parent_activity_id: 0,
             },
         );
 
-        // STDERR_START_ACTIVITY tag
-        assert_eq!(&output[0..8], &STDERR_START_ACTIVITY.to_le_bytes());
+        let mut expected = Vec::new();
+        write_worker_integer(&mut expected, STDERR_START_ACTIVITY);
+        write_worker_integer(&mut expected, 1);
+        write_worker_integer(&mut expected, 2);
+        write_worker_integer(&mut expected, 3);
+        write_worker_byte_string(&mut expected, b"starting build\0");
+        write_worker_integer(&mut expected, 2);
+        write_worker_integer(&mut expected, 1);
+        write_worker_byte_string(&mut expected, b"copying\0");
+        write_worker_integer(&mut expected, 0);
+        write_worker_integer(&mut expected, 42);
+        write_worker_integer(&mut expected, 0);
+        assert_eq!(output, expected);
     }
 
     #[test]
     fn writes_stderr_result_frame_with_fields() {
         let mut output = Vec::new();
         let fields = vec![
-            ActivityField {
-                name: b"output\0".to_vec(),
-                value: None,
-            },
-            ActivityField {
-                name: Vec::new(),
-                value: Some(b"result\0".to_vec()),
-            },
+            ActivityField::String(b"output\0".to_vec()),
+            ActivityField::String(b"result\0".to_vec()),
         ];
-        let _ = write_stderr_frame(&mut output, StderrFrame::Result { fields });
+        let _ = write_stderr_frame(
+            &mut output,
+            StderrFrame::Result {
+                activity_id: 1,
+                result_type: 2,
+                fields,
+            },
+        );
 
-        // STDERR_RESULT tag
-        assert_eq!(&output[0..8], &STDERR_RESULT.to_le_bytes());
+        let mut expected = Vec::new();
+        write_worker_integer(&mut expected, STDERR_RESULT);
+        write_worker_integer(&mut expected, 1);
+        write_worker_integer(&mut expected, 2);
+        write_worker_integer(&mut expected, 2);
+        write_worker_integer(&mut expected, 1);
+        write_worker_byte_string(&mut expected, b"output\0");
+        write_worker_integer(&mut expected, 1);
+        write_worker_byte_string(&mut expected, b"result\0");
+        assert_eq!(output, expected);
     }
 
     #[test]
@@ -2254,6 +2250,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_oversized_worker_error_before_writing() {
+        let mut output = Vec::new();
+        let error = super::write_worker_error(
+            &mut output,
+            &"e".repeat(MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES + 1),
+        )
+        .expect_err("oversized worker error is rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn rejects_oversized_structured_stderr_frames() {
         let mut output = Vec::new();
         let message = vec![b'm'; 16 * 1024 + 1];
@@ -2268,13 +2276,17 @@ mod tests {
     #[test]
     fn rejects_oversized_structured_activity_metadata() {
         let mut output = Vec::new();
-        let fields = vec![ActivityField {
-            name: vec![b'n'; 4 * 1024 + 1],
-            value: None,
-        }];
+        let fields = vec![ActivityField::String(vec![b'n'; 4 * 1024 + 1])];
 
-        let error = write_stderr_frame(&mut output, StderrFrame::Result { fields })
-            .expect_err("oversized activity metadata is rejected");
+        let error = write_stderr_frame(
+            &mut output,
+            StderrFrame::Result {
+                activity_id: 1,
+                result_type: 2,
+                fields,
+            },
+        )
+        .expect_err("oversized activity metadata is rejected");
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(output.is_empty());
@@ -2294,7 +2306,7 @@ mod tests {
     #[test]
     fn round_trip_stderr_stop_activity_frame() {
         let mut encoded = Vec::new();
-        let _ = write_stderr_frame(&mut encoded, StderrFrame::StopActivity);
+        let _ = write_stderr_frame(&mut encoded, StderrFrame::StopActivity { activity_id: 1 });
 
         let mut decoded = encoded.as_slice();
         let frame = read_fixture_stderr_frame(&mut decoded).unwrap();
@@ -2306,20 +2318,18 @@ mod tests {
     fn round_trip_stderr_start_activity_frame() {
         let mut encoded = Vec::new();
         let fields = vec![
-            ActivityField {
-                name: b"copying\0".to_vec(),
-                value: None,
-            },
-            ActivityField {
-                name: Vec::new(),
-                value: Some(b"paths\0".to_vec()),
-            },
+            ActivityField::String(b"copying\0".to_vec()),
+            ActivityField::Integer(42),
         ];
         let _ = write_stderr_frame(
             &mut encoded,
             StderrFrame::StartActivity {
+                activity_id: 1,
+                verbosity: 2,
+                activity_type: 3,
                 message: b"build start\0".to_vec(),
                 fields,
+                parent_activity_id: 0,
             },
         );
 
@@ -2328,7 +2338,7 @@ mod tests {
 
         match frame {
             FixtureStderrFrame::StartActivity { field_count, .. } => {
-                assert_eq!(field_count, 3);
+                assert_eq!(field_count, 2);
             }
             other => panic!("expected StartActivity, got {:?}", other),
         }
@@ -2338,23 +2348,24 @@ mod tests {
     fn round_trip_stderr_result_frame() {
         let mut encoded = Vec::new();
         let fields = vec![
-            ActivityField {
-                name: b"output\0".to_vec(),
-                value: None,
-            },
-            ActivityField {
-                name: Vec::new(),
-                value: Some(b"success\0".to_vec()),
-            },
+            ActivityField::String(b"output\0".to_vec()),
+            ActivityField::String(b"success\0".to_vec()),
         ];
-        let _ = write_stderr_frame(&mut encoded, StderrFrame::Result { fields });
+        let _ = write_stderr_frame(
+            &mut encoded,
+            StderrFrame::Result {
+                activity_id: 1,
+                result_type: 2,
+                fields,
+            },
+        );
 
         let mut decoded = encoded.as_slice();
         let frame = read_fixture_stderr_frame(&mut decoded).unwrap();
 
         match frame {
             FixtureStderrFrame::Result { field_count, .. } => {
-                assert_eq!(field_count, 3);
+                assert_eq!(field_count, 2);
             }
             other => panic!("expected Result, got {:?}", other),
         }

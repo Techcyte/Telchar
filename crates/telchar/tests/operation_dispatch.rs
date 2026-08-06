@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
@@ -60,6 +61,87 @@ fn live_set_options_request_returns_terminal_frame() {
         stderr.contains("worker.set_options.completed"),
         "missing local SetOptions telemetry: {stderr}"
     );
+}
+
+#[test]
+fn partial_set_options_times_out_after_operation_and_cleans_up() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", "40")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Telchar starts");
+    let mut input = child.stdin.take().expect("server input");
+    write_integer(&mut input, CLIENT_WORKER_MAGIC);
+    write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut input, 0);
+    input.flush().expect("handshake flushes");
+    let mut output = child.stdout.take().expect("server output");
+    assert_eq!(read_integer(&mut output), SERVER_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut output), LATEST_WORKER_VERSION.to_wire());
+    assert_eq!(read_integer(&mut output), 0);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    input.flush().expect("post-handshake flushes");
+    assert_eq!(read_string(&mut output), "telchar");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    write_integer(&mut input, 19);
+    input.flush().expect("operation flushes");
+    let started = std::time::Instant::now();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("server stderr")
+        .read_to_string(&mut stderr)
+        .expect("server stderr reads");
+    let elapsed = started.elapsed();
+    let status = child.wait().expect("Telchar exits");
+    assert!(elapsed < Duration::from_secs(1));
+    assert!(status.success());
+    assert!(stderr.contains("worker.session.timed_out"), "{stderr}");
+}
+
+#[test]
+fn partial_set_options_progress_resets_deadline() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", "40")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Telchar starts");
+    let mut input = child.stdin.take().expect("server input");
+    write_integer(&mut input, CLIENT_WORKER_MAGIC);
+    write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut input, 0);
+    input.flush().expect("handshake flushes");
+    let mut output = child.stdout.take().expect("server output");
+    assert_eq!(read_integer(&mut output), SERVER_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut output), LATEST_WORKER_VERSION.to_wire());
+    assert_eq!(read_integer(&mut output), 0);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    input.flush().expect("post-handshake flushes");
+    assert_eq!(read_string(&mut output), "telchar");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    write_integer(&mut input, 19);
+    write_integer(&mut input, 0);
+    input.flush().expect("partial request progresses");
+    std::thread::sleep(Duration::from_millis(25));
+    for _ in 0..11 {
+        write_integer(&mut input, 0);
+    }
+    write_integer(&mut input, 0);
+    input.flush().expect("request completes");
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
 }
 
 #[test]

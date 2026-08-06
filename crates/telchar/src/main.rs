@@ -2,6 +2,7 @@ mod stdio_transport;
 mod telemetry;
 
 use std::io::{self, Write};
+use std::time::Duration;
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("serve-stdio") {
@@ -38,7 +39,7 @@ fn serve_stdio() {
         .expect("telemetry configuration must initialize before application work");
     let input = std::fs::File::open("/dev/stdin").expect("standard input is available");
     let stdout = io::stdout();
-    let limits = nix_worker_protocol::ProtocolSessionLimits::DEFAULT;
+    let limits = protocol_session_limits();
     let input = stdio_transport::StdioInput::new(input, limits.incomplete_message_idle_timeout);
     let mut output = stdout.lock();
     let mut reader = nix_worker_protocol::WorkerReader::new(input, limits);
@@ -102,6 +103,19 @@ fn serve_stdio() {
     }
 
     telemetry.shutdown();
+}
+
+fn protocol_session_limits() -> nix_worker_protocol::ProtocolSessionLimits {
+    let default = nix_worker_protocol::ProtocolSessionLimits::DEFAULT;
+    let timeout = std::env::var("TELCHAR_WORKER_IDLE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(default.incomplete_message_idle_timeout);
+    nix_worker_protocol::ProtocolSessionLimits::new(
+        default.maximum_retained_metadata_bytes,
+        timeout,
+    )
 }
 
 fn reject_worker_operation(output: &mut impl Write, rejection: &str, message: &str) {
