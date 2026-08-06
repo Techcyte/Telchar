@@ -526,7 +526,7 @@ Evidence: paths and output facts to record
   - Verify: ADR checklist.
   - Evidence: data-flow diagram and mitigations.
 
-- [ ] T047 Prototype public-key identity handoff
+- [x] T047 Prototype public-key identity handoff
   - Depends on: T046
   - Outcome: forced command receives an authenticated key identity through OpenSSH-controlled configuration or records the approach as infeasible.
   - Red: spoofing fixture can replace identity metadata.
