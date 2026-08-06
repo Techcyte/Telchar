@@ -79,8 +79,14 @@ fn run_frontend() -> io::Result<()> {
 
     let mut request = daemon.try_clone()?;
     std::thread::spawn(move || {
-        if telchar::ipc::copy_bounded(io::stdin().lock(), &mut request).is_ok() {
-            let _ = request.shutdown(std::net::Shutdown::Write);
+        let result = telchar::ipc::copy_bounded(io::stdin().lock(), &mut request);
+        let _ = request.shutdown(std::net::Shutdown::Write);
+        if let Err(error) = result {
+            tracing::warn!(
+                event = "ipc.frontend.request_relay_failed",
+                reason = error_reason(&error),
+                "frontend request relay failed"
+            );
         }
     });
     telchar::ipc::copy_bounded(daemon, io::stdout().lock())?;
