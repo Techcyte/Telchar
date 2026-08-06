@@ -90,6 +90,41 @@ fn partial_set_options_times_out_after_operation_and_cleans_up() {
 }
 
 #[test]
+fn complete_message_boundary_remains_idle_until_next_input_starts() {
+    let mut fixture = FrontendFixture::spawn(Some(40));
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    write_integer(&mut input, CLIENT_WORKER_MAGIC);
+    write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut input, 0);
+    input.flush().expect("handshake flushes");
+    let mut output = child.stdout.take().expect("server output");
+    assert_eq!(read_integer(&mut output), SERVER_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut output), LATEST_WORKER_VERSION.to_wire());
+    assert_eq!(read_integer(&mut output), 0);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    input.flush().expect("post-handshake flushes");
+    assert_eq!(read_string(&mut output), "telchar");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+
+    thread::sleep(Duration::from_millis(80));
+    assert!(
+        child.try_wait().expect("frontend status").is_none(),
+        "complete-boundary idle session timed out"
+    );
+
+    input
+        .write_all(&19_u64.to_le_bytes()[..1])
+        .expect("partial operation starts");
+    input.flush().expect("partial operation flushes");
+    assert!(child.wait().expect("frontend exits").success());
+    let stderr = fixture.finish();
+    assert!(stderr.contains("worker.session.timed_out"), "{stderr}");
+}
+
+#[test]
 fn partial_set_options_progress_resets_deadline() {
     let mut fixture = FrontendFixture::spawn(Some(40));
     let child = &mut fixture.frontend;
