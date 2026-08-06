@@ -18,12 +18,12 @@ allowlist, traces = map(Path, sys.argv[1:])
 text = allowlist.read_text()
 required_text = [
     '## Required operations',
-    '`SetOptions` (`19`)',
-    '`IsValidPath` (`1`)',
-    '`AddToStore` (`7`)',
-    '`QueryMissing` (`40`)',
-    '`QueryPathInfo` (`26`)',
-    '`BuildPathsWithResults` (`46`)',
+    '| `SetOptions` | `19` |',
+    '| `IsValidPath` | `1` |',
+    '| `AddToStore` | `7` |',
+    '| `QueryMissing` | `40` |',
+    '| `QueryPathInfo` | `26` |',
+    '| `BuildPathsWithResults` | `46` |',
     '## Optional operations',
     '`AddTempRoot` (`11`)',
     '## Recognized and rejected operations',
