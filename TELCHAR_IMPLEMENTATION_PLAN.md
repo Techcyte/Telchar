@@ -586,7 +586,7 @@ Evidence: paths and output facts to record
   - Outcome: `serve-stdio` normalizes the OpenSSH-controlled public-key fingerprint, sends one bounded requester envelope, and forwards one worker stream to a separate daemon process without owning scheduler, database, or store state.
   - Red: separate-process acceptance initially failed because the daemon command did not exist and `serve-stdio` still handled worker protocol directly.
   - Verify: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` exits `0` (`6 passed`), and flake-pinned Nix completes `ssh-ng://` handshake/error tests through the separate daemon.
-  - Evidence: distinct frontend/daemon PIDs; peer authorization before envelope decode; one authenticated connection binds envelope and worker bytes; malformed, oversized, stalled, and capacity-excess connections fail closed; valid sessions remain available concurrently.
+  - Evidence: distinct frontend/daemon PIDs; peer authorization before envelope decode; one authenticated connection binds envelope and worker bytes; malformed, oversized, frontend-error, stalled, and capacity-excess connections fail closed; rejected peers do not terminate persistent listener availability; valid sessions remain available concurrently.
   - Changed paths: `crates/telchar/src/main.rs`, `crates/telchar/src/ipc.rs`, `crates/telchar/src/session.rs`, `crates/telchar/tests/ipc_frontend.rs`, `crates/telchar/tests/operation_dispatch.rs`, `crates/telchar/tests/stdio_handshake.rs`, `docs/adr/local-ipc-frontend-attachment.md`, `docs/adr/local-ipc-envelope.md`, `docs/adr/openssh-process-ipc-threat-model.md`.
   - `jj` changesets: `a80a8dfa`, `5708d98c`, `35ca70ff`, `7874c9f9`, `563a99ea`.
 
@@ -595,7 +595,7 @@ Evidence: paths and output facts to record
   - Outcome: slow daemon or client cannot cause unbounded frontend memory or unbounded accepted-session threads.
   - Red: the initial relay helper did not cover the production frontend lifecycle, and the first persistent daemon admitted an unbounded thread per accepted connection.
   - Verify: IPC buffer, separate-process lifecycle, stalled-envelope concurrency, and bounded-capacity tests pass with warnings-denied Clippy.
-  - Evidence: one fixed 16 KiB stack buffer per relay direction; kernel/socket backpressure; request EOF/error half-closes daemon input; response EOF terminates frontend; 16 KiB observed maximum; 64-session default bound with prompt excess rejection; 0700 runtime directory, 0600 socket, non-socket refusal, and shutdown cleanup.
+  - Evidence: one fixed 16 KiB stack buffer per relay direction; kernel/socket backpressure; request EOF/error half-closes daemon input; response EOF terminates frontend; 16 KiB observed maximum; 64-session default bound with prompt excess rejection; daemon-created 0700 runtime directory, refusal of insecure pre-existing directories without mutating them, 0600 socket, non-socket refusal, and shutdown cleanup.
   - Changed paths: `crates/telchar/src/main.rs`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_buffer.rs`, `crates/telchar/tests/ipc_frontend.rs`, `docs/adr/local-ipc-buffering.md`.
   - `jj` changesets: `088c7f08`, `2a99cbf9`, `7874c9f9`, `95760074`, `30a97c71`, `f0b37463`, `563a99ea`.
 
