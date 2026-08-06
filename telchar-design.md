@@ -79,7 +79,7 @@ Stock remote-building traffic is not guaranteed to use only `BuildDerivation`. D
 
 Telchar schedules only work submitted by client Nix daemons. It cannot observe derivations retained in a client's ready queue. The builder entry's `maxJobs` is ingress credit controlling how much work a client may submit concurrently; it is not Telchar backend capacity.
 
-Each deployment must publish a deliberate capability envelope of systems and supported features. Client builder configuration must match that envelope. Unsupported capability combinations fail promptly rather than waiting forever. Queue and autoscaling metrics represent admitted, submitted demand, not all work potentially ready on client machines.
+Each initial deployment publishes exactly one configured Nix system and one bounded supported-feature set. Client builder configuration must match that envelope. Unsupported systems or feature combinations fail promptly rather than waiting forever. Multi-architecture operation uses independent daemon, PostgreSQL, gateway-store, and ingress deployments configured as separate Nix builders; initial deployments do not share a cross-system control plane or store. Queue and autoscaling metrics represent admitted, submitted demand, not all work potentially ready on client machines.
 
 ### Store ownership and retention
 
@@ -167,10 +167,11 @@ Telchar must work with unmodified, generally available Nix clients through the s
 A client should be able to use Telchar through normal configuration such as:
 
 ```conf
-builders = ssh-ng://nix-builder@telchar.example.org x86_64-linux,aarch64-linux
+builders = ssh-ng://nix-builder@telchar-x86.example.org x86_64-linux
+           ssh-ng://nix-builder@telchar-arm.example.org aarch64-linux
 ```
 
-The exact URI and supported systems are deployment-specific. Telchar must not require an experimental client-side protocol, patched Nix package, wrapper command, or custom evaluator.
+Each URI identifies an independent one-system Telchar deployment. The exact URI, system, and supported features are deployment-specific. Telchar must not require an experimental client-side protocol, patched Nix package, wrapper command, or custom evaluator.
 
 ### Central scheduling
 

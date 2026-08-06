@@ -610,49 +610,49 @@ Evidence: paths and output facts to record
 
 ### SSH restrictions
 
-- [ ] T054 Generate isolated OpenSSH fixture
+- [x] T054 Generate isolated OpenSSH fixture
   - Depends on: T048A, T052
   - Outcome: NixOS or isolated sshd fixture generates host/client keys and forced-command configuration reproducibly.
   - Red: fixture boot/connect test fails.
   - Verify: fixture start/connect/cleanup command.
   - Evidence: ports, generated paths, cleanup.
 
-- [ ] T055 Complete worker handshake through `ssh-ng://`
+- [x] T055 Complete worker handshake through `ssh-ng://`
   - Depends on: T054
   - Outcome: pinned stock Nix completes supported handshake through real OpenSSH.
   - Red: integration test fails at transport or protocol boundary.
   - Verify: `ssh-ng://` handshake test.
   - Evidence: client URI, negotiated protocol, request identity.
 
-- [ ] T056 Reject arbitrary SSH command
+- [x] T056 Reject arbitrary SSH command
   - Depends on: T054
   - Outcome: requested shell command is replaced by Telchar forced command.
   - Red: arbitrary command executes.
   - Verify: negative SSH command test.
   - Evidence: asserted denial.
 
-- [ ] T057 Reject SSH PTY
+- [x] T057 Reject SSH PTY
   - Depends on: T054
   - Outcome: PTY allocation fails.
   - Red: PTY succeeds.
   - Verify: negative PTY test.
   - Evidence: asserted OpenSSH result.
 
-- [ ] T058 Reject SSH TCP forwarding
+- [x] T058 Reject SSH TCP forwarding
   - Depends on: T054
   - Outcome: local, remote, and dynamic forwarding are disabled.
   - Red: forwarding listener or connection succeeds.
   - Verify: forwarding negative tests.
   - Evidence: all denied modes.
 
-- [ ] T059 Reject SSH agent and X11 forwarding
+- [x] T059 Reject SSH agent and X11 forwarding
   - Depends on: T054
   - Outcome: agent and X11 forwarding are unavailable.
   - Red: forwarded socket/display appears.
   - Verify: forwarding environment negative tests.
   - Evidence: absence assertions.
 
-- [ ] T060 Ignore client-supplied identity environment
+- [x] T060 Ignore client-supplied identity environment
   - Depends on: T049, T054
   - Outcome: spoofed environment cannot alter normalized requester; the accepted public-key path carries credential/audit/quota metadata through IPC, while source-address and any future certificate metadata require explicit authenticated schema coverage before use.
   - Red: spoof fixture changes requester.
@@ -661,7 +661,7 @@ Evidence: paths and output facts to record
 
 ### Gate 2 acceptance
 
-- [ ] T061 Verify Gate 2 restricted ingress
+- [x] T061 Verify Gate 2 restricted ingress
   - Depends on: T048A, T055, T056, T057, T058, T059, T060
   - Outcome: shared multi-machine `nixosTest` runs real stock Nix through real OpenSSH, the production forced-command frontend, authenticated local IPC, and the separate daemon; identity is trustworthy and prohibited SSH features fail.
   - Red: gate script reports missing negative test.
@@ -818,8 +818,15 @@ Evidence: paths and output facts to record
 
 ### Build operation and local backend
 
+- [ ] T075A Add one-system deployment configuration
+  - Depends on: T061
+  - Outcome: daemon configuration requires exactly one Nix system and bounded supported-feature set; startup rejects an empty or multi-system envelope, and admission rejects mismatched build requests before store mutation.
+  - Red: configuration or admission test accepts multiple systems or a mismatched request.
+  - Verify: configuration parsing and admission-boundary tests.
+  - Evidence: configured system, feature set, and rejection result.
+
 - [ ] T076 Parse supported derivation build operation
-  - Depends on: T016, T065
+  - Depends on: T016, T065, T075A
   - Outcome: gateway normalizes one captured build operation into `BuildRequest` without backend objects.
   - Red: captured fixture fails to parse.
   - Verify: operation fixture test.
@@ -902,15 +909,22 @@ Evidence: paths and output facts to record
   - Verify: outcome/docs consistency test.
   - Evidence: assertion location.
 
-- [ ] T086A Expand plan for every required worker operation
-  - Depends on: T016, T064, T065, T066, T068, T076
-  - Outcome: for every operation observed as required by the test-only classic fixture inventory, add or identify a focused production decoder, dispatcher, store behavior, response-framing task, and real-client test before end-to-end Telchar success. Observer relay evidence cannot satisfy production coverage.
-  - Red: operation coverage checker finds required operation without complete implementation/test mapping.
-  - Verify: operation coverage script against allowlist and plan manifest.
-  - Evidence: zero uncovered required operations and added task IDs.
+- [ ] T086A Map classic-build operations to focused implementation tasks
+  - Depends on: T016
+  - Outcome: every operation required by the typed classic-build fixture inventory maps to one narrow production packet covering decoder, dispatcher, store behavior, response framing, and focused compatibility tests. Observer relay evidence cannot satisfy production coverage.
+  - Red: operation coverage checker finds a required operation without a bounded implementation packet.
+  - Verify: operation coverage script against allowlist and packet manifest.
+  - Evidence: zero uncovered required operations and packet IDs.
+
+- [ ] T086B Add stock-Nix build walking-skeleton test
+  - Depends on: T061, T086A
+  - Outcome: shared `nixosTest` contains a deliberately failing acceptance path from a stock client that cannot build locally, through restricted OpenSSH and production IPC, to one local gateway-store execution and client-visible output. This test defines the vertical contract before operation implementations begin.
+  - Red: test fails at the first unsupported production worker operation and records its typed operation code; local fallback is independently proven unavailable.
+  - Verify: focused flake NixOS walking-skeleton command with expected failure assertion.
+  - Evidence: failing operation, production process topology, and negative-local proof.
 
 - [ ] T087 Return successful build result over stdio
-  - Depends on: T083, T084, T085, T085A, T086A
+  - Depends on: T083, T084, T085, T085A, T086A, T086B
   - Outcome: pinned Nix client receives successful result and can copy expected output.
   - Red: real-client vertical test fails after build.
   - Verify: direct-stdio end-to-end build.
@@ -968,7 +982,7 @@ Evidence: paths and output facts to record
 ### Gate 3 acceptance
 
 - [ ] T095 Verify Gate 3 local correctness vertical slice
-  - Depends on: T069, T069A, T069B, T070, T070D, T074, T084, T085, T085A, T086A, T089, T091, T092, T093, T094
+  - Depends on: T069, T069A, T069B, T070, T070D, T074, T075A, T084, T085, T085A, T086A, T086B, T089, T091, T092, T093, T094
   - Outcome: stock client that cannot build locally receives verified output through Telchar; bounds, GC, invalid output, and disconnect policies pass.
   - Red: gate script reports missing evidence.
   - Verify: full protocol/store/OpenSSH/local-backend VM suite.
@@ -2332,9 +2346,23 @@ Evidence: paths and output facts to record
   - Verify: `nix build` package target twice and compare declared reproducibility evidence.
   - Evidence: store paths/hashes.
 
+- [ ] T274A Build flake-exported OCI images
+  - Depends on: T274
+  - Outcome: flake exports reproducible daemon and optional ingress-shim OCI images using the same `telchar daemon` and `telchar serve-stdio` commands as native deployment; no Docker-specific application mode is added.
+  - Red: image inspection finds undeclared mutable content, a divergent entrypoint, or bundled daemon/sshd supervision in one application process.
+  - Verify: build images twice, inspect manifests/files, and run command smoke tests.
+  - Evidence: image digests, entrypoints, and contained binaries.
+
+- [ ] T274B Verify container socket trust boundaries
+  - Depends on: T274A
+  - Outcome: integration fixture composes a daemon container with either a host/sidecar Nix daemon endpoint and an optional OpenSSH ingress container sharing only the authenticated Telchar Unix socket; raw socket bridges and client access to the Nix daemon socket are absent.
+  - Red: client or ingress can reach the Nix daemon socket, bypass requester normalization, or require direct `/nix/store` access without explicit configuration.
+  - Verify: container topology integration and hostile reachability tests.
+  - Evidence: mounts, socket ownership/modes, denied paths, and successful worker handshake.
+
 - [ ] T275 Add NixOS module for single-active deployment
   - Depends on: T101D, T251, T255, T274
-  - Outcome: module configures daemon, PostgreSQL connection/credentials, singleton-lock behavior, local IPC, service user, state directory, OTLP endpoint/security/credential references, local telemetry formatting, resource attributes, and OpenSSH forced command without broad shell access. PostgreSQL and the OTLP collector may be local or external according to deployment configuration.
+  - Outcome: module configures daemon, one Nix system and feature envelope, PostgreSQL connection/credentials, singleton-lock behavior, local IPC, service user, state directory, OTLP endpoint/security/credential references, local telemetry formatting, resource attributes, and OpenSSH forced command without broad shell access. PostgreSQL and the OTLP collector may be local or external according to deployment configuration.
   - Red: NixOS VM module test fails.
   - Verify: module evaluation and VM test.
   - Evidence: service and sshd assertions.
@@ -2347,8 +2375,8 @@ Evidence: paths and output facts to record
   - Evidence: PostgreSQL versions, before/after schema, and preserved records.
 
 - [ ] T277 Document operator deployment
-  - Depends on: T275
-  - Outcome: docs cover trust assumptions, client builder envelope/maxJobs, host keys, identity mapping, stores/GC, quotas, backends, secrets, metrics, backup, upgrade, drain, and recovery.
+  - Depends on: T274B, T275
+  - Outcome: docs cover trust assumptions, one-system deployment composition, client builder envelope/maxJobs, host keys, identity mapping, native and OCI layouts, operator-owned OpenSSH, Nix daemon socket privilege, stores/GC, quotas, backends, secrets, metrics, backup, upgrade, drain, and recovery.
   - Red: operator checklist finds missing required topic.
   - Verify: documentation command/checklist and tested examples.
   - Evidence: linked sections and command results.
@@ -2368,7 +2396,7 @@ Evidence: paths and output facts to record
   - Evidence: restored state and reconciled work.
 
 - [ ] T280 Add release verification script
-  - Depends on: T101D, T265, T266, T267, T270, T271, T272, T273, T274, T275, T276
+  - Depends on: T101D, T265, T266, T267, T270, T271, T272, T273, T274, T274A, T274B, T275, T276
   - Outcome: one external-monitor command runs all mandatory release checks or clearly orchestrates documented privileged suites.
   - Red: script reports missing suite/artifact.
   - Verify: release verification command from fresh shell.

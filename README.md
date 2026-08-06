@@ -57,6 +57,12 @@ The initial topology is single-active. Before activating admission, scheduling, 
 
 The advisory lock prevents accidental split brain. It is not leader election or automatic high availability. Active/passive operation would additionally require leadership epochs, protocol-session routing, dispatch fencing, gateway-store availability, and failure-injection proof. Active/active scheduling is outside the initial architecture.
 
+Each initial deployment serves exactly one configured Nix system and bounded feature set. Operators provide separate daemon, PostgreSQL, gateway-store, and ingress deployments for other systems and configure each as a separate Nix builder. Unsupported systems and features fail before admission.
+
+Telchar has no container-specific application mode. Native and container deployments run the same `telchar daemon` and `telchar serve-stdio` commands. OpenSSH remains operator-owned: it may run on the host or in a small ingress container containing `sshd` and the Telchar frontend, sharing only the authenticated daemon Unix socket with the daemon container. A generic raw socket bridge is not supported because it bypasses requester normalization.
+
+The daemon's Nix store endpoint may be host-provided, sidecar-provided, or native to the deployment. Sharing a Nix daemon socket grants privileged store authority; operators own its permissions, store ownership, placement, and trust boundary. OCI packaging does not imply Docker-specific behavior or direct `/nix/store` access.
+
 ## Build flow
 
 A submitted build follows this path:
