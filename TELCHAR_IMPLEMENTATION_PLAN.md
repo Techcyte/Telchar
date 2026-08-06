@@ -319,7 +319,7 @@ Evidence: paths and output facts to record
   - Verify: repeat each diagnostic fixture and compare bounded operation/frame classifications.
   - Evidence: candidate flow list, repeatability result, primary Nix source locations to investigate, and explicit non-acceptance label.
 
-- [ ] T036F Extend typed inventory for classic-build fixtures
+- [x] T036F Extend typed inventory for classic-build fixtures
   - Depends on: T036E
   - Outcome: versioned manifest maps every candidate fixture flow to exact pinned-Nix serializers, version conditions, bounded protocol types, approved metadata, and fail-closed behavior.
   - Red: inventory validator finds a candidate flow without an exact typed boundary or finite bound.

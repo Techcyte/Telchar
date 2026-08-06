@@ -43,6 +43,29 @@ for source in \
 	require "$source"
 done
 
+for classic_boundary in \
+	'Classic-build fixture inventory' \
+	'crates/telchar/tests/classic_build_envelope.rs' \
+	'P003C fixture acceptance limits' \
+	'not generic Nix protocol limits' \
+	'`AddTempRoot` (`11`)' \
+	'`IsValidPath` (`1`)' \
+	'`AddToStore` (`7`)' \
+	'`QueryMissing` (`40`)' \
+	'`QueryPathInfo` (`26`)' \
+	'`BuildPathsWithResults` (`46`)' \
+	'`FramedSink` / `FramedSource`' \
+	'`STDERR_NEXT`' \
+	'`STDERR_START_ACTIVITY`' \
+	'`STDERR_STOP_ACTIVITY`' \
+	'`STDERR_RESULT`' \
+	'`STDERR_READ`, `STDERR_WRITE`, `STDERR_ERROR`' \
+	'future fixture exceeding one requires' \
+	'ValidPathInfo::maxSigs' \
+	'upstream `ValidPathInfo::maxSigs` is unlimited'; do
+	require "$classic_boundary"
+done
+
 for unsupported in \
 	'Worker operation other than `SetOptions`' \
 	'Callback (`STDERR_READ` or `STDERR_WRITE`)' \

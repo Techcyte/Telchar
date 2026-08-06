@@ -27,6 +27,46 @@ All integer fields are 64-bit little-endian words. Byte strings are an integer b
 
 `SetOptions` is the only fixture-reachable operation. Its exact request boundary begins at its typed operation word; the next message cannot begin until all twelve fixed words, override count, and each declared name/value pair have been consumed. The observer must retain only operation code, negotiated version, frame kind, declared string lengths, override count, and terminal frame kind. It must retain no feature, daemon-version, override-name, or override-value body.
 
+## Classic-build fixture inventory
+
+`crates/telchar/tests/classic_build_envelope.rs` is a test-only, disposable
+observer for the trusted and untrusted fixture-owned daemons in
+`crates/telchar/tests/nix_fixture.rs`. It is discovery support, not production
+relay code and not compatibility acceptance evidence. It reads a typed boundary
+only after the serializer below identifies it, forwards bodies through a fixed
+4096-byte buffer, verifies worker-string zero padding, and records only the
+maximum declared length or count. It never retains a NAR, derivation, path,
+option, activity message, signature, error text, or other body.
+
+All rows below apply only to the pinned 2.34.7 fixture, negotiated at `1.38`.
+The finite values are **P003C fixture acceptance limits**, produced by two
+successful runs in each trust mode. They are observations of this exact
+fixture—not generic Nix protocol limits, service limits, or support for
+arbitrary builds. A future fixture exceeding one requires an intentional
+inventory, golden-test, and fixture-acceptance-limit update before admission.
+
+| Direction | Boundary and exact shape | Pinned version gate and primary serializer | P003C fixture acceptance limit | Retained metadata / fail-closed behavior |
+| --- | --- | --- | --- | --- |
+| client → daemon | `SetOptions` (`19`), twelve words, override count, name/value padded strings | `RemoteStore::setOptions`; `daemon.cc::performOp(SetOptions)` | 2 pairs; name ≤17, value ≤85 | operation and declared maxima only; another operation/order rejects |
+| client → daemon | `AddTempRoot` (`11`) and `IsValidPath` (`1`), each one `StorePath` string | `BasicClientConnection::addTempRoot`, `RemoteStore::isValidPathUncached`; `CommonProto::Serialise<StorePath>`; `daemon.cc::performOp` | request path ≤153 | declared maximum only; malformed padding rejects |
+| daemon → client | terminal/activity stream before every reply: `STDERR_NEXT` string, `STDERR_START_ACTIVITY` (three words, string, counted typed fields, parent), `STDERR_STOP_ACTIVITY`, `STDERR_RESULT`, then `STDERR_LAST` | `daemon.cc::TunnelLogger`; `worker-protocol-connection.cc::processStderrReturn`; activity tags from `worker-protocol.hh` | activity field count ≤4; message ≤164; field string ≤153; `STDERR_NEXT` ≤145 | frame tags, declared maxima only; `STDERR_READ`, `STDERR_WRITE`, `STDERR_ERROR`, unknown field/tag reject |
+| daemon → client | `AddTempRoot` / `IsValidPath` reply: `STDERR_LAST`, Boolean word | `daemon.cc::performOp` | Boolean only `0` or `1` | no body; any other value rejects |
+| client → daemon | `AddToStore` (`7`): name string, content-address string, `StorePathSet`, repair Boolean, then `FramedSink` chunks and zero terminator | `RemoteStore::addCAToStore`, `daemon.cc::performOp(AddToStore)`; `FramedSink` / `FramedSource` in `src/libutil/include/nix/util/serialise.hh` | gate `>=1.25`; name ≤27, content address ≤11, references 0, chunk ≤502, total upload ≤502 | declared maxima and total only; chunk body streamed, never retained; terminator required |
+| daemon → client | `AddToStore`: `STDERR_LAST`, then `ValidPathInfo`: path and `UnkeyedValidPathInfo` | `WorkerProto::Serialise<ValidPathInfo>` / `UnkeyedValidPathInfo`; `daemon.cc::performOp(AddToStore)` | path ≤153, optional deriver 0, SHA-256 and CA strings ≤64, references 0, signatures 0 | upstream `ValidPathInfo::maxSigs` is unlimited; P003C admits only observed zero |
+| client → daemon | `QueryMissing` (`40`): count then `DerivedPath` strings | `RemoteStore::queryMissing`; `WorkerProto::Serialise<DerivedPath>`; `LengthPrefixedProtoHelper` | gate `>=1.19`; target count 1, string ≤157 | declared maxima only; a non-legacy path is still a string boundary here |
+| daemon → client | `QueryMissing`: `STDERR_LAST`, three counted `StorePathSet`s, download and NAR-size words | `RemoteStore::queryMissing`; `daemon.cc::performOp(QueryMissing)`; `LengthPrefixedProtoHelper` | will-build count 1/path ≤153; substitute and unknown counts 0 | counts/lengths only; malformed collection rejects |
+| client → daemon | `QueryPathInfo` (`26`): `StorePath` string | `BasicClientConnection::queryPathInfo`; `daemon.cc::performOp(QueryPathInfo)` | path ≤153 | declared maximum only |
+| daemon → client | `QueryPathInfo`: `STDERR_LAST`, validity Boolean, then `UnkeyedValidPathInfo` iff valid | same `queryPathInfo` and `UnkeyedValidPathInfo` serializers | valid in this fixture; same path-info bounds above | invalid Boolean or missing typed fields rejects |
+| client → daemon | `BuildPathsWithResults` (`46`): counted `DerivedPath` strings, `BuildMode` word | `RemoteStore::buildPathsWithResults`; `WorkerProto::Serialise<DerivedPath>` / `<BuildMode>` | gate `>=1.34`; count 1; string ≤157; mode `0..2` | no path body retained; other mode rejects |
+| daemon → client | `BuildPathsWithResults`: `STDERR_LAST`, counted `KeyedBuildResult`: legacy derived-path string, status word, error string, `>=1.29` timing words, `>=1.37` optional CPU durations, `>=1.28` counted `DrvOutputs` key/realisation strings | `WorkerProto::Serialise<KeyedBuildResult>` / `<BuildResult>`; `common-protocol.cc`; `LengthPrefixedProtoHelper` | results 1; result path ≤157; status `0..14`; error 0; outputs 1; output id ≤75; realisation ≤196 | declared maxima only; invalid status/duration tag or collection shape rejects |
+
+The common worker primitive (eight-byte little-endian words; padded strings)
+is defined in `src/libutil/include/nix/util/serialise.hh` and
+`src/libutil/serialise.cc`. `src/libstore/common-protocol.cc` supplies the
+string, `StorePath`, optional-path, and signature serializers; generic vector
+and set counts come from
+`src/libstore/include/nix/store/length-prefixed-protocol-helper.hh`.
+
 ## Explicitly unsupported fixture flows
 
 | Flow class | Fixture reachability | Observer behavior |
