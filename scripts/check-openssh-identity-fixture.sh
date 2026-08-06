@@ -62,7 +62,7 @@ for _ in $(seq 1 100); do
 done
 [ -s "$root/sshd.pid" ] || { cat "$root/sshd.log" >&2; exit 1; }
 ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=$root/known_hosts -o IdentitiesOnly=yes -o SendEnv=TELCHAR_CLIENT_SUPPLIED_KEY -p $port -i $root/client-key"
-TELCHAR_CLIENT_SUPPLIED_KEY=spoofed "$ssh_bin" -vv $ssh_args "$(id -un)@127.0.0.1" ignored || {
+TELCHAR_CLIENT_SUPPLIED_KEY=spoofed "$ssh_bin" -q $ssh_args "$(id -un)@127.0.0.1" ignored || {
   cat "$root/sshd.log" >&2
   exit 1
 }
