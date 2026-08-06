@@ -420,7 +420,7 @@ Evidence: paths and output facts to record
 
 - [x] T021C Add baseline client-gateway integration smoke test
   - Depends on: T021B
-  - Outcome: authoritative `nixosTest` boots separate client and gateway machines, completes the packaged Telchar systemd oneshot service, asserts virtual-network topology independently, and captures correlated OTLP startup telemetry. Real client-to-Telchar protocol reachability remains assigned to Gate 2 OpenSSH integration tasks.
+  - Outcome: baseline `nixosTest` boots separate client and gateway machines, completes the packaged Telchar smoke oneshot, asserts virtual-network topology, and records OTLP startup output. It proves harness packaging/topology only: it does not start the production daemon command, use local IPC or OpenSSH, complete a worker handshake, or establish cross-signal correlation.
   - Red: smoke test fails before service, networking, readiness, and collector wiring are complete.
   - Verify: flake NixOS smoke-test command.
   - Evidence: machine topology, successful oneshot service, independent network assertion, and correlated telemetry artifact.
@@ -434,7 +434,7 @@ Evidence: paths and output facts to record
 
 - [x] T021E Wire NixOS smoke test into repository gates
   - Depends on: T021C, T021D
-  - Outcome: flake checks expose a rerunnable authoritative integration target, and future real-component fixtures extend the shared `nixosTest` harness instead of creating parallel orchestration systems.
+  - Outcome: flake checks expose a rerunnable baseline integration target, and future real-component fixtures extend the shared `nixosTest` harness instead of creating parallel orchestration systems. Whole-system authority begins only when a gate's test exercises that gate's composed production boundary.
   - Red: aggregate validation omits the smoke test or fixture policy permits duplicate harnesses.
   - Verify: `nix flake check` plus direct NixOS smoke-test command.
   - Evidence: flake attributes, aggregate output, direct command, and runtime summary.
@@ -663,7 +663,7 @@ Evidence: paths and output facts to record
 
 - [ ] T061 Verify Gate 2 restricted ingress
   - Depends on: T048A, T055, T056, T057, T058, T059, T060
-  - Outcome: real stock Nix reaches Telchar through `ssh-ng://`; identity is trustworthy; prohibited SSH features fail.
+  - Outcome: shared multi-machine `nixosTest` runs real stock Nix through real OpenSSH, the production forced-command frontend, authenticated local IPC, and the separate daemon; identity is trustworthy and prohibited SSH features fail.
   - Red: gate script reports missing negative test.
   - Verify: complete OpenSSH integration suite.
   - Evidence: exact command and pristine output.

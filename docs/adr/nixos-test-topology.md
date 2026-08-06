@@ -42,4 +42,4 @@ PostgreSQL, OpenSSH builder, Nomad, and cache fixtures extend this topology thro
 
 ## Consequences
 
-A test that crosses an external Telchar boundary extends the shared `nixosTest` harness. Narrow library tests remain appropriate for local behavior, but cannot replace whole-system acceptance. This makes machine roles, service ownership, startup sequencing, telemetry, and failure diagnostics explicit and reusable.
+A test that crosses an external Telchar boundary extends the shared `nixosTest` harness. Narrow library tests remain appropriate for local behavior, but cannot replace whole-system acceptance. A harness boot, network ping, service oneshot, or nonempty telemetry file proves only that specific behavior; it is not authoritative evidence for protocol, ingress, correlation, persistence, or execution until the composed production path is exercised and asserted. This makes machine roles, service ownership, startup sequencing, telemetry, and failure diagnostics explicit and reusable.
