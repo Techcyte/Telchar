@@ -547,7 +547,7 @@ Evidence: paths and output facts to record
   - Verify: identity evidence checklist and negative spoof test.
   - Evidence: approved mechanism and deferred mechanisms, or explicit blocker.
 
-- [ ] T049 Define requester normalization
+- [x] T049 Define requester normalization
   - Depends on: T048A
   - Outcome: credential ID, audit subject, quota subject, certificate metadata, and source address normalize deterministically.
   - Red: table-driven normalization tests fail.
