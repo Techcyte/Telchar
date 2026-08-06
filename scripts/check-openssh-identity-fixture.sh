@@ -4,8 +4,11 @@ set -eu
 root=$(mktemp -d "${TMPDIR:-/tmp}/telchar-identity.XXXXXX")
 pid=''
 cleanup() {
-  if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
-  rm -rf "$root"
+	if [ -n "$pid" ]; then
+		kill "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	fi
+	rm -rf "$root"
 }
 trap cleanup EXIT INT TERM
 
@@ -56,15 +59,21 @@ ssh_bin=${SSH_BIN:-/run/current-system/sw/bin/ssh}
 "$sshd_bin" -D -e -f "$root/sshd_config" -o "PidFile=$root/sshd.pid" >"$root/sshd.log" 2>&1 &
 pid=$!
 for _ in $(seq 1 100); do
-  [ -s "$root/sshd.pid" ] && break
-  kill -0 "$pid" 2>/dev/null || { cat "$root/sshd.log" >&2; exit 1; }
-  sleep 0.01
+	[ -s "$root/sshd.pid" ] && break
+	kill -0 "$pid" 2>/dev/null || {
+		cat "$root/sshd.log" >&2
+		exit 1
+	}
+	sleep 0.01
 done
-[ -s "$root/sshd.pid" ] || { cat "$root/sshd.log" >&2; exit 1; }
+[ -s "$root/sshd.pid" ] || {
+	cat "$root/sshd.log" >&2
+	exit 1
+}
 ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=$root/known_hosts -o IdentitiesOnly=yes -o SendEnv=TELCHAR_CLIENT_SUPPLIED_KEY -p $port -i $root/client-key"
 TELCHAR_CLIENT_SUPPLIED_KEY=spoofed "$ssh_bin" -q $ssh_args "$(id -un)@127.0.0.1" ignored || {
-  cat "$root/sshd.log" >&2
-  exit 1
+	cat "$root/sshd.log" >&2
+	exit 1
 }
 
 grep -F "authenticated_key=$fingerprint" "$root/identity.env" >/dev/null
