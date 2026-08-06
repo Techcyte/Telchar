@@ -127,6 +127,46 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
 }
 
 #[test]
+fn ssh_agent_and_x11_forwarding_are_rejected() {
+    let fixture = Fixture::start();
+
+    let agent = fixture
+        .ssh_command()
+        .env_remove("SSH_AUTH_SOCK")
+        .args(["-A", "sh", "-c", "test -n \"${SSH_AUTH_SOCK-}\""])
+        .output()
+        .expect("agent forwarding request runs");
+    assert!(
+        agent.status.success(),
+        "forced command failed during agent probe: {agent:?}"
+    );
+    let evidence = fs::read_to_string(fixture.root.join("forced-command-output"))
+        .expect("agent environment evidence reads");
+    assert!(
+        evidence.contains("agent_socket=not-forwarded"),
+        "forwarded agent socket leaked: {evidence}"
+    );
+
+    let x11 = fixture
+        .ssh_command()
+        .args(["-X", "sh", "-c", "test -n \"${DISPLAY-}\""])
+        .output()
+        .expect("X11 forwarding request runs");
+    assert!(
+        x11.status.success(),
+        "forced command failed during X11 probe: {x11:?}"
+    );
+    let evidence = fs::read_to_string(fixture.root.join("forced-command-output"))
+        .expect("X11 environment evidence reads");
+    assert!(
+        evidence.contains("display=absent"),
+        "X11 display leaked: {evidence}"
+    );
+
+    fixture.finish();
+}
+
+#[test]
 fn ssh_pty_allocation_is_rejected() {
     let fixture = Fixture::start();
     let output = fixture
@@ -258,7 +298,16 @@ impl Fixture {
         fs::write(
             &forced,
             format!(
-                "#!/bin/sh\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}\nexec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                "#!/bin/sh\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}
+printf 'agent_socket_value=%s\\n' \"${{SSH_AUTH_SOCK-}}\" >> {}
+case \"${{SSH_AUTH_SOCK-}}\" in /tmp/ssh-*) printf 'agent_socket=forwarded\\n' >> {} ;; *) printf 'agent_socket=not-forwarded\\n' >> {} ;; esac
+if [ -n \"${{DISPLAY-}}\" ]; then printf 'display=present\\n' >> {}; else printf 'display=absent\\n' >> {}; fi
+exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                root.join("forced-command-output").display(),
+                root.join("forced-command-output").display(),
+                root.join("forced-command-output").display(),
+                root.join("forced-command-output").display(),
+                root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
                 socket.display(),
                 fingerprint,
@@ -281,7 +330,7 @@ impl Fixture {
         fs::write(
             &config,
             format!(
-                "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitUserEnvironment no\nAllowTcpForwarding no\nAllowAgentForwarding no\nX11Forwarding no\nPermitTTY no\nLogLevel ERROR\n",
+                "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitUserEnvironment no\nAllowTcpForwarding no\nAllowAgentForwarding no\nX11Forwarding no\nPermitTTY no\nSetEnv SSH_AUTH_SOCK=\nSetEnv DISPLAY=\nLogLevel ERROR\n",
                 host_key.display(),
                 root.join("sshd.pid").display(),
                 root.join("authorized_keys").display()
@@ -291,6 +340,9 @@ impl Fixture {
         let sshd_log = root.join("sshd.log");
         let mut sshd_child = Command::new(&sshd)
             .args(["-D", "-e", "-f", config.to_str().unwrap()])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").expect("PATH exists"))
+            .env("HOME", std::env::var("HOME").expect("HOME exists"))
             .stdout(Stdio::null())
             .stderr(fs::File::create(&sshd_log).expect("sshd log creates"))
             .spawn()
