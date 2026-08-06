@@ -32,6 +32,11 @@ impl<R: Read + AsFd> Read for StdioInput<R> {
         let descriptor = PollFd::new(&self.input, PollFlags::IN);
         let timeout = timeout_as_timespec(remaining)?;
         if poll(&mut [descriptor], Some(&timeout))? == 0 {
+            tracing::error!(
+                event = "worker.session.timed_out",
+                timeout_ms = self.idle_timeout.as_millis() as u64,
+                "worker protocol session timed out"
+            );
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "worker protocol input timed out",

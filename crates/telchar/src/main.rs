@@ -50,13 +50,7 @@ fn serve_stdio() {
         })
         .and_then(|_| reader.read_operation());
     match result {
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-            tracing::error!(
-                event = "worker.session.timed_out",
-                timeout_seconds = limits.incomplete_message_idle_timeout.as_secs(),
-                "worker protocol session timed out"
-            );
-        }
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
         Err(_) => reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation"),
         Ok(operation) if !operation.is_fixture_allowed() => {
             reject_worker_operation(&mut output, "recognized-unsupported", "unsupported worker operation");
