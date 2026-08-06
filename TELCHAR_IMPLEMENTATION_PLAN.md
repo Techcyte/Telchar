@@ -349,7 +349,7 @@ Evidence: paths and output facts to record
   - Verify: real-client trusted and untrusted transparent trace commands.
   - Evidence: sanitized trace artifacts and proof that every observed flow used a typed boundary parser.
 
-- [ ] T013 Capture trusted classic derivation trace
+- [x] T013 Capture trusted classic derivation trace
   - Depends on: T012
   - Outcome: record handshake and operation sequence for the fixed trusted classic input-addressed remote build.
   - Red: compatibility matrix cell lacks typed acceptance evidence.

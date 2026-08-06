@@ -20,10 +20,17 @@ real-client evidence.
 
 | Client | Protocol range | Trust mode | Derivation class | Required trace evidence | Support state |
 | --- | --- | --- | --- | --- | --- |
-| Stock Nix 2.34.7 | 1.18–1.38 | Trusted | Classic input-addressed | Handshake and operation sequence | Pending T013 trace |
+| Stock Nix 2.34.7 | 1.18–1.38 | Trusted | Classic input-addressed | `trusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:true`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Trusted trace accepted |
 | Stock Nix 2.34.7 | 1.18–1.38 | Untrusted | Classic input-addressed | Handshake, trust negotiation, and operation sequence | Pending T014 trace |
 | Stock Nix 2.34.7 | 1.18–1.38 | Trusted or untrusted | Content-addressed | Operation and result semantics, or explicit deferral | Pending T015 resolution |
 | Lix | Not recorded | Not recorded | Not recorded | Separate real-client trace packet | Deferred |
+
+The trusted trace runs the exact fixed fixture contract in
+`docs/classic-build-fixtures.md` through `TraceCapture`; its boundary coverage
+is the classic-build inventory in `docs/protocol-fixture-flow-inventory.md`.
+The trace stores only negotiated versions, the typed trust outcome, and
+operation classifications. It stores neither the output path nor any request,
+response, upload, derivation, NAR, secret, or raw protocol body.
 
 No row is supported before its trace evidence is recorded. Required operations,
 optional operations, recognized-rejected operations, and unknown-operation
