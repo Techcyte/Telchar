@@ -478,6 +478,13 @@ Evidence: paths and output facts to record
   - Verify: crate behavior tests, real compatibility test, and evidence inventory validation.
   - Evidence: primary evidence references, test result, and no-copy attestation.
 
+- [x] T041A Define stdout-safe local telemetry routing
+  - Depends on: T009A, T041
+  - Outcome: the telemetry contract reserves standard output exclusively for command protocol or machine-readable result bytes and routes every locally formatted `tracing` event to standard error, while OTLP log, metric, and trace export remains unchanged.
+  - Red: a live `serve-stdio` protocol test observes a textual tracing event in the worker byte stream.
+  - Verify: telemetry-contract validator plus real stdio protocol and OTLP tests proving local activity telemetry on standard error, byte-transparent worker frames on standard output, and exported structured telemetry.
+  - Evidence: ADR update, asserted stdout/stderr bytes, OTLP signal assertion, and unchanged bounded redaction policy.
+
 - [ ] T042 Record Rio-informed edge-case and test inventory
   - Depends on: T017, T018, T041
   - Outcome: compare Rio's architecture and test categories against current crate coverage, adding missing test ideas without copying implementation or test bodies.
