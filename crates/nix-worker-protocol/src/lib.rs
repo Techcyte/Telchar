@@ -7,7 +7,11 @@ pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
 pub const MINIMUM_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 18);
 pub const LATEST_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 pub const FEATURE_NEGOTIATION_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
+pub const STDERR_NEXT: u64 = 0x6f6c_6d67;
 pub const STDERR_LAST: u64 = 0x616c_7473;
+pub const STDERR_START_ACTIVITY: u64 = 0x5354_5254;
+pub const STDERR_STOP_ACTIVITY: u64 = 0x5354_4f50;
+pub const STDERR_RESULT: u64 = 0x5253_4c54;
 const MAXIMUM_HANDSHAKE_FEATURES: usize = 64;
 const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: usize = 1024;
 
@@ -143,6 +147,344 @@ pub struct FixtureSetOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureStorePathRequest {
+    pub operation: WorkerOperation,
+    pub path_length: u64,
+}
+
+pub fn read_fixture_store_path_request(
+    input: &mut &[u8],
+    expected_operation: WorkerOperation,
+) -> Result<FixtureStorePathRequest, ProtocolError> {
+    match expected_operation {
+        WorkerOperation::AddTempRoot | WorkerOperation::IsValidPath => {}
+        _ => return Err(ProtocolError::UnsupportedOperation),
+    }
+    let operation = read_worker_operation(input)?;
+    if operation != expected_operation {
+        return Err(ProtocolError::UnsupportedOperation);
+    }
+    Ok(FixtureStorePathRequest {
+        operation,
+        path_length: read_fixture_string_length(input, 153)?,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureAddToStoreRequest {
+    pub name_length: u64,
+    pub content_address_length: u64,
+    pub reference_count: u64,
+    pub upload_chunk_lengths: Vec<u64>,
+    pub upload_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureDerivedPathsRequest {
+    pub operation: WorkerOperation,
+    pub path_count: u64,
+    pub path_lengths: Vec<u64>,
+    pub build_mode: Option<u64>,
+}
+
+pub fn read_fixture_derived_paths_request(
+    input: &mut &[u8],
+    expected_operation: WorkerOperation,
+) -> Result<FixtureDerivedPathsRequest, ProtocolError> {
+    match expected_operation {
+        WorkerOperation::QueryMissing | WorkerOperation::BuildPathsWithResults => {}
+        _ => return Err(ProtocolError::UnsupportedOperation),
+    }
+    let operation = read_worker_operation(input)?;
+    if operation != expected_operation {
+        return Err(ProtocolError::UnsupportedOperation);
+    }
+    let path_count = read_fixture_count(input, 1)?;
+    let path_lengths = (0..path_count)
+        .map(|_| read_fixture_string_length(input, 157))
+        .collect::<Result<Vec<_>, _>>()?;
+    let build_mode = if operation == WorkerOperation::BuildPathsWithResults {
+        let mode = read_worker_integer(input)?;
+        if mode > 2 {
+            return Err(ProtocolError::InternalFailure);
+        }
+        Some(mode)
+    } else {
+        None
+    };
+    Ok(FixtureDerivedPathsRequest {
+        operation,
+        path_count,
+        path_lengths,
+        build_mode,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureQueryMissingResponse {
+    pub will_build_count: u64,
+    pub will_substitute_count: u64,
+    pub unknown_count: u64,
+    pub path_lengths: Vec<u64>,
+}
+
+pub fn read_fixture_query_missing_response(
+    input: &mut &[u8],
+) -> Result<FixtureQueryMissingResponse, ProtocolError> {
+    let will_build_count = read_fixture_count(input, 1)?;
+    let mut path_lengths = Vec::with_capacity(will_build_count as usize);
+    for _ in 0..will_build_count {
+        path_lengths.push(read_fixture_string_length(input, 153)?);
+    }
+    let will_substitute_count = read_fixture_count(input, 0)?;
+    let unknown_count = read_fixture_count(input, 0)?;
+    read_worker_integer(input)?;
+    read_worker_integer(input)?;
+    Ok(FixtureQueryMissingResponse {
+        will_build_count,
+        will_substitute_count,
+        unknown_count,
+        path_lengths,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureUnkeyedPathInfo {
+    pub deriver_length: u64,
+    pub nar_hash_length: u64,
+    pub reference_count: u64,
+    pub signature_count: u64,
+    pub content_address_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureValidPathInfo {
+    pub path_length: u64,
+    pub deriver_length: u64,
+    pub nar_hash_length: u64,
+    pub reference_count: u64,
+    pub signature_count: u64,
+    pub content_address_length: u64,
+}
+
+pub fn read_fixture_valid_path_info(
+    input: &mut &[u8],
+) -> Result<FixtureValidPathInfo, ProtocolError> {
+    let path_length = read_fixture_string_length(input, 153)?;
+    let info = read_fixture_unkeyed_path_info(input)?;
+    Ok(FixtureValidPathInfo {
+        path_length,
+        deriver_length: info.deriver_length,
+        nar_hash_length: info.nar_hash_length,
+        reference_count: info.reference_count,
+        signature_count: info.signature_count,
+        content_address_length: info.content_address_length,
+    })
+}
+
+pub fn read_fixture_query_path_info_response(
+    input: &mut &[u8],
+) -> Result<Option<FixtureUnkeyedPathInfo>, ProtocolError> {
+    if read_fixture_boolean(input)? {
+        Ok(Some(read_fixture_unkeyed_path_info(input)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn read_fixture_unkeyed_path_info(
+    input: &mut &[u8],
+) -> Result<FixtureUnkeyedPathInfo, ProtocolError> {
+    let deriver_length = read_fixture_string_length(input, 0)?;
+    let nar_hash_length = read_fixture_string_length(input, 64)?;
+    let reference_count = read_fixture_count(input, 0)?;
+    read_worker_integer(input)?;
+    read_worker_integer(input)?;
+    read_fixture_boolean(input)?;
+    let signature_count = read_fixture_count(input, 0)?;
+    let content_address_length = read_fixture_string_length(input, 64)?;
+    Ok(FixtureUnkeyedPathInfo {
+        deriver_length,
+        nar_hash_length,
+        reference_count,
+        signature_count,
+        content_address_length,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixtureBuildPathsWithResultsResponse {
+    pub result_count: u64,
+    pub path_length: u64,
+    pub status: u64,
+    pub error_length: u64,
+    pub output_count: u64,
+    pub output_id_length: u64,
+    pub output_realisation_length: u64,
+}
+
+pub fn read_fixture_build_paths_with_results_response(
+    input: &mut &[u8],
+) -> Result<FixtureBuildPathsWithResultsResponse, ProtocolError> {
+    let result_count = read_fixture_count(input, 1)?;
+    if result_count == 0 {
+        return Err(ProtocolError::InternalFailure);
+    }
+    let path_length = read_fixture_string_length(input, 157)?;
+    let status = read_worker_integer(input)?;
+    if status > 14 {
+        return Err(ProtocolError::InternalFailure);
+    }
+    let error_length = read_fixture_string_length(input, 0)?;
+    read_worker_integer(input)?;
+    read_fixture_boolean(input)?;
+    read_worker_integer(input)?;
+    read_worker_integer(input)?;
+    read_fixture_optional_duration(input)?;
+    read_fixture_optional_duration(input)?;
+    let output_count = read_fixture_count(input, 1)?;
+    if output_count == 0 {
+        return Err(ProtocolError::InternalFailure);
+    }
+    let output_id_length = read_fixture_string_length(input, 75)?;
+    let output_realisation_length = read_fixture_string_length(input, 196)?;
+    Ok(FixtureBuildPathsWithResultsResponse {
+        result_count,
+        path_length,
+        status,
+        error_length,
+        output_count,
+        output_id_length,
+        output_realisation_length,
+    })
+}
+
+fn read_fixture_optional_duration(input: &mut &[u8]) -> Result<(), ProtocolError> {
+    match read_worker_integer(input)? {
+        0 => Ok(()),
+        1 => {
+            read_worker_integer(input)?;
+            Ok(())
+        }
+        _ => Err(ProtocolError::InternalFailure),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FixtureStderrFrame {
+    Next {
+        message_length: u64,
+    },
+    StartActivity {
+        message_length: u64,
+        field_count: u64,
+        field_string_lengths: Vec<u64>,
+    },
+    StopActivity,
+    Result {
+        field_count: u64,
+        field_string_lengths: Vec<u64>,
+    },
+    Last,
+}
+
+pub fn read_fixture_stderr_frame(input: &mut &[u8]) -> Result<FixtureStderrFrame, ProtocolError> {
+    match read_worker_integer(input)? {
+        STDERR_NEXT => Ok(FixtureStderrFrame::Next {
+            message_length: read_fixture_string_length(input, 145)?,
+        }),
+        STDERR_START_ACTIVITY => {
+            read_worker_integer(input)?;
+            read_worker_integer(input)?;
+            read_worker_integer(input)?;
+            let message_length = read_fixture_string_length(input, 164)?;
+            let (field_count, field_string_lengths) = read_fixture_activity_fields(input)?;
+            read_worker_integer(input)?;
+            Ok(FixtureStderrFrame::StartActivity {
+                message_length,
+                field_count,
+                field_string_lengths,
+            })
+        }
+        STDERR_STOP_ACTIVITY => {
+            read_worker_integer(input)?;
+            Ok(FixtureStderrFrame::StopActivity)
+        }
+        STDERR_RESULT => {
+            read_worker_integer(input)?;
+            read_worker_integer(input)?;
+            let (field_count, field_string_lengths) = read_fixture_activity_fields(input)?;
+            Ok(FixtureStderrFrame::Result {
+                field_count,
+                field_string_lengths,
+            })
+        }
+        STDERR_LAST => Ok(FixtureStderrFrame::Last),
+        _ => Err(ProtocolError::UnsupportedOperation),
+    }
+}
+
+fn read_fixture_activity_fields(input: &mut &[u8]) -> Result<(u64, Vec<u64>), ProtocolError> {
+    let field_count = read_fixture_count(input, 4)?;
+    let mut field_string_lengths = Vec::new();
+    for _ in 0..field_count {
+        match read_worker_integer(input)? {
+            0 => {
+                read_worker_integer(input)?;
+            }
+            1 => field_string_lengths.push(read_fixture_string_length(input, 153)?),
+            _ => return Err(ProtocolError::InternalFailure),
+        }
+    }
+    Ok((field_count, field_string_lengths))
+}
+
+pub fn read_fixture_add_to_store_request(
+    input: &mut &[u8],
+) -> Result<FixtureAddToStoreRequest, ProtocolError> {
+    if read_worker_operation(input)? != WorkerOperation::AddToStore {
+        return Err(ProtocolError::UnsupportedOperation);
+    }
+    let name_length = read_fixture_string_length(input, 27)?;
+    let content_address_length = read_fixture_string_length(input, 11)?;
+    let reference_count = read_fixture_count(input, 0)?;
+    for _ in 0..reference_count {
+        read_fixture_string_length(input, 153)?;
+    }
+    read_fixture_boolean(input)?;
+
+    let mut upload_chunk_lengths = Vec::new();
+    let mut upload_length = 0_u64;
+    loop {
+        let length = read_worker_integer(input)?;
+        if length == 0 {
+            break;
+        }
+        if !upload_chunk_lengths.is_empty() || length > 502 {
+            return Err(ProtocolError::SizeLimit);
+        }
+        upload_length = upload_length
+            .checked_add(length)
+            .filter(|length| *length <= 502)
+            .ok_or(ProtocolError::SizeLimit)?;
+        let length = usize::try_from(length).map_err(|_| ProtocolError::SizeLimit)?;
+        if input.len() < length {
+            return Err(ProtocolError::Truncated);
+        }
+        let (_, remaining) = input.split_at(length);
+        *input = remaining;
+        upload_chunk_lengths.push(length as u64);
+    }
+    Ok(FixtureAddToStoreRequest {
+        name_length,
+        content_address_length,
+        reference_count,
+        upload_chunk_lengths,
+        upload_length,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FixtureHandshake {
     pub version: WorkerVersion,
     pub feature_lengths: Vec<u64>,
@@ -258,13 +600,26 @@ fn read_fixture_string_lengths(
     maximum_count: u64,
     maximum_length: u64,
 ) -> Result<Vec<u64>, ProtocolError> {
-    let count = read_worker_integer(input)?;
-    if count > maximum_count {
-        return Err(ProtocolError::SizeLimit);
-    }
+    let count = read_fixture_count(input, maximum_count)?;
     (0..count)
         .map(|_| read_fixture_string_length(input, maximum_length))
         .collect()
+}
+
+fn read_fixture_count(input: &mut &[u8], maximum: u64) -> Result<u64, ProtocolError> {
+    let count = read_worker_integer(input)?;
+    if count > maximum {
+        return Err(ProtocolError::SizeLimit);
+    }
+    Ok(count)
+}
+
+fn read_fixture_boolean(input: &mut &[u8]) -> Result<bool, ProtocolError> {
+    match read_worker_integer(input)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(ProtocolError::InternalFailure),
+    }
 }
 
 fn read_fixture_string_length(
@@ -739,6 +1094,421 @@ mod tests {
             read_worker_operation(&mut build_paths_with_results),
             Ok(WorkerOperation::BuildPathsWithResults)
         );
+    }
+
+    #[test]
+    fn parses_a_fixture_bounded_store_path_request_without_retaining_its_body() {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, 11);
+        write_worker_byte_string(&mut input, &[b'x'; 153]);
+        let mut input = input.as_slice();
+
+        assert_eq!(
+            super::read_fixture_store_path_request(&mut input, WorkerOperation::AddTempRoot),
+            Ok(super::FixtureStorePathRequest {
+                operation: WorkerOperation::AddTempRoot,
+                path_length: 153,
+            })
+        );
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn rejects_oversized_truncated_or_malformed_fixture_store_path_requests() {
+        let mut oversized = Vec::new();
+        write_worker_integer(&mut oversized, 1);
+        write_worker_integer(&mut oversized, 154);
+        let mut oversized = oversized.as_slice();
+        assert_eq!(
+            super::read_fixture_store_path_request(&mut oversized, WorkerOperation::IsValidPath),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut truncated = Vec::new();
+        write_worker_integer(&mut truncated, 11);
+        write_worker_integer(&mut truncated, 153);
+        truncated.extend([0; 152]);
+        let mut truncated = truncated.as_slice();
+        assert_eq!(
+            super::read_fixture_store_path_request(&mut truncated, WorkerOperation::AddTempRoot),
+            Err(ProtocolError::Truncated)
+        );
+
+        let mut padded = Vec::new();
+        write_worker_integer(&mut padded, 1);
+        write_worker_byte_string(&mut padded, b"x");
+        *padded.last_mut().expect("worker string padding") = 1;
+        let mut padded = padded.as_slice();
+        assert_eq!(
+            super::read_fixture_store_path_request(&mut padded, WorkerOperation::IsValidPath),
+            Err(ProtocolError::InternalFailure)
+        );
+    }
+
+    #[test]
+    fn parses_a_fixture_bounded_add_to_store_request_and_upload_without_retaining_bodies() {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, 7);
+        write_worker_byte_string(&mut input, &[b'n'; 27]);
+        write_worker_byte_string(&mut input, &[b'c'; 11]);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 502);
+        input.extend(vec![b'x'; 502]);
+        write_worker_integer(&mut input, 0);
+        let mut input = input.as_slice();
+
+        assert_eq!(
+            super::read_fixture_add_to_store_request(&mut input),
+            Ok(super::FixtureAddToStoreRequest {
+                name_length: 27,
+                content_address_length: 11,
+                reference_count: 0,
+                upload_chunk_lengths: vec![502],
+                upload_length: 502,
+            })
+        );
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parses_fixture_bounded_query_missing_and_build_requests_without_retaining_paths() {
+        let mut query_missing = Vec::new();
+        write_worker_integer(&mut query_missing, 40);
+        write_worker_integer(&mut query_missing, 1);
+        write_worker_byte_string(&mut query_missing, &[b'd'; 157]);
+        let mut query_missing = query_missing.as_slice();
+        assert_eq!(
+            super::read_fixture_derived_paths_request(
+                &mut query_missing,
+                WorkerOperation::QueryMissing
+            ),
+            Ok(super::FixtureDerivedPathsRequest {
+                operation: WorkerOperation::QueryMissing,
+                path_count: 1,
+                path_lengths: vec![157],
+                build_mode: None,
+            })
+        );
+
+        let mut build = Vec::new();
+        write_worker_integer(&mut build, 46);
+        write_worker_integer(&mut build, 1);
+        write_worker_byte_string(&mut build, b"fixture-derived-path");
+        write_worker_integer(&mut build, 0);
+        let mut build = build.as_slice();
+        assert_eq!(
+            super::read_fixture_derived_paths_request(
+                &mut build,
+                WorkerOperation::BuildPathsWithResults
+            ),
+            Ok(super::FixtureDerivedPathsRequest {
+                operation: WorkerOperation::BuildPathsWithResults,
+                path_count: 1,
+                path_lengths: vec![20],
+                build_mode: Some(0),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_fixture_derived_path_count_length_and_build_mode_outside_the_envelope() {
+        let mut too_many = Vec::new();
+        write_worker_integer(&mut too_many, 40);
+        write_worker_integer(&mut too_many, 2);
+        let mut too_many = too_many.as_slice();
+        assert_eq!(
+            super::read_fixture_derived_paths_request(&mut too_many, WorkerOperation::QueryMissing),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut too_long = Vec::new();
+        write_worker_integer(&mut too_long, 46);
+        write_worker_integer(&mut too_long, 1);
+        write_worker_integer(&mut too_long, 158);
+        let mut too_long = too_long.as_slice();
+        assert_eq!(
+            super::read_fixture_derived_paths_request(
+                &mut too_long,
+                WorkerOperation::BuildPathsWithResults
+            ),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut bad_mode = Vec::new();
+        write_worker_integer(&mut bad_mode, 46);
+        write_worker_integer(&mut bad_mode, 1);
+        write_worker_byte_string(&mut bad_mode, b"path");
+        write_worker_integer(&mut bad_mode, 3);
+        let mut bad_mode = bad_mode.as_slice();
+        assert_eq!(
+            super::read_fixture_derived_paths_request(
+                &mut bad_mode,
+                WorkerOperation::BuildPathsWithResults
+            ),
+            Err(ProtocolError::InternalFailure)
+        );
+    }
+
+    #[test]
+    fn parses_fixture_bounded_query_missing_response_without_retaining_paths() {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, 1);
+        write_worker_byte_string(&mut input, &[b'p'; 153]);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 502);
+        write_worker_integer(&mut input, 502);
+        let mut input = input.as_slice();
+
+        assert_eq!(
+            super::read_fixture_query_missing_response(&mut input),
+            Ok(super::FixtureQueryMissingResponse {
+                will_build_count: 1,
+                will_substitute_count: 0,
+                unknown_count: 0,
+                path_lengths: vec![153],
+            })
+        );
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn rejects_fixture_query_missing_response_outside_the_envelope() {
+        let mut too_many = &2_u64.to_le_bytes()[..];
+        assert_eq!(
+            super::read_fixture_query_missing_response(&mut too_many),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut truncated = Vec::new();
+        write_worker_integer(&mut truncated, 1);
+        write_worker_integer(&mut truncated, 153);
+        let mut truncated = truncated.as_slice();
+        assert_eq!(
+            super::read_fixture_query_missing_response(&mut truncated),
+            Err(ProtocolError::Truncated)
+        );
+    }
+
+    #[test]
+    fn parses_fixture_bounded_valid_path_info_replies_without_retaining_bodies() {
+        let mut valid = Vec::new();
+        write_worker_byte_string(&mut valid, &[b'p'; 153]);
+        append_fixture_unkeyed_path_info(&mut valid);
+        let mut valid = valid.as_slice();
+        assert_eq!(
+            super::read_fixture_valid_path_info(&mut valid),
+            Ok(super::FixtureValidPathInfo {
+                path_length: 153,
+                deriver_length: 0,
+                nar_hash_length: 64,
+                reference_count: 0,
+                signature_count: 0,
+                content_address_length: 64,
+            })
+        );
+        assert!(valid.is_empty());
+
+        let mut query_path_info = Vec::new();
+        write_worker_integer(&mut query_path_info, 1);
+        append_fixture_unkeyed_path_info(&mut query_path_info);
+        let mut query_path_info = query_path_info.as_slice();
+        assert_eq!(
+            super::read_fixture_query_path_info_response(&mut query_path_info),
+            Ok(Some(super::FixtureUnkeyedPathInfo {
+                deriver_length: 0,
+                nar_hash_length: 64,
+                reference_count: 0,
+                signature_count: 0,
+                content_address_length: 64,
+            }))
+        );
+        assert!(query_path_info.is_empty());
+    }
+
+    #[test]
+    fn rejects_fixture_path_info_outside_the_envelope() {
+        let mut oversized = Vec::new();
+        write_worker_integer(&mut oversized, 154);
+        let mut oversized = oversized.as_slice();
+        assert_eq!(
+            super::read_fixture_valid_path_info(&mut oversized),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut invalid_flag = &2_u64.to_le_bytes()[..];
+        assert_eq!(
+            super::read_fixture_query_path_info_response(&mut invalid_flag),
+            Err(ProtocolError::InternalFailure)
+        );
+    }
+
+    #[test]
+    fn parses_fixture_bounded_build_paths_with_results_response_without_retaining_bodies() {
+        let mut input = Vec::new();
+        write_worker_integer(&mut input, 1);
+        write_worker_byte_string(&mut input, &[b'p'; 157]);
+        write_worker_integer(&mut input, 0);
+        write_worker_byte_string(&mut input, b"");
+        write_worker_integer(&mut input, 1);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 0);
+        write_worker_integer(&mut input, 1);
+        write_worker_byte_string(&mut input, &[b'o'; 75]);
+        write_worker_byte_string(&mut input, &[b'r'; 196]);
+        let mut input = input.as_slice();
+
+        assert_eq!(
+            super::read_fixture_build_paths_with_results_response(&mut input),
+            Ok(super::FixtureBuildPathsWithResultsResponse {
+                result_count: 1,
+                path_length: 157,
+                status: 0,
+                error_length: 0,
+                output_count: 1,
+                output_id_length: 75,
+                output_realisation_length: 196,
+            })
+        );
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn rejects_fixture_build_results_outside_the_envelope() {
+        let mut too_many = &2_u64.to_le_bytes()[..];
+        assert_eq!(
+            super::read_fixture_build_paths_with_results_response(&mut too_many),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut bad_status = Vec::new();
+        write_worker_integer(&mut bad_status, 1);
+        write_worker_byte_string(&mut bad_status, b"p");
+        write_worker_integer(&mut bad_status, 15);
+        let mut bad_status = bad_status.as_slice();
+        assert_eq!(
+            super::read_fixture_build_paths_with_results_response(&mut bad_status),
+            Err(ProtocolError::InternalFailure)
+        );
+    }
+
+    #[test]
+    fn parses_fixture_bounded_stderr_activity_frames_without_retaining_bodies() {
+        let mut start = Vec::new();
+        write_worker_integer(&mut start, super::STDERR_START_ACTIVITY);
+        write_worker_integer(&mut start, 1);
+        write_worker_integer(&mut start, 2);
+        write_worker_integer(&mut start, 3);
+        write_worker_byte_string(&mut start, &[b'm'; 164]);
+        write_worker_integer(&mut start, 2);
+        write_worker_integer(&mut start, 0);
+        write_worker_integer(&mut start, 42);
+        write_worker_integer(&mut start, 1);
+        write_worker_byte_string(&mut start, &[b'f'; 153]);
+        write_worker_integer(&mut start, 0);
+        let mut start = start.as_slice();
+        assert_eq!(
+            super::read_fixture_stderr_frame(&mut start),
+            Ok(super::FixtureStderrFrame::StartActivity {
+                message_length: 164,
+                field_count: 2,
+                field_string_lengths: vec![153],
+            })
+        );
+        assert!(start.is_empty());
+
+        let mut next = Vec::new();
+        write_worker_integer(&mut next, super::STDERR_NEXT);
+        write_worker_byte_string(&mut next, &[b'n'; 145]);
+        let mut next = next.as_slice();
+        assert_eq!(
+            super::read_fixture_stderr_frame(&mut next),
+            Ok(super::FixtureStderrFrame::Next {
+                message_length: 145
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_fixture_stderr_activity_frames_outside_the_envelope() {
+        let mut too_many_fields = Vec::new();
+        write_worker_integer(&mut too_many_fields, super::STDERR_RESULT);
+        write_worker_integer(&mut too_many_fields, 1);
+        write_worker_integer(&mut too_many_fields, 1);
+        write_worker_integer(&mut too_many_fields, 5);
+        let mut too_many_fields = too_many_fields.as_slice();
+        assert_eq!(
+            super::read_fixture_stderr_frame(&mut too_many_fields),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut unknown = &0_u64.to_le_bytes()[..];
+        assert_eq!(
+            super::read_fixture_stderr_frame(&mut unknown),
+            Err(ProtocolError::UnsupportedOperation)
+        );
+    }
+
+    #[test]
+    fn rejects_fixture_add_to_store_overflow_truncation_and_extra_upload_chunks() {
+        let mut oversized = Vec::new();
+        write_worker_integer(&mut oversized, 7);
+        write_worker_integer(&mut oversized, 28);
+        let mut oversized = oversized.as_slice();
+        assert_eq!(
+            super::read_fixture_add_to_store_request(&mut oversized),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut truncated = Vec::new();
+        write_worker_integer(&mut truncated, 7);
+        write_worker_byte_string(&mut truncated, b"n");
+        write_worker_byte_string(&mut truncated, b"c");
+        write_worker_integer(&mut truncated, 0);
+        write_worker_integer(&mut truncated, 0);
+        write_worker_integer(&mut truncated, 1);
+        let mut truncated = truncated.as_slice();
+        assert_eq!(
+            super::read_fixture_add_to_store_request(&mut truncated),
+            Err(ProtocolError::Truncated)
+        );
+
+        let mut extra_chunk = Vec::new();
+        write_worker_integer(&mut extra_chunk, 7);
+        write_worker_byte_string(&mut extra_chunk, b"n");
+        write_worker_byte_string(&mut extra_chunk, b"c");
+        write_worker_integer(&mut extra_chunk, 0);
+        write_worker_integer(&mut extra_chunk, 0);
+        write_worker_integer(&mut extra_chunk, 1);
+        extra_chunk.push(b'x');
+        write_worker_integer(&mut extra_chunk, 1);
+        extra_chunk.push(b'y');
+        let mut extra_chunk = extra_chunk.as_slice();
+        assert_eq!(
+            super::read_fixture_add_to_store_request(&mut extra_chunk),
+            Err(ProtocolError::SizeLimit)
+        );
+
+        let mut wrong_operation = &39_u64.to_le_bytes()[..];
+        assert_eq!(
+            super::read_fixture_add_to_store_request(&mut wrong_operation),
+            Err(ProtocolError::UnsupportedOperation)
+        );
+    }
+
+    fn append_fixture_unkeyed_path_info(output: &mut Vec<u8>) {
+        write_worker_byte_string(output, b"");
+        write_worker_byte_string(output, &[b'h'; 64]);
+        write_worker_integer(output, 0);
+        write_worker_integer(output, 0);
+        write_worker_integer(output, 502);
+        write_worker_integer(output, 1);
+        write_worker_integer(output, 0);
+        write_worker_byte_string(output, &[b'c'; 64]);
     }
 
     #[test]

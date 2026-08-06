@@ -326,7 +326,7 @@ Evidence: paths and output facts to record
   - Verify: observer coverage manifest validator for both classic-build fixtures.
   - Evidence: operation/message inventory, primary source references, bounds, and unsupported flows.
 
-- [ ] T036G Parse typed classic-build messages
+- [x] T036G Parse typed classic-build messages
   - Depends on: T025, T028, T036F
   - Outcome: `nix-worker-protocol` parses every inventoried classic-build request, response, callback, and upload boundary without retaining payload bodies or secrets.
   - Red: per-message golden fixtures fail or parser accepts a malformed/oversized shape.
