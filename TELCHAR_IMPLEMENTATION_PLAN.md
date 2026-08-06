@@ -565,12 +565,14 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/src/lib.rs`, `crates/telchar/tests/ipc_schema.rs`, `docs/adr/local-ipc-envelope.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: pending.
 
-- [ ] T051 Authenticate local frontend peer
+- [x] T051 Authenticate local frontend peer
   - Depends on: T050
   - Outcome: daemon accepts only expected local OS identity or socket credentials.
-  - Red: wrong-user fixture connects successfully.
-  - Verify: local socket authorization test.
-  - Evidence: allowed and denied peer facts.
+  - Red: `nix develop -c cargo test -p telchar --test ipc_auth --locked` failed because `authorize_peer` and the peer-credential fixture were absent.
+  - Verify: `nix develop -c cargo test -p telchar --test ipc_auth --locked` exits `0` (`2 passed`).
+  - Evidence: `docs/adr/local-ipc-peer-authentication.md`; Linux `SO_PEERCRED` via `rustix`; current kernel UID accepted; wrong UID denied with `PermissionDenied`; bounded tracing events.
+  - Changed paths: `crates/telchar/Cargo.toml`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_auth.rs`, `docs/adr/local-ipc-peer-authentication.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
+  - `jj` changeset: pending.
 
 - [ ] T052 Connect `serve-stdio` frontend to daemon
   - Depends on: T051

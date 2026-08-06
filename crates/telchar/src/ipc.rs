@@ -1,11 +1,26 @@
 use std::io;
+use std::os::fd::AsFd;
+
+#[cfg(target_os = "linux")]
+pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()> {
+    let peer = rustix::net::sockopt::socket_peercred(socket)
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
+    if peer.uid.as_raw() != expected_uid {
+        tracing::warn!(event = "ipc.peer.rejected", reason = "unexpected-uid");
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "local IPC peer has unexpected user identity",
+        ));
+    }
+    tracing::debug!(event = "ipc.peer.authorized", "local IPC peer authorized");
+    Ok(())
+}
 
 pub const IPC_VERSION: u16 = 1;
 const MAGIC: &[u8; 4] = b"TIPC";
 pub const MAX_IPC_COMPONENT_BYTES: usize = 256;
 pub const MAX_IPC_ERROR_MESSAGE_BYTES: usize = 4096;
 pub const MAX_IPC_ENVELOPE_BYTES: usize = 16 * 1024;
-const MAX_ENVELOPE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequesterMetadata {
