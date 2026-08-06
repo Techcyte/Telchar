@@ -519,7 +519,7 @@ Evidence: paths and output facts to record
 
 ### Ingress decision and identity handoff
 
-- [ ] T046 Document OpenSSH process and IPC threat model
+- [x] T046 Document OpenSSH process and IPC threat model
   - Depends on: T045
   - Outcome: ADR defines frontend/daemon privilege boundary, trusted metadata sources, local peer authentication, and spoofing threats.
   - Red: threat checklist exposes unspecified trust edge.
