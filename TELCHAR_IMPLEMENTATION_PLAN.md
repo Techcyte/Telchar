@@ -386,7 +386,7 @@ Evidence: paths and output facts to record
 
 ### Gate 0 acceptance
 
-- [ ] T021 Verify Gate 0 from clean checkout
+- [x] T021 Verify Gate 0 from clean checkout
   - Depends on: T008, T009, T009E, T010, T016, T018, T020
   - Outcome: clean checkout enters dev shell, reports pinned versions, passes baseline checks, exports correlated OTLP smoke signals, and validates compatibility records and provenance.
   - Red: gate script reports any missing artifact.
