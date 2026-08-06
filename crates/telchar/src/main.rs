@@ -50,15 +50,23 @@ fn serve_stdio() {
             )
         })
         .and_then(|_| nix_worker_protocol::read_worker_operation_from(&mut input));
-    if let Err(_error) = result {
-        tracing::error!(
-            event = "worker.operation.rejected",
-            rejection = "unknown-operation",
-            "worker operation rejected"
-        );
-        let _ = nix_worker_protocol::write_worker_error(&mut output, "unknown worker operation");
-        let _ = output.flush();
+    match result {
+        Err(_) => reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation"),
+        Ok(operation) if !operation.is_fixture_allowed() => {
+            reject_worker_operation(&mut output, "recognized-unsupported", "unsupported worker operation");
+        }
+        Ok(_) => {}
     }
 
     telemetry.shutdown();
+}
+
+fn reject_worker_operation(output: &mut impl Write, rejection: &str, message: &str) {
+    tracing::error!(
+        event = "worker.operation.rejected",
+        rejection,
+        "worker operation rejected"
+    );
+    let _ = nix_worker_protocol::write_worker_error(output, message);
+    let _ = output.flush();
 }

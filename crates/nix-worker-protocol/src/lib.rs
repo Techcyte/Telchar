@@ -98,6 +98,21 @@ pub enum WorkerOperation {
     AddPermRoot,
 }
 
+impl WorkerOperation {
+    pub const fn is_fixture_allowed(self) -> bool {
+        matches!(
+            self,
+            Self::IsValidPath
+                | Self::AddToStore
+                | Self::AddTempRoot
+                | Self::SetOptions
+                | Self::QueryPathInfo
+                | Self::QueryMissing
+                | Self::BuildPathsWithResults
+        )
+    }
+}
+
 pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, ProtocolError> {
     worker_operation_from_code(read_worker_integer(input)?)
 }

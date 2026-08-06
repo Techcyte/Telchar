@@ -441,7 +441,7 @@ Evidence: paths and output facts to record
   - Verify: unknown-operation integration test.
   - Evidence: captured asserted client error.
 
-- [ ] T038 Reject recognized unsupported operation
+- [x] T038 Reject recognized unsupported operation
   - Depends on: T016, T037
   - Outcome: allowlist rejects a known deferred operation distinctly from unknown input.
   - Red: unsupported operation is dispatched or reported as unknown.

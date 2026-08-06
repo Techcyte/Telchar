@@ -6,7 +6,25 @@ use nix_worker_protocol::{
 };
 
 #[test]
+fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
+    let response = send_operation(39);
+    assert_eq!(response.message, "unsupported worker operation");
+    assert_eq!(response.rejection, "recognized-unsupported");
+}
+
+#[test]
 fn unknown_operation_returns_a_framed_error() {
+    let response = send_operation(0xffff);
+    assert_eq!(response.message, "unknown worker operation");
+    assert_eq!(response.rejection, "unknown-operation");
+}
+
+struct OperationResponse {
+    message: String,
+    rejection: &'static str,
+}
+
+fn send_operation(operation: u64) -> OperationResponse {
     let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
         .arg("serve-stdio")
         .stdin(Stdio::piped())
@@ -38,7 +56,7 @@ fn unknown_operation_returns_a_framed_error() {
     assert_eq!(read_integer(&mut output), 0);
     assert_eq!(read_integer(&mut output), STDERR_LAST);
 
-    write_integer(&mut input, 0xffff);
+    write_integer(&mut input, operation);
     input.flush().expect("operation flushes");
     drop(input);
 
@@ -46,7 +64,7 @@ fn unknown_operation_returns_a_framed_error() {
     assert_eq!(read_string(&mut output), "Error");
     let _level = read_integer(&mut output);
     assert_eq!(read_string(&mut output), "Error");
-    assert_eq!(read_string(&mut output), "unknown worker operation");
+    let message = read_string(&mut output);
     assert_eq!(read_integer(&mut output), 0, "error has no position");
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
 
@@ -63,6 +81,12 @@ fn unknown_operation_returns_a_framed_error() {
         stderr.contains("worker.operation.rejected"),
         "missing structured rejection event: {stderr}"
     );
+    let rejection = if stderr.contains("recognized-unsupported") {
+        "recognized-unsupported"
+    } else {
+        "unknown-operation"
+    };
+    OperationResponse { message, rejection }
 }
 
 fn write_integer(output: &mut impl Write, value: u64) {
