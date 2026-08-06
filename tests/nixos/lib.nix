@@ -28,6 +28,37 @@ let
           ExecStart = "${telchar}/bin/telchar";
         };
       };
+      systemd.services.telchar-artifacts-failure = {
+        description = "Telchar controlled artifact failure";
+        serviceConfig = {
+          Type = "oneshot";
+          Environment = "TELCHAR_TEST_SECRET=not-for-artifacts";
+          ExecStart = "${pkgs.coreutils}/bin/false";
+        };
+      };
+      systemd.services.telchar-artifacts = {
+        description = "Telchar integration artifact capture";
+        after = [ "telchar-artifacts-failure.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = pkgs.writeShellScript "capture-telchar-artifacts" ''
+            set -eu
+            directory=/var/lib/telchar-artifacts
+            rm -rf "$directory"
+            mkdir -p "$directory"
+            journalctl -u telchar.service -u telchar-artifacts-failure.service -n 200 --no-pager \
+              | ${pkgs.gnused}/bin/sed 's/TELCHAR_TEST_SECRET=[^ ]*/TELCHAR_TEST_SECRET=[REDACTED]/g; s/not-for-artifacts/[REDACTED]/g' \
+              > "$directory/journal.log"
+            systemctl show telchar.service telchar-artifacts-failure.service --no-pager \
+              | ${pkgs.gnused}/bin/sed 's/TELCHAR_TEST_SECRET=[^ ]*/TELCHAR_TEST_SECRET=[REDACTED]/g; s/not-for-artifacts/[REDACTED]/g' \
+              > "$directory/machine-state.json"
+            test "$(wc -c < "$directory/journal.log")" -le 65536
+            test "$(wc -c < "$directory/machine-state.json")" -le 65536
+            ! grep -q 'not-for-artifacts' "$directory/journal.log" "$directory/machine-state.json"
+          '';
+        };
+      };
     };
   };
 

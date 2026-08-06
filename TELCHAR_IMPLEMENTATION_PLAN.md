@@ -416,7 +416,7 @@ Evidence: paths and output facts to record
   - Verify: flake NixOS smoke-test command.
   - Evidence: machine topology, successful oneshot service, independent network assertion, and correlated telemetry artifact.
 
-- [ ] T021D Preserve deterministic NixOS test failure artifacts
+- [x] T021D Preserve deterministic NixOS test failure artifacts
   - Depends on: T021C
   - Outcome: failed integration tests retain bounded service journals, machine state, OTLP records, and driver output while successful tests clean temporary state and emit pristine output.
   - Red: controlled failure loses diagnostics, leaks secrets, or leaves unmanaged state.
