@@ -1,5 +1,100 @@
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::net::{UnixListener, UnixStream};
+
+pub struct IpcListener {
+    listener: UnixListener,
+    expected_uid: u32,
+}
+
+pub struct IpcConnection {
+    stream: UnixStream,
+    envelope: IpcEnvelope,
+    peer_pid: u32,
+}
+
+impl IpcListener {
+    pub fn from_listener(listener: UnixListener, expected_uid: u32) -> Self {
+        Self {
+            listener,
+            expected_uid,
+        }
+    }
+
+    pub fn accept(&self) -> io::Result<IpcConnection> {
+        let _span = tracing::info_span!("ipc.connection.accept").entered();
+        let (mut stream, _) = self.listener.accept()?;
+        authorize_peer(&stream, self.expected_uid)?;
+        let envelope = Self::receive_envelope(&mut stream)?;
+        let peer_pid = peer_pid(&stream)?;
+        tracing::info!(
+            event = "ipc.connection.accepted",
+            "local IPC connection accepted"
+        );
+        Ok(IpcConnection {
+            stream,
+            envelope,
+            peer_pid,
+        })
+    }
+
+    pub fn send_envelope(stream: &mut UnixStream, envelope: &IpcEnvelope) -> io::Result<()> {
+        let encoded = envelope.encode()?;
+        let length = u32::try_from(encoded.len()).map_err(|_| invalid("IPC envelope too large"))?;
+        stream.write_all(&length.to_le_bytes())?;
+        stream.write_all(&encoded)?;
+        stream.flush()
+    }
+
+    fn receive_envelope(stream: &mut UnixStream) -> io::Result<IpcEnvelope> {
+        let mut length = [0; 4];
+        stream.read_exact(&mut length)?;
+        let length = u32::from_le_bytes(length) as usize;
+        if length > MAX_IPC_ENVELOPE_BYTES {
+            return Err(invalid("IPC envelope exceeds size limit"));
+        }
+        let mut encoded = vec![0; length];
+        stream.read_exact(&mut encoded)?;
+        IpcEnvelope::decode(&encoded)
+    }
+}
+
+impl IpcConnection {
+    pub fn envelope(&self) -> &IpcEnvelope {
+        &self.envelope
+    }
+    pub fn stream_mut(&mut self) -> &mut UnixStream {
+        &mut self.stream
+    }
+    pub fn peer_pid(&self) -> io::Result<u32> {
+        Ok(self.peer_pid)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid<Fd: AsFd>(socket: Fd) -> io::Result<u32> {
+    Ok(rustix::net::sockopt::socket_peercred(socket)
+        .map_err(io::Error::other)?
+        .pid
+        .as_raw_nonzero()
+        .get() as u32)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_pid<Fd: AsFd>(_socket: Fd) -> io::Result<u32> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "peer PID is unsupported on this platform",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn authorize_peer<Fd: AsFd>(_socket: Fd, _expected_uid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "local IPC peer credentials are unsupported on this platform",
+    ))
+}
 
 #[cfg(target_os = "linux")]
 pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()> {

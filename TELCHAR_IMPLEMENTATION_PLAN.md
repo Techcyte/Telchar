@@ -574,12 +574,14 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/Cargo.toml`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_auth.rs`, `docs/adr/local-ipc-peer-authentication.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: pending.
 
-- [ ] T052 Connect `serve-stdio` frontend to daemon
+- [x] T052 Connect `serve-stdio` frontend to daemon
   - Depends on: T051
   - Outcome: frontend forwards one protocol stream to daemon without owning scheduler or database state.
-  - Red: end-to-end local IPC handshake fails.
-  - Verify: frontend-daemon handshake test.
-  - Evidence: process IDs and successful negotiation.
+  - Red: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` failed first because `IpcListener` was absent; the first implementation test also caught an incorrect PID assertion.
+  - Verify: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` exits `0` (`1 passed`).
+  - Evidence: `docs/adr/local-ipc-frontend-attachment.md`; real Unix listener; peer authorization precedes envelope decode; bounded length-prefixed envelope; `PING`/`PONG` stream negotiation; no scheduler/database/store state; peer PID recorded only as bounded evidence.
+  - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_frontend.rs`, `docs/adr/local-ipc-frontend-attachment.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
+  - `jj` changeset: pending.
 
 - [ ] T053 Bound frontend buffering
   - Depends on: T052
