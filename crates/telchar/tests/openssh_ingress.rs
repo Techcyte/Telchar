@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -25,6 +26,103 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
             .expect("forced command evidence reads")
             .contains("original_command=arbitrary-command")
     );
+    fixture.finish();
+}
+
+#[test]
+fn ssh_tcp_forwarding_modes_are_rejected() {
+    let fixture = Fixture::start();
+
+    let mut local = fixture
+        .ssh_command()
+        .args([
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-L",
+            "127.0.0.1:12345:127.0.0.1:22",
+            "-N",
+        ])
+        .spawn()
+        .expect("local forwarding starts");
+    thread::sleep(Duration::from_millis(200));
+    let mut local_connection = TcpStream::connect("127.0.0.1:12345")
+        .expect("local forwarding listener should exist before channel denial");
+    local_connection
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("local forwarding read timeout sets");
+    std::io::Write::write_all(&mut local_connection, b"probe")
+        .expect("local forwarding probe writes");
+    let mut local_response = [0_u8; 1];
+    assert!(
+        std::io::Read::read(&mut local_connection, &mut local_response).is_err(),
+        "local forwarding unexpectedly carried data"
+    );
+    local.kill().expect("local forwarding stops");
+    local.wait().expect("local forwarding waits");
+
+    let mut remote = fixture
+        .ssh_command()
+        .args([
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-R",
+            "127.0.0.1:12346:127.0.0.1:22",
+            "-N",
+        ])
+        .spawn()
+        .expect("remote forwarding starts");
+    thread::sleep(Duration::from_millis(300));
+    if remote
+        .try_wait()
+        .expect("remote forwarding status")
+        .is_none()
+    {
+        remote.kill().expect("remote forwarding stops");
+    }
+    let remote_status = remote.wait().expect("remote forwarding waits");
+    assert!(
+        !remote_status.success(),
+        "remote forwarding unexpectedly succeeded"
+    );
+
+    let mut dynamic = fixture
+        .ssh_command()
+        .args([
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-D",
+            "127.0.0.1:12347",
+            "-N",
+        ])
+        .spawn()
+        .expect("dynamic forwarding starts");
+    thread::sleep(Duration::from_millis(200));
+    let mut dynamic_connection = TcpStream::connect("127.0.0.1:12347")
+        .expect("dynamic forwarding listener should exist before channel denial");
+    dynamic_connection
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("dynamic forwarding read timeout sets");
+    std::io::Write::write_all(&mut dynamic_connection, &[5, 1, 0]).expect("SOCKS greeting writes");
+    let mut dynamic_response = [0_u8; 2];
+    std::io::Read::read_exact(&mut dynamic_connection, &mut dynamic_response)
+        .expect("SOCKS method response reads");
+    assert_eq!(dynamic_response[0], 5, "invalid SOCKS version");
+    std::io::Write::write_all(
+        &mut dynamic_connection,
+        &[
+            5, 1, 0, 3, 9, b'1', b'2', b'7', b'.', b'0', b'.', b'0', b'.', b'1', 0, 22,
+        ],
+    )
+    .expect("SOCKS connect request writes");
+    let mut dynamic_connect_response = [0_u8; 10];
+    let dynamic_read = std::io::Read::read(&mut dynamic_connection, &mut dynamic_connect_response);
+    assert!(
+        dynamic_read.map_or(true, |count| count == 0 || dynamic_connect_response[1] != 0),
+        "dynamic forwarding unexpectedly connected"
+    );
+    dynamic.kill().expect("dynamic forwarding stops");
+    dynamic.wait().expect("dynamic forwarding waits");
+
     fixture.finish();
 }
 
