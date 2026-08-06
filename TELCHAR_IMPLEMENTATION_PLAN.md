@@ -552,7 +552,7 @@ Evidence: paths and output facts to record
   - Outcome: credential ID, audit subject, quota subject, certificate metadata, and source address normalize deterministically.
   - Red: table-driven normalization tests fail.
   - Verify: identity unit tests.
-  - Evidence: public-key and certificate cases.
+  - Evidence: public-key and certificate cases, credential-ID quota fallback, collision-free certificate identifiers, and exact component bounds.
 
 ### Frontend and local IPC
 

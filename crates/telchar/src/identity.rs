@@ -70,10 +70,11 @@ pub fn normalize_requester(input: IdentityInput) -> Result<Requester, NormalizeE
             source_address,
         } => {
             validate_component("fingerprint", &fingerprint)?;
+            let credential_id = format!("ssh-pubkey:{fingerprint}");
             let audit_subject = choose_subject("audit subject", audit_subject, &fingerprint)?;
-            let quota_subject = choose_subject("quota subject", quota_subject, &fingerprint)?;
+            let quota_subject = choose_subject("quota subject", quota_subject, &credential_id)?;
             Ok(Requester {
-                credential_id: format!("ssh-pubkey:{fingerprint}"),
+                credential_id,
                 audit_subject,
                 quota_subject,
                 certificate: None,
@@ -96,7 +97,7 @@ pub fn normalize_requester(input: IdentityInput) -> Result<Requester, NormalizeE
             for principal in &principals {
                 validate_component("certificate principal", principal)?;
             }
-            let credential_id = format!("ssh-cert:{ca_fingerprint}:{key_id}");
+            let credential_id = certificate_credential_id(&ca_fingerprint, &key_id);
             let audit_subject = choose_subject("audit subject", audit_subject, &principals[0])?;
             let quota_subject = choose_subject("quota subject", quota_subject, &credential_id)?;
             Ok(Requester {
@@ -112,6 +113,14 @@ pub fn normalize_requester(input: IdentityInput) -> Result<Requester, NormalizeE
             })
         }
     }
+}
+
+fn certificate_credential_id(ca_fingerprint: &str, key_id: &str) -> String {
+    format!(
+        "ssh-cert:{}:{ca_fingerprint}:{}:{key_id}",
+        ca_fingerprint.len(),
+        key_id.len()
+    )
 }
 
 fn choose_subject(
