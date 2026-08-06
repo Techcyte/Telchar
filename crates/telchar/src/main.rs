@@ -51,9 +51,15 @@ fn serve_stdio() {
         .and_then(|_| reader.read_operation());
     match result {
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
-        Err(_) => reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation"),
+        Err(_) => {
+            reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation")
+        }
         Ok(operation) if !operation.is_fixture_allowed() => {
-            reject_worker_operation(&mut output, "recognized-unsupported", "unsupported worker operation");
+            reject_worker_operation(
+                &mut output,
+                "recognized-unsupported",
+                "unsupported worker operation",
+            );
         }
         Ok(_) => {}
     }

@@ -2,8 +2,8 @@
 
 use std::io::{self, Read, Write};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -1151,13 +1151,13 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
-        read_fixture_client_post_handshake, read_fixture_server_handshake_info,
-        read_fixture_set_options, read_fixture_terminal_frame, read_worker_byte_string,
-        read_worker_integer, read_worker_operation, write_server_worker_magic,
-        write_worker_byte_string, write_worker_integer, ProtocolError, ProtocolSessionLimits,
-        SessionAllocationBudget, WorkerOperation, WorkerReader, WorkerVersion, CLIENT_WORKER_MAGIC,
-        LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
+        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, MINIMUM_WORKER_VERSION, ProtocolError,
+        ProtocolSessionLimits, SERVER_WORKER_MAGIC, STDERR_LAST, SessionAllocationBudget,
+        WorkerOperation, WorkerReader, WorkerVersion, protocol_name, read_client_worker_magic,
+        read_fixture_client_handshake, read_fixture_client_post_handshake,
+        read_fixture_server_handshake_info, read_fixture_set_options, read_fixture_terminal_frame,
+        read_worker_byte_string, read_worker_integer, read_worker_operation,
+        write_server_worker_magic, write_worker_byte_string, write_worker_integer,
     };
 
     #[test]

@@ -24,14 +24,12 @@ impl<R> StdioInput<R> {
 
 impl<R: Read + AsFd> Read for StdioInput<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let started = Instant::now();
-        let deadline = self
+        let timeout = self
             .deadline
-            .get_or_insert_with(|| started + self.idle_timeout);
-        let remaining = deadline.saturating_duration_since(started);
+            .map(|deadline| timeout_as_timespec(deadline.saturating_duration_since(Instant::now())))
+            .transpose()?;
         let descriptor = PollFd::new(&self.input, PollFlags::IN);
-        let timeout = timeout_as_timespec(remaining)?;
-        if poll(&mut [descriptor], Some(&timeout))? == 0 {
+        if poll(&mut [descriptor], timeout.as_ref())? == 0 {
             tracing::error!(
                 event = "worker.session.timed_out",
                 timeout_ms = self.idle_timeout.as_millis() as u64,
@@ -98,36 +96,49 @@ impl AsFd for TestInput {
 mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{StdioInput, TestInput};
-    use nix_worker_protocol::WorkerInput;
+    use nix_worker_protocol::{
+        ProtocolSessionLimits, WorkerInput, WorkerReader, CLIENT_WORKER_MAGIC,
+        LATEST_WORKER_VERSION,
+    };
     use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
     use tracing_subscriber::layer::Context;
     use tracing_subscriber::prelude::*;
+    use tracing_subscriber::Layer;
 
     #[test]
     fn incomplete_input_times_out_without_leaking_the_reader() {
-        let (client, server) = UnixStream::pair().expect("socket pair");
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
         let mut input = StdioInput::new(TestInput::new(server), Duration::from_millis(20));
-        let started = Instant::now();
         let mut byte = [0; 1];
+        client.write_all(&[1]).expect("partial message writes");
+        input.read_exact(&mut byte).expect("partial message reads");
 
         let timed_out = Arc::new(AtomicBool::new(false));
         let subscriber = tracing_subscriber::registry().with(TimeoutEvents(Arc::clone(&timed_out)));
         let error = tracing::subscriber::with_default(subscriber, || {
-            input.read(&mut byte).expect_err("idle input times out")
+            input
+                .read(&mut byte)
+                .expect_err("partial message times out")
         });
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert!(timed_out.load(Ordering::Relaxed), "timeout telemetry is emitted");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            timed_out.load(Ordering::Relaxed),
+            "timeout telemetry is emitted"
+        );
         drop(input);
         client
-            .shutdown(std::net::Shutdown::Both)
-            .expect("client closes");
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("client read timeout sets");
+        assert_eq!(client.read(&mut byte).expect("server descriptor closes"), 0);
     }
 
     struct TimeoutEvents(Arc<AtomicBool>);
@@ -163,13 +174,66 @@ mod tests {
     #[test]
     fn input_progress_resets_the_idle_deadline() {
         let (mut client, server) = UnixStream::pair().expect("socket pair");
-        let mut input = StdioInput::new(TestInput::new(server), Duration::from_millis(40));
+        let timeout = Duration::from_millis(40);
+        let mut input = StdioInput::new(TestInput::new(server), timeout);
+        let started = Instant::now();
         client.write_all(&[1]).expect("first byte writes");
         let mut byte = [0; 1];
         input.read_exact(&mut byte).expect("first byte reads");
-        std::thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(25));
         client.write_all(&[2]).expect("second byte writes");
         input.read_exact(&mut byte).expect("second byte reads");
+        thread::sleep(Duration::from_millis(25));
+        client.write_all(&[3]).expect("third byte writes");
+        input.read_exact(&mut byte).expect("third byte reads");
+        assert!(
+            started.elapsed() > timeout,
+            "progress extends the original deadline"
+        );
+    }
+
+    #[test]
+    fn complete_handshake_can_wait_without_operation_input() {
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        let timeout = Duration::from_millis(20);
+        write_worker_integer(&mut client, CLIENT_WORKER_MAGIC);
+        write_worker_integer(&mut client, LATEST_WORKER_VERSION.to_wire());
+        write_worker_integer(&mut client, 0);
+        write_worker_integer(&mut client, 0);
+        write_worker_integer(&mut client, 0);
+        client.flush().expect("handshake writes flush");
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let input = StdioInput::new(TestInput::new(server), timeout);
+            let mut reader = WorkerReader::new(input, ProtocolSessionLimits::new(1024, timeout));
+            let mut output = Vec::new();
+            let result = reader
+                .perform_server_handshake(&mut output, &[])
+                .and_then(|negotiated| {
+                    reader.complete_server_post_handshake(
+                        &mut output,
+                        negotiated.version,
+                        "telchar",
+                    )
+                })
+                .and_then(|_| reader.read_operation());
+            result_sender.send(result).expect("operation result sends");
+        });
+
+        assert!(
+            result_receiver.recv_timeout(timeout * 2).is_err(),
+            "complete handshake idle session remains alive"
+        );
+        write_worker_integer(&mut client, 1);
+        client.flush().expect("operation flushes");
+        assert_eq!(
+            result_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("operation result returns")
+                .expect("operation read"),
+            nix_worker_protocol::WorkerOperation::IsValidPath
+        );
     }
 
     #[test]
@@ -185,5 +249,11 @@ mod tests {
         input
             .read_exact(&mut byte)
             .expect("next message byte reads");
+    }
+
+    fn write_worker_integer(output: &mut impl Write, value: u64) {
+        output
+            .write_all(&value.to_le_bytes())
+            .expect("worker integer writes");
     }
 }
