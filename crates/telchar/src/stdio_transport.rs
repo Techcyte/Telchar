@@ -98,10 +98,15 @@ impl AsFd for TestInput {
 mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     use std::time::{Duration, Instant};
 
     use super::{StdioInput, TestInput};
     use nix_worker_protocol::WorkerInput;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
 
     #[test]
     fn incomplete_input_times_out_without_leaking_the_reader() {
@@ -110,14 +115,49 @@ mod tests {
         let started = Instant::now();
         let mut byte = [0; 1];
 
-        let error = input.read(&mut byte).expect_err("idle input times out");
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let subscriber = tracing_subscriber::registry().with(TimeoutEvents(Arc::clone(&timed_out)));
+        let error = tracing::subscriber::with_default(subscriber, || {
+            input.read(&mut byte).expect_err("idle input times out")
+        });
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(timed_out.load(Ordering::Relaxed), "timeout telemetry is emitted");
         assert!(started.elapsed() < Duration::from_secs(1));
         drop(input);
         client
             .shutdown(std::net::Shutdown::Both)
             .expect("client closes");
+    }
+
+    struct TimeoutEvents(Arc<AtomicBool>);
+
+    impl<S> Layer<S> for TimeoutEvents
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            let mut fields = EventFields::default();
+            event.record(&mut fields);
+            if fields.event.as_deref() == Some("worker.session.timed_out") {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct EventFields {
+        event: Option<String>,
+    }
+
+    impl Visit for EventFields {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "event" {
+                self.event = Some(value.to_owned());
+            }
+        }
+
+        fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
     }
 
     #[test]
