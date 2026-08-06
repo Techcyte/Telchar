@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
+use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -67,6 +68,36 @@ fn daemon_rejects_oversized_and_stalled_envelopes_before_worker_protocol() {
         .expect("length writes");
     stream.write_all(b"T").expect("partial envelope writes");
     stalled.finish_with_failure();
+}
+
+#[test]
+fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
+    let fixture = Fixture::start();
+    let mut stream = UnixStream::connect(&fixture.socket).expect("frontend connects");
+    IpcListener::send_envelope(
+        &mut stream,
+        &IpcEnvelope {
+            version: IPC_VERSION,
+            requester: RequesterMetadata {
+                credential_id: "ssh-pubkey:fixture".into(),
+                audit_subject: "fixture".into(),
+                quota_subject: "ssh-pubkey:fixture".into(),
+            },
+            session_id: "failed-session".into(),
+            error: Some(IpcError {
+                code: "identity-unavailable".into(),
+                message: "frontend could not attach requester".into(),
+            }),
+        },
+    )
+    .expect("error envelope sends");
+    write_word(&mut stream, CLIENT_WORKER_MAGIC);
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("response timeout sets");
+    let mut byte = [0; 1];
+    assert_eq!(stream.read(&mut byte).unwrap_or(0), 0);
+    fixture.finish_with_failure();
 }
 
 #[test]
