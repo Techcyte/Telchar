@@ -423,7 +423,7 @@ Evidence: paths and output facts to record
   - Verify: controlled-failure artifact and cleanup test.
   - Evidence: artifact paths, redaction assertions, and cleanup proof.
 
-- [ ] T021E Wire NixOS smoke test into repository gates
+- [x] T021E Wire NixOS smoke test into repository gates
   - Depends on: T021C, T021D
   - Outcome: flake checks expose a rerunnable authoritative integration target, and future real-component fixtures extend the shared `nixosTest` harness instead of creating parallel orchestration systems.
   - Red: aggregate validation omits the smoke test or fixture policy permits duplicate harnesses.
