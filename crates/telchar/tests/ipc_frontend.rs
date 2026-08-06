@@ -146,6 +146,8 @@ fn daemon_secures_socket_path_and_cleans_up_after_once() {
 fn daemon_refuses_to_replace_non_socket_path() {
     let root = temporary_root();
     fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
     let socket = root.join("daemon.sock");
     fs::write(&socket, b"preserve").expect("sentinel writes");
     let output = daemon_command(&socket, 1_000, true)
@@ -153,6 +155,55 @@ fn daemon_refuses_to_replace_non_socket_path() {
         .expect("daemon command runs");
     assert!(!output.status.success(), "daemon replaced non-socket path");
     assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
+        .expect("fixture root permissions set");
+    let socket = root.join("daemon.sock");
+    let mut daemon = daemon_command(&socket, 1_000, true)
+        .spawn()
+        .expect("daemon command runs");
+    let output = wait_with_deadline(&mut daemon, Duration::from_millis(500));
+    assert!(!output.status.success(), "daemon accepted insecure runtime directory");
+    assert_eq!(
+        fs::metadata(&root)
+            .expect("runtime directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "daemon changed existing runtime directory permissions"
+    );
+    assert!(!socket.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejected_peer_does_not_terminate_persistent_daemon() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut daemon = daemon_command_with_uid(
+        &socket,
+        1_000,
+        false,
+        rustix::process::getuid().as_raw().wrapping_add(1),
+    )
+    .spawn()
+    .expect("daemon starts");
+    wait_for_socket(&socket, &mut daemon);
+    let _rejected = UnixStream::connect(&socket).expect("rejected peer connects");
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        daemon.try_wait().expect("daemon status").is_none(),
+        "peer rejection terminated persistent daemon"
+    );
+    daemon.kill().expect("daemon stops");
+    let _ = daemon.wait();
     let _ = fs::remove_dir_all(root);
 }
 
@@ -302,13 +353,27 @@ fn complete_handshake(frontend: &mut Child) {
 }
 
 fn daemon_command(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Command {
+    daemon_command_with_uid(
+        socket,
+        envelope_timeout_ms,
+        once,
+        rustix::process::getuid().as_raw(),
+    )
+}
+
+fn daemon_command_with_uid(
+    socket: &Path,
+    envelope_timeout_ms: u64,
+    once: bool,
+    frontend_uid: u32,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
     command.args([
         "daemon",
         "--socket",
         socket.to_str().expect("UTF-8 socket path"),
         "--frontend-uid",
-        &rustix::process::getuid().as_raw().to_string(),
+        &frontend_uid.to_string(),
     ]);
     if once {
         command.arg("--once");
