@@ -2,8 +2,19 @@
 
 **Status:** Accepted for the initial frontend/daemon boundary
 
-`serve-stdio` uses one local Unix stream per SSH connection. The frontend writes one length-prefixed TIPC envelope, then forwards the worker-protocol bytes on the same stream. The daemon accepts and authenticates the peer before decoding the envelope; after successful validation, it exposes the stream attachment without creating scheduler, database, or gateway-store state.
+`serve-stdio` opens exactly one local Unix stream per SSH connection. The frontend writes one length-prefixed TIPC envelope and then forwards worker-protocol bytes over that same stream. The daemon authenticates the socket peer before reading the envelope and validates the complete envelope before accepting worker-protocol input.
 
-The length prefix is a little-endian `u32` and is rejected before allocation when greater than the 16 KiB envelope bound. The daemon records the kernel peer PID only as bounded connection telemetry/test evidence; PID is not requester identity and is not a durable authorization field. Stream bytes are not copied into an unbounded application buffer by the attachment API.
+The authenticated Unix connection is the attachment. Session identity is scoped to that connection and is consumed when the daemon accepts the envelope. There is no separately issued attachment token, second attachment connection, detached attachment registry, or replayable attachment identifier. Closing either endpoint invalidates the session. A second connection carrying the same session value is a separate request and receives no authority from the earlier connection.
 
-`crates/telchar/src/ipc.rs::IpcListener` implements listener acceptance, peer authorization, bounded envelope reception, and stream attachment. `crates/telchar/tests/ipc_frontend.rs` uses a real Unix listener and stream: the frontend envelope is decoded, `PING` is forwarded to the daemon, and `PONG` returns over the same connection. The test confirms both sides share the test process PID and no scheduler/database behavior exists in the boundary.
+This design provides the required binding directly:
+
+- `SO_PEERCRED` binds the frontend process identity to the accepted socket.
+- The bounded envelope and worker stream share one ordered byte stream, so protocol bytes cannot attach to another envelope or peer.
+- The daemon processes at most one envelope and one worker session per accepted connection.
+- Unknown versions, malformed or oversized envelopes, partial-envelope timeout, peer-authentication failure, and disconnect before validation fail closed without entering worker-protocol handling.
+
+The length prefix is a little-endian `u32` and is rejected before allocation when greater than the 16 KiB envelope bound. Envelope reception has a fixed incomplete-envelope deadline. Protocol relay uses fixed-size buffers and kernel socket backpressure; neither side retains unbounded protocol bytes. The daemon records only bounded lifecycle classifications and may record the kernel peer PID for test evidence. PID is not requester identity or durable authorization state.
+
+A daemon-issued token would add issuance, expiry, storage, replay, and mismatch state without strengthening this one-connection boundary. Such a token becomes necessary only if a future design intentionally separates metadata and worker bytes across connections. That design is out of scope and requires a separate decision.
+
+Acceptance requires distinct frontend and daemon OS processes, authenticated peer credentials, a real Nix worker handshake through `serve-stdio`, malformed and stalled envelope rejection, byte-transparent stdout, bounded buffering, and cleanup when either endpoint disconnects. Same-process threads and `PING`/`PONG` fixtures are not acceptance evidence.

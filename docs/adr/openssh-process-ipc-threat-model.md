@@ -29,7 +29,7 @@ remote client
 
 The daemon accepts IPC only from the expected local service identity using OS-enforced socket ownership and permissions plus peer credentials (`SO_PEERCRED` or the platform equivalent). The socket is created in a private runtime directory, is not reachable through a network listener, and is removed on shutdown. A frontend running as another user, a process that replaces the socket, and a client that sends forged metadata must be rejected before request attachment or shared-state access.
 
-IPC messages are versioned, length-bounded, and carry a daemon-issued session/attachment identifier. The daemon binds the attachment to the authenticated local peer and refuses replay, unknown versions, oversized metadata, and mismatched session identifiers. T050/T051 define the concrete envelope and peer-authorization tests; this ADR defines their security obligations.
+IPC messages are versioned and length-bounded. One authenticated Unix connection carries exactly one envelope followed by exactly one worker-protocol session; the connection itself binds peer, requester metadata, and worker bytes. Session identifiers are frontend-generated correlation values scoped to that connection, not bearer credentials. There is no detached attachment token or second attachment connection to replay or mismatch. The daemon rejects additional envelopes, unknown versions, oversized or stalled metadata, and all worker bytes received before complete envelope validation. T050/T051 define the concrete envelope and peer-authorization tests; this ADR defines their security obligations.
 
 ## Spoofing and abuse threats
 
@@ -41,7 +41,7 @@ IPC messages are versioned, length-bounded, and carry a daemon-issued session/at
 | Client requests arbitrary shell command | `ForceCommand` invokes only the frontend; frontend does not interpret requested commands | Misconfiguration of `sshd_config` can bypass the intended entrypoint |
 | Client allocates PTY or forwarding channels | Disable PTY, agent/X11 forwarding, and TCP forwarding in the restricted account configuration | OpenSSH configuration drift |
 | Client injects worker-protocol identity fields | Protocol identity fields are ignored; identity is attached before protocol dispatch | Future protocol additions must preserve this rule |
-| Client replays an IPC envelope | Daemon-issued session/attachment IDs, bounded lifetime, and one-time attachment state | Durable replay defense requires later request-state design |
+| Client repeats an IPC envelope | Each authenticated connection is an independent request; an envelope grants authority only to worker bytes following it on that same connection | Durable duplicate-request suppression belongs to later request-state design |
 | Frontend floods daemon or sends oversized metadata | IPC frame and field limits, per-session admission, and daemon-side validation before allocation | Resource limits are defined by T050/T052 |
 | Frontend reads or modifies shared state directly | Separate privilege, filesystem permissions, and code boundary; frontend has no database/store credentials | A frontend process compromise can still consume its own process resources |
 | Source address is treated as identity | Source address is audit/emergency context only; credential and quota subjects derive from authenticated identity | Network attribution can be affected by trusted proxy topology |

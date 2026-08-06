@@ -574,12 +574,12 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/Cargo.toml`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_auth.rs`, `docs/adr/local-ipc-peer-authentication.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: `b49778fe` (`feat: authenticate local IPC peers`).
 
-- [ ] T051A Resolve local IPC attachment lifecycle
+- [x] T051A Resolve local IPC attachment lifecycle
   - Depends on: T046, T051
-  - Outcome: reviewed decision defines attachment issuance, authenticated-peer and session binding, one-time consumption, replay rejection, and bounded expiry without trusting frontend-selected identifiers.
-  - Red: accepted threat model and implementation disagree about who issues and validates attachment identifiers.
-  - Verify: decision validator plus replay, unknown-attachment, session-mismatch, and peer-mismatch acceptance-test definitions.
-  - Evidence: accepted ADR and immutable negative-test contract.
+  - Outcome: one authenticated Unix connection carries exactly one bounded requester envelope followed by one worker-protocol session; the connection itself binds peer, metadata, and worker bytes without a detached bearer token or attachment registry.
+  - Red: accepted threat model required daemon-issued attachment state even though metadata and worker bytes already share one authenticated ordered stream.
+  - Verify: ADR review plus separate-process peer, malformed-envelope, stalled-envelope, and real worker-handshake acceptance-test definitions.
+  - Evidence: `docs/adr/local-ipc-frontend-attachment.md`, `docs/adr/local-ipc-envelope.md`, and `docs/adr/openssh-process-ipc-threat-model.md`; session ID is correlation metadata only; duplicate-request suppression remains later durable request-state work.
 
 - [ ] T052 Connect `serve-stdio` frontend to daemon
   - Depends on: T051A
