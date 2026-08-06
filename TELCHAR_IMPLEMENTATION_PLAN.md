@@ -450,14 +450,14 @@ Evidence: paths and output facts to record
 
 - [x] T038A Define protocol session resource limits
   - Depends on: T026, T035, T038
-  - Outcome: ADR defines a typed `ProtocolSessionLimits` contract with a 16 MiB maximum for concurrently retained decoded metadata, streamed-payload exclusion, checked pre-allocation charging and release, and a 30-second progress-reset idle deadline for incomplete typed messages enforced by the Telchar transport layer.
-  - Red: contract validator finds an unspecified accounting edge, timeout boundary, configuration owner, or cleanup behavior.
+  - Outcome: ADR defines a typed `ProtocolSessionLimits` contract with a 16 MiB maximum for concurrently retained decoded metadata, streamed-payload exclusion, checked pre-allocation charging and release, a session-owned `WorkerReader<R>` sharing one budget across live typed decoders, and a 30-second progress-reset idle deadline for incomplete typed messages enforced by the Telchar transport layer.
+  - Red: contract validator finds an unspecified accounting edge, decoder owner, timeout boundary, configuration owner, or cleanup behavior.
   - Verify: protocol-session-limits contract check.
-  - Evidence: allocation scope, defaults, timeout semantics, transport ownership, and clean failure behavior.
+  - Evidence: allocation scope, defaults, decoder ownership, timeout semantics, transport ownership, and clean failure behavior.
 
 - [ ] T039 Bound per-session protocol allocations
   - Depends on: T038A
-  - Outcome: session rejects decoded metadata whose concurrently retained heap capacity would exceed the configured 16 MiB default, charging with checked arithmetic before allocation and releasing charge when metadata is no longer retained; streamed payload bodies remain outside this budget.
+  - Outcome: one session-owned `WorkerReader<R>` rejects decoded metadata whose concurrently retained heap capacity would exceed the configured 16 MiB default, charging with checked arithmetic before allocation and releasing charge when metadata is no longer retained; streamed payload bodies remain outside this budget and fixture-only non-retaining slice observers remain separate.
   - Red: a sequence whose concurrently retained decoded metadata exceeds the budget succeeds, or released metadata continues consuming budget.
   - Verify: session-budget and charge-release tests.
   - Evidence: configured budget, accounting transitions, rejection point, and streamed-payload exclusion.

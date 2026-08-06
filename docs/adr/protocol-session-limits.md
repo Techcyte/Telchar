@@ -23,6 +23,12 @@ The idle deadline applies only while a handshake field, request, response, callb
 
 The Linux stdio transport may use readiness polling around its input descriptor. It must not rely on a detached or unkillable blocking reader thread.
 
+Live protocol decoding uses one session-owned `WorkerReader<R>`. It owns the input reader, the session limits, and one shared allocation budget for the lifetime of the protocol session. Typed allocating reads are methods on this reader, so nested parsers share the same budget without adding independent budget parameters to every parser API. Returned owned metadata retains private charge guards and releases its charge when dropped.
+
+Stateless wire conversion and writing functions may remain free functions. Fixture-only slice observers that retain no protocol bodies may keep their existing fixture-bounded APIs, but they must not become a second live-session decoding path. Any fixture parser used by production session handling must move behind `WorkerReader<R>`.
+
+The existing free session-level handshake reader is replaced at current call sites rather than retained as a compatibility API that silently creates an independent budget. Future typed operations extend `WorkerReader<R>` methods and reuse the same session budget. Timeout readiness remains a Telchar transport concern; `WorkerReader<R>` propagates `io::ErrorKind::TimedOut` from its input.
+
 ## Consequences
 
 The allocation rule bounds live decoded metadata without penalizing long-lived sessions that release previous messages. Streaming remains independent from metadata accounting, so large legitimate payloads do not require equivalent heap capacity.
