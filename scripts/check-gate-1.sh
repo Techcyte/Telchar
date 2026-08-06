@@ -1,9 +1,11 @@
 #!/bin/sh
 set -eu
 
-expected_nix_version='nix (Nix) 2.34.7'
-actual_nix_version="$(nix develop -c nix --version)"
-[ "$actual_nix_version" = "$expected_nix_version" ]
+nix_reference="$(nix build --no-link --print-out-paths '.#nix-reference^out')"
+expected_nix_version="$(nix eval --raw .#nix-reference.version)"
+actual_nix_version="$($nix_reference/bin/nix --version)"
+[ "$actual_nix_version" = "nix (Nix) $expected_nix_version" ]
+export TELCHAR_NIX_BIN="$nix_reference/bin/nix"
 
 nix develop -c cargo fmt --check
 nix develop -c cargo clippy --all-targets --all-features --locked -- -D warnings

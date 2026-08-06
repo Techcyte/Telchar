@@ -275,7 +275,7 @@ pub fn write_worker_error(output: &mut impl Write, message: &str) -> io::Result<
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActivityField {
-    Integer(i64),
+    Integer(u64),
     String(Vec<u8>),
 }
 
@@ -368,7 +368,7 @@ fn write_activity_fields(output: &mut impl Write, fields: &[ActivityField]) -> i
         match field {
             ActivityField::Integer(value) => {
                 write_worker_integer_to(output, 0)?;
-                write_worker_integer_to(output, *value as u64)?;
+                write_worker_integer_to(output, *value)?;
             }
             ActivityField::String(value) => {
                 write_worker_integer_to(output, 1)?;
@@ -2162,8 +2162,32 @@ mod tests {
         let mut output = Vec::new();
         let _ = write_stderr_frame(&mut output, StderrFrame::StopActivity { activity_id: 1 });
 
-        assert_eq!(&output[0..8], &STDERR_STOP_ACTIVITY.to_le_bytes());
-        assert_eq!(u64::from_le_bytes(output[8..16].try_into().unwrap()), 1);
+        let mut expected = Vec::new();
+        write_worker_integer(&mut expected, STDERR_STOP_ACTIVITY);
+        write_worker_integer(&mut expected, 1);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn writes_unsigned_activity_integer_fields() {
+        let mut output = Vec::new();
+        let _ = write_stderr_frame(
+            &mut output,
+            StderrFrame::Result {
+                activity_id: 1,
+                result_type: 2,
+                fields: vec![ActivityField::Integer(u64::MAX)],
+            },
+        );
+
+        let mut expected = Vec::new();
+        write_worker_integer(&mut expected, STDERR_RESULT);
+        write_worker_integer(&mut expected, 1);
+        write_worker_integer(&mut expected, 2);
+        write_worker_integer(&mut expected, 1);
+        write_worker_integer(&mut expected, 0);
+        write_worker_integer(&mut expected, u64::MAX);
+        assert_eq!(output, expected);
     }
 
     #[test]

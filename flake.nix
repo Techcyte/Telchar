@@ -123,6 +123,7 @@
           cargoExtraArgs = "-p telchar";
           cargoTestExtraArgs = "--lib";
         };
+        nix-reference = pkgs.nix;
         default = pkgs.nix;
       };
 

@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
@@ -20,7 +21,7 @@ fn pinned_nix_completes_worker_handshake_with_serve_stdio() {
         root.display(),
         std::env::var("PATH").expect("PATH exists")
     );
-    let output = Command::new("nix")
+    let output = Command::new(reference_nix())
         .args([
             "--extra-experimental-features",
             "nix-command",
@@ -61,7 +62,7 @@ fn pinned_nix_reports_framed_error_after_set_options() {
         root.display(),
         std::env::var("PATH").expect("PATH exists")
     );
-    let output = Command::new("nix")
+    let output = Command::new(reference_nix())
         .args([
             "--extra-experimental-features",
             "nix-command",
@@ -89,6 +90,12 @@ fn pinned_nix_reports_framed_error_after_set_options() {
         !stderr.contains("unexpected end-of-file"),
         "client received EOF instead of worker error: {stderr}"
     );
+}
+
+fn reference_nix() -> PathBuf {
+    std::env::var_os("TELCHAR_NIX_BIN")
+        .map(PathBuf::from)
+        .expect("TELCHAR_NIX_BIN identifies the flake-pinned Nix client")
 }
 
 fn unique_suffix() -> u128 {
