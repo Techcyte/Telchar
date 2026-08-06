@@ -5,10 +5,10 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, SERVER_WORKER_MAGIC, STDERR_LAST, WorkerOperation,
-    write_worker_byte_string, write_worker_integer,
+    write_worker_byte_string, write_worker_integer, WorkerOperation, CLIENT_WORKER_MAGIC,
+    SERVER_WORKER_MAGIC, STDERR_LAST,
 };
-use telchar::worker_trace::{TRACE_RELAY_BUFFER_BYTES, TraceCapture};
+use telchar::worker_trace::{TraceCapture, TRACE_RELAY_BUFFER_BYTES};
 
 #[test]
 fn captures_real_nix_worker_handshake_and_operation_without_payloads() {
