@@ -4,13 +4,13 @@
 
 | Field | Value |
 | --- | --- |
-| Client | Stock Nix 2.34.7 |
+| Client | Stock Nix 2.34.8 |
 | Client provenance | Flake-locked `NixOS/nixpkgs` revision `04607e1165ac22c5fde6dcc54c9e0b3c0487c555` |
 | Worker protocol | Accept 1.18 through 1.38; capture the negotiated version for each trace |
 | Lix | Deferred; not supported until its own real-client compatibility traces pass |
 
-Nix 2.34.7 is the package exposed by this repository's flake on `x86_64-linux`.
-The Nix 2.34.7 tag resolves to commit `2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`.
+Nix 2.34.8 is the package exposed as `nix-reference` by this repository's locked flake on `x86_64-linux`. The gate derives this version from `.#nix-reference.version` and invokes the built executable by absolute store path rather than depending on the development shell's `nix` command.
+The pinned package source resolves to the revision recorded by the flake lock and protocol evidence inventory.
 Its `src/libstore/worker-protocol.cc` defines worker-protocol latest as 1.38 and
 minimum as 1.18. The supported range here describes the pinned client's
 negotiation range; Telchar support remains limited to matrix rows with recorded
@@ -20,9 +20,9 @@ real-client evidence.
 
 | Client | Protocol range | Trust mode | Derivation class | Required trace evidence | Support state |
 | --- | --- | --- | --- | --- | --- |
-| Stock Nix 2.34.7 | 1.18–1.38 | Trusted | Classic input-addressed | `trusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:true`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Trusted trace accepted |
-| Stock Nix 2.34.7 | 1.18–1.38 | Untrusted | Classic input-addressed | `untrusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:false`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Untrusted trace accepted |
-| Stock Nix 2.34.7 | 1.18–1.38 | Trusted or untrusted | Content-addressed | Unsupported for MVP: classic input-addressed traces do not cover content-addressed behavior | Deferred pending concrete evidence |
+| Stock Nix 2.34.8 | 1.18–1.38 | Trusted | Classic input-addressed | `trusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:true`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Trusted trace accepted |
+| Stock Nix 2.34.8 | 1.18–1.38 | Untrusted | Classic input-addressed | `untrusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:false`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Untrusted trace accepted |
+| Stock Nix 2.34.8 | 1.18–1.38 | Trusted or untrusted | Content-addressed | Unsupported for MVP: classic input-addressed traces do not cover content-addressed behavior | Deferred pending concrete evidence |
 | Lix | Not recorded | Not recorded | Not recorded | Separate real-client trace packet | Deferred |
 
 The trusted trace runs the exact fixed fixture contract in

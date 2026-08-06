@@ -3,7 +3,7 @@
 ## Scope
 
 This allowlist applies only to the two accepted fixed classic input-addressed
-compatibility fixtures at pinned Nix 2.34.7 and negotiated worker version 1.38:
+compatibility fixtures at flake-pinned Nix 2.34.8 and negotiated worker version 1.38:
 `trusted-classic-build-v1` and `untrusted-classic-build-v1`. It classifies the
 operation codes in their sanitized typed trace artifacts under
 `docs/compatibility-traces/`. It is not a generic worker-protocol or service

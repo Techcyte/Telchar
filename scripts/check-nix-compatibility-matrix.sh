@@ -18,7 +18,8 @@ require() {
 	exit 1
 }
 
-require "$matrix" 'Stock Nix 2.34.7'
+expected_nix_version=$(nix eval --raw .#nix-reference.version)
+require "$matrix" "Stock Nix $expected_nix_version"
 require "$matrix" '04607e1165ac22c5fde6dcc54c9e0b3c0487c555'
 require "$matrix" '1.18 through 1.38'
 require "$matrix" 'Lix | Deferred'

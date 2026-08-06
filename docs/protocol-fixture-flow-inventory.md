@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-This inventory covers every protocol flow reachable from the current compatibility fixtures at pinned Nix 2.34.7, source revision `2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`.
+This inventory covers every protocol flow reachable from the current compatibility fixtures at the flake-pinned Nix 2.34.8 source tag.
 
 | Fixture | Client command | Reachable worker flow |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ only after the serializer below identifies it, forwards bodies through a fixed
 maximum declared length or count. It never retains a NAR, derivation, path,
 option, activity message, signature, error text, or other body.
 
-All rows below apply only to the pinned 2.34.7 fixture, negotiated at `1.38`.
+All rows below apply only to the pinned 2.34.8 fixture, negotiated at `1.38`.
 The finite values are **P003C fixture acceptance limits**, produced by two
 successful runs in each trust mode. They are observations of this exact
 fixture—not generic Nix protocol limits, service limits, or support for

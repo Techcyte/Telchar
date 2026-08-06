@@ -3,8 +3,7 @@
 ## Evidence policy
 
 This inventory covers only behavior required by the accepted fixed classic
-input-addressed fixtures at pinned Nix 2.34.7, source revision
-`2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`. Captured acceptance evidence is
+input-addressed fixtures at flake-pinned Nix 2.34.8. Captured acceptance evidence is
 limited to the bounded sanitized artifacts
 `docs/compatibility-traces/trusted-classic-build-v1.json` and
 `docs/compatibility-traces/untrusted-classic-build-v1.json`; they contain

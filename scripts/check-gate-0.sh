@@ -13,7 +13,9 @@ require_output() {
 	}
 }
 
-require_output 'nix develop -c nix --version' 'nix (Nix) 2.34.7'
+nix_reference=$(nix build --no-link --print-out-paths '.#nix-reference^out')
+expected_nix_version=$(nix eval --raw .#nix-reference.version)
+require_output "$nix_reference/bin/nix --version" "nix (Nix) $expected_nix_version"
 require_output 'nix develop -c rustc --version' 'rustc 1.95.0'
 require_output 'nix develop -c cargo --version' 'cargo 1.95.0'
 

@@ -22,8 +22,7 @@ repeatable diagnostic classification, never protocol support.
 
 ## Result
 
-Pinned Nix 2.34.7, source revision
-`2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`, produced the following candidate
+Flake-pinned Nix 2.34.8 produced the following candidate
 client-to-server operation sequence in both repetitions of both fixtures:
 
 | Trust mode | Pre-build trust result | Candidate operation codes | Candidate names |

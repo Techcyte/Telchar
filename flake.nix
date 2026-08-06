@@ -124,7 +124,7 @@
           cargoTestExtraArgs = "--lib";
         };
         nix-reference = pkgs.nix;
-        default = pkgs.nix;
+        default = self.packages.${system}.telchar;
       };
 
       devShells.${system}.default = pkgs.mkShell {

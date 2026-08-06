@@ -2,9 +2,8 @@
 
 ## Scope and non-acceptance status
 
-These are fixed discovery fixtures for pinned stock Nix 2.34.7, flake-locked
-`NixOS/nixpkgs` revision `04607e1165ac22c5fde6dcc54c9e0b3c0487c555` and Nix
-source revision `2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`. They establish
+These are fixed discovery fixtures for pinned stock Nix 2.34.8 from the flake-locked
+`NixOS/nixpkgs` revision `04607e1165ac22c5fde6dcc54c9e0b3c0487c555`. They establish
 only fixture input, topology, trust, and expected observation. Diagnostic
 capture produced from them is explicitly **not compatibility acceptance
 evidence**. No NAR body, derivation body, credential, or unbounded client
@@ -123,7 +122,7 @@ not subsequently inventoried and typed.
 
 ## Primary Nix evidence
 
-At source revision `2c6d06e9387cf58167cb5a7ab91cee7333d8d17c`,
+In the flake-pinned Nix 2.34.8 source,
 `src/libstore/globals.cc` resolves `NIX_STORE_DIR`, `NIX_STATE_DIR`, and
 `NIX_DAEMON_SOCKET_PATH`; `src/nix/unix/daemon.cc::authPeer` maps Unix peer
 credentials against `trusted-users`; and
