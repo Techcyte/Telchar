@@ -370,7 +370,7 @@ Evidence: paths and output facts to record
   - Verify: compatibility matrix deferral validation.
   - Evidence: explicit unsupported status, rationale, and future evidence prerequisites.
 
-- [ ] T016 Define initial worker-operation allowlist
+- [x] T016 Define initial worker-operation allowlist
   - Depends on: T013, T014, T015
   - Outcome: document required, optional, recognized-rejected, and unknown operation behavior.
   - Red: captured trace contains unclassified operation.
