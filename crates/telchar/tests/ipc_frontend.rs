@@ -5,10 +5,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
+
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
@@ -289,12 +292,13 @@ fn daemon_command(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Comman
 
 fn temporary_root() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "telchar-ipc-process-{}-{}",
+        "telchar-ipc-process-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time follows epoch")
-            .as_nanos()
+            .as_nanos(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
