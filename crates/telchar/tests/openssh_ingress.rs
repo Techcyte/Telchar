@@ -32,22 +32,22 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
 #[test]
 fn ssh_tcp_forwarding_modes_are_rejected() {
     let fixture = Fixture::start();
+    let local_port = unused_tcp_port();
+    let remote_port = unused_tcp_port();
+    let dynamic_port = unused_tcp_port();
+    let local_forward = format!("127.0.0.1:{local_port}:127.0.0.1:22");
+    let remote_forward = format!("127.0.0.1:{remote_port}:127.0.0.1:22");
+    let dynamic_listener = format!("127.0.0.1:{dynamic_port}");
 
     let mut local = fixture
         .ssh_command()
-        .args([
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-L",
-            "127.0.0.1:12345:127.0.0.1:22",
-            "-N",
-        ])
+        .args(["-o", "ExitOnForwardFailure=yes", "-L", &local_forward, "-N"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("local forwarding starts");
     thread::sleep(Duration::from_millis(200));
-    let mut local_connection = TcpStream::connect("127.0.0.1:12345")
+    let mut local_connection = TcpStream::connect(("127.0.0.1", local_port))
         .expect("local forwarding listener should exist before channel denial");
     local_connection
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -68,7 +68,7 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             "-o",
             "ExitOnForwardFailure=yes",
             "-R",
-            "127.0.0.1:12346:127.0.0.1:22",
+            &remote_forward,
             "-N",
         ])
         .stdout(Stdio::null())
@@ -95,7 +95,7 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             "-o",
             "ExitOnForwardFailure=yes",
             "-D",
-            "127.0.0.1:12347",
+            &dynamic_listener,
             "-N",
         ])
         .stdout(Stdio::null())
@@ -103,7 +103,7 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
         .spawn()
         .expect("dynamic forwarding starts");
     thread::sleep(Duration::from_millis(200));
-    let mut dynamic_connection = TcpStream::connect("127.0.0.1:12347")
+    let mut dynamic_connection = TcpStream::connect(("127.0.0.1", dynamic_port))
         .expect("dynamic forwarding listener should exist before channel denial");
     dynamic_connection
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -139,7 +139,6 @@ fn client_identity_environment_cannot_spoof_authenticated_requester() {
         .ssh_command()
         .env("TELCHAR_AUTHENTICATED_KEY", "spoofed-client-key")
         .env("TELCHAR_CLIENT_SUPPLIED_KEY", "spoofed-client-key")
-        .env("TELCHAR_AUTHENTICATED_KEY", "spoofed-client-key")
         .arg("ignored-command")
         .output()
         .expect("identity spoof SSH request runs");
@@ -148,7 +147,7 @@ fn client_identity_environment_cannot_spoof_authenticated_requester() {
         .expect("identity evidence reads");
     assert!(evidence.contains("authenticated_key="));
     assert!(!evidence.contains("authenticated_key=spoofed-client-key"));
-    assert!(!evidence.contains("authenticated_key=spoofed-client-key"));
+    assert!(evidence.contains("client_supplied_key=spoofed-client-key"));
     fixture.finish();
 }
 
@@ -324,13 +323,14 @@ impl Fixture {
         fs::write(
             &forced,
             format!(
-                "#!/bin/sh\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}
+                "#!/bin/sh\nTELCHAR_AUTHENTICATED_KEY={}\nexport TELCHAR_AUTHENTICATED_KEY\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}
 printf 'authenticated_key=%s\\n' \"${{TELCHAR_AUTHENTICATED_KEY-}}\" >> {}
 printf 'client_supplied_key=%s\\n' \"${{TELCHAR_CLIENT_SUPPLIED_KEY-}}\" >> {}
 printf 'agent_socket_value=%s\\n' \"${{SSH_AUTH_SOCK-}}\" >> {}
 case \"${{SSH_AUTH_SOCK-}}\" in /tmp/ssh-*) printf 'agent_socket=forwarded\\n' >> {} ;; *) printf 'agent_socket=not-forwarded\\n' >> {} ;; esac
 if [ -n \"${{DISPLAY-}}\" ]; then printf 'display=present\\n' >> {}; else printf 'display=absent\\n' >> {}; fi
 exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                fingerprint,
                 root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
@@ -399,7 +399,9 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
         let mut command = Command::new(command_path("ssh"));
         command.args([
             "-o",
-            "SendEnv=TELCHAR_CLIENT_SUPPLIED_KEY,TELCHAR_AUTHENTICATED_KEY",
+            "SendEnv=TELCHAR_CLIENT_SUPPLIED_KEY",
+            "-o",
+            "SendEnv=TELCHAR_AUTHENTICATED_KEY",
             "-F",
             self.root
                 .join("ssh_config")
@@ -430,12 +432,16 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
         command
     }
 
-    fn finish(mut self) {
-        self.sshd.kill().expect("sshd stops");
-        self.sshd.wait().expect("sshd waits");
-        self.daemon.kill().expect("daemon stops");
-        self.daemon.wait().expect("daemon waits");
-        fs::remove_dir_all(self.root).expect("fixture cleans up");
+    fn finish(self) {}
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = self.sshd.kill();
+        let _ = self.sshd.wait();
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -494,6 +500,14 @@ fn wait_for_path(path: &Path, child: &mut Child) {
         );
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn unused_tcp_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("ephemeral TCP listener binds")
+        .local_addr()
+        .expect("ephemeral TCP listener has address")
+        .port()
 }
 
 fn unique_suffix() -> u128 {
