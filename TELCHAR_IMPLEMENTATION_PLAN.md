@@ -363,7 +363,7 @@ Evidence: paths and output facts to record
   - Verify: rerun untrusted trace fixture.
   - Evidence: exact fixture ID, operation/frame sequence, trust negotiation, and output proof.
 
-- [ ] T015 Defer content-addressed compatibility explicitly
+- [x] T015 Defer content-addressed compatibility explicitly
   - Depends on: T010
   - Outcome: compatibility matrix and protocol allowlist mark content-addressed builds unsupported for MVP until a concrete fixture, required operations, result semantics, and typed observer coverage are separately designed.
   - Red: matrix leaves content-addressed support ambiguous or implies classic fixtures cover it.
