@@ -583,12 +583,14 @@ Evidence: paths and output facts to record
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_frontend.rs`, `docs/adr/local-ipc-frontend-attachment.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
   - `jj` changeset: pending.
 
-- [ ] T053 Bound frontend buffering
+- [x] T053 Bound frontend buffering
   - Depends on: T052
   - Outcome: slow daemon or client cannot cause unbounded frontend memory.
-  - Red: backpressure test exceeds configured buffer.
-  - Verify: bounded-stream test.
-  - Evidence: buffer limits and observed maximum.
+  - Red: `nix develop -c cargo test -p telchar --test ipc_buffer --locked` failed because bounded relay API and buffer constant were absent.
+  - Verify: `nix develop -c cargo test -p telchar --test ipc_buffer --locked` exits `0` (`1 passed`).
+  - Evidence: `docs/adr/local-ipc-buffering.md`; one fixed 16 KiB relay buffer; real Unix socket backpressure; 32x payload delivered byte-for-byte; observed maximum buffered bytes equals 16 KiB; relay completion telemetry.
+  - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_buffer.rs`, `docs/adr/local-ipc-buffering.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
+  - `jj` changeset: pending.
 
 ### SSH restrictions
 

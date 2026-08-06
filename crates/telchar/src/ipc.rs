@@ -2,6 +2,39 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 
+pub const MAX_FRONTEND_BUFFER_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayStats {
+    pub maximum_buffered_bytes: usize,
+}
+
+pub fn relay_bounded(
+    mut source: UnixStream,
+    mut destination: UnixStream,
+) -> io::Result<RelayStats> {
+    let _span =
+        tracing::info_span!("ipc.stream.relay", buffer_bytes = MAX_FRONTEND_BUFFER_BYTES).entered();
+    let mut buffer = [0; MAX_FRONTEND_BUFFER_BYTES];
+    let mut maximum_buffered_bytes = 0;
+    loop {
+        let received = source.read(&mut buffer)?;
+        if received == 0 {
+            destination.shutdown(std::net::Shutdown::Write)?;
+            tracing::info!(
+                event = "ipc.stream.relay.completed",
+                maximum_buffered_bytes,
+                "bounded IPC stream relay completed"
+            );
+            return Ok(RelayStats {
+                maximum_buffered_bytes,
+            });
+        }
+        maximum_buffered_bytes = maximum_buffered_bytes.max(received);
+        destination.write_all(&buffer[..received])?;
+    }
+}
+
 pub struct IpcListener {
     listener: UnixListener,
     expected_uid: u32,
