@@ -434,7 +434,7 @@ Evidence: paths and output facts to record
 
 ### Post-capture dispatch safety
 
-- [ ] T037 Reject unknown operation code
+- [x] T037 Reject unknown operation code
   - Depends on: T016, T021E, T036
   - Outcome: unknown code produces deterministic Nix-compatible error framing.
   - Red: client sees EOF or panic.

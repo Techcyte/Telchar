@@ -9,6 +9,7 @@ pub const LATEST_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 pub const FEATURE_NEGOTIATION_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 pub const STDERR_NEXT: u64 = 0x6f6c_6d67;
 pub const STDERR_LAST: u64 = 0x616c_7473;
+pub const STDERR_ERROR: u64 = 0x6378_7470;
 pub const STDERR_START_ACTIVITY: u64 = 0x5354_5254;
 pub const STDERR_STOP_ACTIVITY: u64 = 0x5354_4f50;
 pub const STDERR_RESULT: u64 = 0x5253_4c54;
@@ -98,7 +99,11 @@ pub enum WorkerOperation {
 }
 
 pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, ProtocolError> {
-    match read_worker_integer(input)? {
+    worker_operation_from_code(read_worker_integer(input)?)
+}
+
+pub fn worker_operation_from_code(code: u64) -> Result<WorkerOperation, ProtocolError> {
+    match code {
         1 => Ok(WorkerOperation::IsValidPath),
         6 => Ok(WorkerOperation::QueryReferrers),
         7 => Ok(WorkerOperation::AddToStore),
@@ -138,6 +143,21 @@ pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, Proto
         47 => Ok(WorkerOperation::AddPermRoot),
         _ => Err(ProtocolError::UnsupportedOperation),
     }
+}
+
+pub fn read_worker_operation_from(input: &mut impl Read) -> io::Result<WorkerOperation> {
+    worker_operation_from_code(read_worker_integer_from(input)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))
+}
+
+pub fn write_worker_error(output: &mut impl Write, message: &str) -> io::Result<()> {
+    write_worker_integer_to(output, STDERR_ERROR)?;
+    write_worker_byte_string_to(output, b"Error")?;
+    write_worker_integer_to(output, 0)?;
+    write_worker_byte_string_to(output, b"Error")?;
+    write_worker_byte_string_to(output, message.as_bytes())?;
+    write_worker_integer_to(output, 0)?;
+    write_worker_integer_to(output, 0)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

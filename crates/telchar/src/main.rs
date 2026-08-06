@@ -1,6 +1,6 @@
 mod telemetry;
 
-use std::io;
+use std::io::{self, Write};
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("serve-stdio") {
@@ -33,6 +33,8 @@ fn main() {
 }
 
 fn serve_stdio() {
+    let telemetry = telemetry::Telemetry::initialize()
+        .expect("telemetry configuration must initialize before application work");
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
@@ -46,8 +48,17 @@ fn serve_stdio() {
                 negotiated.version,
                 "telchar",
             )
-        });
-    if let Err(error) = result {
-        eprintln!("telchar serve-stdio: {error}");
+        })
+        .and_then(|_| nix_worker_protocol::read_worker_operation_from(&mut input));
+    if let Err(_error) = result {
+        tracing::error!(
+            event = "worker.operation.rejected",
+            rejection = "unknown-operation",
+            "worker operation rejected"
+        );
+        let _ = nix_worker_protocol::write_worker_error(&mut output, "unknown worker operation");
+        let _ = output.flush();
     }
+
+    telemetry.shutdown();
 }
