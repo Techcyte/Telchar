@@ -1,44 +1,23 @@
 # Telchar
 
-A lightweight Nix build distributor.
+Telchar is a self-hosted gateway for distributing Nix builds across execution backends while preserving the stock Nix client and worker protocol.
 
-## Status
+Nix remains responsible for evaluation and deciding which derivations are ready to build. Telchar aims to provide:
 
-Early implementation. Telchar is not ready for production use.
+- One stable remote-builder endpoint for stock Nix clients.
+- Central admission control, quotas, fair queueing, and scheduling.
+- Backend selection across local Nix, static SSH builders, Nomad jobs, and future providers.
+- Durable request and execution-attempt tracking in PostgreSQL.
+- Input staging, output collection, cancellation, retry classification, and restart recovery.
+- Correlated OpenTelemetry logs, metrics, and traces.
+- Optional binary-cache integration that never affects build correctness.
 
-## Trust boundary
+Initial deployments use one active Telchar daemon. Restricted OpenSSH forced-command frontends carry worker-protocol sessions to the daemon over authenticated local IPC. The daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation.
 
-Initial deployments are Linux-first and single-active: one Telchar daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation. Authenticated clients share one mutually trusted Nix store domain. This is not hostile multi-tenant isolation or per-path authorization.
+Authenticated clients initially share one mutually trusted Nix store domain. Telchar does not initially provide hostile multi-tenant isolation or per-path authorization.
 
-Read the [design brief](telchar-design.md) and [implementation plan](TELCHAR_IMPLEMENTATION_PLAN.md) before changing the system.
+See the [design brief](telchar-design.md), [implementation plan](TELCHAR_IMPLEMENTATION_PLAN.md), and [deployment assumptions](docs/adr/deployment-assumptions.md) for the complete architecture and delivery plan.
 
-## Development
+## License
 
-Requirements: Nix with `nix-command` and `flakes` experimental features enabled.
-
-From repository root, inspect pinned inputs and enter the reproducible development shell:
-
-```sh
-nix flake metadata
-nix develop
-```
-
-Build the workspace:
-
-```sh
-nix develop -c cargo build --workspace --locked
-```
-
-Run the individual checks:
-
-```sh
-nix develop -c cargo fmt --check
-nix develop -c cargo clippy --all-targets --all-features -- -D warnings
-nix develop -c cargo test --lib --locked
-```
-
-Run every repository check:
-
-```sh
-nix flake check
-```
+Telchar is licensed under the [MIT License](LICENSE).
