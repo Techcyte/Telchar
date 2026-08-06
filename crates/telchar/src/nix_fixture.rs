@@ -14,6 +14,7 @@ pub enum TrustMode {
 
 pub struct NixDaemon {
     child: Child,
+    diagnostic_operations: Option<Vec<u64>>,
     environment: BTreeMap<&'static str, String>,
     socket_path: PathBuf,
 }
@@ -118,6 +119,18 @@ impl NixFixture {
     }
 
     pub fn start_daemon(&self, mode: TrustMode) -> io::Result<NixDaemon> {
+        self.start_daemon_with_diagnostics(mode, false)
+    }
+
+    pub fn start_diagnostic_daemon(&self, mode: TrustMode) -> io::Result<NixDaemon> {
+        self.start_daemon_with_diagnostics(mode, true)
+    }
+
+    fn start_daemon_with_diagnostics(
+        &self,
+        mode: TrustMode,
+        diagnostics_enabled: bool,
+    ) -> io::Result<NixDaemon> {
         let user = fixture_user()?;
         if user == "root" {
             return Err(io::Error::other(
@@ -133,11 +146,15 @@ impl NixFixture {
             fs::read_to_string(&self.config_path)?
         );
         let environment = self.daemon_environment(config);
-        let mut child = Command::new("nix-daemon")
+        let mut command = Command::new("nix-daemon");
+        command
             .envs(&environment)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        if diagnostics_enabled {
+            command.arg("--debug");
+        }
+        let mut child = command.spawn()?;
 
         for _ in 0..100 {
             if self.socket_path.exists() {
@@ -148,6 +165,7 @@ impl NixFixture {
                 );
                 return Ok(NixDaemon {
                     child,
+                    diagnostic_operations: diagnostics_enabled.then(Vec::new),
                     environment,
                     socket_path: self.socket_path.clone(),
                 });
@@ -236,22 +254,33 @@ impl NixDaemon {
         }
     }
 
+    pub fn diagnostic_operations(&self) -> io::Result<Vec<u64>> {
+        self.diagnostic_operations
+            .clone()
+            .ok_or_else(|| io::Error::other("fixture daemon diagnostics are disabled"))
+    }
+
     /// Runs the fixture's fixed input-addressed build through this daemon only.
     pub fn build_classic_derivation(&mut self) -> io::Result<PathBuf> {
         let expression = "derivation { name = \"telchar-classic-fixture\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf telchar-classic-fixture > \\\"$out\\\"\" ]; }";
-        let output = Command::new("nix")
-            .envs(&self.environment)
-            .args([
-                "--store",
-                &self.store_url(),
-                "build",
-                "--impure",
-                "--expr",
-                expression,
-                "--no-link",
-                "--print-out-paths",
-            ])
-            .output()?;
+        let mut command = Command::new("nix");
+        command.envs(&self.environment).args([
+            "--store",
+            &self.store_url(),
+            "build",
+            "--impure",
+            "--expr",
+            expression,
+            "--no-link",
+            "--print-out-paths",
+        ]);
+        if self.diagnostic_operations.is_some() {
+            command.arg("--debug");
+        }
+        let output = command.output()?;
+        if let Some(operations) = &mut self.diagnostic_operations {
+            *operations = diagnostic_operation_codes(&output.stderr);
+        }
         if !output.status.success() {
             return Err(io::Error::other("fixture daemon classic build failed"));
         }
@@ -277,6 +306,16 @@ impl NixDaemon {
         );
         Ok(())
     }
+}
+
+fn diagnostic_operation_codes(output: &[u8]) -> Vec<u64> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            line.split_once("performing daemon worker op: ")
+                .and_then(|(_, value)| value.parse().ok())
+        })
+        .collect()
 }
 
 fn fixture_user() -> io::Result<String> {

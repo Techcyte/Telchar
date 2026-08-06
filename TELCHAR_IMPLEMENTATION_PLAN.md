@@ -312,7 +312,7 @@ Evidence: paths and output facts to record
   - Verify: fixture-contract validator and manual command review against pinned Nix documentation.
   - Evidence: exact commands, Nix configuration, derivation source/hash, machine/process roles, and expected success/failure observations.
 
-- [ ] T036E Discover candidate classic-build flows diagnostically
+- [x] T036E Discover candidate classic-build flows diagnostically
   - Depends on: T036D
   - Outcome: run the fixed fixtures through a disposable diagnostic capture to identify candidate operations, responses, callbacks, and uploads; diagnostic output is sanitized and explicitly cannot satisfy compatibility acceptance.
   - Red: either fixture cannot run reproducibly or diagnostic output contains an unexplained flow or retained payload/secret.

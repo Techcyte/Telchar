@@ -78,3 +78,34 @@ fn fixture_owned_daemon_builds_the_fixed_classic_derivation_in_both_trust_modes(
         fixture.cleanup().expect("fixture cleans up");
     }
 }
+
+#[test]
+fn classic_build_diagnostics_repeat_sanitized_worker_operation_candidates() {
+    for mode in [TrustMode::Trusted, TrustMode::Untrusted] {
+        let first = diagnostic_operations(mode);
+        let second = diagnostic_operations(mode);
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            vec![19, 11, 1, 7, 40, 26, 46],
+            "diagnostic classifications changed"
+        );
+    }
+}
+
+fn diagnostic_operations(mode: TrustMode) -> Vec<u64> {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_diagnostic_daemon(mode)
+        .expect("diagnostic daemon starts");
+    daemon
+        .build_classic_derivation()
+        .expect("diagnostic fixture build succeeds");
+    let operations = daemon
+        .diagnostic_operations()
+        .expect("diagnostic operation classifications read");
+    daemon.stop().expect("diagnostic daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+    operations
+}
