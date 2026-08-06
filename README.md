@@ -1,8 +1,10 @@
 # Telchar
 
-Telchar is a self-hosted Nix build gateway. It presents one stable remote-builder endpoint to stock Nix clients, applies admission and scheduling policy, and dispatches submitted build operations to compatible execution backends.
+Telchar is intended to be a self-hosted Nix build gateway. It will present one stable remote-builder endpoint to stock Nix clients, apply admission and scheduling policy, and dispatch submitted build operations to compatible execution backends.
 
-Clients continue using ordinary Nix commands and remote-builder configuration. They do not need a custom client, a patched Nix installation, or knowledge of the execution fleet.
+Clients will continue using ordinary Nix commands and remote-builder configuration. They will not need a custom client, a patched Nix installation, or knowledge of the execution fleet.
+
+The implemented boundary currently completes stock-Nix handshake and `SetOptions`, then returns a framed unsupported-operation error. Typed classic-build traffic has been observed byte-transparently through a test-only proxy to a real Nix daemon, but Telchar does not yet execute or return a build. Gateway store, persistence, scheduler, and backend sections below describe target architecture.
 
 ```text
 Stock Nix client
@@ -60,8 +62,8 @@ The advisory lock prevents accidental split brain. It is not leader election or 
 A submitted build follows this path:
 
 1. OpenSSH authenticates the client and starts the restricted frontend.
-2. The frontend negotiates the supported Nix worker protocol and forwards typed operations to the daemon.
-3. The daemon normalizes requester identity and checks system, feature, quota, concurrency, and transfer policy.
+2. The frontend forwards authenticated requester metadata and worker bytes to the daemon over one bounded local stream.
+3. The daemon validates requester metadata, negotiates the supported Nix worker protocol, and checks system, feature, quota, concurrency, and transfer policy.
 4. Required inputs are copied into the gateway store under bounded transfer admission.
 5. The request enters a fair queue. Backend capacity is distinct from client ingress credit.
 6. The daemon creates a durable execution attempt and backend idempotency key before submission.

@@ -26,11 +26,19 @@ real-client evidence.
 | Lix | Not recorded | Not recorded | Not recorded | Separate real-client trace packet | Deferred |
 
 The trusted trace runs the exact fixed fixture contract in
-`docs/classic-build-fixtures.md` through `TraceCapture`; its boundary coverage
-is the classic-build inventory in `docs/protocol-fixture-flow-inventory.md`.
-The trace stores only negotiated versions, the typed trust outcome, and
-operation classifications. It stores neither the output path nor any request,
-response, upload, derivation, NAR, secret, or raw protocol body.
+`docs/classic-build-fixtures.md` through the test-only `TraceCapture` proxy to a
+real Nix daemon; its boundary coverage is the classic-build inventory in
+`docs/protocol-fixture-flow-inventory.md`. The trace stores only negotiated
+versions, the typed trust outcome, and operation classifications. It stores
+neither the output path nor any request, response, upload, derivation, NAR,
+secret, or raw protocol body.
+
+These rows prove observed client↔Nix-daemon fixture traffic and typed transparent
+observation. They do **not** mean the Telchar daemon can execute those builds.
+The production daemon currently completes handshake, post-handshake information,
+and `SetOptions`; it returns a Nix-compatible framed rejection for every later
+store/build operation. End-to-end Telchar build support remains pending Gate 3,
+including T076–T089 and the required-operation coverage task T086A.
 
 ## Content-addressed deferral
 

@@ -519,7 +519,7 @@ Evidence: paths and output facts to record
 
 - [x] T045 Verify Gate 1 stdio protocol proof
   - Depends on: T030, T035, T038, T039, T040, T041, T042, T043, T044
-  - Outcome: real pinned Nix negotiates over stdio; malformed, oversized, unsupported, and unknown inputs fail cleanly.
+  - Outcome: real pinned Nix negotiates over the production frontend/daemon path, completes `SetOptions`, and decodes framed rejection; malformed, oversized, unsupported, and unknown inputs fail cleanly. This is not a successful store-operation or build claim.
   - Red: gate script reports missing evidence.
   - Verify: protocol unit/property/fuzz-smoke and real-client stdio suite.
   - Evidence: exact commands and pristine output.
@@ -904,7 +904,7 @@ Evidence: paths and output facts to record
 
 - [ ] T086A Expand plan for every required worker operation
   - Depends on: T016, T064, T065, T066, T068, T076
-  - Outcome: for every operation classified required by T016, add or identify a focused decoder, dispatcher, store behavior, response-framing task, and real-client test before end-to-end success.
+  - Outcome: for every operation observed as required by the test-only classic fixture inventory, add or identify a focused production decoder, dispatcher, store behavior, response-framing task, and real-client test before end-to-end Telchar success. Observer relay evidence cannot satisfy production coverage.
   - Red: operation coverage checker finds required operation without complete implementation/test mapping.
   - Verify: operation coverage script against allowlist and plan manifest.
   - Evidence: zero uncovered required operations and added task IDs.
