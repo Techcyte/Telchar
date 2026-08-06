@@ -76,6 +76,8 @@ impl Fixture {
             unique_suffix()
         ));
         fs::create_dir(&root).expect("test root creates");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("test root permissions set");
         let ssh = root.join("ssh");
         fs::write(&ssh, "#!/bin/sh\nexec \"$TELCHAR_STDIO_BIN\" serve-stdio\n")
             .expect("SSH shim writes");

@@ -1,13 +1,17 @@
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
 };
+
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn live_set_options_request_returns_terminal_frame() {
@@ -147,14 +151,17 @@ struct FrontendFixture {
 impl FrontendFixture {
     fn spawn(worker_timeout_ms: Option<u64>) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "telchar-operation-{}-{}",
+            "telchar-operation-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time follows epoch")
-                .as_nanos()
+                .as_nanos(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root).expect("fixture root creates");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("fixture root permissions set");
         let socket = root.join("daemon.sock");
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command
