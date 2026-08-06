@@ -29,6 +29,31 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
 }
 
 #[test]
+fn ssh_pty_allocation_is_rejected() {
+    let fixture = Fixture::start();
+    let output = fixture
+        .ssh_command()
+        .args(["-tt", "true"])
+        .output()
+        .expect("SSH PTY request runs");
+
+    assert!(
+        !output.status.success(),
+        "PTY request unexpectedly succeeded: {output:?}"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("PTY allocation request failed") || combined.contains("not permitted"),
+        "OpenSSH did not report PTY rejection: {combined:?}"
+    );
+    fixture.finish();
+}
+
+#[test]
 fn pinned_nix_completes_handshake_through_real_openssh_and_daemon() {
     let fixture = Fixture::start();
     let output = fixture
