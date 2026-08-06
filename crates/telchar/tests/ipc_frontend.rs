@@ -1,5 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -64,6 +66,61 @@ fn daemon_rejects_oversized_and_stalled_envelopes_before_worker_protocol() {
     stalled.finish_with_failure();
 }
 
+#[test]
+fn stalled_envelope_does_not_block_another_frontend() {
+    let fixture = Fixture::start_persistent(1_000);
+    let mut stalled = UnixStream::connect(&fixture.socket).expect("stalled frontend connects");
+    stalled
+        .write_all(&8_u32.to_le_bytes())
+        .expect("stalled length writes");
+    stalled.write_all(b"T").expect("partial envelope writes");
+
+    let started = Instant::now();
+    let mut frontend = fixture.spawn_frontend();
+    complete_handshake(&mut frontend);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "valid frontend waited for stalled envelope timeout"
+    );
+    fixture.stop();
+}
+
+#[test]
+fn daemon_secures_socket_path_and_cleans_up_after_once() {
+    let fixture = Fixture::start();
+    assert_eq!(
+        fs::metadata(&fixture.root)
+            .expect("runtime directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let socket_metadata = fs::symlink_metadata(&fixture.socket).expect("socket metadata");
+    assert!(socket_metadata.file_type().is_socket());
+    assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o600);
+
+    let mut frontend = fixture.spawn_frontend();
+    complete_handshake(&mut frontend);
+    let socket = fixture.socket.clone();
+    fixture.finish_successfully();
+    assert!(!socket.exists(), "daemon socket remains after normal shutdown");
+}
+
+#[test]
+fn daemon_refuses_to_replace_non_socket_path() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    let socket = root.join("daemon.sock");
+    fs::write(&socket, b"preserve").expect("sentinel writes");
+    let output = daemon_command(&socket, 1_000, true)
+        .output()
+        .expect("daemon command runs");
+    assert!(!output.status.success(), "daemon replaced non-socket path");
+    assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+    let _ = fs::remove_dir_all(root);
+}
+
 struct Fixture {
     root: PathBuf,
     socket: PathBuf,
@@ -76,32 +133,17 @@ impl Fixture {
     }
 
     fn start_with_timeout(envelope_timeout_ms: u64) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "telchar-ipc-process-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time follows epoch")
-                .as_nanos()
-        ));
-        fs::create_dir(&root).expect("fixture root creates");
+        Self::start_mode(envelope_timeout_ms, true)
+    }
+
+    fn start_persistent(envelope_timeout_ms: u64) -> Self {
+        Self::start_mode(envelope_timeout_ms, false)
+    }
+
+    fn start_mode(envelope_timeout_ms: u64, once: bool) -> Self {
+        let root = temporary_root();
         let socket = root.join("daemon.sock");
-        let mut daemon = Command::new(env!("CARGO_BIN_EXE_telchar"))
-            .args([
-                "daemon",
-                "--socket",
-                socket.to_str().expect("UTF-8 socket path"),
-                "--frontend-uid",
-                &rustix::process::getuid().as_raw().to_string(),
-                "--once",
-            ])
-            .env(
-                "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
-                envelope_timeout_ms.to_string(),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let mut daemon = daemon_command(&socket, envelope_timeout_ms, once)
             .spawn()
             .expect("daemon starts");
         wait_for_socket(&socket, &mut daemon);
@@ -110,6 +152,18 @@ impl Fixture {
             socket,
             daemon,
         }
+    }
+
+    fn spawn_frontend(&self) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .arg("serve-stdio")
+            .env("TELCHAR_IPC_SOCKET", &self.socket)
+            .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("frontend starts")
     }
 
     fn finish_successfully(self) {
@@ -124,6 +178,12 @@ impl Fixture {
         let _ = fs::remove_dir_all(&self.root);
         assert!(!output.status.success(), "daemon accepted invalid envelope");
         assert!(output.stdout.is_empty(), "daemon wrote to stdout");
+    }
+
+    fn stop(mut self) {
+        self.daemon.kill().expect("daemon stops");
+        let _ = self.daemon.wait();
+        let _ = fs::remove_dir_all(self.root);
     }
 }
 
@@ -179,6 +239,60 @@ fn read_word(input: &mut impl Read) -> u64 {
     let mut bytes = [0; 8];
     input.read_exact(&mut bytes).expect("word reads");
     u64::from_le_bytes(bytes)
+}
+
+fn complete_handshake(frontend: &mut Child) {
+    let mut input = frontend.stdin.take().expect("frontend stdin");
+    let mut output = frontend.stdout.take().expect("frontend stdout");
+    write_word(&mut input, CLIENT_WORKER_MAGIC);
+    write_word(&mut input, LATEST_WORKER_VERSION.to_wire());
+    write_word(&mut input, 0);
+    input.flush().expect("client handshake flushes");
+    assert_eq!(read_word(&mut output), SERVER_WORKER_MAGIC);
+    assert_eq!(read_word(&mut output), LATEST_WORKER_VERSION.to_wire());
+    assert_eq!(read_word(&mut output), 0);
+    write_word(&mut input, 0);
+    write_word(&mut input, 0);
+    input.flush().expect("post-handshake flushes");
+    assert_eq!(read_string(&mut output), b"telchar");
+    assert_eq!(read_word(&mut output), 0);
+    assert_eq!(read_word(&mut output), nix_worker_protocol::STDERR_LAST);
+    drop(input);
+    assert!(frontend.wait().expect("frontend exits").success());
+}
+
+fn daemon_command(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+    command.args([
+        "daemon",
+        "--socket",
+        socket.to_str().expect("UTF-8 socket path"),
+        "--frontend-uid",
+        &rustix::process::getuid().as_raw().to_string(),
+    ]);
+    if once {
+        command.arg("--once");
+    }
+    command
+        .env(
+            "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
+            envelope_timeout_ms.to_string(),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn temporary_root() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "telchar-ipc-process-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time follows epoch")
+            .as_nanos()
+    ))
 }
 
 fn read_string(input: &mut impl Read) -> Vec<u8> {
