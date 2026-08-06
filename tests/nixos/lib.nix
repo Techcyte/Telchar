@@ -51,6 +51,7 @@ let
               | ${pkgs.gnused}/bin/sed 's/TELCHAR_TEST_SECRET=[^ ]*/TELCHAR_TEST_SECRET=[REDACTED]/g; s/not-for-artifacts/[REDACTED]/g' \
               > "$directory/journal.log"
             systemctl show telchar.service telchar-artifacts-failure.service --no-pager \
+              --property=Id,LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus \
               | ${pkgs.gnused}/bin/sed 's/TELCHAR_TEST_SECRET=[^ ]*/TELCHAR_TEST_SECRET=[REDACTED]/g; s/not-for-artifacts/[REDACTED]/g' \
               > "$directory/machine-state.json"
             test "$(wc -c < "$directory/journal.log")" -le 65536
