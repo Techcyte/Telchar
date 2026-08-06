@@ -42,6 +42,8 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             "127.0.0.1:12345:127.0.0.1:22",
             "-N",
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("local forwarding starts");
     thread::sleep(Duration::from_millis(200));
@@ -69,6 +71,8 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             "127.0.0.1:12346:127.0.0.1:22",
             "-N",
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("remote forwarding starts");
     thread::sleep(Duration::from_millis(300));
@@ -94,6 +98,8 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             "127.0.0.1:12347",
             "-N",
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("dynamic forwarding starts");
     thread::sleep(Duration::from_millis(200));
@@ -375,7 +381,7 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
         fs::write(
             root.join("ssh_config"),
             format!(
-                "Host telchar-openssh-test\nHostName 127.0.0.1\nPort {port}\nUser {}\nIdentityFile {}\nIdentitiesOnly yes\nStrictHostKeyChecking no\nUserKnownHostsFile /dev/null\n",
+                "Host telchar-openssh-test\nHostName 127.0.0.1\nPort {port}\nUser {}\nIdentityFile {}\nIdentitiesOnly yes\nStrictHostKeyChecking no\nUserKnownHostsFile /dev/null\nLogLevel ERROR\n",
                 whoami(),
                 client_key.display()
             ),
