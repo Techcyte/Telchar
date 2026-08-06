@@ -54,6 +54,24 @@ fn serve_stdio() {
         Err(_) => {
             reject_worker_operation(&mut output, "unknown-operation", "unknown worker operation")
         }
+        Ok(nix_worker_protocol::WorkerOperation::SetOptions) => {
+            let set_options = tracing::info_span!("worker.set_options");
+            let _entered = set_options.enter();
+            if reader.complete_set_options().is_err() {
+                reject_worker_operation(
+                    &mut output,
+                    "invalid-set-options",
+                    "invalid SetOptions request",
+                );
+            } else {
+                let _ = output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes());
+                let _ = output.flush();
+                tracing::info!(
+                    event = "worker.set_options.completed",
+                    "SetOptions request completed"
+                );
+            }
+        }
         Ok(operation) if !operation.is_fixture_allowed() => {
             reject_worker_operation(
                 &mut output,

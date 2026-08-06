@@ -931,6 +931,32 @@ impl<R: WorkerInput> WorkerReader<R> {
         Ok(operation)
     }
 
+    pub fn complete_set_options(&mut self) -> io::Result<()> {
+        let span = tracing::info_span!("worker.set_options");
+        let _entered = span.enter();
+        for _ in 0..12 {
+            self.read_integer()?;
+        }
+
+        let override_count = self.read_integer()?;
+        if override_count > 256 {
+            tracing::error!(
+                event = "worker.set_options.rejected",
+                reason = "override-count"
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "too many option overrides",
+            ));
+        }
+        for _ in 0..override_count {
+            self.discard_byte_string(16_384)?;
+            self.discard_byte_string(16_384)?;
+        }
+        self.input.complete_message();
+        Ok(())
+    }
+
     pub fn into_inner(self) -> R {
         self.input
     }
@@ -941,6 +967,39 @@ impl<R: WorkerInput> WorkerReader<R> {
 
     fn read_strings(&mut self) -> io::Result<DecodedWorkerStrings> {
         read_worker_strings_from(&mut self.input, &self.budget)
+    }
+
+    fn discard_byte_string(&mut self, maximum_length: usize) -> io::Result<()> {
+        let length = usize::try_from(self.read_integer()?).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "worker string exceeds limit")
+        })?;
+        if length > maximum_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "worker string exceeds limit",
+            ));
+        }
+        let padding_length = (8 - length % 8) % 8;
+        let framed_length = length + padding_length;
+        let mut remaining = framed_length;
+        let mut buffer = [0_u8; 4096];
+        while remaining > 0 {
+            let read_length = remaining.min(buffer.len());
+            self.input.read_exact(&mut buffer[..read_length])?;
+            if remaining == read_length
+                && padding_length > 0
+                && buffer[read_length - padding_length..read_length]
+                    .iter()
+                    .any(|byte| *byte != 0)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "worker string padding is not zero",
+                ));
+            }
+            remaining -= read_length;
+        }
+        Ok(())
     }
 }
 

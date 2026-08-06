@@ -35,21 +35,18 @@ struct LocalFormat;
 struct LocalWriter;
 
 enum LocalOutput {
-    StandardOutput(std::io::Stdout),
     StandardError(std::io::Stderr),
 }
 
 impl std::io::Write for LocalOutput {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         match self {
-            Self::StandardOutput(output) => output.write(buffer),
             Self::StandardError(output) => output.write(buffer),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Self::StandardOutput(output) => output.flush(),
             Self::StandardError(output) => output.flush(),
         }
     }
@@ -59,15 +56,7 @@ impl<'a> MakeWriter<'a> for LocalWriter {
     type Writer = LocalOutput;
 
     fn make_writer(&'a self) -> Self::Writer {
-        LocalOutput::StandardOutput(std::io::stdout())
-    }
-
-    fn make_writer_for(&'a self, metadata: &tracing::Metadata<'_>) -> Self::Writer {
-        if *metadata.level() == tracing::Level::ERROR {
-            LocalOutput::StandardError(std::io::stderr())
-        } else {
-            self.make_writer()
-        }
+        LocalOutput::StandardError(std::io::stderr())
     }
 }
 
@@ -265,6 +254,17 @@ impl Collector {
                 .lock()
                 .expect("metric requests")
                 .is_empty()
+    }
+
+    fn has_log_event(&self, event: &str) -> bool {
+        self.log_requests
+            .lock()
+            .expect("log requests")
+            .iter()
+            .flat_map(|request| &request.resource_logs)
+            .flat_map(|resource| &resource.scope_logs)
+            .flat_map(|scope| &scope.log_records)
+            .any(|record| Self::has_attribute(&record.attributes, "event", event))
     }
 
     fn assert_correlated(&self, request_id: &str, service_name: &str) -> String {
@@ -487,6 +487,37 @@ mod tests {
     use super::{SERVICE_NAME, start_collector};
 
     #[test]
+    fn exports_set_options_event_to_otlp() {
+        let collector = start_collector();
+        let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .args([
+                "test",
+                "--test",
+                "operation_dispatch",
+                "--locked",
+                "live_set_options_request_returns_terminal_frame",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .output()
+            .expect("SetOptions test process starts");
+        assert!(
+            output.status.success(),
+            "SetOptions test process failed: {output:?}"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !collector.has_log_event("worker.set_options.completed")
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            collector.has_log_event("worker.set_options.completed"),
+            "worker SetOptions event was not exported through OTLP"
+        );
+    }
+
+    #[test]
     fn exports_otlp_signals_before_application_work() {
         let collector = start_collector();
         let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
@@ -507,17 +538,17 @@ mod tests {
             "missing protocol output: {output:?}"
         );
         assert!(
-            stdout.contains(" trace_id="),
-            "missing local trace ID: {output:?}"
-        );
-        assert!(
-            stdout.contains(" INFO request started"),
-            "missing local log: {output:?}"
+            !stdout.contains(" trace_id="),
+            "local telemetry contaminated command output: {output:?}"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains(" trace_id="),
-            "missing error trace ID: {output:?}"
+            "missing local trace ID: {output:?}"
+        );
+        assert!(
+            stderr.contains(" INFO request started"),
+            "missing local log: {output:?}"
         );
         assert!(
             stderr.contains(" ERROR smoke error"),
@@ -530,6 +561,6 @@ mod tests {
         }
 
         let trace_id = collector.assert_correlated("request-smoke-001", SERVICE_NAME);
-        assert!(stdout.contains(&format!("trace_id={trace_id}")));
+        assert!(stderr.contains(&format!("trace_id={trace_id}")));
     }
 }

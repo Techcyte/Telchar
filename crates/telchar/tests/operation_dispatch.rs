@@ -6,6 +6,63 @@ use nix_worker_protocol::{
 };
 
 #[test]
+fn live_set_options_request_returns_terminal_frame() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Telchar starts");
+    let mut input = child.stdin.take().expect("server input");
+
+    write_integer(&mut input, CLIENT_WORKER_MAGIC);
+    write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 19);
+    for _ in 0..12 {
+        write_integer(&mut input, 0);
+    }
+    write_integer(&mut input, 0);
+    drop(input);
+
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("server stdout")
+        .read_to_end(&mut stdout)
+        .expect("server stdout reads");
+    let mut expected_stdout = Vec::new();
+    write_integer(&mut expected_stdout, SERVER_WORKER_MAGIC);
+    write_integer(&mut expected_stdout, LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut expected_stdout, 0);
+    write_string(&mut expected_stdout, b"telchar");
+    write_integer(&mut expected_stdout, 0);
+    write_integer(&mut expected_stdout, STDERR_LAST);
+    write_integer(&mut expected_stdout, STDERR_LAST);
+    assert_eq!(
+        stdout, expected_stdout,
+        "worker stdout has no text contamination"
+    );
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("server stderr")
+        .read_to_string(&mut stderr)
+        .expect("server stderr reads");
+    assert!(
+        stderr.contains("worker.set_options.completed"),
+        "missing local SetOptions telemetry: {stderr}"
+    );
+}
+
+#[test]
 fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
     let response = send_operation(39);
     assert_eq!(response.message, "unsupported worker operation");
@@ -93,6 +150,14 @@ fn write_integer(output: &mut impl Write, value: u64) {
     output
         .write_all(&value.to_le_bytes())
         .expect("worker integer writes");
+}
+
+fn write_string(output: &mut impl Write, value: &[u8]) {
+    write_integer(output, value.len() as u64);
+    output.write_all(value).expect("worker string writes");
+    output
+        .write_all(&[0; 7][..(8 - value.len() % 8) % 8])
+        .expect("worker string padding writes");
 }
 
 fn read_integer(input: &mut impl Read) -> u64 {
