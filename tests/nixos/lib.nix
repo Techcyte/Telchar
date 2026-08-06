@@ -138,7 +138,10 @@ let
   restrictedIngressClientModule = machineModule {
     role = "stock-client";
     extraConfig = {
-      environment.systemPackages = [ pkgs.nix pkgs.openssh ];
+      environment.systemPackages = [
+        pkgs.nix
+        pkgs.openssh
+      ];
     };
   };
 

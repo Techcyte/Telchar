@@ -113,6 +113,44 @@
                 stock_client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:22345:127.0.0.1:22 -N " + ssh_options + " >/tmp/local-forward.out 2>&1; echo $?) -ne 0")
               '';
             };
+          nixos-gate-3-contract =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+              remoteOnlyDerivation = pkgs.writeText "telchar-remote-only-derivation.nix" ''
+                derivation {
+                  name = "telchar-gate-3-contract";
+                  system = builtins.currentSystem;
+                  builder = "/bin/sh";
+                  args = [ "-c" "printf telchar-remote-build > $out" ];
+                }
+              '';
+            in
+            harness.mkTest {
+              name = "telchar-nixos-gate-3-contract";
+              restrictedIngress = true;
+              includeCollector = true;
+              testScript = ''
+                start_all()
+                otlp_collector.wait_for_open_port(4317)
+                gateway.wait_for_unit("telchar-daemon.service")
+                gateway.wait_for_unit("sshd.service")
+                stock_client.succeed("mkdir -p /root/.ssh && ssh-keygen -q -t ed25519 -N \"\" -f /root/.ssh/telchar")
+                public_key = stock_client.succeed("cat /root/.ssh/telchar.pub").strip()
+                gateway.succeed("mkdir -p /var/lib/telchar-ingress/.ssh")
+                gateway.succeed("printf 'command=\\\"/etc/telchar/forced-command\\\",restrict %s\\n' '" + public_key + "' > /var/lib/telchar-ingress/.ssh/authorized_keys")
+                gateway.succeed("chown -R telchar-ingress:telchar /var/lib/telchar-ingress/.ssh && chmod 700 /var/lib/telchar-ingress/.ssh && chmod 600 /var/lib/telchar-ingress/.ssh/authorized_keys")
+                stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/remote-only.nix")
+                stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
+                stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
+                stock_client.succeed("test $(HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 30 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1; echo $?) -ne 0")
+                stock_client.succeed("grep -q 'unsupported worker operation' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
+                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'operation=AddTempRoot' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
+                gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
+              '';
+            };
           nixos-artifacts =
             let
               harness = import ./tests/nixos/lib.nix {

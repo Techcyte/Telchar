@@ -98,13 +98,23 @@ pub fn run_worker_session(
                 );
             }
             Ok(operation) if !operation.is_fixture_allowed() => {
+                tracing::error!(
+                    event = "worker.operation.unsupported",
+                    operation = ?operation,
+                    "recognized worker operation is unsupported"
+                );
                 return reject(
                     &mut output,
                     "recognized-unsupported",
                     "unsupported worker operation",
                 );
             }
-            Ok(_) => {
+            Ok(operation) => {
+                tracing::error!(
+                    event = "worker.operation.unimplemented",
+                    operation = ?operation,
+                    "fixture-observed worker operation is not implemented"
+                );
                 return reject(
                     &mut output,
                     "recognized-unimplemented",
