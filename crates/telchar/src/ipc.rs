@@ -2,6 +2,8 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 
+use crate::identity::Requester;
+
 pub const MAX_FRONTEND_BUFFER_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +149,7 @@ pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()>
 pub const IPC_VERSION: u16 = 1;
 const MAGIC: &[u8; 4] = b"TIPC";
 pub const MAX_IPC_COMPONENT_BYTES: usize = 256;
+pub const MAX_IPC_CREDENTIAL_ID_BYTES: usize = 1024;
 pub const MAX_IPC_ERROR_MESSAGE_BYTES: usize = 4096;
 pub const MAX_IPC_ENVELOPE_BYTES: usize = 16 * 1024;
 
@@ -155,6 +158,21 @@ pub struct RequesterMetadata {
     pub credential_id: String,
     pub audit_subject: String,
     pub quota_subject: String,
+}
+
+impl TryFrom<&Requester> for RequesterMetadata {
+    type Error = io::Error;
+
+    fn try_from(requester: &Requester) -> Result<Self, Self::Error> {
+        validate_string(&requester.credential_id, MAX_IPC_CREDENTIAL_ID_BYTES)?;
+        validate_string(&requester.audit_subject, MAX_IPC_COMPONENT_BYTES)?;
+        validate_string(&requester.quota_subject, MAX_IPC_CREDENTIAL_ID_BYTES)?;
+        Ok(Self {
+            credential_id: requester.credential_id.clone(),
+            audit_subject: requester.audit_subject.clone(),
+            quota_subject: requester.quota_subject.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +207,7 @@ impl IpcEnvelope {
         write_string(
             &mut output,
             &self.requester.credential_id,
-            MAX_IPC_COMPONENT_BYTES,
+            MAX_IPC_CREDENTIAL_ID_BYTES,
         )?;
         write_string(
             &mut output,
@@ -199,7 +217,7 @@ impl IpcEnvelope {
         write_string(
             &mut output,
             &self.requester.quota_subject,
-            MAX_IPC_COMPONENT_BYTES,
+            MAX_IPC_CREDENTIAL_ID_BYTES,
         )?;
         write_string(&mut output, &self.session_id, MAX_IPC_COMPONENT_BYTES)?;
         output.extend_from_slice(&self.attachment.id.to_le_bytes());
@@ -231,9 +249,9 @@ impl IpcEnvelope {
             return Err(invalid("unsupported IPC version"));
         }
         let requester = RequesterMetadata {
-            credential_id: reader.string(MAX_IPC_COMPONENT_BYTES)?,
+            credential_id: reader.string(MAX_IPC_CREDENTIAL_ID_BYTES)?,
             audit_subject: reader.string(MAX_IPC_COMPONENT_BYTES)?,
-            quota_subject: reader.string(MAX_IPC_COMPONENT_BYTES)?,
+            quota_subject: reader.string(MAX_IPC_CREDENTIAL_ID_BYTES)?,
         };
         let session_id = reader.string(MAX_IPC_COMPONENT_BYTES)?;
         let attachment = StreamAttachment { id: reader.u64()? };
@@ -259,12 +277,17 @@ impl IpcEnvelope {
 }
 
 fn write_string(output: &mut Vec<u8>, value: &str, maximum: usize) -> io::Result<()> {
-    if value.is_empty() || value.len() > maximum || !value.is_char_boundary(value.len()) {
-        return Err(invalid("IPC string exceeds bounds"));
-    }
+    validate_string(value, maximum)?;
     let length = u16::try_from(value.len()).map_err(|_| invalid("IPC string exceeds bounds"))?;
     output.extend_from_slice(&length.to_le_bytes());
     output.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn validate_string(value: &str, maximum: usize) -> io::Result<()> {
+    if value.is_empty() || value.len() > maximum {
+        return Err(invalid("IPC string exceeds bounds"));
+    }
     Ok(())
 }
 

@@ -1,4 +1,5 @@
-use telchar::ipc::{IpcEnvelope, IpcError, RequesterMetadata, StreamAttachment, IPC_VERSION};
+use telchar::identity::{IdentityInput, normalize_requester};
+use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, RequesterMetadata, StreamAttachment};
 
 #[test]
 fn envelope_round_trips_authenticated_metadata_and_attachment() {
@@ -20,6 +21,30 @@ fn envelope_round_trips_authenticated_metadata_and_attachment() {
     let encoded = envelope.encode().expect("envelope encodes");
     let decoded = IpcEnvelope::decode(&encoded).expect("envelope decodes");
     assert_eq!(decoded, envelope);
+}
+
+#[test]
+fn maximum_normalized_requester_fits_the_ipc_envelope() {
+    let requester = normalize_requester(IdentityInput::Certificate {
+        ca_fingerprint: "c".repeat(256),
+        key_id: "k".repeat(256),
+        principals: vec!["p".repeat(256)],
+        audit_subject: None,
+        quota_subject: None,
+        source_address: None,
+    })
+    .expect("maximum requester normalizes");
+    let metadata = RequesterMetadata::try_from(&requester).expect("maximum requester converts");
+    let envelope = IpcEnvelope {
+        version: IPC_VERSION,
+        requester: metadata,
+        session_id: "session".into(),
+        attachment: StreamAttachment { id: 1 },
+        error: None,
+    };
+
+    let encoded = envelope.encode().expect("maximum requester encodes");
+    assert_eq!(IpcEnvelope::decode(&encoded).unwrap(), envelope);
 }
 
 #[test]

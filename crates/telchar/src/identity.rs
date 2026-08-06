@@ -2,6 +2,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 const MAX_IDENTITY_COMPONENT: usize = 256;
+const MAX_CREDENTIAL_ID: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKeyIdentity {
@@ -72,7 +73,7 @@ pub fn normalize_requester(input: IdentityInput) -> Result<Requester, NormalizeE
             validate_component("fingerprint", &fingerprint)?;
             let credential_id = format!("ssh-pubkey:{fingerprint}");
             let audit_subject = choose_subject("audit subject", audit_subject, &fingerprint)?;
-            let quota_subject = choose_subject("quota subject", quota_subject, &credential_id)?;
+            let quota_subject = choose_quota_subject(quota_subject, &credential_id)?;
             Ok(Requester {
                 credential_id,
                 audit_subject,
@@ -99,7 +100,7 @@ pub fn normalize_requester(input: IdentityInput) -> Result<Requester, NormalizeE
             }
             let credential_id = certificate_credential_id(&ca_fingerprint, &key_id);
             let audit_subject = choose_subject("audit subject", audit_subject, &principals[0])?;
-            let quota_subject = choose_subject("quota subject", quota_subject, &credential_id)?;
+            let quota_subject = choose_quota_subject(quota_subject, &credential_id)?;
             Ok(Requester {
                 credential_id,
                 audit_subject,
@@ -121,6 +122,24 @@ fn certificate_credential_id(ca_fingerprint: &str, key_id: &str) -> String {
         ca_fingerprint.len(),
         key_id.len()
     )
+}
+
+fn choose_quota_subject(
+    configured: Option<String>,
+    credential_id: &str,
+) -> Result<String, NormalizeError> {
+    match configured {
+        Some(subject) => {
+            validate_component("quota subject", &subject)?;
+            Ok(subject)
+        }
+        None => {
+            if credential_id.len() > MAX_CREDENTIAL_ID {
+                return Err(NormalizeError::OversizedComponent("credential ID"));
+            }
+            Ok(credential_id.to_owned())
+        }
+    }
 }
 
 fn choose_subject(
