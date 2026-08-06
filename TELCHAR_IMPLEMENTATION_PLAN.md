@@ -533,7 +533,7 @@ Evidence: paths and output facts to record
   - Verify: real OpenSSH key-auth fixture.
   - Evidence: key fingerprint and spoof rejection.
 
-- [ ] T048 Prototype certificate identity handoff
+- [x] T048 Prototype certificate identity handoff
   - Depends on: T047
   - Outcome: capture CA, key ID, and principals securely or explicitly defer certificate support.
   - Red: matrix marks certificate support unresolved.
