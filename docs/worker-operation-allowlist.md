@@ -21,12 +21,12 @@ the fixed fixture:
 
 | Operation | Code | Typed fixture role |
 | --- | --- | --- |
-| `SetOptions` (`19`) | Client option request |
-| `IsValidPath` (`1`) | Store-path validity query |
-| `AddToStore` (`7`) | Bounded framed classic staging upload |
-| `QueryMissing` (`40`) | Missing-path query |
-| `QueryPathInfo` (`26`) | Typed path-info query |
-| `BuildPathsWithResults` (`46`) | Fixed classic build request and result |
+| `SetOptions` | `19` | Client option request |
+| `IsValidPath` | `1` | Store-path validity query |
+| `AddToStore` | `7` | Bounded framed classic staging upload |
+| `QueryMissing` | `40` | Missing-path query |
+| `QueryPathInfo` | `26` | Typed path-info query |
+| `BuildPathsWithResults` | `46` | Fixed classic build request and result |
 
 ## Optional operations
 
