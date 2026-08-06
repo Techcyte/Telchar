@@ -127,6 +127,26 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
 }
 
 #[test]
+fn client_identity_environment_cannot_spoof_authenticated_requester() {
+    let fixture = Fixture::start();
+    let output = fixture
+        .ssh_command()
+        .env("TELCHAR_AUTHENTICATED_KEY", "spoofed-client-key")
+        .env("TELCHAR_CLIENT_SUPPLIED_KEY", "spoofed-client-key")
+        .env("TELCHAR_AUTHENTICATED_KEY", "spoofed-client-key")
+        .arg("ignored-command")
+        .output()
+        .expect("identity spoof SSH request runs");
+    assert!(output.status.success(), "forced command failed: {output:?}");
+    let evidence = fs::read_to_string(fixture.root.join("forced-command-output"))
+        .expect("identity evidence reads");
+    assert!(evidence.contains("authenticated_key="));
+    assert!(!evidence.contains("authenticated_key=spoofed-client-key"));
+    assert!(!evidence.contains("authenticated_key=spoofed-client-key"));
+    fixture.finish();
+}
+
+#[test]
 fn ssh_agent_and_x11_forwarding_are_rejected() {
     let fixture = Fixture::start();
 
@@ -299,10 +319,14 @@ impl Fixture {
             &forced,
             format!(
                 "#!/bin/sh\nprintf 'original_command=%s\\n' \"${{SSH_ORIGINAL_COMMAND-}}\" > {}
+printf 'authenticated_key=%s\\n' \"${{TELCHAR_AUTHENTICATED_KEY-}}\" >> {}
+printf 'client_supplied_key=%s\\n' \"${{TELCHAR_CLIENT_SUPPLIED_KEY-}}\" >> {}
 printf 'agent_socket_value=%s\\n' \"${{SSH_AUTH_SOCK-}}\" >> {}
 case \"${{SSH_AUTH_SOCK-}}\" in /tmp/ssh-*) printf 'agent_socket=forwarded\\n' >> {} ;; *) printf 'agent_socket=not-forwarded\\n' >> {} ;; esac
 if [ -n \"${{DISPLAY-}}\" ]; then printf 'display=present\\n' >> {}; else printf 'display=absent\\n' >> {}; fi
 exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
+                root.join("forced-command-output").display(),
+                root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
                 root.join("forced-command-output").display(),
@@ -330,7 +354,7 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
         fs::write(
             &config,
             format!(
-                "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitUserEnvironment no\nAllowTcpForwarding no\nAllowAgentForwarding no\nX11Forwarding no\nPermitTTY no\nSetEnv SSH_AUTH_SOCK=\nSetEnv DISPLAY=\nLogLevel ERROR\n",
+                "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitUserEnvironment no\nAcceptEnv TELCHAR_CLIENT_SUPPLIED_KEY TELCHAR_AUTHENTICATED_KEY\nAllowTcpForwarding no\nAllowAgentForwarding no\nX11Forwarding no\nPermitTTY no\nSetEnv SSH_AUTH_SOCK=\nSetEnv DISPLAY=\nLogLevel ERROR\n",
                 host_key.display(),
                 root.join("sshd.pid").display(),
                 root.join("authorized_keys").display()
@@ -368,6 +392,8 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
     fn ssh_command(&self) -> Command {
         let mut command = Command::new(command_path("ssh"));
         command.args([
+            "-o",
+            "SendEnv=TELCHAR_CLIENT_SUPPLIED_KEY,TELCHAR_AUTHENTICATED_KEY",
             "-F",
             self.root
                 .join("ssh_config")
