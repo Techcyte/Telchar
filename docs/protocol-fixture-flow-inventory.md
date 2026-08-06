@@ -25,7 +25,7 @@ All integer fields are 64-bit little-endian words. Byte strings are an integer b
 | Client → server | `SetOptions` operation `19`, twelve fixed setting words, override count, name/value string pairs | all pinned fixture versions | 256 override pairs; 16384 bytes per name or value | `src/libstore/remote-store.cc`, `src/libstore/daemon.cc` |
 | Server → client | `STDERR_LAST` response to `SetOptions` | all pinned fixture versions | fixed word | `src/libstore/daemon.cc` |
 
-`SetOptions` is the only fixture-reachable operation. Its exact request boundary begins at its typed operation word; the next message cannot begin until all twelve fixed words, override count, and each declared name/value pair have been consumed. The observer must retain only operation code, negotiated version, frame kind, declared string lengths, override count, and terminal frame kind. It must retain no feature, daemon-version, override-name, or override-value body.
+For the two narrow `store info` fixtures, `SetOptions` is the only fixture-reachable operation. Its exact request boundary begins at its typed operation word; the next message cannot begin until all twelve fixed words, override count, and each declared name/value pair have been consumed. The observer retains only operation code, negotiated version, frame kind, declared string lengths, override count, and terminal frame kind. It retains no feature, daemon-version, override-name, or override-value body. The classic-build fixtures below exercise the larger typed operation set documented in their own inventory.
 
 ## Classic-build fixture inventory
 
@@ -71,13 +71,14 @@ and set counts come from
 
 | Flow class | Fixture reachability | Observer behavior |
 | --- | --- | --- |
-| Worker operation other than `SetOptions` | none | Fail closed before relaying the untyped body |
-| Callback (`STDERR_READ` or `STDERR_WRITE`) | none | Fail closed before relaying the untyped body |
-| Upload (`AddToStore`, `AddToStoreNar`, `AddMultipleToStore`) | none | Fail closed before relaying the untyped body |
-| Activity/error/result frame other than `STDERR_LAST` | none | Fail closed before relaying the untyped body |
+| Worker operation outside the two inventories above | none | Fail closed before relaying the untyped body |
+| Callback (`STDERR_READ` or `STDERR_WRITE`) | not observed in successful fixed fixtures | Fail closed before relaying the untyped callback body |
+| Upload operation other than the inventoried `AddToStore` flow | none | Fail closed before relaying the untyped body |
+| `STDERR_ERROR` or unknown activity/result frame | not observed in successful fixed fixtures | Fail closed before relaying the untyped frame body |
+| Content-addressed build-specific flow beyond the classic fixture's `AddToStore` staging | unsupported for MVP | Fail closed pending a concrete fixture and typed inventory |
 
-The typed observer relays only these listed messages byte-for-byte at their exact boundaries. It uses a fixed 4096-byte transfer buffer for declared string bodies and retains only protocol versions, operation tag, declared feature/daemon/override string lengths, override count, and terminal-frame count. It retains no feature, daemon version, option name, option value, callback body, upload body, secret, or raw chunk.
+The typed observer relays only the messages listed above byte-for-byte at exact boundaries. It uses a fixed 4096-byte transfer buffer for declared string and upload bodies and retains only approved bounded metadata: protocol versions, operation/frame tags, declared lengths/counts, scalar classifications, and terminal-frame counts. It retains no feature, daemon version, option value, store path, activity text, callback body, upload body, derivation payload, secret, or raw transport chunk.
 
-Large-upload coverage is intentionally absent: no current concrete fixture establishes a typed upload boundary. A synthetic upload stream is not protocol acceptance evidence. P003B remains blocked pending explicit trusted-classic/untrusted-classic fixture-definition tasks and a matching inventory/parser extension. Content-addressed compatibility is deferred from the initial gate and unsupported until a concrete fixture, required operations, result semantics, and primary-source evidence are defined.
+The classic fixture establishes one typed framed `AddToStore` upload with an observed 502-byte fixture envelope. This proves bounded streaming and byte transparency for that exact operation; it is not a general large-upload or production service limit. P003B may now capture trusted and untrusted classic-build acceptance traces through this typed observer. Content-addressed build compatibility remains deferred and unsupported until a concrete fixture, required operations, result semantics, and primary-source evidence are defined.
 
 Future fixture changes must extend this inventory with exact serializer references, version conditions, bounded message types, retained metadata fields, and golden fixtures before the observer accepts the new flow.

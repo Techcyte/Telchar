@@ -67,10 +67,12 @@ for classic_boundary in \
 done
 
 for unsupported in \
-	'Worker operation other than `SetOptions`' \
+	'Worker operation outside the two inventories above' \
 	'Callback (`STDERR_READ` or `STDERR_WRITE`)' \
-	'Upload (`AddToStore`, `AddToStoreNar`, `AddMultipleToStore`)' \
-	'Activity/error/result frame other than `STDERR_LAST`'; do
+	'Upload operation other than the inventoried `AddToStore` flow' \
+	'`STDERR_ERROR` or unknown activity/result frame' \
+	'Content-addressed build-specific flow beyond the classic fixture' \
+	'P003B may now capture trusted and untrusted classic-build acceptance traces'; do
 	require "$unsupported"
 done
 
