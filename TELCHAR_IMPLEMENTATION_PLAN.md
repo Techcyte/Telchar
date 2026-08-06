@@ -563,7 +563,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test ipc_schema --locked` exits `0` (`2 passed`).
   - Evidence: `docs/adr/local-ipc-envelope.md`; supported version `1`; component/session/error-code limit `256` bytes; error-message limit `4096` bytes; complete envelope limit `16 KiB`; tracing rejection events.
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/src/lib.rs`, `crates/telchar/tests/ipc_schema.rs`, `docs/adr/local-ipc-envelope.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
-  - `jj` changeset: pending.
+  - `jj` changeset: `54e147df` (`feat: define local IPC envelope`).
 
 - [x] T051 Authenticate local frontend peer
   - Depends on: T050
@@ -572,7 +572,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test ipc_auth --locked` exits `0` (`2 passed`).
   - Evidence: `docs/adr/local-ipc-peer-authentication.md`; Linux `SO_PEERCRED` via `rustix`; current kernel UID accepted; wrong UID denied with `PermissionDenied`; bounded tracing events.
   - Changed paths: `crates/telchar/Cargo.toml`, `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_auth.rs`, `docs/adr/local-ipc-peer-authentication.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
-  - `jj` changeset: pending.
+  - `jj` changeset: `b49778fe` (`feat: authenticate local IPC peers`).
 
 - [x] T052 Connect `serve-stdio` frontend to daemon
   - Depends on: T051
@@ -581,7 +581,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test ipc_frontend --locked` exits `0` (`1 passed`).
   - Evidence: `docs/adr/local-ipc-frontend-attachment.md`; real Unix listener; peer authorization precedes envelope decode; bounded length-prefixed envelope; `PING`/`PONG` stream negotiation; no scheduler/database/store state; peer PID recorded only as bounded evidence.
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_frontend.rs`, `docs/adr/local-ipc-frontend-attachment.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
-  - `jj` changeset: pending.
+  - `jj` changeset: `05118b09` (`feat: attach frontend streams over local IPC`).
 
 - [x] T053 Bound frontend buffering
   - Depends on: T052
@@ -590,7 +590,7 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test ipc_buffer --locked` exits `0` (`1 passed`).
   - Evidence: `docs/adr/local-ipc-buffering.md`; one fixed 16 KiB relay buffer; real Unix socket backpressure; 32x payload delivered byte-for-byte; observed maximum buffered bytes equals 16 KiB; relay completion telemetry.
   - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/tests/ipc_buffer.rs`, `docs/adr/local-ipc-buffering.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
-  - `jj` changeset: pending.
+  - `jj` changeset: `088c7f08` (`feat: bound local IPC stream buffering`).
 
 ### SSH restrictions
 
