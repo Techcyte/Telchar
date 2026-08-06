@@ -70,7 +70,12 @@ fn rejects_missing_or_oversized_authenticated_identity_components() {
         quota_subject: None,
         source_address: None,
     });
-    assert!(matches!(empty, Err(telchar::identity::NormalizeError::EmptyComponent("fingerprint"))));
+    assert!(matches!(
+        empty,
+        Err(telchar::identity::NormalizeError::EmptyComponent(
+            "fingerprint"
+        ))
+    ));
 
     let oversized = normalize_requester(IdentityInput::Certificate {
         ca_fingerprint: "ca".into(),
@@ -82,6 +87,8 @@ fn rejects_missing_or_oversized_authenticated_identity_components() {
     });
     assert!(matches!(
         oversized,
-        Err(telchar::identity::NormalizeError::OversizedComponent("certificate principal"))
+        Err(telchar::identity::NormalizeError::OversizedComponent(
+            "certificate principal"
+        ))
     ));
 }
