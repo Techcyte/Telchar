@@ -228,6 +228,26 @@ fn daemon_refuses_to_replace_non_socket_path() {
 }
 
 #[test]
+fn daemon_reports_startup_failure_without_panicking() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
+        .expect("fixture root permissions set");
+    let socket = root.join("daemon.sock");
+    let output = daemon_command(&socket, 1_000, true)
+        .output()
+        .expect("daemon command runs");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon runtime directory is not private"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
     let root = temporary_root();
     fs::create_dir(&root).expect("fixture root creates");

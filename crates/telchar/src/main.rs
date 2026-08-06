@@ -11,17 +11,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use telchar::identity::{IdentityInput, normalize_requester};
 use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
 
-fn main() {
-    match std::env::args().nth(1).as_deref() {
+fn main() -> std::process::ExitCode {
+    let result = match std::env::args().nth(1).as_deref() {
         Some("serve-stdio") => serve_stdio(),
         Some("daemon") => daemon(),
         _ => smoke(),
+    };
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("telchar: {error}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 
-fn smoke() {
-    let telemetry = telemetry::Telemetry::initialize()
-        .expect("telemetry configuration must initialize before application work");
+fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let telemetry = telemetry::Telemetry::initialize()?;
 
     tracing::info!(event = "application.started", "application started");
     if let Some(request_id) = std::env::var_os("TELCHAR_SMOKE_REQUEST_ID") {
@@ -42,11 +48,11 @@ fn smoke() {
     println!("{}", nix_worker_protocol::protocol_name());
 
     telemetry.shutdown();
+    Ok(())
 }
 
-fn serve_stdio() {
-    let telemetry = telemetry::Telemetry::initialize()
-        .expect("telemetry configuration must initialize before application work");
+fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let telemetry = telemetry::Telemetry::initialize()?;
     let result = run_frontend();
     if let Err(error) = &result {
         tracing::error!(
@@ -56,7 +62,7 @@ fn serve_stdio() {
         );
     }
     telemetry.shutdown();
-    result.expect("stdio frontend must connect to daemon");
+    result.map_err(Into::into)
 }
 
 fn run_frontend() -> io::Result<()> {
@@ -94,9 +100,8 @@ fn run_frontend() -> io::Result<()> {
     Ok(())
 }
 
-fn daemon() {
-    let telemetry = telemetry::Telemetry::initialize()
-        .expect("telemetry configuration must initialize before application work");
+fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let telemetry = telemetry::Telemetry::initialize()?;
     let result = run_daemon();
     if let Err(error) = &result {
         tracing::error!(
@@ -106,7 +111,7 @@ fn daemon() {
         );
     }
     telemetry.shutdown();
-    result.expect("daemon must serve accepted frontend");
+    result.map_err(Into::into)
 }
 
 fn run_daemon() -> io::Result<()> {
