@@ -70,6 +70,78 @@ let
     };
   };
 
+  restrictedIngressGatewayModule = machineModule {
+    role = "gateway";
+    extraConfig = {
+      environment.systemPackages = [ telchar ];
+      services.openssh = {
+        enable = true;
+        settings = {
+          PasswordAuthentication = false;
+          KbdInteractiveAuthentication = false;
+          PermitRootLogin = "prohibit-password";
+          PermitTTY = false;
+          AllowTcpForwarding = false;
+          AllowAgentForwarding = false;
+          X11Forwarding = false;
+          PermitUserEnvironment = false;
+        };
+      };
+      users.users.telchar-ingress = {
+        isSystemUser = true;
+        uid = 995;
+        group = "telchar";
+        home = "/var/lib/telchar-ingress";
+        createHome = true;
+        shell = "${pkgs.bashInteractive}/bin/bash";
+      };
+      users.groups.telchar = { };
+      systemd.services.telchar-daemon = {
+        description = "Telchar integration daemon";
+        wantedBy = [ "multi-user.target" ];
+        environment.OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
+        before = [ "sshd.service" ];
+        serviceConfig = {
+          User = "telchar-ingress";
+          Group = "telchar";
+          RuntimeDirectory = "telchar";
+          RuntimeDirectoryMode = "0700";
+          ExecStart = "${telchar}/bin/telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995";
+        };
+      };
+      environment.etc."telchar/forced-command" = {
+        mode = "0555";
+        text = ''
+          #!${pkgs.runtimeShell}
+          set -eu
+          fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf /var/lib/telchar-ingress/.ssh/authorized_keys | ${pkgs.gawk}/bin/awk '{print $2}')"
+          {
+            printf 'original_command=%s\n' "''${SSH_ORIGINAL_COMMAND-}"
+            printf 'authenticated_key=%s\n' "$fingerprint"
+            printf 'client_supplied_key=%s\n' "''${TELCHAR_AUTHENTICATED_KEY-}"
+            printf 'agent_socket=%s\n' "''${SSH_AUTH_SOCK-}"
+            printf 'display=%s\n' "''${DISPLAY-}"
+          } > /run/telchar/forced-command-evidence
+          exec env OTEL_EXPORTER_OTLP_ENDPOINT=http://otlp-collector:4317 TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY="$fingerprint" ${telchar}/bin/telchar serve-stdio
+        '';
+      };
+      environment.etc."ssh/sshd_config.d/telchar-test.conf".text = ''
+        Match User telchar-ingress
+          AuthorizedKeysFile /var/lib/telchar-ingress/.ssh/authorized_keys
+          DisableForwarding yes
+          PermitTTY no
+          PermitUserEnvironment no
+      '';
+    };
+  };
+
+  restrictedIngressClientModule = machineModule {
+    role = "stock-client";
+    extraConfig = {
+      environment.systemPackages = [ pkgs.nix pkgs.openssh ];
+    };
+  };
+
   collectorModule = machineModule {
     role = "otlp-collector";
     extraConfig = {
@@ -122,13 +194,14 @@ in
     {
       name,
       includeCollector ? false,
+      restrictedIngress ? false,
       testScript ? "",
     }:
     pkgs.testers.nixosTest {
       inherit name testScript;
       nodes = {
-        stock-client = stockClientModule;
-        gateway = gatewayModule;
+        stock-client = if restrictedIngress then restrictedIngressClientModule else stockClientModule;
+        gateway = if restrictedIngress then restrictedIngressGatewayModule else gatewayModule;
       }
       // pkgs.lib.optionalAttrs includeCollector {
         otlp-collector = collectorModule;
