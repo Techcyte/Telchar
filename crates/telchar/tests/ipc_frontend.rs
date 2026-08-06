@@ -89,6 +89,30 @@ fn stalled_envelope_does_not_block_another_frontend() {
 }
 
 #[test]
+fn daemon_rejects_connections_beyond_bounded_session_capacity() {
+    let fixture = Fixture::start_persistent_with_limit(1_000, 1);
+    let _stalled = UnixStream::connect(&fixture.socket).expect("first frontend connects");
+    thread::sleep(Duration::from_millis(20));
+
+    let mut excess = UnixStream::connect(&fixture.socket).expect("excess frontend connects");
+    excess
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("excess timeout sets");
+    excess
+        .write_all(&8_u32.to_le_bytes())
+        .expect("excess length writes");
+    excess.write_all(b"T").expect("excess partial envelope writes");
+    let mut byte = [0; 1];
+    let rejected = match excess.read(&mut byte) {
+        Ok(0) => true,
+        Err(error) => !matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+        Ok(_) => false,
+    };
+    assert!(rejected, "excess connection remained admitted");
+    fixture.stop();
+}
+
+#[test]
 fn daemon_secures_socket_path_and_cleans_up_after_once() {
     let fixture = Fixture::start();
     assert_eq!(
@@ -139,17 +163,22 @@ impl Fixture {
     }
 
     fn start_with_timeout(envelope_timeout_ms: u64) -> Self {
-        Self::start_mode(envelope_timeout_ms, true)
+        Self::start_mode(envelope_timeout_ms, true, 1)
     }
 
     fn start_persistent(envelope_timeout_ms: u64) -> Self {
-        Self::start_mode(envelope_timeout_ms, false)
+        Self::start_persistent_with_limit(envelope_timeout_ms, 64)
     }
 
-    fn start_mode(envelope_timeout_ms: u64, once: bool) -> Self {
+    fn start_persistent_with_limit(envelope_timeout_ms: u64, session_limit: usize) -> Self {
+        Self::start_mode(envelope_timeout_ms, false, session_limit)
+    }
+
+    fn start_mode(envelope_timeout_ms: u64, once: bool, session_limit: usize) -> Self {
         let root = temporary_root();
         let socket = root.join("daemon.sock");
         let mut daemon = daemon_command(&socket, envelope_timeout_ms, once)
+            .env("TELCHAR_IPC_MAX_SESSIONS", session_limit.to_string())
             .spawn()
             .expect("daemon starts");
         wait_for_socket(&socket, &mut daemon);
