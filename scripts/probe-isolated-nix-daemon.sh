@@ -33,12 +33,12 @@ run_case() {
 	config=$2
 	log=$3
 	NIX_STORE_DIR="$store_dir" \
-	NIX_STATE_DIR="$state_dir" \
-	NIX_LOG_DIR="$log_dir" \
-	NIX_CONF_DIR="$config_dir" \
-	NIX_DAEMON_SOCKET_PATH="$socket_path" \
-	NIX_CONFIG="$(cat "$config")" \
-	nix-daemon >"$log" 2>&1 &
+		NIX_STATE_DIR="$state_dir" \
+		NIX_LOG_DIR="$log_dir" \
+		NIX_CONF_DIR="$config_dir" \
+		NIX_DAEMON_SOCKET_PATH="$socket_path" \
+		NIX_CONFIG="$(cat "$config")" \
+		nix-daemon >"$log" 2>&1 &
 	daemon_pid=$!
 	for _ in $(seq 1 100); do
 		[ -S "$socket_path" ] && break
@@ -51,12 +51,12 @@ run_case() {
 		exit 1
 	fi
 	NIX_STORE_DIR="$store_dir" \
-	NIX_STATE_DIR="$state_dir" \
-	NIX_LOG_DIR="$log_dir" \
-	NIX_CONF_DIR="$config_dir" \
-	NIX_DAEMON_SOCKET_PATH="$socket_path" \
-	NIX_CONFIG="$(cat "$config")" \
-	nix --store "unix://$socket_path" store info --json >"$root/$name.json"
+		NIX_STATE_DIR="$state_dir" \
+		NIX_LOG_DIR="$log_dir" \
+		NIX_CONF_DIR="$config_dir" \
+		NIX_DAEMON_SOCKET_PATH="$socket_path" \
+		NIX_CONFIG="$(cat "$config")" \
+		nix --store "unix://$socket_path" store info --json >"$root/$name.json"
 	kill "$daemon_pid"
 	wait "$daemon_pid" || true
 	rm -f "$socket_path"
