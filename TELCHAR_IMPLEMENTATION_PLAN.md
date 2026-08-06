@@ -471,7 +471,7 @@ Evidence: paths and output facts to record
 
 ### Independent protocol behavior
 
-- [ ] T041 Implement first inventoried protocol behavior independently
+- [x] T041 Implement first inventoried protocol behavior independently
   - Depends on: T020, T035
   - Outcome: implement one required behavior in `nix-worker-protocol` from captured traffic, primary Nix source/documentation, and a failing compatibility or behavior test without copying or translating Rio source.
   - Red: named compatibility or behavior test fails before implementation.
@@ -492,14 +492,14 @@ Evidence: paths and output facts to record
   - Verify: reference-to-test-category checklist.
   - Evidence: categories adopted, deferred, or rejected with reasons.
 
-- [ ] T043 Implement structured error framing independently
+- [x] T043 Implement structured error framing independently
   - Depends on: T020, T037
   - Outcome: `nix-worker-protocol` emits error and activity frames required by the pinned client using captured traffic and primary Nix references without copying or translating Rio source.
   - Red: real client reports undecodable EOF/error.
   - Verify: crate framing tests and real-client expected-error test.
   - Evidence: primary evidence references and captured clean client message.
 
-- [ ] T044 Bound structured log and error frame sizes
+- [x] T044 Bound structured log and error frame sizes
   - Depends on: T043
   - Outcome: oversized outbound/inbound log metadata is rejected or truncated by explicit policy.
   - Red: frame exceeds configured budget.
@@ -508,7 +508,7 @@ Evidence: paths and output facts to record
 
 ### Gate 1 acceptance
 
-- [ ] T045 Verify Gate 1 stdio protocol proof
+- [x] T045 Verify Gate 1 stdio protocol proof
   - Depends on: T030, T035, T038, T039, T040, T041, T042, T043, T044
   - Outcome: real pinned Nix negotiates over stdio; malformed, oversized, unsupported, and unknown inputs fail cleanly.
   - Red: gate script reports missing evidence.
