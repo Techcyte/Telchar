@@ -6,6 +6,10 @@ This plan decomposes Telchar into Ralph-compatible tasks. Each task is intended 
 
 ## Ralph execution contract
 
+Ralph owns implementation readiness, not acceptance. For security, protocol, identity, IPC, persistence, concurrency, scheduling, resource-boundary, and release-gate work, a fresh-context reviewer or parent review must inspect the actual production path and rerun independent evidence before the master task is checked. Implementation-authored parsers, fixtures, grep validators, and documentation are supporting evidence only.
+
+Before executing any packet, validate that every dependency names an earlier task, completed-task evidence still matches current paths and commands, the packet status matches the master plan, and the working copy contains no unexplained changes. A packet stops instead of repairing unrelated state.
+
 For every implementation or bug-fix task:
 
 1. Mark exactly one task in progress in the active Ralph task file.
@@ -18,6 +22,11 @@ For every implementation or bug-fix task:
 8. Record commands, working directory, relevant environment, and output summary.
 9. Commit a logical changeset with `jj` before starting the next task.
 10. Do not cross a phase gate until every gate item has rerunnable evidence.
+11. Run the pinned formatter; never hand-edit formatter output or substitute host/LSP formatting.
+12. Include at least one test through the live production composition path when the task changes a process, protocol, security, persistence, or concurrency boundary.
+13. Report `<promise>IMPLEMENTATION_READY_FOR_REVIEW</promise>` only after narrow and broader checks pass; do not mark reviewer-owned master-plan acceptance or choose the next critical packet.
+
+Independent review must state the supported behavior precisely, distinguish test-only observers from production code, disposition every finding, and rerun affected gates. Broad reviews use narrow lanes and a synthesis deadline; a stalled, killed, empty, or self-authored review is not acceptance evidence.
 
 Decision and research tasks do not invent production behavior. They must produce an ADR, compatibility record, captured trace, threat model, or test fixture. If evidence does not support a decision, mark the dependent work blocked.
 
@@ -2250,14 +2259,14 @@ Evidence: paths and output facts to record
   - Evidence: retained/deleted rows and transaction boundary.
 
 - [ ] T265 Run dependency and source-provenance audit
-  - Depends on: T274
+  - Depends on: T257
   - Outcome: repository records allowed dependency licenses, confirms `nix-worker-protocol` source provenance, and validates notices for any separately approved future import.
   - Red: audit reports unknown/disallowed package, untracked copied source, or missing notice.
   - Verify: reproducible license and provenance audit command.
   - Evidence: report path and zero unresolved findings.
 
 - [ ] T266 Run dependency vulnerability audit
-  - Depends on: T274
+  - Depends on: T257
   - Outcome: reproducible Rust/Nix dependency audit has no unresolved applicable critical/high findings.
   - Red: audit fixture or current graph reports findings.
   - Verify: documented audit command.
