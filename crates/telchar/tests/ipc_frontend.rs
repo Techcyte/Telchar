@@ -101,11 +101,16 @@ fn daemon_rejects_connections_beyond_bounded_session_capacity() {
     excess
         .write_all(&8_u32.to_le_bytes())
         .expect("excess length writes");
-    excess.write_all(b"T").expect("excess partial envelope writes");
+    excess
+        .write_all(b"T")
+        .expect("excess partial envelope writes");
     let mut byte = [0; 1];
     let rejected = match excess.read(&mut byte) {
         Ok(0) => true,
-        Err(error) => !matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+        Err(error) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
         Ok(_) => false,
     };
     assert!(rejected, "excess connection remained admitted");

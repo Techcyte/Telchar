@@ -5,6 +5,7 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use telchar::identity::{IdentityInput, normalize_requester};
@@ -121,9 +122,20 @@ fn run_daemon() -> io::Result<()> {
     if once {
         return serve_connection(&listener, envelope_timeout);
     }
+    let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
+    let active_sessions = Arc::new(Mutex::new(0_usize));
     loop {
         let connection = listener.accept_pending()?;
+        let permit = match SessionPermit::acquire(Arc::clone(&active_sessions), maximum_sessions) {
+            Some(permit) => permit,
+            None => {
+                tracing::warn!(event = "ipc.daemon.session_rejected", reason = "capacity");
+                drop(connection);
+                continue;
+            }
+        };
         std::thread::spawn(move || {
+            let _permit = permit;
             let result = connection
                 .receive_envelope(envelope_timeout)
                 .and_then(serve_accepted_connection);
@@ -170,6 +182,27 @@ fn prepare_socket_path(socket: &std::path::Path) -> io::Result<()> {
         )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
+    }
+}
+
+struct SessionPermit(Arc<Mutex<usize>>);
+
+impl SessionPermit {
+    fn acquire(active: Arc<Mutex<usize>>, maximum: usize) -> Option<Self> {
+        let mut count = active.lock().expect("session count mutex is not poisoned");
+        if *count >= maximum {
+            return None;
+        }
+        *count += 1;
+        drop(count);
+        Some(Self(active))
+    }
+}
+
+impl Drop for SessionPermit {
+    fn drop(&mut self) {
+        let mut count = self.0.lock().expect("session count mutex is not poisoned");
+        *count -= 1;
     }
 }
 
@@ -246,6 +279,14 @@ fn duration_from_env(name: &str, default_ms: u64) -> Duration {
         .and_then(|value| value.parse().ok())
         .map(Duration::from_millis)
         .unwrap_or(Duration::from_millis(default_ms))
+}
+
+fn usize_from_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 fn error_reason(error: &io::Error) -> &'static str {
