@@ -471,7 +471,7 @@ Evidence: paths and output facts to record
 
 ### Independent protocol behavior
 
-- [ ] T041 Implement first inventoried protocol behavior independently
+- [x] T041 Implement first inventoried protocol behavior independently
   - Depends on: T020, T035
   - Outcome: implement one required behavior in `nix-worker-protocol` from captured traffic, primary Nix source/documentation, and a failing compatibility or behavior test without copying or translating Rio source.
   - Red: named compatibility or behavior test fails before implementation.
@@ -485,7 +485,7 @@ Evidence: paths and output facts to record
   - Verify: telemetry-contract validator plus real stdio protocol and OTLP tests proving local activity telemetry on standard error, byte-transparent worker frames on standard output, and exported structured telemetry.
   - Evidence: ADR update, asserted stdout/stderr bytes, OTLP signal assertion, and unchanged bounded redaction policy.
 
-- [ ] T042 Record Rio-informed edge-case and test inventory
+- [x] T042 Record Rio-informed edge-case and test inventory
   - Depends on: T017, T018, T041
   - Outcome: compare Rio's architecture and test categories against current crate coverage, adding missing test ideas without copying implementation or test bodies.
   - Red: reference review identifies an untracked edge-case category.
