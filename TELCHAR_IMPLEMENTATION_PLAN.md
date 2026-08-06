@@ -556,12 +556,14 @@ Evidence: paths and output facts to record
 
 ### Frontend and local IPC
 
-- [ ] T050 Define local IPC message envelope
+- [x] T050 Define local IPC message envelope
   - Depends on: T046
   - Outcome: versioned envelope carries trusted requester metadata, session ID, stream attachment, and bounded error data.
-  - Red: schema round-trip tests fail.
-  - Verify: IPC schema tests.
-  - Evidence: supported version and size bounds.
+  - Red: `nix develop -c cargo test -p telchar --test ipc_schema --locked` initially failed because `telchar::ipc` was absent.
+  - Verify: `nix develop -c cargo test -p telchar --test ipc_schema --locked` exits `0` (`2 passed`).
+  - Evidence: `docs/adr/local-ipc-envelope.md`; supported version `1`; component/session/error-code limit `256` bytes; error-message limit `4096` bytes; complete envelope limit `16 KiB`; tracing rejection events.
+  - Changed paths: `crates/telchar/src/ipc.rs`, `crates/telchar/src/lib.rs`, `crates/telchar/tests/ipc_schema.rs`, `docs/adr/local-ipc-envelope.md`, `TELCHAR_IMPLEMENTATION_PLAN.md`, `.ralph/P011-frontend-daemon-ipc.md`.
+  - `jj` changeset: pending.
 
 - [ ] T051 Authenticate local frontend peer
   - Depends on: T050

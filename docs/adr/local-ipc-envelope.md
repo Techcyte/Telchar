@@ -1,0 +1,24 @@
+# Local IPC Envelope
+
+**Status:** Accepted for the initial frontend/daemon boundary
+
+The forced-command frontend sends one bounded, versioned envelope to the daemon before attaching its worker-protocol stream. The envelope carries only authenticated requester metadata supplied by the OpenSSH-controlled frontend, a session ID, a daemon attachment ID, and an optional bounded error descriptor. Worker-protocol payloads remain a separate byte stream and are never embedded in the envelope.
+
+## Wire contract
+
+- Magic: `TIPC`.
+- Version: little-endian `u16`; supported version is `1`.
+- Strings: non-empty UTF-8, little-endian `u16` byte length.
+- Requester components and session ID: maximum 256 bytes each.
+- Error code: maximum 256 bytes.
+- Error message: maximum 4096 bytes.
+- Complete encoded envelope: maximum 16 KiB.
+- Attachment ID: little-endian `u64`.
+- Error flag: `0` absent or `1` followed by error code and message.
+- Unknown versions, malformed UTF-8, empty strings, trailing bytes, truncation, and bounds violations fail closed before stream attachment.
+
+The daemon must authenticate the local peer independently of this envelope. Envelope metadata is not trusted merely because it arrived over a local socket. Every encode/decode rejection uses the established `tracing` path with bounded reason fields and no requester values.
+
+## Verification
+
+`crates/telchar/tests/ipc_schema.rs` proves round-trip preservation, version rejection, and bounded error data. Constants in `crates/telchar/src/ipc.rs` are the authoritative supported version and size bounds.
