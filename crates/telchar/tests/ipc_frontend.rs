@@ -169,7 +169,10 @@ fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
         .spawn()
         .expect("daemon command runs");
     let output = wait_with_deadline(&mut daemon, Duration::from_millis(500));
-    assert!(!output.status.success(), "daemon accepted insecure runtime directory");
+    assert!(
+        !output.status.success(),
+        "daemon accepted insecure runtime directory"
+    );
     assert_eq!(
         fs::metadata(&root)
             .expect("runtime directory metadata")

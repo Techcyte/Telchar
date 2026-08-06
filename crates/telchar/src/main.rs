@@ -125,7 +125,17 @@ fn run_daemon() -> io::Result<()> {
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
     loop {
-        let connection = listener.accept_pending()?;
+        let connection = match listener.accept_pending() {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(
+                    event = "ipc.daemon.connection_rejected",
+                    reason = error_reason(&error),
+                    "local IPC connection rejected"
+                );
+                continue;
+            }
+        };
         let permit = match SessionPermit::acquire(Arc::clone(&active_sessions), maximum_sessions) {
             Some(permit) => permit,
             None => {
@@ -172,8 +182,19 @@ fn prepare_socket_path(socket: &std::path::Path) -> io::Result<()> {
     let parent = socket
         .parent()
         .ok_or_else(|| invalid("daemon socket requires a parent directory"))?;
-    std::fs::create_dir_all(parent)?;
-    std::fs::set_permissions(parent, Permissions::from_mode(0o700))?;
+    match std::fs::create_dir(parent) {
+        Ok(()) => std::fs::set_permissions(parent, Permissions::from_mode(0o700))?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(parent)?;
+            if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "daemon runtime directory is not private",
+                ));
+            }
+        }
+        Err(error) => return Err(error),
+    }
     match std::fs::symlink_metadata(socket) {
         Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket),
         Ok(_) => Err(io::Error::new(
