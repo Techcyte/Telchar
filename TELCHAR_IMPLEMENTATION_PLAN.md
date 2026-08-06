@@ -395,7 +395,7 @@ Evidence: paths and output facts to record
 
 ### Reusable NixOS integration harness
 
-- [ ] T021A Define reusable `nixosTest` topology contract
+- [x] T021A Define reusable `nixosTest` topology contract
   - Depends on: T021
   - Outcome: ADR defines authoritative multi-machine integration topology, machine roles, shared helpers, service readiness, test artifacts, secrets handling, and when specialized tests extend rather than duplicate the harness.
   - Red: integration inventory finds an external boundary with no machine role, readiness rule, or artifact policy.
