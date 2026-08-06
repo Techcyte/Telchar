@@ -166,6 +166,17 @@ fn serve_connection(listener: &IpcListener, envelope_timeout: Duration) -> io::R
 }
 
 fn serve_accepted_connection(mut connection: telchar::ipc::IpcConnection) -> io::Result<()> {
+    if connection.envelope().error.is_some() {
+        tracing::warn!(
+            event = "ipc.daemon.session_rejected",
+            reason = "frontend-error",
+            "frontend session rejected"
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frontend reported an IPC envelope error",
+        ));
+    }
     tracing::info!(
         event = "ipc.daemon.session_started",
         "authenticated frontend session started"
