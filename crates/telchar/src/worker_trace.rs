@@ -6,13 +6,26 @@ use std::thread::{self, JoinHandle};
 
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, FEATURE_NEGOTIATION_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
-    WorkerOperation, WorkerVersion,
+    STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY, WorkerOperation,
+    WorkerVersion,
 };
 
 const MAXIMUM_HANDSHAKE_FEATURES: u64 = 64;
 const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: u64 = 1024;
 const MAXIMUM_OPTION_OVERRIDES: u64 = 256;
 const MAXIMUM_OPTION_STRING_LENGTH: u64 = 16_384;
+const MAXIMUM_CLASSIC_STORE_PATH_LENGTH: u64 = 153;
+const MAXIMUM_CLASSIC_ACTIVITY_FIELDS: u64 = 4;
+const MAXIMUM_CLASSIC_ACTIVITY_MESSAGE_LENGTH: u64 = 164;
+const MAXIMUM_CLASSIC_ACTIVITY_FIELD_LENGTH: u64 = 153;
+const MAXIMUM_CLASSIC_STDERR_MESSAGE_LENGTH: u64 = 145;
+const MAXIMUM_CLASSIC_DERIVED_PATH_LENGTH: u64 = 157;
+const MAXIMUM_CLASSIC_ADD_TO_STORE_NAME_LENGTH: u64 = 27;
+const MAXIMUM_CLASSIC_CONTENT_ADDRESS_LENGTH: u64 = 11;
+const MAXIMUM_CLASSIC_UPLOAD_LENGTH: u64 = 502;
+const MAXIMUM_CLASSIC_PATH_INFO_STRING_LENGTH: u64 = 64;
+const MAXIMUM_CLASSIC_BUILD_RESULT_OUTPUT_ID_LENGTH: u64 = 75;
+const MAXIMUM_CLASSIC_BUILD_RESULT_REALISATION_LENGTH: u64 = 196;
 
 pub struct TraceCapture {
     socket_path: PathBuf,
@@ -136,9 +149,49 @@ fn relay_fixture_flow(
 
     relay_client_post_handshake(&mut client, &mut peer, version)?;
     relay_peer_handshake_info(&mut peer, &mut client, version, &trace)?;
-    relay_terminal_frame(&mut peer, &mut client, &trace)?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
     relay_set_options(&mut client, &mut peer, &trace)?;
-    relay_terminal_frame(&mut peer, &mut client, &trace)?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    if !relay_optional_store_path_operation(
+        &mut client,
+        &mut peer,
+        &trace,
+        WorkerOperation::AddTempRoot,
+    )? {
+        return Ok(());
+    }
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_boolean(&mut peer, &mut client)?;
+    relay_store_path_operation(&mut client, &mut peer, &trace, WorkerOperation::IsValidPath)?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_boolean(&mut peer, &mut client)?;
+    relay_add_to_store(&mut client, &mut peer, &trace)?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_valid_path_info(&mut peer, &mut client)?;
+    relay_derived_paths_operation(
+        &mut client,
+        &mut peer,
+        &trace,
+        WorkerOperation::QueryMissing,
+    )?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_query_missing_response(&mut peer, &mut client)?;
+    relay_store_path_operation(
+        &mut client,
+        &mut peer,
+        &trace,
+        WorkerOperation::QueryPathInfo,
+    )?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_query_path_info_response(&mut peer, &mut client)?;
+    relay_derived_paths_operation(
+        &mut client,
+        &mut peer,
+        &trace,
+        WorkerOperation::BuildPathsWithResults,
+    )?;
+    relay_stderr_frames(&mut peer, &mut client, &trace)?;
+    relay_build_paths_with_results_response(&mut peer, &mut client)?;
     Ok(())
 }
 
@@ -251,16 +304,289 @@ fn relay_set_options(
     Ok(())
 }
 
-fn relay_terminal_frame(
+fn operation_code(operation: WorkerOperation) -> u64 {
+    match operation {
+        WorkerOperation::AddTempRoot => 11,
+        WorkerOperation::IsValidPath => 1,
+        WorkerOperation::AddToStore => 7,
+        WorkerOperation::QueryMissing => 40,
+        WorkerOperation::QueryPathInfo => 26,
+        WorkerOperation::BuildPathsWithResults => 46,
+        _ => unreachable!("only fixture operations are relayed"),
+    }
+}
+
+fn relay_store_path_operation(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    trace: &Arc<Mutex<WorkerTrace>>,
+    expected: WorkerOperation,
+) -> io::Result<()> {
+    relay_operation(source, destination, expected)?;
+    relay_string(source, destination, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    trace
+        .lock()
+        .expect("worker trace")
+        .operations
+        .push(expected);
+    Ok(())
+}
+
+fn relay_optional_store_path_operation(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    trace: &Arc<Mutex<WorkerTrace>>,
+    expected: WorkerOperation,
+) -> io::Result<bool> {
+    let Some(operation) = relay_optional_word(source, destination)? else {
+        return Ok(false);
+    };
+    if operation != operation_code(expected) {
+        return Err(invalid("untyped worker operation"));
+    }
+    relay_string(source, destination, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    trace
+        .lock()
+        .expect("worker trace")
+        .operations
+        .push(expected);
+    Ok(true)
+}
+
+fn relay_add_to_store(
     source: &mut impl Read,
     destination: &mut impl Write,
     trace: &Arc<Mutex<WorkerTrace>>,
 ) -> io::Result<()> {
-    if relay_word(source, destination)? != STDERR_LAST {
-        return Err(invalid("untyped worker response, callback, or upload"));
-    }
-    trace.lock().expect("worker trace").terminal_frames += 1;
+    relay_operation(source, destination, WorkerOperation::AddToStore)?;
+    relay_string(
+        source,
+        destination,
+        MAXIMUM_CLASSIC_ADD_TO_STORE_NAME_LENGTH,
+    )?;
+    relay_string(source, destination, MAXIMUM_CLASSIC_CONTENT_ADDRESS_LENGTH)?;
+    relay_strings(source, destination, 0, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_boolean(source, destination)?;
+    relay_framed_upload(source, destination)?;
+    trace
+        .lock()
+        .expect("worker trace")
+        .operations
+        .push(WorkerOperation::AddToStore);
     Ok(())
+}
+
+fn relay_derived_paths_operation(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    trace: &Arc<Mutex<WorkerTrace>>,
+    operation: WorkerOperation,
+) -> io::Result<()> {
+    relay_operation(source, destination, operation)?;
+    relay_strings(source, destination, 1, MAXIMUM_CLASSIC_DERIVED_PATH_LENGTH)?;
+    if operation == WorkerOperation::BuildPathsWithResults && relay_word(source, destination)? > 2 {
+        return Err(invalid("worker build mode is invalid"));
+    }
+    trace
+        .lock()
+        .expect("worker trace")
+        .operations
+        .push(operation);
+    Ok(())
+}
+
+fn relay_operation(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    expected: WorkerOperation,
+) -> io::Result<()> {
+    if relay_word(source, destination)? != operation_code(expected) {
+        return Err(invalid("untyped worker operation"));
+    }
+    Ok(())
+}
+
+fn relay_framed_upload(source: &mut impl Read, destination: &mut impl Write) -> io::Result<()> {
+    let length = relay_word(source, destination)?;
+    if length > MAXIMUM_CLASSIC_UPLOAD_LENGTH {
+        return Err(invalid("worker upload exceeds limit"));
+    }
+    if length != 0 {
+        relay_exact(
+            source,
+            destination,
+            usize::try_from(length).map_err(|_| invalid("worker upload exceeds limit"))?,
+        )?;
+        if relay_word(source, destination)? != 0 {
+            return Err(invalid("worker upload has extra chunks"));
+        }
+    }
+    Ok(())
+}
+
+fn relay_valid_path_info(source: &mut impl Read, destination: &mut impl Write) -> io::Result<()> {
+    relay_string(source, destination, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_unkeyed_path_info(source, destination)
+}
+
+fn relay_unkeyed_path_info(source: &mut impl Read, destination: &mut impl Write) -> io::Result<()> {
+    relay_string(source, destination, 0)?;
+    relay_string(source, destination, MAXIMUM_CLASSIC_PATH_INFO_STRING_LENGTH)?;
+    relay_strings(source, destination, 0, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_word(source, destination)?;
+    relay_word(source, destination)?;
+    relay_boolean(source, destination)?;
+    relay_strings(
+        source,
+        destination,
+        0,
+        MAXIMUM_CLASSIC_PATH_INFO_STRING_LENGTH,
+    )?;
+    relay_string(source, destination, MAXIMUM_CLASSIC_PATH_INFO_STRING_LENGTH)?;
+    Ok(())
+}
+
+fn relay_query_missing_response(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+) -> io::Result<()> {
+    relay_strings(source, destination, 1, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_strings(source, destination, 0, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_strings(source, destination, 0, MAXIMUM_CLASSIC_STORE_PATH_LENGTH)?;
+    relay_word(source, destination)?;
+    relay_word(source, destination)?;
+    Ok(())
+}
+
+fn relay_query_path_info_response(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+) -> io::Result<()> {
+    if relay_boolean(source, destination)? {
+        relay_unkeyed_path_info(source, destination)?;
+    }
+    Ok(())
+}
+
+fn relay_build_paths_with_results_response(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+) -> io::Result<()> {
+    let result_count = relay_count(source, destination, 1)?;
+    if result_count == 0 {
+        return Err(invalid("worker build result count is invalid"));
+    }
+    relay_string(source, destination, MAXIMUM_CLASSIC_DERIVED_PATH_LENGTH)?;
+    if relay_word(source, destination)? > 14 {
+        return Err(invalid("worker build status is invalid"));
+    }
+    relay_string(source, destination, 0)?;
+    relay_word(source, destination)?;
+    relay_boolean(source, destination)?;
+    relay_word(source, destination)?;
+    relay_word(source, destination)?;
+    relay_optional_duration(source, destination)?;
+    relay_optional_duration(source, destination)?;
+    let output_count = relay_count(source, destination, 1)?;
+    if output_count == 0 {
+        return Err(invalid("worker build output count is invalid"));
+    }
+    relay_string(
+        source,
+        destination,
+        MAXIMUM_CLASSIC_BUILD_RESULT_OUTPUT_ID_LENGTH,
+    )?;
+    relay_string(
+        source,
+        destination,
+        MAXIMUM_CLASSIC_BUILD_RESULT_REALISATION_LENGTH,
+    )?;
+    Ok(())
+}
+
+fn relay_optional_duration(source: &mut impl Read, destination: &mut impl Write) -> io::Result<()> {
+    match relay_word(source, destination)? {
+        0 => Ok(()),
+        1 => {
+            relay_word(source, destination)?;
+            Ok(())
+        }
+        _ => Err(invalid("worker optional duration is invalid")),
+    }
+}
+
+fn relay_stderr_frames(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    trace: &Arc<Mutex<WorkerTrace>>,
+) -> io::Result<()> {
+    loop {
+        match relay_word(source, destination)? {
+            STDERR_LAST => {
+                trace.lock().expect("worker trace").terminal_frames += 1;
+                return Ok(());
+            }
+            STDERR_NEXT => {
+                relay_string(source, destination, MAXIMUM_CLASSIC_STDERR_MESSAGE_LENGTH)?;
+            }
+            STDERR_START_ACTIVITY => {
+                relay_word(source, destination)?;
+                relay_word(source, destination)?;
+                relay_word(source, destination)?;
+                relay_string(source, destination, MAXIMUM_CLASSIC_ACTIVITY_MESSAGE_LENGTH)?;
+                relay_activity_fields(source, destination)?;
+                relay_word(source, destination)?;
+            }
+            STDERR_STOP_ACTIVITY => {
+                relay_word(source, destination)?;
+            }
+            STDERR_RESULT => {
+                relay_word(source, destination)?;
+                relay_word(source, destination)?;
+                relay_activity_fields(source, destination)?;
+            }
+            _ => return Err(invalid("untyped worker response, callback, or upload")),
+        }
+    }
+}
+
+fn relay_activity_fields(source: &mut impl Read, destination: &mut impl Write) -> io::Result<()> {
+    let count = relay_word(source, destination)?;
+    if count > MAXIMUM_CLASSIC_ACTIVITY_FIELDS {
+        return Err(invalid("worker activity field count exceeds limit"));
+    }
+    for _ in 0..count {
+        match relay_word(source, destination)? {
+            0 => {
+                relay_word(source, destination)?;
+            }
+            1 => {
+                relay_string(source, destination, MAXIMUM_CLASSIC_ACTIVITY_FIELD_LENGTH)?;
+            }
+            _ => return Err(invalid("worker activity field type is invalid")),
+        }
+    }
+    Ok(())
+}
+
+fn relay_boolean(source: &mut impl Read, destination: &mut impl Write) -> io::Result<bool> {
+    match relay_word(source, destination)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(invalid("worker Boolean is invalid")),
+    }
+}
+
+fn relay_count(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    maximum: u64,
+) -> io::Result<u64> {
+    let count = relay_word(source, destination)?;
+    if count > maximum {
+        return Err(invalid("worker count exceeds limit"));
+    }
+    Ok(count)
 }
 
 fn relay_strings(
@@ -306,10 +632,34 @@ fn relay_string(
 }
 
 fn relay_word(source: &mut impl Read, destination: &mut impl Write) -> io::Result<u64> {
+    relay_optional_word(source, destination)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "worker message ended before its typed boundary",
+        )
+    })
+}
+
+fn relay_optional_word(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+) -> io::Result<Option<u64>> {
     let mut bytes = [0; 8];
-    source.read_exact(&mut bytes)?;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match source.read(&mut bytes[offset..])? {
+            0 if offset == 0 => return Ok(None),
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated worker word",
+                ));
+            }
+            length => offset += length,
+        }
+    }
     destination.write_all(&bytes)?;
-    Ok(u64::from_le_bytes(bytes))
+    Ok(Some(u64::from_le_bytes(bytes)))
 }
 
 fn relay_exact(

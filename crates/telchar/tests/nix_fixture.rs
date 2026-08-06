@@ -1,6 +1,8 @@
 use std::process::Command;
 
+use nix_worker_protocol::WorkerOperation;
 use telchar::nix_fixture::{NixFixture, TrustMode};
+use telchar::worker_trace::TraceCapture;
 
 #[test]
 fn creates_isolated_real_nix_client_state_and_removes_it() {
@@ -71,6 +73,64 @@ fn fixture_owned_daemon_builds_the_fixed_classic_derivation_in_both_trust_modes(
         assert!(output.starts_with(fixture.store_dir()));
         assert_eq!(
             std::fs::read(&output).expect("fixture output reads"),
+            b"telchar-classic-fixture"
+        );
+
+        daemon.stop().expect("fixture daemon stops");
+        fixture.cleanup().expect("fixture cleans up");
+    }
+}
+
+#[test]
+fn relay_streams_the_complete_classic_build_fixture_in_both_trust_modes() {
+    for (mode, expected_trust) in [(TrustMode::Trusted, true), (TrustMode::Untrusted, false)] {
+        let fixture = NixFixture::create().expect("fixture creates");
+        let mut daemon = fixture.start_daemon(mode).expect("fixture daemon starts");
+        assert_eq!(
+            daemon.trusted().expect("daemon reports trust"),
+            expected_trust
+        );
+
+        let capture =
+            TraceCapture::start(daemon.socket_path().to_str().expect("UTF-8 socket path"))
+                .expect("capture starts");
+        let output = Command::new("nix")
+            .envs(fixture.environment())
+            .args([
+                "--store",
+                &capture.store_url(),
+                "build",
+                "--impure",
+                "--expr",
+                "derivation { name = \"telchar-classic-fixture\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf telchar-classic-fixture > \\\"$out\\\"\" ]; }",
+                "--no-link",
+                "--print-out-paths",
+            ])
+            .output()
+            .expect("stock Nix client runs through relay");
+        assert!(output.status.success(), "Nix client failed: {output:?}");
+
+        let trace = capture.finish().expect("capture finishes");
+        assert_eq!(
+            trace.operations(),
+            &[
+                WorkerOperation::SetOptions,
+                WorkerOperation::AddTempRoot,
+                WorkerOperation::IsValidPath,
+                WorkerOperation::AddToStore,
+                WorkerOperation::QueryMissing,
+                WorkerOperation::QueryPathInfo,
+                WorkerOperation::BuildPathsWithResults,
+            ]
+        );
+        assert!(!trace.contains_payloads());
+        assert_eq!(
+            std::fs::read(
+                String::from_utf8(output.stdout)
+                    .expect("output UTF-8")
+                    .trim()
+            )
+            .expect("fixture output reads"),
             b"telchar-classic-fixture"
         );
 

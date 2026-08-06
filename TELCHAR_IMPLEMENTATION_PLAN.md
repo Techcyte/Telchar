@@ -333,7 +333,7 @@ Evidence: paths and output facts to record
   - Verify: typed classic-build parser golden, truncation, and bound tests.
   - Evidence: per-message fixtures, accepted metadata, rejected malformed cases, and allocation bounds.
 
-- [ ] T036H Relay typed classic-build flows transparently
+- [x] T036H Relay typed classic-build flows transparently
   - Depends on: T029, T036G
   - Outcome: observer streams every inventoried classic-build flow bidirectionally with bounded memory, exact byte preservation, sanitized telemetry, and deterministic failure on any untyped flow.
   - Red: relay loses bytes, buffers a complete upload, retains a body/secret, or accepts an untyped frame.
