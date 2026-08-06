@@ -174,6 +174,44 @@ fn daemon_secures_socket_path_and_cleans_up_after_once() {
 }
 
 #[test]
+fn second_daemon_cannot_replace_live_socket() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut first = daemon_command(&socket, 1_000, false)
+        .spawn()
+        .expect("first daemon starts");
+    wait_for_socket(&socket, &mut first);
+
+    let mut second = daemon_command(&socket, 1_000, true)
+        .spawn()
+        .expect("second daemon runs");
+    let output = wait_with_deadline(&mut second, Duration::from_millis(500));
+    assert!(
+        !output.status.success(),
+        "second daemon replaced live socket"
+    );
+
+    let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_IPC_SOCKET", &socket)
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("frontend starts through original daemon");
+    complete_handshake(&mut frontend);
+    assert!(
+        first.try_wait().expect("first daemon status").is_none(),
+        "original daemon stopped serving"
+    );
+
+    first.kill().expect("first daemon stops");
+    let _ = first.wait();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_refuses_to_replace_non_socket_path() {
     let root = temporary_root();
     fs::create_dir(&root).expect("fixture root creates");

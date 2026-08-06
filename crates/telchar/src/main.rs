@@ -207,7 +207,21 @@ fn prepare_socket_path(socket: &std::path::Path) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     match std::fs::symlink_metadata(socket) {
-        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket),
+        Ok(metadata) if metadata.file_type().is_socket() => match UnixStream::connect(socket) {
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "daemon socket is already accepting connections",
+            )),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                ) =>
+            {
+                std::fs::remove_file(socket)
+            }
+            Err(error) => Err(error),
+        },
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "daemon socket path exists and is not a socket",
