@@ -540,7 +540,7 @@ Evidence: paths and output facts to record
   - Verify: real OpenSSH certificate fixture or deferral validation.
   - Evidence: authenticated metadata or recorded deferral.
 
-- [ ] T048A Approve supported authenticated identity path
+- [x] T048A Approve supported authenticated identity path
   - Depends on: T047, T048
   - Outcome: ADR identifies at least one proven OpenSSH-controlled identity path for initial ingress; if none exists, block Gate 2 and add a separately reviewed ingress redesign task.
   - Red: no supported path has spoof-resistant evidence.
