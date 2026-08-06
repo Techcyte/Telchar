@@ -21,7 +21,7 @@ real-client evidence.
 | Client | Protocol range | Trust mode | Derivation class | Required trace evidence | Support state |
 | --- | --- | --- | --- | --- | --- |
 | Stock Nix 2.34.7 | 1.18–1.38 | Trusted | Classic input-addressed | `trusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:true`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Trusted trace accepted |
-| Stock Nix 2.34.7 | 1.18–1.38 | Untrusted | Classic input-addressed | Handshake, trust negotiation, and operation sequence | Pending T014 trace |
+| Stock Nix 2.34.7 | 1.18–1.38 | Untrusted | Classic input-addressed | `untrusted-classic-build-v1`: typed handshake `1.38`/`1.38`, `trusted:false`, then `SetOptions`, `AddTempRoot`, `IsValidPath`, `AddToStore`, `QueryMissing`, `QueryPathInfo`, `BuildPathsWithResults`; one fixture-store output hashes to `984f9573538566f8f43b8333ac3ee3dfe96ea7629ffaeb4c754ac9f65ac1526f` | Untrusted trace accepted |
 | Stock Nix 2.34.7 | 1.18–1.38 | Trusted or untrusted | Content-addressed | Operation and result semantics, or explicit deferral | Pending T015 resolution |
 | Lix | Not recorded | Not recorded | Not recorded | Separate real-client trace packet | Deferred |
 

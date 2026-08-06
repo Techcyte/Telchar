@@ -356,7 +356,7 @@ Evidence: paths and output facts to record
   - Verify: rerun trusted trace fixture.
   - Evidence: exact fixture ID, protocol version, trust result, operation/frame sequence, and output proof.
 
-- [ ] T014 Capture untrusted classic derivation trace
+- [x] T014 Capture untrusted classic derivation trace
   - Depends on: T012
   - Outcome: record the exact operation and response sequence used by the fixed untrusted classic input-addressed remote build.
   - Red: compatibility matrix cell lacks typed acceptance evidence.
