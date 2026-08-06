@@ -342,7 +342,7 @@ Evidence: paths and output facts to record
 
 ### Compatibility traces and protocol evidence
 
-- [ ] T012 Add typed classic-build trace capture fixture
+- [x] T012 Add typed classic-build trace capture fixture
   - Depends on: T011, T036H
   - Outcome: the transparent typed peer relays the fixed trusted and untrusted stock-Nix fixtures while capturing operation codes and bounded protocol metadata without storing secrets or payload bodies.
   - Red: either real-client trace assertion fails before the expanded typed observer is wired.

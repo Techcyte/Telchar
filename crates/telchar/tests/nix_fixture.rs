@@ -125,6 +125,12 @@ fn relay_streams_the_complete_classic_build_fixture_in_both_trust_modes() {
         );
         assert!(!trace.contains_payloads());
         assert_eq!(
+            trace.sanitized_json(),
+            format!(
+                "{{\"client_protocol\":\"1.38\",\"operations\":[SetOptions, AddTempRoot, IsValidPath, AddToStore, QueryMissing, QueryPathInfo, BuildPathsWithResults],\"peer_protocol\":\"1.38\",\"trusted\":{expected_trust}}}"
+            )
+        );
+        assert_eq!(
             std::fs::read(
                 String::from_utf8(output.stdout)
                     .expect("output UTF-8")

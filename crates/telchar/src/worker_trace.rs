@@ -42,6 +42,7 @@ pub struct WorkerTrace {
     operations: Vec<WorkerOperation>,
     feature_lengths: Vec<u64>,
     daemon_version_length: Option<u64>,
+    trust_status: Option<bool>,
     override_count: Option<u64>,
     option_string_lengths: Vec<u64>,
     terminal_frames: usize,
@@ -117,18 +118,23 @@ impl WorkerTrace {
         &self.operations
     }
 
+    pub fn trust_status(&self) -> bool {
+        self.trust_status.expect("worker trust status")
+    }
+
     pub fn contains_payloads(&self) -> bool {
         false
     }
 
     pub fn sanitized_json(&self) -> String {
         format!(
-            "{{\"client_protocol\":\"{}.{}\",\"operations\":{:?},\"peer_protocol\":\"{}.{}\"}}",
+            "{{\"client_protocol\":\"{}.{}\",\"operations\":{:?},\"peer_protocol\":\"{}.{}\",\"trusted\":{}}}",
             self.client_protocol_version().0,
             self.client_protocol_version().1,
             self.operations,
             self.peer_protocol_version().0,
-            self.peer_protocol_version().1
+            self.peer_protocol_version().1,
+            self.trust_status()
         )
     }
 }
@@ -265,6 +271,7 @@ fn relay_peer_handshake_info(
         if trust_status > 2 {
             return Err(invalid("worker trust status is invalid"));
         }
+        trace.lock().expect("worker trace").trust_status = Some(trust_status == 1);
     }
     Ok(())
 }

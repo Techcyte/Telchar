@@ -27,7 +27,7 @@ fn captures_real_nix_worker_handshake_and_operation_without_payloads() {
     assert!(!trace.contains_payloads());
     assert_eq!(
         trace.sanitized_json(),
-        "{\"client_protocol\":\"1.38\",\"operations\":[SetOptions],\"peer_protocol\":\"1.38\"}"
+        "{\"client_protocol\":\"1.38\",\"operations\":[SetOptions],\"peer_protocol\":\"1.38\",\"trusted\":true}"
     );
 }
 
