@@ -68,7 +68,13 @@ impl NixFixture {
                 event = "nix.fixture.setup.failed",
                 "Nix fixture setup failed"
             );
-            return Err(io::Error::other("fixture setup failed"));
+            let stderr = String::from_utf8_lossy(&setup.stderr);
+            let reason = stderr.trim();
+            return Err(io::Error::other(if reason.is_empty() {
+                "fixture setup failed".to_owned()
+            } else {
+                format!("fixture setup failed: {reason}")
+            }));
         }
 
         tracing::info!(
