@@ -154,7 +154,10 @@ fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
         !request.nar_path.exists(),
         "staging file leaked after success"
     );
-    assert_eq!(backend.queried_paths, vec![declared.path]);
+    assert_eq!(
+        backend.queried_paths,
+        vec![declared.references[0].clone(), declared.path]
+    );
     assert_directory_empty(staging.path());
 }
 

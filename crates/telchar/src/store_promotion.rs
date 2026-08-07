@@ -1,5 +1,7 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use crate::nar::stage_nar;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeclaredPathInfo {
@@ -194,14 +196,154 @@ fn parse_sha256_sri(value: &str) -> io::Result<[u8; 32]> {
 }
 
 pub fn validate_and_promote_nar(
-    _source: impl Read,
-    _staging_directory: &Path,
-    _store_directory: &Path,
-    _declared: &DeclaredPathInfo,
-    _backend: &mut impl StorePromotionBackend,
+    source: impl Read,
+    staging_directory: &Path,
+    store_directory: &Path,
+    declared: &DeclaredPathInfo,
+    backend: &mut impl StorePromotionBackend,
 ) -> io::Result<RegisteredPathInfo> {
+    validate_declaration(declared, store_directory)?;
+    let nar_path = create_staging_file(staging_directory)?;
+    let result = promote_staged(
+        source,
+        nar_path.as_path(),
+        staging_directory,
+        store_directory,
+        declared,
+        backend,
+    );
+    let cleanup = std::fs::remove_file(&nar_path);
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(io::Error::other(format!(
+            "staged NAR cleanup failed: {error}"
+        ))),
+    }
+}
+
+fn promote_staged(
+    source: impl Read,
+    nar_path: &Path,
+    staging_directory: &Path,
+    _store_directory: &Path,
+    declared: &DeclaredPathInfo,
+    backend: &mut impl StorePromotionBackend,
+) -> io::Result<RegisteredPathInfo> {
+    let mut staged = std::fs::File::create(nar_path)?;
+    let fingerprint = stage_nar(source, &mut staged)?;
+    if fingerprint.sha256 != declared.nar_hash {
+        let error = io::Error::new(io::ErrorKind::InvalidData, "NAR hash mismatch");
+        let _ = backend.is_valid_path(&declared.path);
+        return Err(error);
+    }
+    if fingerprint.size != declared.nar_size {
+        let error = io::Error::new(io::ErrorKind::InvalidData, "NAR size mismatch");
+        let _ = backend.is_valid_path(&declared.path);
+        return Err(error);
+    }
+    for reference in &declared.references {
+        if reference != &declared.path && !backend.is_valid_path(reference)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "reference is not valid",
+            ));
+        }
+    }
+    staged.seek(SeekFrom::Start(0))?;
+    let request = PromotionRequest {
+        version: 1,
+        store_uri: backend.store_uri().to_owned(),
+        staging_directory: staging_directory.to_path_buf(),
+        path: declared.path.clone(),
+        nar_hash_hex: hex_hash(declared.nar_hash),
+        nar_size: declared.nar_size,
+        references: declared.references.clone(),
+        deriver: declared.deriver.clone(),
+        nar_path: nar_path.to_path_buf(),
+    };
+    backend.before_promote(&request)?;
+    if let Err(error) = backend.promote(&request) {
+        let _ = backend.is_valid_path(&declared.path);
+        return Err(io::Error::other(format!("promotion failed: {error}")));
+    }
+    let registered = backend.query_path_info(&declared.path)?;
+    if registered.path != declared.path
+        || registered.nar_hash != declared.nar_hash
+        || registered.nar_size != declared.nar_size
+        || registered.references != declared.references
+        || registered.deriver != declared.deriver
+        || registered.content_address != declared.content_address
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "registered metadata mismatch",
+        ));
+    }
+    Ok(registered)
+}
+
+fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
+    if declared.content_address.is_some() || !declared.signatures.is_empty() || declared.ultimate {
+        return Err(invalid("unsupported classic path metadata"));
+    }
+    validate_store_path(&declared.path, store_directory, false)?;
+    let mut references = std::collections::BTreeSet::new();
+    for reference in &declared.references {
+        validate_store_path(reference, store_directory, false)?;
+        if !references.insert(reference) {
+            return Err(invalid("invalid duplicate reference"));
+        }
+    }
+    if let Some(deriver) = &declared.deriver {
+        validate_store_path(deriver, store_directory, true)?;
+    }
+    Ok(())
+}
+
+fn validate_store_path(path: &Path, store_directory: &Path, deriver: bool) -> io::Result<()> {
+    let parent = path.parent();
+    let file_name = path.file_name().and_then(|name| name.to_str());
+    if parent != Some(store_directory) || file_name.is_none() {
+        return Err(invalid("invalid store path"));
+    }
+    let file_name = file_name.unwrap();
+    let (hash, name) = file_name.split_at(32);
+    if hash.len() != 32
+        || !hash
+            .bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+        || name.is_empty()
+        || name.ends_with(".drv") != deriver
+    {
+        return Err(invalid("invalid store path"));
+    }
+    Ok(())
+}
+
+fn create_staging_file(directory: &Path) -> io::Result<PathBuf> {
+    for attempt in 0..100 {
+        let path = directory.join(format!("telchar-nar-{}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
     Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "validated NAR promotion is not implemented",
+        io::ErrorKind::AlreadyExists,
+        "unable to allocate staging file",
     ))
+}
+
+fn hex_hash(hash: [u8; 32]) -> String {
+    hash.into_iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
