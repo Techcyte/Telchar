@@ -19,6 +19,27 @@ pub struct NixDaemon {
     socket_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorePathInfo {
+    pub path: PathBuf,
+    pub nar_hash: String,
+    pub nar_size: u64,
+    pub references: Vec<PathBuf>,
+    pub deriver: Option<PathBuf>,
+    pub content_address: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct NixPathInfo {
+    #[serde(rename = "narHash")]
+    nar_hash: String,
+    #[serde(rename = "narSize")]
+    nar_size: u64,
+    references: Vec<String>,
+    deriver: Option<String>,
+    ca: Option<String>,
+}
+
 pub struct NixFixture {
     cleanup_guard: Option<Child>,
     root: PathBuf,
@@ -260,6 +281,63 @@ impl NixDaemon {
         format!("unix://{}", self.socket_path.display())
     }
 
+    pub fn is_valid_path(&self, path: &Path) -> io::Result<bool> {
+        let output = self.path_info_output(path)?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        if output.stdout.len() > 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fixture daemon path-info response exceeds limit",
+            ));
+        }
+        let entries: BTreeMap<String, serde_json::Value> =
+            serde_json::from_slice(&output.stdout).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON")
+            })?;
+        Ok(entries.contains_key(path.to_string_lossy().as_ref()))
+    }
+
+    pub fn query_path_info(&self, path: &Path) -> io::Result<StorePathInfo> {
+        let output = self.path_info_output(path)?;
+        if !output.status.success() {
+            return Err(io::Error::other("fixture daemon path-info query failed"));
+        }
+        if output.stdout.len() > 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fixture daemon path-info response exceeds limit",
+            ));
+        }
+        let entries: BTreeMap<String, NixPathInfo> = serde_json::from_slice(&output.stdout)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON"))?;
+        let info = entries
+            .get(path.to_string_lossy().as_ref())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "path-info response omitted path",
+                )
+            })?;
+        Ok(StorePathInfo {
+            path: path.to_path_buf(),
+            nar_hash: info.nar_hash.clone(),
+            nar_size: info.nar_size,
+            references: info.references.iter().map(PathBuf::from).collect(),
+            deriver: info.deriver.as_deref().map(PathBuf::from),
+            content_address: info.ca.clone(),
+        })
+    }
+
+    fn path_info_output(&self, path: &Path) -> io::Result<std::process::Output> {
+        Command::new("nix")
+            .envs(&self.environment)
+            .args(["--store", &self.store_url(), "path-info", "--json"])
+            .arg(path)
+            .output()
+    }
+
     pub fn trusted(&mut self) -> io::Result<bool> {
         let output = Command::new("nix")
             .envs(&self.environment)
@@ -409,8 +487,8 @@ fn fixture_user() -> io::Result<String> {
 }
 
 fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time after Unix epoch")
-        .as_nanos()
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(_) => 0,
+    }
 }

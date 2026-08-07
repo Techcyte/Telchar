@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 nix-worker-protocol = { path = "../nix-worker-protocol" }
+serde.workspace = true
+serde_json.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true

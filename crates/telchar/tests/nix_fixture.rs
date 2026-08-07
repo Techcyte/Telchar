@@ -163,6 +163,46 @@ fn fixture_owned_daemon_builds_the_fixed_classic_derivation_in_both_trust_modes(
 }
 
 #[test]
+fn real_store_query_reports_valid_and_invalid_paths() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let valid = daemon
+        .build_classic_derivation()
+        .expect("fixture daemon builds classic derivation");
+    let invalid = fixture.root().join("not-a-store-path");
+
+    assert!(daemon.is_valid_path(&valid).expect("valid path query"));
+    assert!(!daemon.is_valid_path(&invalid).expect("invalid path query"));
+
+    daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+}
+
+#[test]
+fn real_store_query_returns_required_path_metadata() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let path = daemon
+        .build_classic_derivation()
+        .expect("fixture daemon builds classic derivation");
+
+    let info = daemon.query_path_info(&path).expect("path metadata query");
+    assert_eq!(info.path, path);
+    assert_eq!(info.nar_size, 136);
+    assert!(info.nar_hash.starts_with("sha256-"));
+    assert!(info.references.is_empty());
+    assert!(info.deriver.is_some());
+    assert!(info.content_address.is_none());
+
+    daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+}
+
+#[test]
 fn relay_streams_the_complete_classic_build_fixture_in_both_trust_modes() {
     for (mode, expected_trust) in [(TrustMode::Trusted, true), (TrustMode::Untrusted, false)] {
         let fixture = NixFixture::create().expect("fixture creates");
