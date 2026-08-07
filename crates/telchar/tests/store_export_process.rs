@@ -54,7 +54,33 @@ done
         .export_nar(&request, &mut writer)
         .expect_err("writer failure must stop helper");
 
-    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error}");
+    fixture.assert_recorded_process_reaped();
+}
+
+#[test]
+fn panicking_writer_terminates_export_helper() {
+    let fixture = HelperFixture::create(
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do
+  printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+done
+"#,
+    );
+    let mut backend = NixStoreExportBackend::new(
+        fixture.helper.clone(),
+        "unix:///run/nix-daemon.sock",
+        Vec::<(String, String)>::new(),
+    );
+    let request = export_request();
+    let mut writer = PanickingWriter;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = backend.export_nar(&request, &mut writer);
+    }));
+
+    assert!(result.is_err(), "writer did not panic");
     fixture.assert_recorded_process_reaped();
 }
 
@@ -114,6 +140,18 @@ fn export_request() -> StoreExportRequest {
         version: 1,
         store_uri: "unix:///run/nix-daemon.sock".to_owned(),
         path: PathBuf::from("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture"),
+    }
+}
+
+struct PanickingWriter;
+
+impl Write for PanickingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        panic!("writer panicked")
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

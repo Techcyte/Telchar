@@ -88,12 +88,14 @@ impl StoreExportBackend for NixStoreExportBackend {
 
     fn export_nar(&mut self, request: &StoreExportRequest, sink: &mut dyn Write) -> io::Result<()> {
         let mut command = std::process::Command::new(&self.helper);
+        configure_child_lifecycle(&mut command);
         command
             .envs(self.environment.iter().cloned())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
+        let mut child = ExportChild::new(child);
         let mut stdin = child
             .stdin
             .take()
@@ -111,16 +113,14 @@ impl StoreExportBackend for NixStoreExportBackend {
             .map_err(io::Error::other)
             .and_then(|_| stdin.flush());
         if let Err(error) = request_result {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill_and_reap();
             let _ = stderr_reader.join();
             return Err(error);
         }
         drop(stdin);
 
         if let Err(error) = io::copy(&mut stdout, sink).map(|_| ()) {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill_and_reap();
             let _ = stderr_reader.join();
             return Err(error);
         }
@@ -128,10 +128,61 @@ impl StoreExportBackend for NixStoreExportBackend {
         let (_, exceeded) = stderr_reader
             .join()
             .map_err(|_| io::Error::other("export helper stderr reader panicked"))??;
-        if !status.success() || exceeded {
+        if exceeded {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "export helper output exceeds limit",
+            ));
+        }
+        if !status.success() {
             return Err(io::Error::other("export helper failed"));
         }
         Ok(())
+    }
+}
+
+struct ExportChild {
+    child: Option<std::process::Child>,
+}
+
+impl ExportChild {
+    fn new(child: std::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn kill_and_reap(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| io::Error::other("export helper already reaped"))?;
+        child.wait()
+    }
+}
+
+impl std::ops::Deref for ExportChild {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        self.child.as_ref().expect("export helper available")
+    }
+}
+
+impl std::ops::DerefMut for ExportChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.child.as_mut().expect("export helper available")
+    }
+}
+
+impl Drop for ExportChild {
+    fn drop(&mut self) {
+        self.kill_and_reap();
     }
 }
 
@@ -272,6 +323,25 @@ struct StorePathJson {
     deriver: Option<PathBuf>,
     ca: Option<String>,
 }
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn configure_child_lifecycle(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(io::Error::from)?;
+            if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
+                return Err(io::Error::other("export owner exited before helper start"));
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn configure_child_lifecycle(_command: &mut std::process::Command) {}
 
 fn parse_sha256_sri(value: &str) -> io::Result<[u8; 32]> {
     let encoded = value
