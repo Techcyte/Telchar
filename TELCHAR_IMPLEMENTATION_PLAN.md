@@ -853,14 +853,14 @@ Evidence: paths and output facts to record
   - Verify: option normalization tests.
   - Evidence: supported set.
 
-- [ ] T079 Define local execution request
+- [x] T079 Define local execution request
   - Depends on: T076, T078
   - Outcome: local executor receives derivation, system/features, allowed options, closure references, request ID, and cancellation token.
   - Red: schema tests fail.
   - Verify: request schema tests.
   - Evidence: required fields.
 
-- [ ] T080 Execute one derivation in gateway store
+- [x] T080 Execute one derivation in gateway store
   - Depends on: T079
   - Outcome: local backend realizes one derivation through structured process arguments or Nix API, without shell interpolation.
   - Red: real local execution test fails.
@@ -881,7 +881,7 @@ Evidence: paths and output facts to record
   - Verify: bounded log streaming test.
   - Evidence: observed maximum and policy.
 
-- [ ] T083 Map successful local result
+- [x] T083 Map successful local result
   - Depends on: T080
   - Outcome: supported Nix result fields map to normalized outcome.
   - Red: result fixture lacks required fields.
