@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -27,6 +27,11 @@ pub struct StorePathInfo {
     pub references: Vec<PathBuf>,
     pub deriver: Option<PathBuf>,
     pub content_address: Option<String>,
+}
+
+pub struct ExportedPath {
+    pub path: PathBuf,
+    pub info: StorePathInfo,
 }
 
 #[derive(serde::Deserialize)]
@@ -350,6 +355,111 @@ impl NixDaemon {
             .output()
     }
 
+    pub fn delete_path(&self, path: &Path) -> io::Result<()> {
+        let output = Command::new("nix-store")
+            .envs(&self.environment)
+            .args(["--store", &self.store_url(), "--delete"])
+            .arg(path)
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "NAR path delete failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn import_nar(&self, mut body: impl Read + Send) -> io::Result<()> {
+        let mut command = Command::new("nix-store");
+        command
+            .envs(&self.environment)
+            .args(["--store", &self.store_url(), "--import"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("import stdin not configured"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("import stdout not configured"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("import stderr not configured"))?;
+        thread::scope(|scope| -> io::Result<()> {
+            let writer = scope.spawn(move || -> io::Result<()> {
+                io::copy(&mut body, &mut stdin)?;
+                stdin.flush()
+            });
+            let stdout_reader = scope.spawn(|| drain_bounded(stdout));
+            let stderr_reader = scope.spawn(|| drain_bounded(stderr));
+            let status = child.wait()?;
+            writer
+                .join()
+                .map_err(|_| io::Error::other("NAR import writer panicked"))??;
+            stdout_reader
+                .join()
+                .map_err(|_| io::Error::other("NAR import stdout reader panicked"))??;
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| io::Error::other("NAR import stderr reader panicked"))??;
+            if !status.success() {
+                return Err(io::Error::other(format!(
+                    "NAR import failed: {}",
+                    String::from_utf8_lossy(&stderr).trim()
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn export_path(&self, path: &Path, body: &mut impl Write) -> io::Result<ExportedPath> {
+        let info = self.query_path_info(path)?;
+        let mut command = Command::new("nix-store");
+        command
+            .envs(&self.environment)
+            .args(["--store", &self.store_url(), "--export"])
+            .arg(path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("export stdout not configured"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("export stderr not configured"))?;
+        thread::scope(|scope| -> io::Result<ExportedPath> {
+            let stderr_reader = scope.spawn(|| drain_bounded(stderr));
+            if let Err(error) = io::copy(&mut stdout, body) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+            let status = child.wait()?;
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| io::Error::other("NAR export stderr reader panicked"))??;
+            if !status.success() {
+                return Err(io::Error::other(format!(
+                    "NAR export failed: {}",
+                    String::from_utf8_lossy(&stderr).trim()
+                )));
+            }
+            Ok(ExportedPath {
+                path: path.to_path_buf(),
+                info,
+            })
+        })
+    }
+
     pub fn trusted(&mut self) -> io::Result<bool> {
         let output = Command::new("nix")
             .envs(&self.environment)
@@ -434,6 +544,21 @@ impl Drop for NixDaemon {
             );
         }
     }
+}
+
+fn drain_bounded(mut reader: impl Read) -> io::Result<Vec<u8>> {
+    const LIMIT: usize = 64 * 1024;
+    let mut bytes = Vec::with_capacity(LIMIT);
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = LIMIT.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+    }
+    Ok(bytes)
 }
 
 fn start_cleanup_guard(root: &Path) -> io::Result<Child> {

@@ -205,6 +205,82 @@ fn real_store_validity_query_does_not_hide_daemon_failure() {
 }
 
 #[test]
+fn real_store_import_registers_valid_nar_and_export_streams_it() {
+    let source_fixture = NixFixture::create().expect("source fixture creates");
+    let mut source_daemon = source_fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("source daemon starts");
+    let path = source_daemon
+        .build_classic_derivation()
+        .expect("source path builds");
+    let mut body = Vec::new();
+    let exported = source_daemon
+        .export_path(&path, &mut body)
+        .expect("path exports");
+    assert_eq!(exported.path, path);
+    assert_eq!(exported.info.nar_size, 136);
+    assert!(!body.is_empty());
+
+    source_daemon
+        .delete_path(&path)
+        .expect("source path deletes before import");
+    source_daemon
+        .import_nar(body.as_slice())
+        .expect("valid NAR imports");
+    assert!(
+        source_daemon
+            .is_valid_path(&path)
+            .expect("imported path query")
+    );
+    let imported = source_daemon
+        .query_path_info(&path)
+        .expect("imported metadata query");
+    assert_eq!(imported, exported.info);
+
+    source_daemon.stop().expect("source daemon stops");
+    source_fixture.cleanup().expect("source fixture cleans");
+}
+
+#[test]
+fn real_store_corrupt_nar_reaches_registration_and_is_rejected() {
+    let source_fixture = NixFixture::create().expect("source fixture creates");
+    let mut source_daemon = source_fixture
+        .start_diagnostic_daemon(TrustMode::Trusted)
+        .expect("source daemon starts");
+    let path = source_daemon
+        .build_classic_derivation()
+        .expect("source path builds");
+    let mut exported = Vec::new();
+    source_daemon
+        .export_path(&path, &mut exported)
+        .expect("path exports");
+    let index = exported.len() / 2;
+    exported[index] ^= 0xff;
+
+    source_daemon
+        .delete_path(&path)
+        .expect("source path deletes before corrupt import");
+    let error = source_daemon
+        .import_nar(exported.as_slice())
+        .expect_err("corrupt NAR must be rejected");
+    assert!(error.to_string().contains("import"));
+    assert!(
+        !source_daemon
+            .is_valid_path(&path)
+            .expect("corrupt path query")
+    );
+    assert!(
+        source_daemon
+            .diagnostic_operations()
+            .expect("registration diagnostics")
+            .contains(&7)
+    );
+
+    source_daemon.stop().expect("source daemon stops");
+    source_fixture.cleanup().expect("source fixture cleans");
+}
+
+#[test]
 fn real_store_query_returns_required_path_metadata() {
     let fixture = NixFixture::create().expect("fixture creates");
     let mut daemon = fixture
