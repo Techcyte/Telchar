@@ -167,10 +167,11 @@
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
                 stock_client.succeed("test $(HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 30 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1; echo $?) -ne 0")
-                stock_client.succeed("grep -q 'unsupported worker operation' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
+                stock_client.succeed("grep -q 'BuildDerivation execution is unavailable' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
                 gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_valid_paths.completed' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
                 gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.add_multiple_to_store.completed' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
-                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'operation=BuildDerivation' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
+                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.admitted' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
+                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.execution_unavailable' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
                 gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
               '';
             };
