@@ -242,10 +242,10 @@ fn real_store_import_registers_valid_nar_and_export_streams_it() {
 }
 
 #[test]
-fn real_store_corrupt_nar_reaches_registration_and_is_rejected() {
+fn legacy_import_rejects_structurally_corrupt_export() {
     let source_fixture = NixFixture::create().expect("source fixture creates");
     let mut source_daemon = source_fixture
-        .start_diagnostic_daemon(TrustMode::Trusted)
+        .start_daemon(TrustMode::Trusted)
         .expect("source daemon starts");
     let path = source_daemon
         .build_classic_derivation()
@@ -262,18 +262,12 @@ fn real_store_corrupt_nar_reaches_registration_and_is_rejected() {
         .expect("source path deletes before corrupt import");
     let error = source_daemon
         .import_nar(exported.as_slice())
-        .expect_err("corrupt NAR must be rejected");
+        .expect_err("structurally corrupt export must be rejected");
     assert!(error.to_string().contains("import"));
     assert!(
         !source_daemon
             .is_valid_path(&path)
             .expect("corrupt path query")
-    );
-    assert!(
-        source_daemon
-            .diagnostic_operations()
-            .expect("registration diagnostics")
-            .contains(&7)
     );
 
     source_daemon.stop().expect("source daemon stops");

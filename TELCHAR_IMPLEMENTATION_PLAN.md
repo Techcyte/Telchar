@@ -700,26 +700,33 @@ Evidence: paths and output facts to record
   - Verify: real-store metadata test.
   - Evidence: asserted fields.
 
-- [ ] T066 Import one NAR with path metadata
+- [ ] T066 Import one validated NAR with path metadata
   - Depends on: T065
-  - Outcome: real store accepts a valid NAR and registers expected path info.
-  - Red: import integration test fails before adapter implementation.
-  - Verify: real-store import test.
-  - Evidence: imported path and metadata.
+  - Outcome: after Telchar validates the streamed NAR against the client-declared NAR hash, size, path, references, deriver, and content-address metadata, the real gateway store accepts it and reports matching registered path info.
+  - Red: import integration test either bypasses pre-registration validation or registers metadata differing from the declared envelope.
+  - Verify: validated real-store import test.
+  - Evidence: declared metadata, computed metadata, imported path, and registered metadata.
 
-- [ ] T067 Reject corrupt NAR import
-  - Depends on: T066
-  - Outcome: hash/content mismatch fails without valid path registration.
-  - Red: corrupt import appears valid.
-  - Verify: corrupt-NAR test.
-  - Evidence: asserted failure and invalid path.
+- [ ] T066A Parse and hash one streamed NAR before registration
+  - Depends on: T065
+  - Outcome: bounded-memory staging consumes exactly one NAR, computes SHA-256 and byte size over the NAR serialization, rejects trailing/truncated/malformed input, and produces a promotion source without trusting `nix-store --import` to validate classic input-addressed content.
+  - Red: a payload mutation can reach authoritative registration without a hash mismatch.
+  - Verify: fixed NAR stream parser/hash tests plus malformed/trailing-input cases.
+  - Evidence: computed hash/size, bounded buffer maximum, and rejection offset.
+
+- [ ] T067 Reject corrupt NAR before authoritative registration
+  - Depends on: T066A
+  - Outcome: content or declared-metadata mismatch fails before the authoritative gateway store receives the object; no valid path registration or partial promoted state remains.
+  - Red: mutated fixture payload imports successfully through legacy `nix-store --import`, proving that import alone is not validation.
+  - Verify: hostile mutation test against staged validation followed by authoritative-store validity query.
+  - Evidence: mutation location, computed-versus-declared mismatch, and invalid authoritative path.
 
 - [ ] T068 Export one valid path as NAR
   - Depends on: T066
-  - Outcome: adapter streams valid path and metadata back to caller.
-  - Red: exported NAR differs from store content.
-  - Verify: round-trip NAR test.
-  - Evidence: content/hash equality.
+  - Outcome: adapter streams valid path and metadata back to caller while independently confirming streamed NAR hash and size against registered path info.
+  - Red: exported NAR differs from store content or registered metadata.
+  - Verify: streamed export hash/size and round-trip test.
+  - Evidence: content, computed hash/size, and registered metadata equality.
 
 - [ ] T069 Bound NAR transfer bytes
   - Depends on: T066, T068
