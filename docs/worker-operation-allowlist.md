@@ -26,7 +26,12 @@ the fixed fixture:
 | `AddToStore` | `7` | Bounded framed classic staging upload |
 | `QueryMissing` | `40` | Missing-path query |
 | `QueryPathInfo` | `26` | Typed path-info query |
-| `BuildPathsWithResults` | `46` | Fixed classic build request and result |
+| `BuildPathsWithResults` | `46` | Fixed diagnostic classic-build fixtures only; not the current production walking-skeleton build operation |
+
+The production stock-Nix Gate 3 walking skeleton instead exposes `BuildDerivation`
+(`36`) after `QueryValidPaths` and an empty `AddMultipleToStore`. That production
+boundary is tracked independently from this trace-specific allowlist because the
+accepted diagnostic fixtures did not exercise operation 36.
 
 ## Optional operations
 

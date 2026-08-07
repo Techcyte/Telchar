@@ -825,7 +825,7 @@ Evidence: paths and output facts to record
 
 ### Build operation and local backend
 
-- [ ] T075A Add one-system deployment configuration
+- [x] T075A Add one-system deployment configuration
   - Depends on: T061
   - Outcome: daemon configuration requires exactly one Nix system and bounded supported-feature set; startup rejects an empty or multi-system envelope, and admission rejects mismatched build requests before store mutation.
   - Red: configuration or admission test accepts multiple systems or a mismatched request.
@@ -834,10 +834,10 @@ Evidence: paths and output facts to record
 
 - [ ] T076 Parse supported derivation build operation
   - Depends on: T016, T065, T075A
-  - Outcome: gateway normalizes one captured build operation into `BuildRequest` without backend objects.
-  - Red: captured fixture fails to parse.
-  - Verify: operation fixture test.
-  - Evidence: normalized fields.
+  - Outcome: gateway normalizes the stock-Nix Gate 3 `BuildDerivation` operation into `BuildRequest` without backend objects.
+  - Red: bounded `BasicDerivation` contract and Gate 3 request fail to parse.
+  - Verify: `build_derivation_contract`, `build_request`, and focused operation-dispatch tests.
+  - Evidence: normalized derivation path, outputs, inputs, system, builder, arguments, environment, and mode.
 
 - [ ] T077 Reject unsupported build option
   - Depends on: T076

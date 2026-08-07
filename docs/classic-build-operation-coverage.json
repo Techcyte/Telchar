@@ -123,20 +123,40 @@
     {
       "name": "BuildPathsWithResults",
       "code": 46,
-      "fixture_role": "required fixed classic build request and result vector",
+      "fixture_role": "required diagnostic classic-build request and result vector",
       "admission": "required",
       "production_packet": "classic-op-build-paths-with-results",
       "decoder": "bounded DerivedPath vector and BuildMode decoder",
-      "dispatcher": "dispatch operation 46 to normalized local build request",
-      "store_behavior": "execute one admitted derivation in gateway store and validate output metadata",
+      "dispatcher": "retain diagnostic-fixture production mapping independently from walking-skeleton order",
+      "store_behavior": "future compatibility leaf executes one admitted derived path and validates output metadata",
       "response_framing": "frame bounded KeyedBuildResult vector, timing fields, and DrvOutputs",
-      "compatibility_test": "trusted and untrusted client-visible build result golden with output hash",
+      "compatibility_test": "trusted and untrusted diagnostic fixture result golden",
       "primary_sources": [
         "src/libstore/remote-store.cc::buildPathsWithResults",
         "src/libstore/daemon.cc::performOp(BuildPathsWithResults)",
         "src/libstore/common-protocol.cc"
       ],
       "inventory_boundary": "Classic-build fixture inventory"
+    }
+  ],
+  "walking_skeleton_operations": [
+    {
+      "name": "BuildDerivation",
+      "code": 36,
+      "fixture_role": "required stock-Nix Gate 3 BasicDerivation request and BuildResult",
+      "admission": "required",
+      "production_packet": "classic-op-build-derivation-admission",
+      "decoder": "bounded derivation path, BasicDerivation collections, strings, output metadata, and BuildMode decoder",
+      "dispatcher": "normalize operation 36 into a backend-neutral BuildRequest under one-system deployment policy",
+      "store_behavior": "admission packet performs no store mutation or execution; later local-executor packet realizes the admitted request in the gateway store",
+      "response_framing": "admission packet returns typed execution-unavailable error; parent integration later frames bounded BuildResult",
+      "compatibility_test": "stock-Nix Gate 3 request admission, hostile metadata rejection, and later client-visible result golden",
+      "primary_sources": [
+        "src/libstore/worker-protocol-connection.cc::BasicClientConnection::putBuildDerivationRequest",
+        "src/libstore/daemon.cc::performOp(BuildDerivation)",
+        "src/libstore/derivations.cc::readDerivation"
+      ],
+      "inventory_boundary": "Stock-Nix Gate 3 walking skeleton"
     }
   ],
   "rejected_fixture_flows": [

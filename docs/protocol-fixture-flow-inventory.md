@@ -27,6 +27,16 @@ All integer fields are 64-bit little-endian words. Byte strings are an integer b
 
 For the two narrow `store info` fixtures, `SetOptions` is the only fixture-reachable operation. Its exact request boundary begins at its typed operation word; the next message cannot begin until all twelve fixed words, override count, and each declared name/value pair have been consumed. The observer retains only operation code, negotiated version, frame kind, declared string lengths, override count, and terminal frame kind. It retains no feature, daemon-version, override-name, or override-value body. The classic-build fixtures below exercise the larger typed operation set documented in their own inventory.
 
+## Stock-Nix Gate 3 walking skeleton
+
+The parent-owned production walking skeleton uses stock Nix 2.34.8 through
+`ssh-ng://` and currently reaches `BuildDerivation` (`36`) after an empty
+`AddMultipleToStore` (`44`). Operation 36 carries a derivation store path, a
+full `BasicDerivation` encoded by `writeDerivation`, and a `BuildMode`; its
+response is one `BuildResult`. This boundary is authoritative for production
+packet order even though the older diagnostic classic-build fixtures below
+expose `BuildPathsWithResults` (`46`).
+
 ## Classic-build fixture inventory
 
 `crates/telchar/tests/classic_build_envelope.rs` is a test-only, disposable
