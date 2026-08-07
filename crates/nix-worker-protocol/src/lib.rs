@@ -1927,6 +1927,29 @@ fn validate_store_path(path: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn write_build_derivation_success_response(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    already_valid: bool,
+) -> io::Result<()> {
+    output.write_all(&STDERR_LAST.to_le_bytes())?;
+    write_worker_integer_to(output, if already_valid { 2 } else { 0 })?;
+    write_worker_byte_string_to(output, b"")?;
+    if version >= WorkerVersion::new(1, 29) {
+        for value in [0_u64; 4] {
+            write_worker_integer_to(output, value)?;
+        }
+    }
+    if version >= WorkerVersion::new(1, 37) {
+        write_worker_integer_to(output, 0)?;
+        write_worker_integer_to(output, 0)?;
+    }
+    if version >= WorkerVersion::new(1, 28) {
+        write_worker_integer_to(output, 0)?;
+    }
+    output.flush()
+}
+
 pub fn write_query_valid_paths_response(
     output: &mut impl Write,
     paths: impl IntoIterator<Item = impl AsRef<[u8]>>,
