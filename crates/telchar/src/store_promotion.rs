@@ -43,6 +43,7 @@ pub trait StorePromotionBackend {
 pub fn validate_and_promote_nar(
     _source: impl Read,
     _staging_directory: &Path,
+    _store_directory: &Path,
     _declared: &DeclaredPathInfo,
     _backend: &mut impl StorePromotionBackend,
 ) -> io::Result<RegisteredPathInfo> {

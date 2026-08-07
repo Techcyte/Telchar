@@ -11,6 +11,7 @@ const NAR_HASH: [u8; 32] = [
     0x6c, 0x2b, 0xe2, 0xf1, 0x2a, 0x16, 0x86, 0x05, 0xeb, 0xcb, 0xa3, 0x78, 0x22, 0x86, 0xc3, 0x8e,
     0xaf, 0x3f, 0x5d, 0x78, 0x7b, 0x7a, 0x8b, 0xb2, 0x4a, 0x54, 0x0d, 0x22, 0x67, 0xff, 0x68, 0xe1,
 ];
+const STORE_DIRECTORY: &str = "/nix/store";
 const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture";
 
 #[test]
@@ -22,6 +23,7 @@ fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
     let registered = validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
+        Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
@@ -50,8 +52,14 @@ fn rejects_content_hash_mismatch_before_helper_invocation() {
     let declared = declared_path_info();
     let mut backend = RecordingBackend::accepting(registered_path_info());
 
-    let error = validate_and_promote_nar(Cursor::new(nar), staging.path(), &declared, &mut backend)
-        .expect_err("mutated content must fail");
+    let error = validate_and_promote_nar(
+        Cursor::new(nar),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("mutated content must fail");
 
     assert!(error.to_string().contains("NAR hash mismatch"));
     assert!(
@@ -72,6 +80,7 @@ fn rejects_declared_size_mismatch_before_helper_invocation() {
     let error = validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
+        Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
@@ -108,6 +117,7 @@ fn rejects_unsupported_classic_metadata_before_staging() {
         let error = validate_and_promote_nar(
             Cursor::new(regular_nar(CONTENT)),
             staging.path(),
+            Path::new(STORE_DIRECTORY),
             &declared,
             &mut backend,
         )
@@ -159,6 +169,7 @@ fn rejects_invalid_and_duplicate_path_metadata_before_staging() {
         let error = validate_and_promote_nar(
             Cursor::new(regular_nar(CONTENT)),
             staging.path(),
+            Path::new(STORE_DIRECTORY),
             &declared,
             &mut backend,
         )
@@ -181,6 +192,7 @@ fn rejects_missing_reference_before_staging() {
     let error = validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
+        Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
@@ -201,6 +213,7 @@ fn helper_failure_is_followed_by_authoritative_validity_query_and_cleanup() {
     let error = validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
+        Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
@@ -223,6 +236,7 @@ fn rejects_registered_metadata_mismatch() {
     let error = validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
+        Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
