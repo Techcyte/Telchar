@@ -85,6 +85,8 @@ impl Fixture {
             .expect("SSH shim is executable");
         let socket = root.join("daemon.sock");
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env("TELCHAR_SYSTEM", "x86_64-linux")
+            .env("TELCHAR_SUPPORTED_FEATURES", "")
             .args([
                 "daemon",
                 "--socket",

@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};
+use telchar::ipc::{IpcEnvelope, IpcError, IpcListener, RequesterMetadata, IPC_VERSION};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -471,6 +471,8 @@ fn daemon_command_with_uid(
         command.arg("--once");
     }
     command
+        .env("TELCHAR_SYSTEM", "x86_64-linux")
+        .env("TELCHAR_SUPPORTED_FEATURES", "")
         .env(
             "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
             envelope_timeout_ms.to_string(),

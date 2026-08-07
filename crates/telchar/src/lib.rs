@@ -1,3 +1,4 @@
+pub mod deployment;
 pub mod identity;
 pub mod ipc;
 pub mod nar;

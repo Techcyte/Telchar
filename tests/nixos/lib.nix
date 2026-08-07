@@ -103,6 +103,8 @@ let
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
+          TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
+          TELCHAR_SUPPORTED_FEATURES = "";
         };
         before = [ "sshd.service" ];
         serviceConfig = {

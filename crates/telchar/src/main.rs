@@ -115,6 +115,13 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_daemon() -> io::Result<()> {
+    let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
+    tracing::info!(
+        event = "deployment.configured",
+        system = deployment.system(),
+        supported_feature_count = deployment.supported_features().len(),
+        "one-system deployment configured"
+    );
     let socket = daemon_socket_argument()?;
     let expected_uid = daemon_uid_argument()?;
     prepare_socket_path(&socket)?;
