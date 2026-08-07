@@ -979,6 +979,22 @@ impl<R: WorkerInput + ?Sized> WorkerInput for &mut R {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct EmptyAddMultipleToStoreRequest {
+    repair: bool,
+    dont_check_signatures: bool,
+}
+
+impl EmptyAddMultipleToStoreRequest {
+    pub const fn repair(&self) -> bool {
+        self.repair
+    }
+
+    pub const fn dont_check_signatures(&self) -> bool {
+        self.dont_check_signatures
+    }
+}
+
 pub struct WorkerReader<R> {
     input: R,
     budget: SessionAllocationBudget,
@@ -1161,6 +1177,89 @@ impl<R: WorkerInput> WorkerReader<R> {
         })
     }
 
+    pub fn complete_empty_add_multiple_to_store(
+        &mut self,
+        version: WorkerVersion,
+    ) -> io::Result<EmptyAddMultipleToStoreRequest> {
+        if version < WorkerVersion::new(1, 32) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AddMultipleToStore requires worker protocol 1.32",
+            ));
+        }
+
+        let repair = read_strict_worker_boolean(&mut self.input, "repair")?;
+        let dont_check_signatures = read_strict_worker_boolean(&mut self.input, "dontCheckSigs")?;
+        if repair {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "repair is unsupported for AddMultipleToStore",
+            ));
+        }
+
+        let mut remaining = 0_u64;
+        let mut count_bytes = [0_u8; 8];
+        let mut count_read = 0;
+
+        let frame_terminated = loop {
+            if remaining == 0 {
+                let frame_length = self.read_integer().map_err(|error| {
+                    if error.kind() == io::ErrorKind::UnexpectedEof {
+                        io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "truncated AddMultipleToStore frame",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+                if frame_length == 0 {
+                    break true;
+                }
+                remaining = frame_length;
+            }
+
+            let mut buffer = [0_u8; 256];
+            let read_length = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
+            self.input.read_exact(&mut buffer[..read_length])?;
+            remaining -= read_length as u64;
+
+            for byte in &buffer[..read_length] {
+                if count_read < count_bytes.len() {
+                    count_bytes[count_read] = *byte;
+                    count_read += 1;
+                    if count_read == count_bytes.len() {
+                        let count = u64::from_le_bytes(count_bytes);
+                        if count != 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "nonempty AddMultipleToStore is unsupported",
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "trailing AddMultipleToStore logical bytes",
+                    ));
+                }
+            }
+        };
+
+        if !frame_terminated || count_read != count_bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated AddMultipleToStore logical stream",
+            ));
+        }
+
+        self.input.complete_message();
+        Ok(EmptyAddMultipleToStoreRequest {
+            repair,
+            dont_check_signatures,
+        })
+    }
+
     pub fn complete_set_options(&mut self) -> io::Result<()> {
         let span = tracing::info_span!("worker.set_options");
         let _entered = span.enter();
@@ -1230,6 +1329,17 @@ impl<R: WorkerInput> WorkerReader<R> {
             remaining -= read_length;
         }
         Ok(())
+    }
+}
+
+fn read_strict_worker_boolean(input: &mut impl Read, name: &str) -> io::Result<bool> {
+    match read_worker_integer_from(input)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid AddMultipleToStore {name} boolean"),
+        )),
     }
 }
 

@@ -78,6 +78,47 @@ pub fn run_worker_session(
             Err(_) => {
                 return reject(&mut output, "unknown-operation", "unknown worker operation");
             }
+            Ok(WorkerOperation::AddMultipleToStore) => {
+                let request = match reader.complete_empty_add_multiple_to_store(negotiated.version)
+                {
+                    Ok(request) => request,
+                    Err(error) if error.to_string().contains("nonempty") => {
+                        tracing::error!(
+                            event = "worker.operation.rejected",
+                            rejection = "nonempty-add-multiple-to-store",
+                            reason = error.to_string(),
+                            "nonempty AddMultipleToStore request rejected"
+                        );
+                        return reject(
+                            &mut output,
+                            "nonempty-add-multiple-to-store",
+                            "nonempty AddMultipleToStore is unsupported",
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.operation.rejected",
+                            rejection = "invalid-add-multiple-to-store",
+                            reason = error.to_string(),
+                            "AddMultipleToStore request rejected"
+                        );
+                        return reject(
+                            &mut output,
+                            "invalid-add-multiple-to-store",
+                            "invalid AddMultipleToStore request",
+                        );
+                    }
+                };
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                output.flush()?;
+                tracing::info!(
+                    event = "worker.add_multiple_to_store.completed",
+                    object_count = 0_u64,
+                    repair = request.repair(),
+                    dont_check_signatures = request.dont_check_signatures(),
+                    "empty AddMultipleToStore request completed"
+                );
+            }
             Ok(WorkerOperation::QueryValidPaths) => {
                 let request = match reader.complete_query_valid_paths(negotiated.version) {
                     Ok(request) => request,
@@ -164,11 +205,16 @@ pub fn run_worker_session(
                     operation = ?operation,
                     "fixture-observed worker operation is not implemented"
                 );
-                return reject(
+                reject(
                     &mut output,
                     "recognized-unimplemented",
                     "unsupported worker operation",
-                );
+                )?;
+                if operation == WorkerOperation::IsValidPath {
+                    let mut input = reader.into_inner();
+                    io::copy(&mut input, &mut io::sink())?;
+                    return Ok(());
+                }
             }
         }
     }
