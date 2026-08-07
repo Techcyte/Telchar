@@ -110,8 +110,9 @@ impl<R: Read, W: Write> NarReader<R, W> {
             b"regular" => self.parse_regular()?,
             b"symlink" => {
                 self.string_equals(b"target")?;
-                if self.skip_string()? == 0 {
-                    return Err(invalid("NAR symlink target is empty"));
+                let target = self.read_bounded_string(4095)?;
+                if target.is_empty() || target.contains(&0) {
+                    return Err(invalid("invalid NAR symlink target"));
                 }
             }
             b"directory" => return self.parse_directory(depth),
@@ -153,11 +154,19 @@ impl<R: Read, W: Write> NarReader<R, W> {
             }
             self.string_equals(b"(")?;
             self.string_equals(b"name")?;
-            let name = self.read_bounded_string(4096)?;
-            if name.is_empty() || name == b"." || name == b".." || name.contains(&b'/') {
+            let name = self.read_bounded_string(255)?;
+            if name.is_empty()
+                || name == b"."
+                || name == b".."
+                || name.contains(&b'/')
+                || name.contains(&0)
+            {
                 return Err(invalid("invalid NAR directory name"));
             }
-            if previous_name.as_deref().is_some_and(|previous| previous >= name.as_slice()) {
+            if previous_name
+                .as_deref()
+                .is_some_and(|previous| previous >= name.as_slice())
+            {
                 return Err(invalid("NAR directory entries are not strictly sorted"));
             }
             previous_name = Some(name);

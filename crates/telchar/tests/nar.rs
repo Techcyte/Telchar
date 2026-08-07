@@ -77,6 +77,88 @@ fn rejects_bytes_after_complete_nar() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
+#[test]
+fn accepts_executable_regular_file() {
+    let nar = nar_with_root(executable_regular_node(CONTENT));
+    let mut staged = Vec::new();
+
+    stage_nar(Cursor::new(&nar), &mut staged).expect("executable regular NAR stages");
+
+    assert_eq!(staged, nar);
+}
+
+#[test]
+fn accepts_directory_with_sorted_entries_and_symlink() {
+    let nar = nar_with_root(directory_node(&[
+        (b"file", regular_node(CONTENT)),
+        (b"link", symlink_node(b"file")),
+    ]));
+    let mut staged = Vec::new();
+
+    stage_nar(Cursor::new(&nar), &mut staged).expect("directory NAR stages");
+
+    assert_eq!(staged, nar);
+}
+
+#[test]
+fn rejects_invalid_symlink_targets() {
+    for (label, target) in [
+        ("empty", b"".as_slice()),
+        ("nul", b"bad\0target".as_slice()),
+        ("too long", &[b'x'; 4096]),
+    ] {
+        let nar = nar_with_root(symlink_node(target));
+        match stage_nar(Cursor::new(nar), Vec::new()) {
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{label}"),
+            Ok(fingerprint) => panic!("{label} symlink target must fail: {fingerprint:?}"),
+        }
+    }
+}
+
+#[test]
+fn rejects_invalid_directory_names() {
+    for (label, name) in [
+        ("empty", b"".as_slice()),
+        ("dot", b".".as_slice()),
+        ("dot-dot", b"..".as_slice()),
+        ("slash", b"with/slash".as_slice()),
+        ("nul", b"with\0nul".as_slice()),
+        ("too long", &[b'x'; 256]),
+    ] {
+        let nar = nar_with_root(directory_node(&[(name, regular_node(CONTENT))]));
+        match stage_nar(Cursor::new(nar), Vec::new()) {
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{label}"),
+            Ok(fingerprint) => panic!("{label} directory name must fail: {fingerprint:?}"),
+        }
+    }
+}
+
+#[test]
+fn rejects_unsorted_directory_entries() {
+    let nar = nar_with_root(directory_node(&[
+        (b"z", regular_node(CONTENT)),
+        (b"a", regular_node(CONTENT)),
+    ]));
+
+    let error =
+        stage_nar(Cursor::new(nar), Vec::new()).expect_err("unsorted directory entries must fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn rejects_directory_nesting_at_nix_limit() {
+    let mut node = regular_node(CONTENT);
+    for _ in 0..64 {
+        node = directory_node(&[(b"child", node)]);
+    }
+    let nar = nar_with_root(node);
+
+    let error = stage_nar(Cursor::new(nar), Vec::new()).expect_err("Nix depth limit must fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
 fn regular_nar(contents: &[u8]) -> Vec<u8> {
     let mut nar = Vec::new();
     push_string(&mut nar, NAR_MAGIC);
@@ -87,6 +169,66 @@ fn regular_nar(contents: &[u8]) -> Vec<u8> {
     push_string(&mut nar, contents);
     push_string(&mut nar, b")");
     nar
+}
+
+fn nar_with_root(root: Vec<u8>) -> Vec<u8> {
+    let mut nar = Vec::new();
+    push_string(&mut nar, NAR_MAGIC);
+    nar.extend(root);
+    nar
+}
+
+fn regular_node(contents: &[u8]) -> Vec<u8> {
+    let mut node = Vec::new();
+    push_string(&mut node, b"(");
+    push_string(&mut node, b"type");
+    push_string(&mut node, b"regular");
+    push_string(&mut node, b"contents");
+    push_string(&mut node, contents);
+    push_string(&mut node, b")");
+    node
+}
+
+fn executable_regular_node(contents: &[u8]) -> Vec<u8> {
+    let mut node = Vec::new();
+    push_string(&mut node, b"(");
+    push_string(&mut node, b"type");
+    push_string(&mut node, b"regular");
+    push_string(&mut node, b"executable");
+    push_string(&mut node, b"");
+    push_string(&mut node, b"contents");
+    push_string(&mut node, contents);
+    push_string(&mut node, b")");
+    node
+}
+
+fn symlink_node(target: &[u8]) -> Vec<u8> {
+    let mut node = Vec::new();
+    push_string(&mut node, b"(");
+    push_string(&mut node, b"type");
+    push_string(&mut node, b"symlink");
+    push_string(&mut node, b"target");
+    push_string(&mut node, target);
+    push_string(&mut node, b")");
+    node
+}
+
+fn directory_node(entries: &[(&[u8], Vec<u8>)]) -> Vec<u8> {
+    let mut node = Vec::new();
+    push_string(&mut node, b"(");
+    push_string(&mut node, b"type");
+    push_string(&mut node, b"directory");
+    for (name, child) in entries {
+        push_string(&mut node, b"entry");
+        push_string(&mut node, b"(");
+        push_string(&mut node, b"name");
+        push_string(&mut node, name);
+        push_string(&mut node, b"node");
+        node.extend(child);
+        push_string(&mut node, b")");
+    }
+    push_string(&mut node, b")");
+    node
 }
 
 fn push_string(output: &mut Vec<u8>, value: &[u8]) {

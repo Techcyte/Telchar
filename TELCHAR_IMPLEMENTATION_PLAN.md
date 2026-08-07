@@ -707,7 +707,7 @@ Evidence: paths and output facts to record
   - Verify: validated real-store import test.
   - Evidence: declared metadata, computed metadata, imported path, and registered metadata.
 
-- [ ] T066A Parse and hash one streamed NAR before registration
+- [x] T066A Parse and hash one streamed NAR before registration
   - Depends on: T065
   - Outcome: bounded-memory staging consumes exactly one NAR, computes SHA-256 and byte size over the NAR serialization, rejects trailing/truncated/malformed input, and produces a promotion source without trusting `nix-store --import` to validate classic input-addressed content.
   - Red: a payload mutation can reach authoritative registration without a hash mismatch.
