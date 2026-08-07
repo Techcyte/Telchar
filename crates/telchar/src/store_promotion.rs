@@ -266,8 +266,15 @@ fn promote_staged(
     };
     backend.before_promote(&request)?;
     if let Err(error) = backend.promote(&request) {
-        let _ = backend.is_valid_path(&declared.path);
-        return Err(io::Error::other(format!("promotion failed: {error}")));
+        return match backend.is_valid_path(&declared.path) {
+            Ok(false) => Err(io::Error::other(format!("promotion failed: {error}"))),
+            Ok(true) => Err(io::Error::other(format!(
+                "promotion failed but authoritative path is valid: {error}"
+            ))),
+            Err(query_error) => Err(io::Error::other(format!(
+                "promotion failed and authoritative validity query failed: {error}; {query_error}"
+            ))),
+        };
     }
     let registered = backend.query_path_info(&declared.path)?;
     if registered.path != declared.path
@@ -289,6 +296,9 @@ fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> 
     if declared.content_address.is_some() || !declared.signatures.is_empty() || declared.ultimate {
         return Err(invalid("unsupported classic path metadata"));
     }
+    if declared.references.len() > MAXIMUM_PROMOTION_REFERENCES {
+        return Err(invalid("too many references"));
+    }
     validate_store_path(&declared.path, store_directory, false)?;
     let mut references = std::collections::BTreeSet::new();
     for reference in &declared.references {
@@ -304,23 +314,46 @@ fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> 
 }
 
 fn validate_store_path(path: &Path, store_directory: &Path, deriver: bool) -> io::Result<()> {
-    let parent = path.parent();
-    let file_name = path.file_name().and_then(|name| name.to_str());
-    if parent != Some(store_directory) || file_name.is_none() {
+    const HASH_LENGTH: usize = 32;
+    const MAXIMUM_BASE_NAME_LENGTH: usize = 211;
+    const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(invalid("invalid store path"));
+    };
+    if path.parent() != Some(store_directory)
+        || file_name.len() > MAXIMUM_BASE_NAME_LENGTH
+        || file_name.as_bytes().get(HASH_LENGTH) != Some(&b'-')
+    {
         return Err(invalid("invalid store path"));
     }
-    let file_name = file_name.unwrap();
-    let (hash, name) = file_name.split_at(32);
-    if hash.len() != 32
-        || !hash
-            .bytes()
-            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
-        || name.is_empty()
+    let Some(hash) = file_name.get(..HASH_LENGTH) else {
+        return Err(invalid("invalid store path"));
+    };
+    let Some(name) = file_name.get(HASH_LENGTH + 1..) else {
+        return Err(invalid("invalid store path"));
+    };
+    if !hash.bytes().all(|byte| HASH_ALPHABET.contains(&byte))
+        || !valid_store_path_name(name)
         || name.ends_with(".drv") != deriver
     {
         return Err(invalid("invalid store path"));
     }
     Ok(())
+}
+
+fn valid_store_path_name(name: &str) -> bool {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.starts_with(".-")
+        || name.starts_with("..-")
+    {
+        return false;
+    }
+    name.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+    })
 }
 
 fn create_staging_file(directory: &Path) -> io::Result<PathBuf> {
