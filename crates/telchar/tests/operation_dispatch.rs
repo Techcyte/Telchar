@@ -342,6 +342,76 @@ fn nonempty_add_multiple_to_store_fails_before_first_item_body() {
 }
 
 #[test]
+fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "BuildDerivation execution is unavailable"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.admitted"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("worker.build_derivation.execution_unavailable"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("printf telchar-remote-build"), "{stderr}");
+}
+
+#[test]
+fn mismatched_build_derivation_system_is_rejected_before_execution() {
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "aarch64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "unsupported BuildDerivation request"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(stderr.contains("unsupported-build-derivation"), "{stderr}");
+    assert!(
+        !stderr.contains("worker.build_derivation.admitted"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
     let response = send_operation(39);
     assert_eq!(response.message, "unsupported worker operation");
@@ -535,6 +605,37 @@ fn write_integer(output: &mut impl Write, value: u64) {
     output
         .write_all(&value.to_le_bytes())
         .expect("worker integer writes");
+}
+
+fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
+    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
+    write_integer(output, 36);
+    write_string(
+        output,
+        b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+    );
+    write_integer(output, 1);
+    write_string(output, b"out");
+    write_string(output, store_output);
+    write_string(output, b"");
+    write_string(output, b"");
+    write_integer(output, 0);
+    write_string(output, system.as_bytes());
+    write_string(output, b"/bin/sh");
+    write_integer(output, 2);
+    write_string(output, b"-c");
+    write_string(output, b"printf telchar-remote-build > $out");
+    write_integer(output, 4);
+    for (key, value) in [
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (b"out".as_slice(), store_output.as_slice()),
+        (b"system".as_slice(), system.as_bytes()),
+    ] {
+        write_string(output, key);
+        write_string(output, value);
+    }
+    write_integer(output, mode);
 }
 
 fn write_string(output: &mut impl Write, value: &[u8]) {

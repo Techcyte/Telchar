@@ -1021,6 +1021,78 @@ impl EmptyAddMultipleToStoreRequest {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct BuildDerivationOutput {
+    name: Vec<u8>,
+    path: Vec<u8>,
+    hash_algorithm: Vec<u8>,
+    hash: Vec<u8>,
+}
+
+impl BuildDerivationOutput {
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
+    pub fn hash_algorithm(&self) -> &[u8] {
+        &self.hash_algorithm
+    }
+
+    pub fn hash(&self) -> &[u8] {
+        &self.hash
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct BuildDerivationRequest {
+    drv_path: Vec<u8>,
+    outputs: Vec<BuildDerivationOutput>,
+    input_sources: Vec<Vec<u8>>,
+    platform: Vec<u8>,
+    builder: Vec<u8>,
+    arguments: Vec<Vec<u8>>,
+    environment: Vec<(Vec<u8>, Vec<u8>)>,
+    build_mode: u64,
+}
+
+impl BuildDerivationRequest {
+    pub fn drv_path(&self) -> &[u8] {
+        &self.drv_path
+    }
+
+    pub fn outputs(&self) -> &[BuildDerivationOutput] {
+        &self.outputs
+    }
+
+    pub fn input_sources(&self) -> &[Vec<u8>] {
+        &self.input_sources
+    }
+
+    pub fn platform(&self) -> &[u8] {
+        &self.platform
+    }
+
+    pub fn builder(&self) -> &[u8] {
+        &self.builder
+    }
+
+    pub fn arguments(&self) -> &[Vec<u8>] {
+        &self.arguments
+    }
+
+    pub fn environment(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.environment
+    }
+
+    pub const fn build_mode(&self) -> u64 {
+        self.build_mode
+    }
+}
+
 pub struct WorkerReader<R> {
     input: R,
     budget: SessionAllocationBudget,
@@ -1288,6 +1360,13 @@ impl<R: WorkerInput> WorkerReader<R> {
             repair,
             dont_check_signatures,
         })
+    }
+
+    pub fn complete_build_derivation(&mut self) -> io::Result<BuildDerivationRequest> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "BuildDerivation request parsing is unavailable",
+        ))
     }
 
     pub fn complete_set_options(&mut self) -> io::Result<()> {

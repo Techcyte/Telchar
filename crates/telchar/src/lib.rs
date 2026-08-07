@@ -1,3 +1,4 @@
+pub mod build_request;
 pub mod deployment;
 pub mod identity;
 pub mod ipc;
