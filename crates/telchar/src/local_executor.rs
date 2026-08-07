@@ -135,8 +135,9 @@ impl NixStoreExecutor {
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("build helper stderr not configured"))?;
-        let stdout_reader = std::thread::spawn(|| drain_bounded(stdout));
-        let stderr_reader = std::thread::spawn(|| drain_bounded(stderr));
+        let (reader_error_sender, reader_error_receiver) = std::sync::mpsc::channel();
+        let stdout_reader = spawn_reader(stdout, reader_error_sender.clone());
+        let stderr_reader = spawn_reader(stderr, reader_error_sender);
 
         let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
         drop(stdin);
@@ -149,6 +150,12 @@ impl NixStoreExecutor {
 
         let deadline = Instant::now() + request.timeout();
         let status = loop {
+            if let Ok(error) = reader_error_receiver.try_recv() {
+                child.kill_and_reap();
+                let _ = join_reader(stdout_reader, "stdout");
+                let _ = join_reader(stderr_reader, "stderr");
+                return Err(error);
+            }
             match child.try_wait()? {
                 Some(status) => break status,
                 None if Instant::now() >= deadline => {
@@ -362,6 +369,27 @@ fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
         retained.extend_from_slice(&buffer[..read.min(available)]);
         exceeded |= read > available;
     }
+}
+
+fn spawn_reader(
+    source: impl Read + Send + 'static,
+    error_sender: std::sync::mpsc::Sender<io::Error>,
+) -> std::thread::JoinHandle<io::Result<(Vec<u8>, bool)>> {
+    std::thread::spawn(move || {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drain_bounded(source))) {
+            Ok(result) => {
+                if let Err(error) = &result {
+                    let _ = error_sender.send(io::Error::new(error.kind(), error.to_string()));
+                }
+                result
+            }
+            Err(_) => {
+                let error = io::Error::other("build helper output reader panicked");
+                let _ = error_sender.send(io::Error::other(error.to_string()));
+                Err(error)
+            }
+        }
+    })
 }
 
 fn join_reader(
