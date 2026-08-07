@@ -721,7 +721,7 @@ Evidence: paths and output facts to record
   - Verify: hostile mutation test against staged validation followed by authoritative-store validity query.
   - Evidence: mutation location, computed-versus-declared mismatch, and invalid authoritative path.
 
-- [ ] T068 Export one valid path as NAR
+- [x] T068 Export one valid path as NAR
   - Depends on: T066
   - Outcome: adapter streams valid path and metadata back to caller while independently confirming streamed NAR hash and size against registered path info.
   - Red: exported NAR differs from store content or registered metadata.
