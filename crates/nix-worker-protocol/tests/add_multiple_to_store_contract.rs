@@ -1,0 +1,152 @@
+use std::io;
+use std::time::Duration;
+
+use nix_worker_protocol::{
+    write_worker_integer, ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion,
+    LATEST_WORKER_VERSION,
+};
+
+#[test]
+fn decodes_empty_add_multiple_to_store_request() {
+    let mut wire = request_prefix(0, 1);
+    append_frame(&mut wire, &0_u64.to_le_bytes());
+    write_worker_integer(&mut wire, 0);
+    let mut reader = reader(&wire);
+
+    assert_eq!(
+        reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+    let request = reader
+        .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+        .expect("empty batch decodes");
+
+    assert!(!request.repair());
+    assert!(request.dont_check_signatures());
+}
+
+#[test]
+fn decodes_inner_count_split_across_protocol_frames() {
+    let count = 0_u64.to_le_bytes();
+    let mut wire = request_prefix(0, 0);
+    append_frame(&mut wire, &count[..3]);
+    append_frame(&mut wire, &count[3..]);
+    write_worker_integer(&mut wire, 0);
+    let mut reader = reader(&wire);
+
+    assert_eq!(
+        reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+    let request = reader
+        .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+        .expect("split count decodes");
+
+    assert!(!request.dont_check_signatures());
+}
+
+#[test]
+fn rejects_nonempty_batch_before_reading_first_item() {
+    let mut wire = request_prefix(0, 1);
+    append_frame(&mut wire, &1_u64.to_le_bytes());
+    let mut reader = reader(&wire);
+    assert_eq!(
+        reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+
+    let error = reader
+        .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+        .expect_err("nonempty batch is a separate security boundary");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn rejects_repair_invalid_booleans_trailing_bytes_and_missing_terminator() {
+    for (repair, dont_check) in [(1, 0), (2, 0), (0, 2)] {
+        let mut wire = request_prefix(repair, dont_check);
+        append_frame(&mut wire, &0_u64.to_le_bytes());
+        write_worker_integer(&mut wire, 0);
+        let mut reader = reader(&wire);
+        assert_eq!(
+            reader.read_operation().unwrap(),
+            WorkerOperation::AddMultipleToStore
+        );
+        assert!(
+            reader
+                .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+                .is_err(),
+            "flags {repair}/{dont_check} accepted"
+        );
+    }
+
+    let mut trailing = request_prefix(0, 1);
+    append_frame(&mut trailing, &[0; 9]);
+    write_worker_integer(&mut trailing, 0);
+    let mut trailing_reader = reader(&trailing);
+    assert_eq!(
+        trailing_reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+    assert_eq!(
+        trailing_reader
+            .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+            .expect_err("trailing logical bytes must fail")
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let mut missing_terminator = request_prefix(0, 1);
+    append_frame(&mut missing_terminator, &0_u64.to_le_bytes());
+    let mut terminator_reader = reader(&missing_terminator);
+    assert_eq!(
+        terminator_reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+    assert_eq!(
+        terminator_reader
+            .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
+            .expect_err("framed stream terminator is required")
+            .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+}
+
+#[test]
+fn rejects_operation_before_worker_protocol_1_32() {
+    let mut wire = request_prefix(0, 1);
+    append_frame(&mut wire, &0_u64.to_le_bytes());
+    write_worker_integer(&mut wire, 0);
+    let mut reader = reader(&wire);
+    assert_eq!(
+        reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+
+    let error = reader
+        .complete_empty_add_multiple_to_store(WorkerVersion::new(1, 31))
+        .expect_err("operation requires worker protocol 1.32");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+fn request_prefix(repair: u64, dont_check_signatures: u64) -> Vec<u8> {
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 44);
+    write_worker_integer(&mut wire, repair);
+    write_worker_integer(&mut wire, dont_check_signatures);
+    wire
+}
+
+fn append_frame(wire: &mut Vec<u8>, body: &[u8]) {
+    write_worker_integer(wire, body.len() as u64);
+    wire.extend_from_slice(body);
+}
+
+fn reader(wire: &[u8]) -> WorkerReader<&[u8]> {
+    WorkerReader::new(
+        wire,
+        ProtocolSessionLimits::new(16 * 1024 * 1024, Duration::from_secs(1)),
+    )
+}

@@ -264,6 +264,84 @@ fn oversized_query_valid_paths_count_fails_before_reading_path_bodies() {
 }
 
 #[test]
+fn empty_add_multiple_to_store_completes_and_keeps_session_open() {
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 44);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 1);
+    write_integer(&mut input, 8);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    input.flush().expect("empty upload batch flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+
+    write_integer(&mut input, 1);
+    write_string(
+        &mut input,
+        b"/nix/store/00000000000000000000000000000000-missing",
+    );
+    input.flush().expect("next operation flushes");
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "unsupported worker operation");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.add_multiple_to_store.completed"),
+        "missing empty-batch completion telemetry: {stderr}"
+    );
+    assert!(stderr.contains("operation=IsValidPath"), "{stderr}");
+}
+
+#[test]
+fn nonempty_add_multiple_to_store_fails_before_first_item_body() {
+    let mut fixture = FrontendFixture::spawn(Some(100));
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 44);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 1);
+    write_integer(&mut input, 8);
+    write_integer(&mut input, 1);
+    input.flush().expect("nonempty upload count flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "nonempty AddMultipleToStore is unsupported"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("nonempty-add-multiple-to-store"),
+        "missing fail-before-body evidence: {stderr}"
+    );
+    assert!(!stderr.contains("worker.session.timed_out"), "{stderr}");
+}
+
+#[test]
 fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
     let response = send_operation(39);
     assert_eq!(response.message, "unsupported worker operation");
