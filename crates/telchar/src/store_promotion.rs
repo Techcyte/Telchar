@@ -39,6 +39,9 @@ pub struct RegisteredPathInfo {
 pub trait StorePromotionBackend {
     fn store_uri(&self) -> &str;
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool>;
+    fn before_promote(&mut self, _request: &PromotionRequest) -> io::Result<()> {
+        Ok(())
+    }
     fn promote(&mut self, request: &PromotionRequest) -> io::Result<()>;
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo>;
 }

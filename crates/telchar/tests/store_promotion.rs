@@ -228,6 +228,33 @@ fn helper_failure_is_followed_by_authoritative_validity_query_and_cleanup() {
 }
 
 #[test]
+fn staged_mutation_after_validation_is_left_for_nix_to_reject() {
+    let staging = TestDirectory::create();
+    let declared = declared_path_info();
+    let mut backend = RecordingBackend::failing();
+    backend.valid_paths = vec![true, false];
+    backend.before_promote = Some(Box::new(|request| {
+        let mut nar = std::fs::read(&request.nar_path)?;
+        nar[96] ^= 0xff;
+        std::fs::write(&request.nar_path, nar)
+    }));
+
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("Nix must reject staged mutation");
+
+    assert!(error.to_string().contains("promotion failed"));
+    assert!(backend.request.is_some(), "helper was not invoked");
+    assert_eq!(backend.queried_paths.last(), Some(&declared.path));
+    assert_directory_empty(staging.path());
+}
+
+#[test]
 fn rejects_registered_metadata_mismatch() {
     let staging = TestDirectory::create();
     let declared = declared_path_info();
@@ -280,6 +307,7 @@ fn registered_path_info() -> RegisteredPathInfo {
 struct RecordingBackend {
     request: Option<PromotionRequest>,
     registered: Option<RegisteredPathInfo>,
+    before_promote: Option<Box<dyn FnMut(&PromotionRequest) -> io::Result<()>>>,
     promote_error: bool,
     valid_paths: Vec<bool>,
     queried_paths: Vec<PathBuf>,
@@ -290,6 +318,7 @@ impl RecordingBackend {
         Self {
             request: None,
             registered: Some(registered),
+            before_promote: None,
             promote_error: false,
             valid_paths: vec![true],
             queried_paths: Vec::new(),
@@ -300,6 +329,7 @@ impl RecordingBackend {
         Self {
             request: None,
             registered: None,
+            before_promote: None,
             promote_error: true,
             valid_paths: Vec::new(),
             queried_paths: Vec::new(),
@@ -318,6 +348,13 @@ impl StorePromotionBackend for RecordingBackend {
             return Ok(false);
         }
         Ok(self.valid_paths.remove(0))
+    }
+
+    fn before_promote(&mut self, request: &PromotionRequest) -> io::Result<()> {
+        if let Some(before_promote) = &mut self.before_promote {
+            before_promote(request)?;
+        }
+        Ok(())
     }
 
     fn promote(&mut self, request: &PromotionRequest) -> io::Result<()> {
