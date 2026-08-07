@@ -8,6 +8,7 @@ use nix_worker_protocol::{
 
 use crate::build_request::BuildRequest;
 use crate::deployment::DeploymentConfig;
+use crate::local_executor::{BuildExecutor, LocalBuildStatus, LocalExecutionRequest};
 use crate::store_query::QueryValidPathsStore;
 
 pub struct SessionInput {
@@ -62,6 +63,8 @@ pub fn run_worker_session(
     limits: ProtocolSessionLimits,
     deployment: &DeploymentConfig,
     store_query: &mut dyn QueryValidPathsStore,
+    build_executor: &mut dyn BuildExecutor,
+    request_id: &str,
 ) -> io::Result<()> {
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
@@ -134,14 +137,49 @@ pub fn run_worker_session(
                     build_mode = request.build_mode(),
                     "BuildDerivation request admitted"
                 );
-                tracing::info!(
-                    event = "worker.build_derivation.execution_unavailable",
-                    "BuildDerivation execution is unavailable"
-                );
-                return reject(
+                let execution = LocalExecutionRequest::new(
+                    request_id,
+                    &admitted,
+                    Duration::from_secs(30 * 60),
+                )?;
+                let result = match build_executor.execute(&execution) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let unavailable = error.kind() == io::ErrorKind::Unsupported;
+                        tracing::error!(
+                            event = if unavailable {
+                                "worker.build_derivation.execution_unavailable"
+                            } else {
+                                "worker.build_derivation.failed"
+                            },
+                            reason = execution_error_reason(&error),
+                            "BuildDerivation execution failed"
+                        );
+                        return reject(
+                            &mut output,
+                            if unavailable {
+                                "execution-unavailable"
+                            } else {
+                                "build-derivation-failed"
+                            },
+                            if unavailable {
+                                "BuildDerivation execution is unavailable"
+                            } else {
+                                "BuildDerivation execution failed"
+                            },
+                        );
+                    }
+                };
+                nix_worker_protocol::write_build_derivation_success_response(
                     &mut output,
-                    "execution-unavailable",
-                    "BuildDerivation execution is unavailable",
+                    negotiated.version,
+                    result.status() == LocalBuildStatus::AlreadyValid,
+                )?;
+                tracing::info!(
+                    event = "worker.build_derivation.completed",
+                    output_count = result.outputs().len(),
+                    status = ?result.status(),
+                    "BuildDerivation execution completed"
                 );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
@@ -277,6 +315,17 @@ pub fn run_worker_session(
                 );
             }
         }
+    }
+}
+
+fn execution_error_reason(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::TimedOut => "timeout",
+        io::ErrorKind::InvalidData => "invalid-data",
+        io::ErrorKind::InvalidInput => "invalid-input",
+        io::ErrorKind::NotFound => "not-found",
+        io::ErrorKind::PermissionDenied => "permission-denied",
+        _ => "execution-failure",
     }
 }
 

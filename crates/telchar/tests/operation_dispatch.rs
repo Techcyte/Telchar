@@ -486,7 +486,8 @@ impl FrontendFixture {
             .stderr(Stdio::piped());
         daemon_command
             .env("TELCHAR_SYSTEM", "x86_64-linux")
-            .env("TELCHAR_SUPPORTED_FEATURES", "");
+            .env("TELCHAR_SUPPORTED_FEATURES", "")
+            .env_remove("TELCHAR_NIX_STORE_BUILD");
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }

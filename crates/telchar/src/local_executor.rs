@@ -80,6 +80,44 @@ impl LocalBuildResult {
     }
 }
 
+pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
+    match std::env::var_os("TELCHAR_NIX_STORE_BUILD") {
+        Some(helper) => Ok(Box::new(NixStoreExecutor::new(
+            PathBuf::from(helper),
+            std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "gateway store endpoint is not configured",
+                )
+            })?,
+        )?)),
+        None => Ok(Box::new(UnavailableBuildExecutor)),
+    }
+}
+
+pub trait BuildExecutor {
+    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult>;
+
+    fn helper(&self) -> Option<&Path> {
+        None
+    }
+
+    fn store_uri(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub struct UnavailableBuildExecutor;
+
+impl BuildExecutor for UnavailableBuildExecutor {
+    fn execute(&mut self, _request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "BuildDerivation execution is unavailable",
+        ))
+    }
+}
+
 pub struct NixStoreExecutor {
     helper: PathBuf,
     store_uri: String,
@@ -112,7 +150,10 @@ impl NixStoreExecutor {
         &self.store_uri
     }
 
-    pub fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+    fn execute_request(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+    ) -> io::Result<LocalBuildResult> {
         let payload = encode_request(request)?;
         let mut command = std::process::Command::new(&self.helper);
         configure_child_lifecycle(&mut command);
@@ -185,7 +226,13 @@ impl NixStoreExecutor {
             ));
         }
         if !status.success() {
-            return Err(io::Error::other("build helper failed"));
+            let diagnostic = String::from_utf8_lossy(&stderr.0);
+            let diagnostic = diagnostic.trim();
+            return Err(io::Error::other(if diagnostic.is_empty() {
+                "build helper failed".to_owned()
+            } else {
+                format!("build helper failed: {diagnostic}")
+            }));
         }
         parse_response(&stdout.0, request.build())
     }
@@ -215,6 +262,26 @@ struct OutputRequest<'a> {
 struct EnvironmentRequest<'a> {
     key: &'a str,
     value: &'a str,
+}
+
+impl BuildExecutor for NixStoreExecutor {
+    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+        self.execute_request(request)
+    }
+
+    fn helper(&self) -> Option<&Path> {
+        Some(&self.helper)
+    }
+
+    fn store_uri(&self) -> Option<&str> {
+        Some(&self.store_uri)
+    }
+}
+
+impl NixStoreExecutor {
+    pub fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+        self.execute_request(request)
+    }
 }
 
 fn encode_request(request: &LocalExecutionRequest<'_>) -> io::Result<Vec<u8>> {
@@ -298,7 +365,7 @@ fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildRe
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid build helper status",
-            ))
+            ));
         }
     };
     if response.outputs.len() != build.expected_outputs().len() {

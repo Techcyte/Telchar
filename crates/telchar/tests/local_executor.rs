@@ -162,7 +162,6 @@ fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
         .expect("execution request is valid");
     let mut executor =
         NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
-
     let result = executor.execute(&request).expect("real build succeeds");
 
     assert!(matches!(

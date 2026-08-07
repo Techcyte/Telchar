@@ -96,6 +96,10 @@ let
         shell = "${pkgs.bashInteractive}/bin/bash";
       };
       users.groups.telchar = { };
+      nix.settings.trusted-users = [
+        "root"
+        "telchar-ingress"
+      ];
       systemd.services.telchar-daemon = {
         description = "Telchar integration daemon";
         wantedBy = [ "multi-user.target" ];
@@ -103,6 +107,7 @@ let
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
+          TELCHAR_NIX_STORE_BUILD = "${telchar}/libexec/telchar/nix-store-build";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";
         };

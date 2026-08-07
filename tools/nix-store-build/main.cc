@@ -122,8 +122,10 @@ int main(int argc, char ** argv)
         nix::initLibStore();
         auto request = json::parse(readRequest());
         return run(argv[1], request);
-    } catch (const std::exception &) {
-        constexpr std::string_view diagnostic = "build helper failed\n";
+    } catch (const std::exception & error) {
+        std::string diagnostic = "build helper failed: ";
+        diagnostic += error.what();
+        diagnostic += '\n';
         std::cerr.write(diagnostic.data(), std::min(diagnostic.size(), maximumDiagnosticBytes));
         return 1;
     }

@@ -206,12 +206,16 @@ fn serve_accepted_connection(
     );
     let input = connection.stream_mut().try_clone()?;
     let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
+    let mut build_executor = telchar::local_executor::executor_from_environment()?;
+    let request_id = session_id();
     telchar::session::run_worker_session(
         input,
         connection.stream_mut().try_clone()?,
         protocol_session_limits(),
         deployment,
         &mut store_query,
+        build_executor.as_mut(),
+        &request_id,
     )
 }
 
