@@ -11,12 +11,14 @@ pub trait QueryValidPathsStore {
 }
 
 pub struct GatewayStoreQuery {
+    executable: String,
     store_uri: Option<String>,
 }
 
 impl GatewayStoreQuery {
     pub fn from_environment() -> Self {
         Self {
+            executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
             store_uri: std::env::var("TELCHAR_GATEWAY_STORE_URI").ok(),
         }
     }
@@ -24,6 +26,9 @@ impl GatewayStoreQuery {
 
 impl QueryValidPathsStore for GatewayStoreQuery {
     fn query_valid_paths(&mut self, paths: &[Vec<u8>]) -> io::Result<Vec<Vec<u8>>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
         let store_uri = self.store_uri.as_deref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -34,9 +39,16 @@ impl QueryValidPathsStore for GatewayStoreQuery {
             .iter()
             .map(|path| String::from_utf8(path.clone()).map_err(|_| invalid_response()))
             .collect::<io::Result<BTreeSet<_>>>()?;
-        let mut command = Command::new("nix");
+        let mut command = Command::new(&self.executable);
         command
-            .args(["--store", store_uri, "path-info", "--json"])
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "path-info",
+                "--store",
+                store_uri,
+                "--json",
+            ])
             .args(
                 paths
                     .iter()

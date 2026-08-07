@@ -99,7 +99,11 @@ let
       systemd.services.telchar-daemon = {
         description = "Telchar integration daemon";
         wantedBy = [ "multi-user.target" ];
-        environment.OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
+        environment = {
+          OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
+          TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
+          TELCHAR_NIX = "${pkgs.nix}/bin/nix";
+        };
         before = [ "sshd.service" ];
         serviceConfig = {
           User = "telchar-ingress";
