@@ -224,12 +224,24 @@ impl NixFixture {
             event = "nix.fixture.cleanup.started",
             "Nix fixture cleanup started"
         );
-        fs::remove_dir_all(self.root)?;
+        remove_fixture_root(&self.root)?;
         tracing::info!(
             event = "nix.fixture.cleanup.finished",
             "Nix fixture cleanup finished"
         );
         Ok(())
+    }
+}
+
+impl Drop for NixFixture {
+    fn drop(&mut self) {
+        if let Err(error) = remove_fixture_root(&self.root) {
+            tracing::error!(
+                event = "nix.fixture.cleanup.failed",
+                error = %error,
+                "Nix fixture cleanup failed"
+            );
+        }
     }
 }
 
@@ -304,13 +316,35 @@ impl NixDaemon {
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
-        self.child.kill()?;
-        self.child.wait()?;
+        if self.child.try_wait()?.is_none() {
+            self.child.kill()?;
+        }
+        let _ = self.child.wait()?;
         tracing::info!(
             event = "nix.fixture.daemon.stopped",
             "Fixture daemon stopped"
         );
         Ok(())
+    }
+}
+
+impl Drop for NixDaemon {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            tracing::error!(
+                event = "nix.fixture.daemon.cleanup_failed",
+                error = %error,
+                "Fixture daemon cleanup failed"
+            );
+        }
+    }
+}
+
+fn remove_fixture_root(root: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

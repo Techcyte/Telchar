@@ -5,6 +5,33 @@ use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::worker_trace::TraceCapture;
 
 #[test]
+fn dropping_fixture_removes_isolated_root_without_explicit_cleanup() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let root = fixture.root().to_path_buf();
+
+    drop(fixture);
+
+    assert!(!root.exists(), "fixture root leaked after drop: {root:?}");
+}
+
+#[test]
+fn dropping_running_daemon_and_fixture_cleans_process_and_store() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let root = fixture.root().to_path_buf();
+    let _daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+
+    drop(_daemon);
+    drop(fixture);
+
+    assert!(
+        !root.exists(),
+        "fixture root leaked after daemon drop: {root:?}"
+    );
+}
+
+#[test]
 fn creates_isolated_real_nix_client_state_and_removes_it() {
     let fixture = NixFixture::create().expect("fixture creates");
     let root = fixture.root().to_path_buf();
