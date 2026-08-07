@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <set>
 #include <string>
@@ -53,7 +54,10 @@ int run()
         info.deriver = std::move(deriver);
     }
 
-    auto narPath = request.at("nar_path").get<std::string>();
+    auto stagingDirectory = std::filesystem::weakly_canonical(request.at("staging_directory").get<std::string>());
+    auto narPath = std::filesystem::weakly_canonical(request.at("nar_path").get<std::string>());
+    if (narPath.parent_path() != stagingDirectory)
+        throw std::runtime_error("staged NAR is outside configured staging directory");
     auto fd = open(narPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd == -1)
         throw std::runtime_error("cannot open staged NAR: " + std::string(std::strerror(errno)));

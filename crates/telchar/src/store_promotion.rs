@@ -17,6 +17,7 @@ pub struct DeclaredPathInfo {
 pub struct PromotionRequest {
     pub version: u32,
     pub store_uri: String,
+    pub staging_directory: PathBuf,
     pub path: PathBuf,
     pub nar_hash_hex: String,
     pub nar_size: u64,

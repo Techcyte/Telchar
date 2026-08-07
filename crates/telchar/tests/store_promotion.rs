@@ -33,6 +33,7 @@ fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
     let request = backend.request.expect("helper invoked once");
     assert_eq!(request.version, 1);
     assert_eq!(request.store_uri, "unix:///run/nix-daemon.sock");
+    assert_eq!(request.staging_directory, staging.path());
     assert_eq!(request.path, declared.path);
     assert_eq!(request.nar_hash_hex, hex_hash(NAR_HASH));
     assert_eq!(request.nar_size, declared.nar_size);
