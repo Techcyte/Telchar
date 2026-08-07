@@ -4,7 +4,7 @@ Telchar is intended to be a self-hosted Nix build gateway. It will present one s
 
 Clients will continue using ordinary Nix commands and remote-builder configuration. They will not need a custom client, a patched Nix installation, or knowledge of the execution fleet.
 
-The implemented boundary currently completes stock-Nix handshake and `SetOptions`, then returns a framed unsupported-operation error. Typed classic-build traffic has been observed byte-transparently through a test-only proxy to a real Nix daemon, but Telchar does not yet execute or return a build. Gateway store, persistence, scheduler, and backend sections below describe target architecture.
+The implemented alpha accepts stock-Nix `ssh-ng` sessions through OpenSSH, executes admitted input-addressed derivations against a fixed gateway Nix store, and returns verified outputs to the client. Durable scheduling, PostgreSQL state, multi-backend execution, quotas, recovery, and single-flight coordination remain target architecture rather than alpha behavior.
 
 ```text
 Stock Nix client
@@ -28,6 +28,37 @@ Telchar daemon
              ├── Nomad batch job
              └── future backend
 ```
+
+## Local isolated-store smoke test
+
+A developer can exercise Telchar locally without reusing the host Nix store. The smoke test starts an isolated `nixos/nix:2.34.3` daemon in Docker, runs Telchar against its Unix socket, submits one typed `BuildDerivation`, and verifies a successful worker result:
+
+```bash
+./scripts/test-local-docker-alpha.sh
+```
+
+Requirements:
+
+- Docker daemon available to the current user.
+- Nix with flakes enabled.
+- Linux host capable of running the privileged Nix daemon container.
+
+The image can be overridden:
+
+```bash
+TELCHAR_DOCKER_NIX_IMAGE=your-registry/nix:tag \
+  ./scripts/test-local-docker-alpha.sh
+```
+
+This is a local implementation smoke test, not the production deployment topology. Normal clients connect to a separate Telchar gateway host:
+
+```bash
+nix build \
+  --max-jobs 0 \
+  --builders 'ssh-ng://telchar@build-host x86_64-linux'
+```
+
+The gateway must use its own Nix store. Pointing a localhost client and Telchar at the same host store can create recursive store-lock contention and is not supported.
 
 ## Responsibilities
 
