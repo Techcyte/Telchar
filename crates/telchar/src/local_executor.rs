@@ -1,8 +1,11 @@
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::build_request::BuildRequest;
+
+const MAXIMUM_REQUEST_ID_BYTES: usize = 4096;
+const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalExecutionRequest<'a> {
@@ -21,6 +24,12 @@ impl<'a> LocalExecutionRequest<'a> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "local execution request ID is empty",
+            ));
+        }
+        if request_id.len() > MAXIMUM_REQUEST_ID_BYTES || request_id.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local execution request ID is invalid",
             ));
         }
         if timeout.is_zero() {
@@ -86,7 +95,7 @@ impl NixStoreExecutor {
             ));
         }
         let store_uri = store_uri.into();
-        if store_uri.is_empty() {
+        if store_uri.is_empty() || store_uri.contains('\0') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "gateway store endpoint is not configured",
@@ -103,13 +112,283 @@ impl NixStoreExecutor {
         &self.store_uri
     }
 
-    pub fn execute(
-        &mut self,
-        _request: &LocalExecutionRequest<'_>,
-    ) -> io::Result<LocalBuildResult> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "local BuildDerivation execution is unavailable",
-        ))
+    pub fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+        let payload = encode_request(request)?;
+        let mut command = std::process::Command::new(&self.helper);
+        configure_child_lifecycle(&mut command);
+        command
+            .arg(&self.store_uri)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = command.spawn()?;
+        let mut child = ChildGuard::new(child);
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("build helper stdin not configured"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("build helper stdout not configured"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("build helper stderr not configured"))?;
+        let stdout_reader = std::thread::spawn(|| drain_bounded(stdout));
+        let stderr_reader = std::thread::spawn(|| drain_bounded(stderr));
+
+        let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
+        drop(stdin);
+        if let Err(error) = write_result {
+            child.kill_and_reap();
+            join_reader(stdout_reader, "stdout")?;
+            join_reader(stderr_reader, "stderr")?;
+            return Err(error);
+        }
+
+        let deadline = Instant::now() + request.timeout();
+        let status = loop {
+            match child.try_wait()? {
+                Some(status) => break status,
+                None if Instant::now() >= deadline => {
+                    child.kill_and_reap();
+                    join_reader(stdout_reader, "stdout")?;
+                    join_reader(stderr_reader, "stderr")?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "build helper timed out",
+                    ));
+                }
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        let stdout = join_reader(stdout_reader, "stdout")?;
+        let stderr = join_reader(stderr_reader, "stderr")?;
+        if stdout.1 || stderr.1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "build helper output exceeds limit",
+            ));
+        }
+        if !status.success() {
+            return Err(io::Error::other("build helper failed"));
+        }
+        parse_response(&stdout.0, request.build())
     }
 }
+
+#[derive(serde::Serialize)]
+struct ExecutionRequest<'a> {
+    version: u32,
+    request_id: &'a str,
+    derivation_path: &'a str,
+    outputs: Vec<OutputRequest<'a>>,
+    input_sources: Vec<&'a str>,
+    system: &'a str,
+    builder: &'a str,
+    arguments: Vec<&'a str>,
+    environment: Vec<EnvironmentRequest<'a>>,
+    build_mode: u32,
+}
+
+#[derive(serde::Serialize)]
+struct OutputRequest<'a> {
+    name: &'a str,
+    path: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct EnvironmentRequest<'a> {
+    key: &'a str,
+    value: &'a str,
+}
+
+fn encode_request(request: &LocalExecutionRequest<'_>) -> io::Result<Vec<u8>> {
+    fn text(bytes: &[u8]) -> io::Result<&str> {
+        std::str::from_utf8(bytes).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "BuildRequest contains invalid UTF-8",
+            )
+        })
+    }
+
+    let build = request.build();
+    let outputs = build
+        .expected_outputs()
+        .iter()
+        .map(|(name, path)| {
+            Ok(OutputRequest {
+                name: text(name)?,
+                path: text(path)?,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let input_sources = build
+        .input_sources()
+        .iter()
+        .map(|value| text(value))
+        .collect::<io::Result<Vec<_>>>()?;
+    let arguments = build
+        .arguments()
+        .iter()
+        .map(|value| text(value))
+        .collect::<io::Result<Vec<_>>>()?;
+    let environment = build
+        .environment()
+        .iter()
+        .map(|(key, value)| {
+            Ok(EnvironmentRequest {
+                key: text(key)?,
+                value: text(value)?,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    serde_json::to_vec(&ExecutionRequest {
+        version: 1,
+        request_id: request.request_id(),
+        derivation_path: text(build.derivation_path())?,
+        outputs,
+        input_sources,
+        system: build.system(),
+        builder: text(build.builder())?,
+        arguments,
+        environment,
+        build_mode: 0,
+    })
+    .map_err(io::Error::other)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionResponse {
+    version: u32,
+    success: bool,
+    status: String,
+    outputs: Vec<(String, String)>,
+}
+
+fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildResult> {
+    let response: ExecutionResponse = serde_json::from_slice(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid build helper response"))?;
+    if response.version != 1 || !response.success {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid build helper response",
+        ));
+    }
+    let status = match response.status.as_str() {
+        "built" => LocalBuildStatus::Built,
+        "already-valid" => LocalBuildStatus::AlreadyValid,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid build helper status",
+            ))
+        }
+    };
+    if response.outputs.len() != build.expected_outputs().len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "build helper output set mismatch",
+        ));
+    }
+    let outputs = response
+        .outputs
+        .into_iter()
+        .map(|(name, path)| (name.into_bytes(), path.into_bytes()))
+        .collect::<Vec<_>>();
+    if outputs != build.expected_outputs() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "build helper output set mismatch",
+        ));
+    }
+    Ok(LocalBuildResult { status, outputs })
+}
+
+struct ChildGuard {
+    child: Option<std::process::Child>,
+}
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn kill_and_reap(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let pid = rustix::process::Pid::from_raw(child.id() as rustix::process::RawPid);
+            if let Some(pid) = pid {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl std::ops::Deref for ChildGuard {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        self.child.as_ref().expect("build helper available")
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.child.as_mut().expect("build helper available")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.kill_and_reap();
+    }
+}
+
+fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::new();
+    let mut exceeded = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            return Ok((retained, exceeded));
+        }
+        let available = MAXIMUM_SUBPROCESS_OUTPUT_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(available)]);
+        exceeded |= read > available;
+    }
+}
+
+fn join_reader(
+    reader: std::thread::JoinHandle<io::Result<(Vec<u8>, bool)>>,
+    stream: &str,
+) -> io::Result<(Vec<u8>, bool)> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other(format!("build helper {stream} reader panicked")))?
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn configure_child_lifecycle(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(io::Error::from)?;
+            rustix::process::setpgid(None, None).map_err(io::Error::from)?;
+            if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
+                return Err(io::Error::other("build owner exited before helper start"));
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn configure_child_lifecycle(_command: &mut std::process::Command) {}
