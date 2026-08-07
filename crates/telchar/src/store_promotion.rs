@@ -16,6 +16,7 @@ pub struct DeclaredPathInfo {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PromotionRequest {
     pub version: u32,
+    pub store_uri: String,
     pub path: PathBuf,
     pub nar_hash_hex: String,
     pub nar_size: u64,
@@ -35,6 +36,7 @@ pub struct RegisteredPathInfo {
 }
 
 pub trait StorePromotionBackend {
+    fn store_uri(&self) -> &str;
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool>;
     fn promote(&mut self, request: &PromotionRequest) -> io::Result<()>;
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo>;

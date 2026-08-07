@@ -32,6 +32,7 @@ fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
     assert_eq!(registered, registered_path_info());
     let request = backend.request.expect("helper invoked once");
     assert_eq!(request.version, 1);
+    assert_eq!(request.store_uri, "unix:///run/nix-daemon.sock");
     assert_eq!(request.path, declared.path);
     assert_eq!(request.nar_hash_hex, hex_hash(NAR_HASH));
     assert_eq!(request.nar_size, declared.nar_size);
@@ -306,6 +307,10 @@ impl RecordingBackend {
 }
 
 impl StorePromotionBackend for RecordingBackend {
+    fn store_uri(&self) -> &str {
+        "unix:///run/nix-daemon.sock"
+    }
+
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool> {
         self.queried_paths.push(path.to_path_buf());
         if self.valid_paths.is_empty() {
