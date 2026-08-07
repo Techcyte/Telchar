@@ -292,10 +292,10 @@ impl NixDaemon {
                 "fixture daemon path-info response exceeds limit",
             ));
         }
-        let entries: BTreeMap<String, serde_json::Value> =
-            serde_json::from_slice(&output.stdout).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON")
-            })?;
+        let entries: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&output.stdout)
+            .map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON")
+        })?;
         Ok(entries.contains_key(path.to_string_lossy().as_ref()))
     }
 
