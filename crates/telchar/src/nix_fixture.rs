@@ -298,6 +298,19 @@ impl NixDaemon {
         &self.temp_dir
     }
 
+    pub fn export_backend(
+        &self,
+        helper: impl Into<PathBuf>,
+    ) -> crate::store_export::NixStoreExportBackend {
+        crate::store_export::NixStoreExportBackend::new(
+            helper,
+            self.store_url(),
+            self.environment
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone())),
+        )
+    }
+
     pub fn promotion_backend(
         &self,
         helper: impl Into<PathBuf>,

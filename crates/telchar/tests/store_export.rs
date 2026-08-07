@@ -1,8 +1,10 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_export::{
-    export_verified_nar, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
+    export_verified_nar, NixStoreExportBackend, StoreExportBackend, StoreExportRequest,
+    VerifiedStoreExport,
 };
 use telchar::store_promotion::RegisteredPathInfo;
 
@@ -12,6 +14,36 @@ const NAR_HASH: [u8; 32] = [
     0x6c, 0x2b, 0xe2, 0xf1, 0x2a, 0x16, 0x86, 0x05, 0xeb, 0xcb, 0xa3, 0x78, 0x22, 0x86, 0xc3, 0x8e,
     0xaf, 0x3f, 0x5d, 0x78, 0x7b, 0x7a, 0x8b, 0xb2, 0x4a, 0x54, 0x0d, 0x22, 0x67, 0xff, 0x68, 0xe1,
 ];
+
+#[test]
+fn real_store_streams_raw_nar_with_registered_hash_and_size() {
+    let helper = helper_path();
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("daemon starts");
+    let path = daemon
+        .build_classic_derivation()
+        .expect("fixture path builds");
+    let expected = daemon
+        .query_path_info(&path)
+        .expect("registered metadata queries");
+    let mut backend: NixStoreExportBackend = daemon.export_backend(helper);
+    let mut output = Vec::new();
+
+    let verified = export_verified_nar(&path, &mut output, &mut backend)
+        .expect("real raw NAR export verifies");
+
+    assert!(output.starts_with(&13_u64.to_le_bytes()));
+    assert_eq!(verified.metadata.path, path);
+    assert_eq!(verified.metadata.nar_hash, sri_sha256(&expected.nar_hash));
+    assert_eq!(verified.metadata.nar_size, expected.nar_size);
+    assert_eq!(verified.nar_hash, verified.metadata.nar_hash);
+    assert_eq!(verified.nar_size, verified.metadata.nar_size);
+
+    daemon.stop().expect("daemon stops");
+    fixture.cleanup().expect("fixture cleans");
+}
 
 #[test]
 fn streams_raw_nar_and_verifies_registered_metadata() {
@@ -35,7 +67,11 @@ fn streams_raw_nar_and_verifies_registered_metadata() {
     assert_eq!(backend.queries, vec![PathBuf::from(PATH)]);
     assert_eq!(
         backend.requests,
-        vec![StoreExportRequest { path: PATH.into() }]
+        vec![StoreExportRequest {
+            version: 1,
+            store_uri: "unix:///run/nix-daemon.sock".into(),
+            path: PATH.into(),
+        }]
     );
 }
 
@@ -128,6 +164,23 @@ fn slow_writer_receives_complete_nar_without_export_buffering() {
     assert!(writer.writes > 1);
 }
 
+fn helper_path() -> PathBuf {
+    std::env::var_os("TELCHAR_NIX_STORE_EXPORT")
+        .map(PathBuf::from)
+        .expect("TELCHAR_NIX_STORE_EXPORT points to the flake-built helper")
+}
+
+fn sri_sha256(value: &str) -> [u8; 32] {
+    use base64::Engine;
+
+    let encoded = value.strip_prefix("sha256-").expect("SHA-256 SRI hash");
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("valid SRI base64")
+        .try_into()
+        .expect("SHA-256 length")
+}
+
 fn registered_path_info() -> RegisteredPathInfo {
     RegisteredPathInfo {
         path: PathBuf::from(PATH),
@@ -173,6 +226,10 @@ impl RecordingExportBackend {
 }
 
 impl StoreExportBackend for RecordingExportBackend {
+    fn store_uri(&self) -> &str {
+        "unix:///run/nix-daemon.sock"
+    }
+
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
         self.queries.push(path.to_path_buf());
         self.metadata
