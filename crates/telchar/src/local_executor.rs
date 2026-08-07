@@ -156,9 +156,15 @@ impl NixStoreExecutor {
                 let _ = join_reader(stderr_reader, "stderr");
                 return Err(error);
             }
-            match child.try_wait()? {
-                Some(status) => break status,
-                None if Instant::now() >= deadline => {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Err(error) => {
+                    child.kill_and_reap();
+                    let _ = join_reader(stdout_reader, "stdout");
+                    let _ = join_reader(stderr_reader, "stderr");
+                    return Err(error);
+                }
+                Ok(None) if Instant::now() >= deadline => {
                     child.kill_and_reap();
                     join_reader(stdout_reader, "stdout")?;
                     join_reader(stderr_reader, "stderr")?;
@@ -167,7 +173,7 @@ impl NixStoreExecutor {
                         "build helper timed out",
                     ));
                 }
-                None => std::thread::sleep(Duration::from_millis(5)),
+                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             }
         };
         let stdout = join_reader(stdout_reader, "stdout")?;
