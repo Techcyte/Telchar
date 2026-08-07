@@ -1,13 +1,13 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
 use telchar::local_executor::{LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor};
-use telchar::nix_fixture::{NixFixture, TrustMode};
+use telchar::nix_fixture::NixFixture;
 
 const DERIVATION_PATH: &[u8] =
     b"/nix/store/00000000000000000000000000000000-telchar-local-executor.drv";
@@ -156,14 +156,12 @@ fn executor_times_out_and_reaps_the_helper() {
 #[test]
 fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
-    let daemon = fixture
-        .start_daemon(TrustMode::Trusted)
-        .expect("trusted fixture daemon starts");
+    let store_uri = format!("local?root={}", fixture.root().display());
     let build = admitted_request();
     let request = LocalExecutionRequest::new("real-build", &build, Duration::from_secs(30))
         .expect("execution request is valid");
     let mut executor =
-        NixStoreExecutor::new(helper_path(), daemon.store_url()).expect("executor config is valid");
+        NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
 
     let result = executor.execute(&request).expect("real build succeeds");
 
@@ -172,13 +170,21 @@ fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
         LocalBuildStatus::Built | LocalBuildStatus::AlreadyValid
     ));
     assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT_PATH.to_vec())]);
-    assert!(daemon
-        .is_valid_path(Path::new(
-            std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8")
-        ))
-        .expect("path validity query succeeds"));
+    assert!(std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            &store_uri,
+            "path-info",
+            std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
+        ])
+        .status()
+        .expect("path validity query runs")
+        .success());
     let real_output = fixture
-        .store_dir()
+        .root()
+        .join("nix/store")
         .join(String::from_utf8_lossy(OUTPUT_PATH).trim_start_matches("/nix/store/"));
     assert_eq!(
         fs::read(real_output).expect("output reads"),
