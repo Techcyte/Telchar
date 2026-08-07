@@ -262,13 +262,19 @@ impl Read for ExportReader {
             };
             self.offset = 0;
         }
-        let message = self.pending.as_ref().expect("pending export message");
+        let message = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| io::Error::other("export message missing"))?;
         let remaining = &message.bytes[self.offset..];
         let read = remaining.len().min(buffer.len());
         buffer[..read].copy_from_slice(&remaining[..read]);
         self.offset += read;
         if self.offset == message.bytes.len() {
-            let message = self.pending.take().expect("pending export message");
+            let message = self
+                .pending
+                .take()
+                .ok_or_else(|| io::Error::other("export message missing"))?;
             message
                 .acknowledgement
                 .send(Ok(()))
