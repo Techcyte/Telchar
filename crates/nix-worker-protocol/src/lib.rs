@@ -29,6 +29,18 @@ const NIX_STORE_HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 pub const MAXIMUM_QUERY_VALID_PATHS: usize = 256;
 pub const MAXIMUM_WORKER_STORE_PATH_BYTES: usize = NIX_STORE_DIRECTORY.len() + 211;
+pub const MAXIMUM_BUILD_DERIVATION_OUTPUTS: usize = 16;
+pub const MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES: usize = 4096;
+pub const MAXIMUM_BUILD_DERIVATION_ARGUMENTS: usize = 1024;
+pub const MAXIMUM_BUILD_DERIVATION_ENVIRONMENT: usize = 4096;
+pub const MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES: usize = 256;
+pub const MAXIMUM_BUILD_DERIVATION_PLATFORM_BYTES: usize = 64;
+pub const MAXIMUM_BUILD_DERIVATION_BUILDER_BYTES: usize = 4096;
+pub const MAXIMUM_BUILD_DERIVATION_ARGUMENT_BYTES: usize = 64 * 1024;
+pub const MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_KEY_BYTES: usize = 4096;
+pub const MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_VALUE_BYTES: usize = 1024 * 1024;
+pub const MAXIMUM_BUILD_DERIVATION_HASH_ALGORITHM_BYTES: usize = 64;
+pub const MAXIMUM_BUILD_DERIVATION_HASH_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolSessionLimits {
@@ -1021,12 +1033,13 @@ impl EmptyAddMultipleToStoreRequest {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct BuildDerivationOutput {
     name: Vec<u8>,
     path: Vec<u8>,
     hash_algorithm: Vec<u8>,
     hash: Vec<u8>,
+    _charges: BuildDerivationStringCharges,
 }
 
 impl BuildDerivationOutput {
@@ -1047,7 +1060,7 @@ impl BuildDerivationOutput {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct BuildDerivationRequest {
     drv_path: Vec<u8>,
     outputs: Vec<BuildDerivationOutput>,
@@ -1057,6 +1070,18 @@ pub struct BuildDerivationRequest {
     arguments: Vec<Vec<u8>>,
     environment: Vec<(Vec<u8>, Vec<u8>)>,
     build_mode: u64,
+    _charges: BuildDerivationCharges,
+}
+
+#[derive(Debug)]
+struct BuildDerivationStringCharges {
+    _charges: Vec<SessionAllocationCharge>,
+}
+
+#[derive(Debug)]
+struct BuildDerivationCharges {
+    _collection_charges: Vec<SessionAllocationCharge>,
+    _string_charges: Vec<SessionAllocationCharge>,
 }
 
 impl BuildDerivationRequest {
@@ -1363,10 +1388,198 @@ impl<R: WorkerInput> WorkerReader<R> {
     }
 
     pub fn complete_build_derivation(&mut self) -> io::Result<BuildDerivationRequest> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "BuildDerivation request parsing is unavailable",
-        ))
+        let invalid = |message: &'static str| io::Error::new(io::ErrorKind::InvalidData, message);
+        let (drv_path, drv_charge) = read_build_string(
+            &mut self.input,
+            MAXIMUM_WORKER_STORE_PATH_BYTES,
+            &self.budget,
+        )
+        .map_err(|_| invalid("invalid BuildDerivation request"))?;
+        validate_store_path(&drv_path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+        if !drv_path.ends_with(b".drv") {
+            return Err(invalid("invalid BuildDerivation request"));
+        }
+
+        let (outputs, output_collection_charge) = read_build_count(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_OUTPUTS,
+            std::mem::size_of::<BuildDerivationOutput>(),
+            &self.budget,
+        )?;
+        let mut output_values = Vec::with_capacity(outputs);
+        let mut string_charges = Vec::new();
+        let mut output_names = Vec::with_capacity(outputs);
+        let mut output_paths = Vec::with_capacity(outputs);
+        for _ in 0..outputs {
+            let (name, name_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES,
+                &self.budget,
+            )?;
+            if name.is_empty() || name.contains(&0) || output_names.iter().any(|v| v == &name) {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            let (path, path_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_WORKER_STORE_PATH_BYTES,
+                &self.budget,
+            )?;
+            validate_store_path(&path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+            if output_paths.iter().any(|v| v == &path) {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            let (hash_algorithm, hash_algorithm_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_HASH_ALGORITHM_BYTES,
+                &self.budget,
+            )?;
+            let (hash, hash_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_HASH_BYTES,
+                &self.budget,
+            )?;
+            if !hash_algorithm.is_empty() || !hash.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid BuildDerivation request",
+                ));
+            }
+            output_names.push(name.clone());
+            output_paths.push(path.clone());
+            output_values.push(BuildDerivationOutput {
+                name,
+                path,
+                hash_algorithm,
+                hash,
+                _charges: BuildDerivationStringCharges {
+                    _charges: vec![name_charge, path_charge, hash_algorithm_charge, hash_charge],
+                },
+            });
+        }
+
+        let (input_count, input_collection_charge) = read_build_count(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES,
+            std::mem::size_of::<Vec<u8>>(),
+            &self.budget,
+        )?;
+        let mut input_sources = Vec::with_capacity(input_count);
+        for _ in 0..input_count {
+            let (path, path_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_WORKER_STORE_PATH_BYTES,
+                &self.budget,
+            )?;
+            validate_store_path(&path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+            if input_sources.iter().any(|v| v == &path) {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            string_charges.push(path_charge);
+            input_sources.push(path);
+        }
+
+        let (platform, platform_charge) = read_build_string(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_PLATFORM_BYTES,
+            &self.budget,
+        )?;
+        if platform.is_empty() || platform.contains(&0) {
+            return Err(invalid("invalid BuildDerivation request"));
+        }
+        let (builder, builder_charge) = read_build_string(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_BUILDER_BYTES,
+            &self.budget,
+        )?;
+        if builder.is_empty() || builder.contains(&0) {
+            return Err(invalid("invalid BuildDerivation request"));
+        }
+        let (argument_count, argument_collection_charge) = read_build_count(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_ARGUMENTS,
+            std::mem::size_of::<Vec<u8>>(),
+            &self.budget,
+        )?;
+        let mut arguments = Vec::with_capacity(argument_count);
+        for _ in 0..argument_count {
+            let (value, value_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_ARGUMENT_BYTES,
+                &self.budget,
+            )?;
+            if value.contains(&0) {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            string_charges.push(value_charge);
+            arguments.push(value);
+        }
+        let (environment_count, environment_collection_charge) = read_build_count(
+            &mut self.input,
+            MAXIMUM_BUILD_DERIVATION_ENVIRONMENT,
+            std::mem::size_of::<(Vec<u8>, Vec<u8>)>(),
+            &self.budget,
+        )?;
+        let mut environment = Vec::with_capacity(environment_count);
+        let mut environment_keys = Vec::with_capacity(environment_count);
+        for _ in 0..environment_count {
+            let (key, key_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_KEY_BYTES,
+                &self.budget,
+            )?;
+            if key.is_empty()
+                || key.contains(&0)
+                || key.contains(&b'=')
+                || environment_keys.iter().any(|v| v == &key)
+            {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            let (value, value_charge) = read_build_string(
+                &mut self.input,
+                MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_VALUE_BYTES,
+                &self.budget,
+            )?;
+            if value.contains(&0) {
+                return Err(invalid("invalid BuildDerivation request"));
+            }
+            environment_keys.push(key.clone());
+            string_charges.push(key_charge);
+            string_charges.push(value_charge);
+            environment.push((key, value));
+        }
+        let build_mode = self
+            .read_integer()
+            .map_err(|_| invalid("invalid BuildDerivation request"))?;
+        if build_mode != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid BuildDerivation request",
+            ));
+        }
+        self.input.complete_message();
+        Ok(BuildDerivationRequest {
+            drv_path,
+            outputs: output_values,
+            input_sources,
+            platform,
+            builder,
+            arguments,
+            environment,
+            build_mode,
+            _charges: BuildDerivationCharges {
+                _collection_charges: vec![
+                    output_collection_charge,
+                    input_collection_charge,
+                    argument_collection_charge,
+                    environment_collection_charge,
+                ],
+                _string_charges: {
+                    let mut charges = vec![drv_charge, platform_charge, builder_charge];
+                    charges.append(&mut string_charges);
+                    charges
+                },
+            },
+        })
     }
 
     pub fn complete_set_options(&mut self) -> io::Result<()> {
@@ -1445,6 +1658,47 @@ impl From<io::Error> for AddMultipleToStoreRequestError {
     fn from(error: io::Error) -> Self {
         Self::Invalid(error.kind(), error.to_string())
     }
+}
+
+fn read_build_count(
+    input: &mut impl Read,
+    maximum: usize,
+    element_size: usize,
+    budget: &SessionAllocationBudget,
+) -> io::Result<(usize, SessionAllocationCharge)> {
+    let count = usize::try_from(read_worker_integer_from(input)?).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid BuildDerivation request",
+        )
+    })?;
+    if count > maximum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid BuildDerivation request",
+        ));
+    }
+    let bytes = count.checked_mul(element_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid BuildDerivation request",
+        )
+    })?;
+    let charge = budget.charge(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid BuildDerivation request",
+        )
+    })?;
+    Ok((count, charge))
+}
+
+fn read_build_string(
+    input: &mut impl Read,
+    maximum: usize,
+    budget: &SessionAllocationBudget,
+) -> io::Result<(Vec<u8>, SessionAllocationCharge)> {
+    read_worker_byte_string_with_charge_from(input, maximum, budget)
 }
 
 fn read_strict_worker_boolean(input: &mut impl Read, name: &str) -> io::Result<bool> {

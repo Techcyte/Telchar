@@ -132,7 +132,7 @@ fn run_daemon() -> io::Result<()> {
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
     if once {
-        return serve_connection(&listener, envelope_timeout);
+        return serve_connection(&listener, envelope_timeout, &deployment);
     }
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
@@ -156,11 +156,12 @@ fn run_daemon() -> io::Result<()> {
                 continue;
             }
         };
+        let deployment = deployment.clone();
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
                 .receive_envelope(envelope_timeout)
-                .and_then(serve_accepted_connection);
+                .and_then(|connection| serve_accepted_connection(connection, &deployment));
             if let Err(error) = result {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
@@ -173,11 +174,21 @@ fn run_daemon() -> io::Result<()> {
     }
 }
 
-fn serve_connection(listener: &IpcListener, envelope_timeout: Duration) -> io::Result<()> {
-    serve_accepted_connection(listener.accept_with_envelope_timeout(envelope_timeout)?)
+fn serve_connection(
+    listener: &IpcListener,
+    envelope_timeout: Duration,
+    deployment: &telchar::deployment::DeploymentConfig,
+) -> io::Result<()> {
+    serve_accepted_connection(
+        listener.accept_with_envelope_timeout(envelope_timeout)?,
+        deployment,
+    )
 }
 
-fn serve_accepted_connection(mut connection: telchar::ipc::IpcConnection) -> io::Result<()> {
+fn serve_accepted_connection(
+    mut connection: telchar::ipc::IpcConnection,
+    deployment: &telchar::deployment::DeploymentConfig,
+) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
             event = "ipc.daemon.session_rejected",
@@ -199,6 +210,7 @@ fn serve_accepted_connection(mut connection: telchar::ipc::IpcConnection) -> io:
         input,
         connection.stream_mut().try_clone()?,
         protocol_session_limits(),
+        deployment,
         &mut store_query,
     )
 }

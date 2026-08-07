@@ -6,6 +6,8 @@ use nix_worker_protocol::{
     WorkerReader,
 };
 
+use crate::build_request::BuildRequest;
+use crate::deployment::DeploymentConfig;
 use crate::store_query::QueryValidPathsStore;
 
 pub struct SessionInput {
@@ -58,6 +60,7 @@ pub fn run_worker_session(
     input: std::os::unix::net::UnixStream,
     mut output: std::os::unix::net::UnixStream,
     limits: ProtocolSessionLimits,
+    deployment: &DeploymentConfig,
     store_query: &mut dyn QueryValidPathsStore,
 ) -> io::Result<()> {
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
@@ -77,6 +80,69 @@ pub fn run_worker_session(
             }
             Err(_) => {
                 return reject(&mut output, "unknown-operation", "unknown worker operation");
+            }
+            Ok(WorkerOperation::BuildDerivation) => {
+                let request = match reader.complete_build_derivation() {
+                    Ok(request) => request,
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                        tracing::error!(
+                            event = "worker.session.timed_out",
+                            "worker protocol session timed out"
+                        );
+                        return Ok(());
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                };
+                let admitted = match BuildRequest::from_worker_request(&request, deployment) {
+                    Ok(admitted) => admitted,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "unsupported-build-derivation",
+                            "unsupported BuildDerivation request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                };
+                tracing::info!(
+                    event = "worker.build_derivation.admitted",
+                    output_count = admitted.expected_outputs().len(),
+                    input_count = admitted.input_sources().len(),
+                    argument_count = admitted.arguments().len(),
+                    environment_count = admitted.environment().len(),
+                    configured_system = deployment.system(),
+                    requested_system = request.platform(),
+                    build_mode = request.build_mode(),
+                    "BuildDerivation request admitted"
+                );
+                tracing::info!(
+                    event = "worker.build_derivation.execution_unavailable",
+                    "BuildDerivation execution is unavailable"
+                );
+                return reject(
+                    &mut output,
+                    "execution-unavailable",
+                    "BuildDerivation execution is unavailable",
+                );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
                 let request = match reader.complete_empty_add_multiple_to_store(negotiated.version)
