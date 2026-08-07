@@ -82,11 +82,10 @@ pub fn run_worker_session(
                 let request = match reader.complete_empty_add_multiple_to_store(negotiated.version)
                 {
                     Ok(request) => request,
-                    Err(error) if error.to_string().contains("nonempty") => {
+                    Err(nix_worker_protocol::AddMultipleToStoreRequestError::Nonempty) => {
                         tracing::error!(
                             event = "worker.operation.rejected",
                             rejection = "nonempty-add-multiple-to-store",
-                            reason = error.to_string(),
                             "nonempty AddMultipleToStore request rejected"
                         );
                         return reject(
@@ -205,16 +204,11 @@ pub fn run_worker_session(
                     operation = ?operation,
                     "fixture-observed worker operation is not implemented"
                 );
-                reject(
+                return reject(
                     &mut output,
                     "recognized-unimplemented",
                     "unsupported worker operation",
-                )?;
-                if operation == WorkerOperation::IsValidPath {
-                    let mut input = reader.into_inner();
-                    io::copy(&mut input, &mut io::sink())?;
-                    return Ok(());
-                }
+                );
             }
         }
     }

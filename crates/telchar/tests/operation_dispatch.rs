@@ -281,20 +281,17 @@ fn empty_add_multiple_to_store_completes_and_keeps_session_open() {
 
     assert_eq!(read_integer(&mut output), STDERR_LAST);
 
-    write_integer(&mut input, 1);
-    write_string(
-        &mut input,
-        b"/nix/store/00000000000000000000000000000000-missing",
-    );
+    write_integer(&mut input, 0xffff);
     input.flush().expect("next operation flushes");
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
     assert_eq!(read_string(&mut output), "Error");
     let _level = read_integer(&mut output);
     assert_eq!(read_string(&mut output), "Error");
-    assert_eq!(read_string(&mut output), "unsupported worker operation");
+    assert_eq!(read_string(&mut output), "unknown worker operation");
     assert_eq!(read_integer(&mut output), 0, "error has no position");
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
     drop(input);
+    drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
     let stderr = fixture.finish();
@@ -302,7 +299,10 @@ fn empty_add_multiple_to_store_completes_and_keeps_session_open() {
         stderr.contains("worker.add_multiple_to_store.completed"),
         "missing empty-batch completion telemetry: {stderr}"
     );
-    assert!(stderr.contains("operation=IsValidPath"), "{stderr}");
+    assert!(
+        stderr.contains("rejection=\"unknown-operation\""),
+        "{stderr}"
+    );
 }
 
 #[test]
