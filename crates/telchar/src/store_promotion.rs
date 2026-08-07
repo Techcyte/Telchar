@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::nar::stage_nar;
 
+pub const MAXIMUM_PROMOTION_REFERENCES: usize = 256;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeclaredPathInfo {
     pub path: PathBuf,

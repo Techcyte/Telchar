@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_promotion::{
     validate_and_promote_nar, DeclaredPathInfo, PromotionRequest, RegisteredPathInfo,
-    StorePromotionBackend,
+    StorePromotionBackend, MAXIMUM_PROMOTION_REFERENCES,
 };
+
+type DeclarationMutation = Box<dyn Fn(&mut DeclaredPathInfo)>;
+type BeforePromote = Box<dyn FnMut(&PromotionRequest) -> io::Result<()>>;
 
 const CONTENT: &[u8] = b"telchar-classic-fixture";
 const NAR_HASH: [u8; 32] = [
@@ -214,7 +217,7 @@ fn rejects_declared_size_mismatch_before_helper_invocation() {
 
 #[test]
 fn rejects_unsupported_classic_metadata_before_staging() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut DeclaredPathInfo)>)> = vec![
+    let cases: Vec<(&str, DeclarationMutation)> = vec![
         (
             "content address",
             Box::new(|info| info.content_address = Some("fixed:r:sha256:00".into())),
@@ -252,15 +255,47 @@ fn rejects_unsupported_classic_metadata_before_staging() {
 
 #[test]
 fn rejects_invalid_and_duplicate_path_metadata_before_staging() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut DeclaredPathInfo)>)> = vec![
+    let cases: Vec<(&str, DeclarationMutation)> = vec![
         (
             "path outside store",
             Box::new(|info| info.path = PathBuf::from("/tmp/not-store")),
         ),
         (
+            "short path basename",
+            Box::new(|info| info.path = PathBuf::from("/nix/store/short")),
+        ),
+        (
             "invalid path hash",
             Box::new(|info| {
                 info.path = PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-bad")
+            }),
+        ),
+        (
+            "missing path separator",
+            Box::new(|info| {
+                info.path = PathBuf::from("/nix/store/0123456789abcdfghijklmnpqrsvwxyztelchar")
+            }),
+        ),
+        (
+            "illegal path name",
+            Box::new(|info| {
+                info.path =
+                    PathBuf::from("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-name@invalid")
+            }),
+        ),
+        (
+            "reserved path name",
+            Box::new(|info| {
+                info.path = PathBuf::from("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-.")
+            }),
+        ),
+        (
+            "overlong path",
+            Box::new(|info| {
+                info.path = Path::new(STORE_DIRECTORY).join(format!(
+                    "0123456789abcdfghijklmnpqrsvwxyz-{}",
+                    "a".repeat(179)
+                ))
             }),
         ),
         (
@@ -297,6 +332,33 @@ fn rejects_invalid_and_duplicate_path_metadata_before_staging() {
         assert!(backend.queried_paths.is_empty(), "{label} queried store");
         assert_directory_empty(staging.path());
     }
+}
+
+#[test]
+fn rejects_reference_count_above_limit_before_staging() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.references = (0..=MAXIMUM_PROMOTION_REFERENCES)
+        .map(|index| {
+            Path::new(STORE_DIRECTORY)
+                .join(format!("{:032}-reference-{index}", format!("{index:x}")))
+        })
+        .collect();
+    let mut backend = RecordingBackend::accepting(registered_path_info());
+
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("excess references must fail");
+
+    assert!(error.to_string().contains("too many references"));
+    assert!(backend.request.is_none());
+    assert!(backend.queried_paths.is_empty());
+    assert_directory_empty(staging.path());
 }
 
 #[test]
@@ -340,6 +402,48 @@ fn helper_failure_is_followed_by_authoritative_validity_query_and_cleanup() {
     assert!(backend.request.is_some(), "helper was not invoked");
     assert_eq!(backend.queried_paths.last(), Some(&declared.path));
     assert_directory_empty(staging.path());
+}
+
+#[test]
+fn helper_failure_rejects_unexpected_authoritative_registration() {
+    let staging = TestDirectory::create();
+    let declared = declared_path_info();
+    let mut backend = RecordingBackend::failing();
+    backend.valid_paths = vec![true, true];
+
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("helper failure with valid path must fail closed");
+
+    assert!(error.to_string().contains("authoritative path is valid"));
+    assert_directory_empty(staging.path());
+}
+
+#[test]
+fn cleanup_failure_is_reported_after_success() {
+    let staging = TestDirectory::create();
+    let declared = declared_path_info();
+    let mut backend = RecordingBackend::accepting(registered_path_info());
+    backend.before_promote = Some(Box::new(|request| {
+        std::fs::remove_file(&request.nar_path)?;
+        std::fs::create_dir(&request.nar_path)
+    }));
+
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("cleanup failure must surface");
+
+    assert!(error.to_string().contains("staged NAR cleanup failed"));
 }
 
 #[test]
@@ -422,7 +526,7 @@ fn registered_path_info() -> RegisteredPathInfo {
 struct RecordingBackend {
     request: Option<PromotionRequest>,
     registered: Option<RegisteredPathInfo>,
-    before_promote: Option<Box<dyn FnMut(&PromotionRequest) -> io::Result<()>>>,
+    before_promote: Option<BeforePromote>,
     promote_error: bool,
     valid_paths: Vec<bool>,
     queried_paths: Vec<PathBuf>,
