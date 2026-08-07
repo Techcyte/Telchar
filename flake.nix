@@ -37,6 +37,7 @@
             runHook postInstall
           '';
         };
+      nixStoreBuild = mkNixStoreHelper "build" ./tools/nix-store-build;
       nixStoreExport = mkNixStoreHelper "export" ./tools/nix-store-export;
       nixStorePromote = mkNixStoreHelper "promote" ./tools/nix-store-promote;
     in
@@ -219,6 +220,7 @@
           cargoExtraArgs = "-p telchar";
           cargoTestExtraArgs = "--lib";
         };
+        nix-store-build = nixStoreBuild;
         nix-store-export = nixStoreExport;
         nix-store-promote = nixStorePromote;
         nix-reference = pkgs.nix;
@@ -226,6 +228,7 @@
       };
 
       devShells.${system}.default = pkgs.mkShell {
+        TELCHAR_NIX_STORE_BUILD = "${nixStoreBuild}/libexec/telchar/nix-store-build";
         packages = [
           pkgs.openssh
           pkgs.cargo

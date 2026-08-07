@@ -2,6 +2,7 @@ pub mod build_request;
 pub mod deployment;
 pub mod identity;
 pub mod ipc;
+pub mod local_executor;
 pub mod nar;
 pub mod nix_fixture;
 pub mod session;
