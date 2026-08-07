@@ -1,4 +1,6 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use nix_worker_protocol::WorkerOperation;
 use telchar::nix_fixture::{NixFixture, TrustMode};
@@ -29,6 +31,58 @@ fn dropping_running_daemon_and_fixture_cleans_process_and_store() {
         !root.exists(),
         "fixture root leaked after daemon drop: {root:?}"
     );
+}
+
+#[test]
+fn killed_fixture_owner_cleans_process_and_store() {
+    const CHILD_ENV: &str = "TELCHAR_NIX_FIXTURE_KILL_CHILD";
+    const ROOT_ENV: &str = "TELCHAR_NIX_FIXTURE_ROOT_EVIDENCE";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let fixture = NixFixture::create().expect("fixture creates");
+        let daemon = fixture
+            .start_daemon(TrustMode::Trusted)
+            .expect("fixture daemon starts");
+        std::fs::write(
+            std::env::var_os(ROOT_ENV).expect("root evidence path"),
+            fixture.root().as_os_str().as_encoded_bytes(),
+        )
+        .expect("root evidence writes");
+        std::hint::black_box((&fixture, &daemon));
+        thread::sleep(Duration::from_secs(60));
+        return;
+    }
+
+    let evidence = std::env::temp_dir().join(format!(
+        "telchar-nix-fixture-kill-evidence-{}",
+        std::process::id()
+    ));
+    let mut child = Command::new(std::env::current_exe().expect("test executable path"))
+        .args(["killed_fixture_owner_cleans_process_and_store", "--exact"])
+        .env(CHILD_ENV, "1")
+        .env(ROOT_ENV, &evidence)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("fixture owner starts");
+    for _ in 0..500 {
+        if evidence.is_file() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let root = std::path::PathBuf::from(
+        std::fs::read_to_string(&evidence).expect("fixture root evidence reads"),
+    );
+    child.kill().expect("fixture owner killed");
+    child.wait().expect("fixture owner reaped");
+    for _ in 0..500 {
+        if !root.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!root.exists(), "killed fixture owner leaked root: {root:?}");
+    let _ = std::fs::remove_file(evidence);
 }
 
 #[test]

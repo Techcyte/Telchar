@@ -672,14 +672,14 @@ Evidence: paths and output facts to record
 
 ### Store boundary
 
-- [ ] T062 Document dedicated gateway-store ownership
+- [x] T062 Document dedicated gateway-store ownership
   - Depends on: T061
   - Outcome: ADR specifies service account, daemon interaction, privileges, GC ownership, and no unrelated host workloads.
   - Red: privilege checklist exposes unspecified operation.
   - Verify: ADR checklist.
   - Evidence: required permissions and trust boundary.
 
-- [ ] T063 Create real Nix store test fixture
+- [x] T063 Create real Nix store test fixture
   - Depends on: T062
   - Outcome: reproducible fixture provisions known store state and cleans it safely.
   - Red: fixture leaves path/database/process residue.

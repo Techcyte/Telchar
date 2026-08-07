@@ -20,6 +20,7 @@ pub struct NixDaemon {
 }
 
 pub struct NixFixture {
+    cleanup_guard: Option<Child>,
     root: PathBuf,
     config_path: PathBuf,
     private_key_path: PathBuf,
@@ -77,12 +78,14 @@ impl NixFixture {
             }));
         }
 
+        let cleanup_guard = start_cleanup_guard(&root)?;
         tracing::info!(
             event = "nix.fixture.setup.finished",
             state = "isolated",
             "Nix fixture setup finished"
         );
         Ok(Self {
+            cleanup_guard: Some(cleanup_guard),
             root,
             config_path,
             private_key_path,
@@ -161,6 +164,7 @@ impl NixFixture {
             command.arg("--debug");
         }
         let mut child = command.spawn()?;
+        fs::write(self.root.join("daemon.pid"), child.id().to_string())?;
 
         for _ in 0..100 {
             if self.socket_path.exists() {
@@ -216,7 +220,7 @@ impl NixFixture {
         environment
     }
 
-    pub fn cleanup(self) -> io::Result<()> {
+    pub fn cleanup(mut self) -> io::Result<()> {
         let lifecycle =
             tracing::info_span!("nix_fixture.cleanup", fixture = "isolated", client = "nix");
         let _entered = lifecycle.enter();
@@ -224,6 +228,7 @@ impl NixFixture {
             event = "nix.fixture.cleanup.started",
             "Nix fixture cleanup started"
         );
+        stop_cleanup_guard(&mut self.cleanup_guard);
         remove_fixture_root(&self.root)?;
         tracing::info!(
             event = "nix.fixture.cleanup.finished",
@@ -235,6 +240,7 @@ impl NixFixture {
 
 impl Drop for NixFixture {
     fn drop(&mut self) {
+        stop_cleanup_guard(&mut self.cleanup_guard);
         if let Err(error) = remove_fixture_root(&self.root) {
             tracing::error!(
                 event = "nix.fixture.cleanup.failed",
@@ -337,6 +343,40 @@ impl Drop for NixDaemon {
                 "Fixture daemon cleanup failed"
             );
         }
+    }
+}
+
+fn start_cleanup_guard(root: &Path) -> io::Result<Child> {
+    let script = r#"
+parent=$1
+root=$2
+while kill -0 "$parent" 2>/dev/null; do sleep 0.05; done
+if test -f "$root/daemon.pid"; then
+    daemon=$(cat "$root/daemon.pid")
+    kill "$daemon" 2>/dev/null || true
+    sleep 0.05
+    kill -KILL "$daemon" 2>/dev/null || true
+fi
+rm -rf "$root"
+"#;
+    Command::new("sh")
+        .args([
+            "-c",
+            script,
+            "telchar-nix-fixture-cleanup",
+            &std::process::id().to_string(),
+            &root.display().to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+fn stop_cleanup_guard(guard: &mut Option<Child>) {
+    if let Some(mut guard) = guard.take() {
+        let _ = guard.kill();
+        let _ = guard.wait();
     }
 }
 
