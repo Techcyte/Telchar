@@ -18,6 +18,23 @@
       pkgs = nixpkgs.legacyPackages.${system};
       craneLib = crane.mkLib pkgs;
       source = craneLib.cleanCargoSource ./.;
+      nixStorePromote = pkgs.stdenv.mkDerivation {
+        pname = "telchar-nix-store-promote";
+        version = "0.1.0";
+        src = ./tools/nix-store-promote;
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.nix.dev ];
+        buildPhase = ''
+          runHook preBuild
+          $CXX $(pkg-config --cflags nix-store) -o telchar-nix-store-promote main.cc $(pkg-config --libs nix-store)
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          install -Dm755 telchar-nix-store-promote $out/libexec/telchar/nix-store-promote
+          runHook postInstall
+        '';
+      };
     in
     {
       checks.${system} =
@@ -195,6 +212,7 @@
           cargoExtraArgs = "-p telchar";
           cargoTestExtraArgs = "--lib";
         };
+        nix-store-promote = nixStorePromote;
         nix-reference = pkgs.nix;
         default = self.packages.${system}.telchar;
       };
