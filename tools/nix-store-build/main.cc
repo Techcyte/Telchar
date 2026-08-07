@@ -16,6 +16,7 @@ using json = nlohmann::json;
 namespace {
 
 constexpr std::size_t maximumRequestBytes = 16 * 1024 * 1024;
+constexpr std::size_t maximumDiagnosticBytes = 4096;
 
 std::string readRequest()
 {
@@ -84,14 +85,21 @@ int run(const std::string & storeUri, const json & request)
         throw std::runtime_error("build returned unsupported success status");
 
     json outputs = json::array();
-    std::set<std::string> declared;
+    std::map<std::string, std::string> declared;
     for (const auto & output : request.at("outputs")) {
         auto name = requiredString(output, "name");
         auto path = requiredString(output, "path");
         auto parsed = parseDeclaredPath(*store, path);
-        if (!store->isValidPath(parsed) || !declared.insert(name).second)
+        if (!store->isValidPath(parsed) || !declared.emplace(name, path).second)
             throw std::runtime_error("build output verification failed");
         outputs.push_back({name, path});
+    }
+    if (success->builtOutputs.size() != declared.size())
+        throw std::runtime_error("build output verification failed");
+    for (const auto & [name, path] : declared) {
+        auto built = success->builtOutputs.find(name);
+        if (built == success->builtOutputs.end() || store->printStorePath(built->second.outPath) != path)
+            throw std::runtime_error("build output verification failed");
     }
     json response = {
         {"version", 1},
@@ -113,8 +121,9 @@ int main(int argc, char ** argv)
         nix::initLibStore();
         auto request = json::parse(readRequest());
         return run(argv[1], request);
-    } catch (const std::exception & error) {
-        std::cerr << "build helper failed: " << error.what() << '\n';
+    } catch (const std::exception &) {
+        constexpr std::string_view diagnostic = "build helper failed\n";
+        std::cerr.write(diagnostic.data(), std::min(diagnostic.size(), maximumDiagnosticBytes));
         return 1;
     }
 }
