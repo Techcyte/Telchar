@@ -1226,6 +1226,20 @@ impl<R: WorkerInput> WorkerReader<R> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))
     }
 
+    pub fn complete_store_path_request(&mut self) -> io::Result<StorePathRequest> {
+        let (path, charge) = read_worker_byte_string_with_charge_from(
+            &mut self.input,
+            MAXIMUM_WORKER_STORE_PATH_BYTES,
+            &self.budget,
+        )?;
+        validate_store_path(&path)?;
+        self.input.complete_message();
+        Ok(StorePathRequest {
+            path,
+            _charge: charge,
+        })
+    }
+
     pub fn complete_query_valid_paths(
         &mut self,
         version: WorkerVersion,
@@ -1882,6 +1896,18 @@ fn read_worker_byte_string_with_charge_from(
 }
 
 #[derive(Debug)]
+pub struct StorePathRequest {
+    path: Vec<u8>,
+    _charge: SessionAllocationCharge,
+}
+
+impl StorePathRequest {
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+}
+
+#[derive(Debug)]
 pub struct QueryValidPathsRequest {
     paths: Vec<Vec<u8>>,
     substitute: bool,
@@ -1948,6 +1974,59 @@ pub fn write_build_derivation_success_response(
         write_worker_integer_to(output, 0)?;
     }
     output.flush()
+}
+
+pub struct PathInfoResponse<'a> {
+    pub deriver: Option<&'a [u8]>,
+    pub nar_hash_hex: &'a str,
+    pub references: &'a [Vec<u8>],
+    pub registration_time: u64,
+    pub nar_size: u64,
+    pub ultimate: bool,
+    pub signatures: &'a [String],
+    pub content_address: Option<&'a str>,
+}
+
+pub fn write_query_path_info_response(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    info: Option<PathInfoResponse<'_>>,
+) -> io::Result<()> {
+    let Some(info) = info else {
+        return write_worker_integer_to(output, 0);
+    };
+    write_worker_integer_to(output, 1)?;
+    write_worker_byte_string_to(output, info.deriver.unwrap_or_default())?;
+    if info.nar_hash_hex.len() != 64
+        || !info
+            .nar_hash_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid path info NAR hash",
+        ));
+    }
+    write_worker_byte_string_to(output, info.nar_hash_hex.as_bytes())?;
+    write_worker_integer_to(output, info.references.len() as u64)?;
+    for reference in info.references {
+        validate_store_path(reference).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid path info reference")
+        })?;
+        write_worker_byte_string_to(output, reference)?;
+    }
+    write_worker_integer_to(output, info.registration_time)?;
+    write_worker_integer_to(output, info.nar_size)?;
+    if version >= WorkerVersion::new(1, 16) {
+        write_worker_integer_to(output, u64::from(info.ultimate))?;
+        write_worker_integer_to(output, info.signatures.len() as u64)?;
+        for signature in info.signatures {
+            write_worker_byte_string_to(output, signature.as_bytes())?;
+        }
+        write_worker_byte_string_to(output, info.content_address.unwrap_or_default().as_bytes())?;
+    }
+    Ok(())
 }
 
 pub fn write_query_valid_paths_response(
