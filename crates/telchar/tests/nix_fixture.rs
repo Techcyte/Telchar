@@ -171,12 +171,36 @@ fn real_store_query_reports_valid_and_invalid_paths() {
     let valid = daemon
         .build_classic_derivation()
         .expect("fixture daemon builds classic derivation");
-    let invalid = fixture.root().join("not-a-store-path");
+    let invalid = fixture
+        .store_dir()
+        .join("00000000000000000000000000000000-missing");
 
     assert!(daemon.is_valid_path(&valid).expect("valid path query"));
     assert!(!daemon.is_valid_path(&invalid).expect("invalid path query"));
 
     daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+}
+
+#[test]
+fn real_store_validity_query_does_not_hide_daemon_failure() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let path = daemon
+        .build_classic_derivation()
+        .expect("fixture daemon builds classic derivation");
+    daemon.stop().expect("fixture daemon stops");
+
+    let error = daemon
+        .is_valid_path(&path)
+        .expect_err("daemon failure must not become invalid-path result");
+    assert!(
+        error.to_string().contains("path-info query failed"),
+        "unexpected store failure: {error}"
+    );
+
     fixture.cleanup().expect("fixture cleans up");
 }
 

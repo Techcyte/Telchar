@@ -686,14 +686,14 @@ Evidence: paths and output facts to record
   - Verify: setup/build/teardown self-test.
   - Evidence: pre/post state.
 
-- [ ] T064 Query path validity
+- [x] T064 Query path validity
   - Depends on: T063
   - Outcome: store adapter reports one valid and one invalid path through real Nix.
   - Red: integration test cannot distinguish paths.
   - Verify: real-store validity test.
   - Evidence: tested store paths.
 
-- [ ] T065 Query path metadata
+- [x] T065 Query path metadata
   - Depends on: T064
   - Outcome: adapter returns NAR hash, size, references, deriver, and content-address metadata required by protocol target.
   - Red: metadata test lacks expected fields.

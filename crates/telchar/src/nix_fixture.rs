@@ -284,7 +284,17 @@ impl NixDaemon {
     pub fn is_valid_path(&self, path: &Path) -> io::Result<bool> {
         let output = self.path_info_output(path)?;
         if !output.status.success() {
-            return Ok(false);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("is not valid")
+                || stderr.contains("does not exist")
+                || stderr.contains("is not a valid store path")
+            {
+                return Ok(false);
+            }
+            return Err(io::Error::other(format!(
+                "fixture daemon path-info query failed: {}",
+                stderr.trim()
+            )));
         }
         if output.stdout.len() > 64 * 1024 {
             return Err(io::Error::new(
@@ -292,11 +302,13 @@ impl NixDaemon {
                 "fixture daemon path-info response exceeds limit",
             ));
         }
-        let entries: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&output.stdout)
-            .map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON")
-        })?;
-        Ok(entries.contains_key(path.to_string_lossy().as_ref()))
+        let entries: BTreeMap<String, Option<serde_json::Value>> =
+            serde_json::from_slice(&output.stdout).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid path-info JSON")
+            })?;
+        Ok(entries
+            .get(path.to_string_lossy().as_ref())
+            .is_some_and(Option::is_some))
     }
 
     pub fn query_path_info(&self, path: &Path) -> io::Result<StorePathInfo> {
