@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
 };
+use telchar::nix_fixture::{NixFixture, TrustMode};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -159,6 +160,76 @@ fn partial_set_options_progress_resets_deadline() {
 }
 
 #[test]
+fn query_valid_paths_returns_only_authoritative_valid_paths() {
+    let fixture = NixFixture::create().expect("Nix fixture creates");
+    let mut store = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("Nix daemon starts");
+    let valid = store
+        .build_classic_derivation()
+        .expect("authoritative fixture path builds");
+    let invalid = fixture
+        .store_dir()
+        .join("00000000000000000000000000000000-missing");
+    let mut frontend =
+        FrontendFixture::spawn_with_store(None, &store.store_url(), fixture.environment());
+    let child = &mut frontend.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 31);
+    write_integer(&mut input, 2);
+    write_string(&mut input, valid.as_os_str().as_encoded_bytes());
+    write_string(&mut input, invalid.as_os_str().as_encoded_bytes());
+    write_integer(&mut input, 0);
+    input.flush().expect("QueryValidPaths request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 1, "one requested path is valid");
+    assert_eq!(read_string(&mut output), valid.to_string_lossy());
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = frontend.finish();
+    assert!(
+        stderr.contains("worker.query_valid_paths.completed"),
+        "missing completion telemetry: {stderr}"
+    );
+
+    store.stop().expect("Nix daemon stops");
+    fixture.cleanup().expect("Nix fixture cleans");
+}
+
+#[test]
+fn oversized_query_valid_paths_count_fails_before_reading_path_bodies() {
+    let mut fixture = FrontendFixture::spawn(Some(100));
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 31);
+    write_integer(&mut input, 257);
+    input.flush().expect("oversized count flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "invalid QueryValidPaths request");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("invalid-query-valid-paths"),
+        "missing bounded rejection evidence: {stderr}"
+    );
+    assert!(!stderr.contains("worker.session.timed_out"), "{stderr}");
+}
+
+#[test]
 fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
     let response = send_operation(39);
     assert_eq!(response.message, "unsupported worker operation");
@@ -185,6 +256,26 @@ struct FrontendFixture {
 
 impl FrontendFixture {
     fn spawn(worker_timeout_ms: Option<u64>) -> Self {
+        Self::spawn_configured(
+            worker_timeout_ms,
+            None,
+            std::iter::empty::<(&str, String)>(),
+        )
+    }
+
+    fn spawn_with_store(
+        worker_timeout_ms: Option<u64>,
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
+        Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+    }
+
+    fn spawn_configured(
+        worker_timeout_ms: Option<u64>,
+        store_uri: Option<&str>,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!(
             "telchar-operation-{}-{}-{}",
             std::process::id(),
@@ -214,6 +305,10 @@ impl FrontendFixture {
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }
+        if let Some(store_uri) = store_uri {
+            daemon_command.env("TELCHAR_GATEWAY_STORE_URI", store_uri);
+        }
+        daemon_command.envs(environment);
         let mut daemon = daemon_command.spawn().expect("daemon starts");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !socket.exists() {
@@ -269,27 +364,7 @@ fn send_operation(operation: u64) -> OperationResponse {
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
-
-    write_integer(&mut input, CLIENT_WORKER_MAGIC);
-    write_integer(&mut input, LATEST_WORKER_VERSION.to_wire());
-    write_integer(&mut input, 0);
-    input.flush().expect("handshake flushes");
-
-    assert_eq!(read_integer(&mut output), SERVER_WORKER_MAGIC);
-    assert_eq!(
-        read_integer(&mut output),
-        LATEST_WORKER_VERSION.to_wire(),
-        "server sends its protocol version"
-    );
-    assert_eq!(read_integer(&mut output), 0, "server has no features");
-
-    write_integer(&mut input, 0);
-    write_integer(&mut input, 0);
-    input.flush().expect("post-handshake flushes");
-
-    assert_eq!(read_string(&mut output), "telchar");
-    assert_eq!(read_integer(&mut output), 0);
-    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    complete_handshake(&mut input, &mut output);
 
     write_integer(&mut input, operation);
     input.flush().expect("operation flushes");
@@ -316,6 +391,29 @@ fn send_operation(operation: u64) -> OperationResponse {
         "unknown-operation"
     };
     OperationResponse { message, rejection }
+}
+
+fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
+    write_integer(input, CLIENT_WORKER_MAGIC);
+    write_integer(input, LATEST_WORKER_VERSION.to_wire());
+    write_integer(input, 0);
+    input.flush().expect("handshake flushes");
+
+    assert_eq!(read_integer(output), SERVER_WORKER_MAGIC);
+    assert_eq!(
+        read_integer(output),
+        LATEST_WORKER_VERSION.to_wire(),
+        "server sends its protocol version"
+    );
+    assert_eq!(read_integer(output), 0, "server has no features");
+
+    write_integer(input, 0);
+    write_integer(input, 0);
+    input.flush().expect("post-handshake flushes");
+
+    assert_eq!(read_string(output), "telchar");
+    assert_eq!(read_integer(output), 0);
+    assert_eq!(read_integer(output), STDERR_LAST);
 }
 
 fn write_integer(output: &mut impl Write, value: u64) {
