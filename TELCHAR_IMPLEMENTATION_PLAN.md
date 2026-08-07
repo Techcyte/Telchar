@@ -702,10 +702,10 @@ Evidence: paths and output facts to record
 
 - [ ] T066 Import one validated NAR with path metadata
   - Depends on: T065
-  - Outcome: after Telchar validates the streamed NAR against the client-declared NAR hash, size, path, references, deriver, and content-address metadata, the real gateway store accepts it and reports matching registered path info.
+  - Outcome: after Telchar validates the streamed NAR against the client-declared NAR hash, size, path, references, deriver, and content-address metadata, Nix `Store::addToStore(ValidPathInfo, Source)` accepts it and the real gateway store reports matching registered path info.
   - Red: import integration test either bypasses pre-registration validation or registers metadata differing from the declared envelope.
-  - Verify: validated real-store import test.
-  - Evidence: declared metadata, computed metadata, imported path, and registered metadata.
+  - Verify: validated real-store import test through the flake-pinned private Nix helper.
+  - Evidence: declared metadata, computed metadata, helper invocation, imported path, and registered metadata.
 
 - [x] T066A Parse and hash one streamed NAR before registration
   - Depends on: T065
