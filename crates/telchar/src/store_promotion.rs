@@ -1,9 +1,10 @@
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::nar::stage_nar;
 
 pub const MAXIMUM_PROMOTION_REFERENCES: usize = 256;
+const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeclaredPathInfo {
@@ -87,12 +88,13 @@ impl StorePromotionBackend for NixStorePromotionBackend {
     }
 
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool> {
-        let output = std::process::Command::new("nix")
+        let mut command = std::process::Command::new("nix");
+        command
             .envs(self.environment.iter().cloned())
             .args(["--store", &self.store_uri, "path-info", "--json"])
-            .arg(path)
-            .output()?;
-        if output.stdout.len() > 64 * 1024 || output.stderr.len() > 64 * 1024 {
+            .arg(path);
+        let output = run_bounded_command(command, None)?;
+        if output.exceeded_limit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "path-info response exceeds limit",
@@ -114,21 +116,12 @@ impl StorePromotionBackend for NixStorePromotionBackend {
     }
 
     fn promote(&mut self, request: &PromotionRequest) -> io::Result<()> {
-        let mut child = std::process::Command::new(&self.helper)
-            .envs(self.environment.iter().cloned())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("promotion helper stdin not configured"))?;
-        serde_json::to_writer(&mut stdin, request)
+        let request = serde_json::to_vec(request)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid helper request"))?;
-        drop(stdin);
-        let output = child.wait_with_output()?;
-        if output.stdout.len() > 64 * 1024 || output.stderr.len() > 64 * 1024 {
+        let mut command = std::process::Command::new(&self.helper);
+        command.envs(self.environment.iter().cloned());
+        let output = run_bounded_command(command, Some(&request))?;
+        if output.exceeded_limit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "promotion helper output exceeds limit",
@@ -154,12 +147,13 @@ impl StorePromotionBackend for NixStorePromotionBackend {
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        let output = std::process::Command::new("nix")
+        let mut command = std::process::Command::new("nix");
+        command
             .envs(self.environment.iter().cloned())
             .args(["--store", &self.store_uri, "path-info", "--json"])
-            .arg(path)
-            .output()?;
-        if !output.status.success() || output.stdout.len() > 64 * 1024 {
+            .arg(path);
+        let output = run_bounded_command(command, None)?;
+        if !output.status.success() || output.exceeded_limit {
             return Err(io::Error::other("registered path-info query failed"));
         }
         let entries: std::collections::BTreeMap<String, StorePathJson> =
@@ -180,6 +174,73 @@ impl StorePromotionBackend for NixStorePromotionBackend {
             deriver: info.deriver.clone(),
             content_address: info.ca.clone(),
         })
+    }
+}
+
+struct BoundedCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exceeded_limit: bool,
+}
+
+fn run_bounded_command(
+    mut command: std::process::Command,
+    input: Option<&[u8]>,
+) -> io::Result<BoundedCommandOutput> {
+    command
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("subprocess stdout not configured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("subprocess stderr not configured"))?;
+    let stdout_reader = std::thread::spawn(move || drain_bounded(stdout));
+    let stderr_reader = std::thread::spawn(move || drain_bounded(stderr));
+    if let Some(input) = input {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("subprocess stdin not configured"))?;
+        stdin.write_all(input)?;
+    }
+    let status = child.wait()?;
+    let (stdout, stdout_exceeded) = stdout_reader
+        .join()
+        .map_err(|_| io::Error::other("subprocess stdout reader panicked"))??;
+    let (stderr, stderr_exceeded) = stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("subprocess stderr reader panicked"))??;
+    Ok(BoundedCommandOutput {
+        status,
+        stdout,
+        stderr,
+        exceeded_limit: stdout_exceeded || stderr_exceeded,
+    })
+}
+
+fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::new();
+    let mut exceeded = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            return Ok((retained, exceeded));
+        }
+        let available = MAXIMUM_SUBPROCESS_OUTPUT_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(available)]);
+        exceeded |= read > available;
     }
 }
 
