@@ -28,6 +28,58 @@ pub trait StoreExportBackend: Send {
     fn export_nar(&mut self, request: &StoreExportRequest, sink: &mut dyn Write) -> io::Result<()>;
 }
 
+pub struct UnavailableStoreExportBackend;
+
+impl StoreExportBackend for UnavailableStoreExportBackend {
+    fn store_uri(&self) -> &str {
+        ""
+    }
+
+    fn query_path_info(&mut self, _path: &Path) -> io::Result<RegisteredPathInfo> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "store export is unavailable",
+        ))
+    }
+
+    fn export_nar(
+        &mut self,
+        _request: &StoreExportRequest,
+        _sink: &mut dyn Write,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "store export is unavailable",
+        ))
+    }
+}
+
+pub fn backend_from_environment() -> io::Result<Box<dyn StoreExportBackend>> {
+    let Some(helper) = std::env::var_os("TELCHAR_NIX_STORE_EXPORT") else {
+        return Ok(Box::new(UnavailableStoreExportBackend));
+    };
+    if !Path::new(&helper).is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "store export helper must be absolute",
+        ));
+    }
+    let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "gateway store endpoint is not configured",
+        )
+    })?;
+    let nix = std::env::var_os("TELCHAR_NIX").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "Nix executable is not configured")
+    })?;
+    Ok(Box::new(NixStoreExportBackend::new(
+        helper,
+        store_uri,
+        [("TELCHAR_NIX".to_owned(), nix.to_string_lossy().into_owned())],
+    )))
+}
+
 pub struct NixStoreExportBackend {
     environment: Vec<(String, String)>,
     helper: PathBuf,
@@ -54,17 +106,44 @@ impl StoreExportBackend for NixStoreExportBackend {
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        let mut command = std::process::Command::new("nix");
+        let nix = self
+            .environment
+            .iter()
+            .find_map(|(name, value)| (name == "TELCHAR_NIX").then_some(value.as_str()))
+            .unwrap_or("nix");
+        let mut command = std::process::Command::new(nix);
         command
             .envs(self.environment.iter().cloned())
-            .args(["--store", &self.store_uri, "path-info", "--json"])
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "--store",
+                &self.store_uri,
+                "path-info",
+                "--json",
+            ])
             .arg(path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let output = run_bounded_command(command)?;
-        if !output.status.success() || output.exceeded_limit {
-            return Err(io::Error::other("registered path-info query failed"));
+        if output.exceeded_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "registered path-info query output exceeds limit",
+            ));
+        }
+        if !output.status.success() {
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            let kind = if diagnostic.contains("is not valid")
+                || diagnostic.contains("path-info command failed")
+                || diagnostic.contains("No such file or directory")
+            {
+                io::ErrorKind::NotFound
+            } else {
+                io::ErrorKind::Other
+            };
+            return Err(io::Error::new(kind, diagnostic.trim().to_owned()));
         }
         let entries: std::collections::BTreeMap<String, StorePathJson> =
             serde_json::from_slice(&output.stdout).map_err(|_| {
@@ -186,10 +265,21 @@ impl Drop for ExportChild {
     }
 }
 
+pub fn query_path_info(
+    path: &Path,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+) -> io::Result<Option<RegisteredPathInfo>> {
+    match backend.query_path_info(path) {
+        Ok(info) => Ok(Some(info)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn export_verified_nar(
     path: &Path,
     sink: &mut impl Write,
-    backend: &mut impl StoreExportBackend,
+    backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<VerifiedStoreExport> {
     let metadata = backend
         .query_path_info(path)
@@ -363,6 +453,7 @@ fn parse_sha256_sri(value: &str) -> io::Result<[u8; 32]> {
 struct BoundedCommandOutput {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
+    stderr: Vec<u8>,
     exceeded_limit: bool,
 }
 
@@ -382,12 +473,13 @@ fn run_bounded_command(mut command: std::process::Command) -> io::Result<Bounded
     let (stdout, stdout_exceeded) = stdout_reader
         .join()
         .map_err(|_| io::Error::other("subprocess stdout reader panicked"))??;
-    let (_, stderr_exceeded) = stderr_reader
+    let (stderr, stderr_exceeded) = stderr_reader
         .join()
         .map_err(|_| io::Error::other("subprocess stderr reader panicked"))??;
     Ok(BoundedCommandOutput {
         status,
         stdout,
+        stderr,
         exceeded_limit: stdout_exceeded || stderr_exceeded,
     })
 }

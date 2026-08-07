@@ -201,6 +201,54 @@ fn query_valid_paths_returns_only_authoritative_valid_paths() {
 }
 
 #[test]
+fn query_path_info_returns_authoritative_metadata() {
+    let fixture = NixFixture::create().expect("Nix fixture creates");
+    let mut store = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("Nix daemon starts");
+    let valid = store
+        .build_classic_derivation()
+        .expect("authoritative fixture path builds");
+    let mut frontend =
+        FrontendFixture::spawn_with_store_export(None, &store.store_url(), fixture.environment());
+    let child = &mut frontend.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 26);
+    write_string(&mut input, valid.as_os_str().as_encoded_bytes());
+    input.flush().expect("QueryPathInfo flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 1);
+    let _deriver = read_string(&mut output);
+    assert_eq!(read_string(&mut output).len(), 64);
+    let reference_count = read_integer(&mut output);
+    for _ in 0..reference_count {
+        let _ = read_string(&mut output);
+    }
+    let _registration_time = read_integer(&mut output);
+    assert!(read_integer(&mut output) > 0);
+    let _ultimate = read_integer(&mut output);
+    let signature_count = read_integer(&mut output);
+    for _ in 0..signature_count {
+        let _ = read_string(&mut output);
+    }
+    let _content_address = read_string(&mut output);
+
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = frontend.finish();
+    assert!(
+        stderr.contains("worker.query_path_info.completed"),
+        "{stderr}"
+    );
+    store.stop().expect("daemon stops");
+    fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
 fn empty_query_valid_paths_returns_empty_set_without_store_lookup() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
@@ -453,6 +501,24 @@ impl FrontendFixture {
         Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
     }
 
+    fn spawn_with_store_export(
+        worker_timeout_ms: Option<u64>,
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
+        let mut environment = environment.into_iter().collect::<Vec<_>>();
+        environment.push((
+            "TELCHAR_NIX_STORE_EXPORT",
+            std::env::var("TELCHAR_NIX_STORE_EXPORT")
+                .expect("flake-built export helper is configured"),
+        ));
+        environment.push((
+            "TELCHAR_NIX",
+            std::env::var("TELCHAR_NIX_BIN").expect("flake-pinned Nix is configured"),
+        ));
+        Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+    }
+
     fn spawn_configured(
         worker_timeout_ms: Option<u64>,
         store_uri: Option<&str>,
@@ -487,7 +553,8 @@ impl FrontendFixture {
         daemon_command
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
-            .env_remove("TELCHAR_NIX_STORE_BUILD");
+            .env_remove("TELCHAR_NIX_STORE_BUILD")
+            .env_remove("TELCHAR_NIX_STORE_EXPORT");
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }

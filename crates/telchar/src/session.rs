@@ -57,6 +57,7 @@ impl WorkerInput for SessionInput {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_worker_session(
     input: std::os::unix::net::UnixStream,
     mut output: std::os::unix::net::UnixStream,
@@ -64,6 +65,7 @@ pub fn run_worker_session(
     deployment: &DeploymentConfig,
     store_query: &mut dyn QueryValidPathsStore,
     build_executor: &mut dyn BuildExecutor,
+    store_export: &mut dyn crate::store_export::StoreExportBackend,
     request_id: &str,
 ) -> io::Result<()> {
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
@@ -180,6 +182,130 @@ pub fn run_worker_session(
                     output_count = result.outputs().len(),
                     status = ?result.status(),
                     "BuildDerivation execution completed"
+                );
+            }
+            Ok(WorkerOperation::QueryPathInfo) => {
+                let request = match reader.complete_store_path_request() {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-query-path-info",
+                            "invalid QueryPathInfo request",
+                        );
+                    }
+                };
+                let path = match std::str::from_utf8(request.path()) {
+                    Ok(path) => std::path::Path::new(path),
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-query-path-info",
+                            "invalid QueryPathInfo request",
+                        );
+                    }
+                };
+                let info = match crate::store_export::query_path_info(path, store_export) {
+                    Ok(info) => info,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.query_path_info.failed",
+                            reason = execution_error_reason(&error),
+                            diagnostic = %error,
+                            "gateway store QueryPathInfo failed"
+                        );
+                        return reject(
+                            &mut output,
+                            "query-path-info-store-failure",
+                            "QueryPathInfo store query failed",
+                        );
+                    }
+                };
+                let valid = info.is_some();
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                if let Some(info) = info {
+                    let references = info
+                        .references
+                        .iter()
+                        .map(|path| path.as_os_str().as_encoded_bytes().to_vec())
+                        .collect::<Vec<_>>();
+                    let deriver = info
+                        .deriver
+                        .as_ref()
+                        .map(|path| path.as_os_str().as_encoded_bytes());
+                    let nar_hash_hex = info
+                        .nar_hash
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    nix_worker_protocol::write_query_path_info_response(
+                        &mut output,
+                        negotiated.version,
+                        Some(nix_worker_protocol::PathInfoResponse {
+                            deriver,
+                            nar_hash_hex: &nar_hash_hex,
+                            references: &references,
+                            registration_time: 0,
+                            nar_size: info.nar_size,
+                            ultimate: false,
+                            signatures: &[],
+                            content_address: info.content_address.as_deref(),
+                        }),
+                    )?;
+                } else {
+                    nix_worker_protocol::write_query_path_info_response(
+                        &mut output,
+                        negotiated.version,
+                        None,
+                    )?;
+                }
+                output.flush()?;
+                tracing::info!(
+                    event = "worker.query_path_info.completed",
+                    valid,
+                    "QueryPathInfo request completed"
+                );
+            }
+            Ok(WorkerOperation::NarFromPath) => {
+                let request = match reader.complete_store_path_request() {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-nar-from-path",
+                            "invalid NarFromPath request",
+                        );
+                    }
+                };
+                let path = match std::str::from_utf8(request.path()) {
+                    Ok(path) => std::path::Path::new(path),
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-nar-from-path",
+                            "invalid NarFromPath request",
+                        );
+                    }
+                };
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                let verified =
+                    match crate::store_export::export_verified_nar(path, &mut output, store_export)
+                    {
+                        Ok(verified) => verified,
+                        Err(error) => {
+                            tracing::error!(
+                                event = "worker.nar_from_path.failed",
+                                reason = execution_error_reason(&error),
+                                "gateway store NarFromPath failed"
+                            );
+                            return Err(error);
+                        }
+                    };
+                output.flush()?;
+                tracing::info!(
+                    event = "worker.nar_from_path.completed",
+                    nar_size = verified.nar_size,
+                    "NarFromPath request completed"
                 );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {

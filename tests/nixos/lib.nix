@@ -108,6 +108,7 @@ let
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           TELCHAR_NIX_STORE_BUILD = "${telchar}/libexec/telchar/nix-store-build";
+          TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";
         };

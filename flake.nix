@@ -167,13 +167,15 @@
                 stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/remote-only.nix")
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
-                stock_client.succeed("test $(HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 30 nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1; echo $?) -ne 0")
-                stock_client.succeed("grep -q 'unsupported worker operation' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
+                stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 30 nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1 || { cat /tmp/remote-build.out >&2; exit 1; }")
+                stock_client.succeed("grep -q '/nix/store/h12821vyyw22vp659ays72njyg1rrfcw-telchar-gate-3-contract' /tmp/remote-build.out")
+                stock_client.succeed("test \"$(cat /nix/store/h12821vyyw22vp659ays72njyg1rrfcw-telchar-gate-3-contract)\" = telchar-remote-build")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_valid_paths.completed'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.add_multiple_to_store.completed'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.admitted'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.completed'")
-                gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.operation.unimplemented.*operation=QueryPathInfo'")
+                gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_path_info.completed.*valid=true'")
+                gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.nar_from_path.completed'")
                 gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
               '';
             };
@@ -223,6 +225,7 @@
           postInstall = ''
             mkdir -p $out/libexec/telchar
             cp ${nixStoreBuild}/libexec/telchar/nix-store-build $out/libexec/telchar/nix-store-build
+            cp ${nixStoreExport}/libexec/telchar/nix-store-export $out/libexec/telchar/nix-store-export
           '';
         };
         nix-store-build = nixStoreBuild;
@@ -233,7 +236,10 @@
       };
 
       devShells.${system}.default = pkgs.mkShell {
+        TELCHAR_NIX = "${pkgs.nix}/bin/nix";
+        TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
         TELCHAR_NIX_STORE_BUILD = "${nixStoreBuild}/libexec/telchar/nix-store-build";
+        TELCHAR_NIX_STORE_EXPORT = "${nixStoreExport}/libexec/telchar/nix-store-export";
         packages = [
           pkgs.openssh
           pkgs.cargo
