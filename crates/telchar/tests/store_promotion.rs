@@ -1,6 +1,7 @@
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 
+use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_promotion::{
     DeclaredPathInfo, PromotionRequest, RegisteredPathInfo, StorePromotionBackend,
     validate_and_promote_nar,
@@ -13,6 +14,119 @@ const NAR_HASH: [u8; 32] = [
 ];
 const STORE_DIRECTORY: &str = "/nix/store";
 const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture";
+
+#[test]
+fn real_store_promotes_matching_nar_with_explicit_metadata() {
+    let helper = helper_path();
+    let source_fixture = NixFixture::create().expect("source fixture creates");
+    let mut source_daemon = source_fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("source daemon starts");
+    let path = source_daemon
+        .build_classic_derivation()
+        .expect("source path builds");
+    let expected = source_daemon
+        .query_path_info(&path)
+        .expect("source metadata queries");
+    let mut exported = Vec::new();
+    source_daemon
+        .export_path(&path, &mut exported)
+        .expect("source exports");
+    let nar = raw_nar_from_export(&exported);
+    source_daemon
+        .delete_path(&path)
+        .expect("source path deletes before promotion");
+    assert!(!source_daemon.is_valid_path(&path).expect("path absent"));
+
+    let declared = DeclaredPathInfo {
+        path: path.clone(),
+        nar_hash: sri_sha256(&expected.nar_hash),
+        nar_size: expected.nar_size,
+        references: expected.references.clone(),
+        deriver: expected.deriver.clone(),
+        content_address: expected.content_address.clone(),
+        signatures: Vec::new(),
+        ultimate: false,
+    };
+    let mut backend = source_daemon.promotion_backend(helper);
+
+    let registered = validate_and_promote_nar(
+        Cursor::new(nar),
+        source_daemon.temp_dir(),
+        source_daemon.store_dir(),
+        &declared,
+        &mut backend,
+    )
+    .expect("validated NAR promotes");
+
+    assert_eq!(registered.path, path);
+    assert_eq!(registered.nar_hash, declared.nar_hash);
+    assert_eq!(registered.nar_size, declared.nar_size);
+    assert_eq!(registered.references, declared.references);
+    assert_eq!(registered.deriver, declared.deriver);
+    assert_eq!(registered.content_address, declared.content_address);
+
+    source_daemon.stop().expect("source daemon stops");
+    source_fixture.cleanup().expect("source fixture cleans");
+}
+
+#[test]
+fn real_store_rejects_mutated_nar_before_authoritative_registration() {
+    let helper = helper_path();
+    let source_fixture = NixFixture::create().expect("source fixture creates");
+    let mut source_daemon = source_fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("source daemon starts");
+    let path = source_daemon
+        .build_classic_derivation()
+        .expect("source path builds");
+    let expected = source_daemon
+        .query_path_info(&path)
+        .expect("source metadata queries");
+    let mut exported = Vec::new();
+    source_daemon
+        .export_path(&path, &mut exported)
+        .expect("source exports");
+    let mut nar = raw_nar_from_export(&exported);
+    nar[96] ^= 0xff;
+    source_daemon
+        .delete_path(&path)
+        .expect("source path deletes before rejection");
+
+    let declared = DeclaredPathInfo {
+        path: path.clone(),
+        nar_hash: sri_sha256(&expected.nar_hash),
+        nar_size: expected.nar_size,
+        references: expected.references,
+        deriver: expected.deriver,
+        content_address: expected.content_address,
+        signatures: Vec::new(),
+        ultimate: false,
+    };
+    let mut backend = source_daemon.promotion_backend(helper);
+
+    let error = validate_and_promote_nar(
+        Cursor::new(nar),
+        source_daemon.temp_dir(),
+        source_daemon.store_dir(),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("mutated NAR must fail");
+
+    assert!(
+        error.to_string().contains("NAR hash mismatch"),
+        "mutation did not reach staged hash comparison: {error}"
+    );
+    assert!(
+        !source_daemon
+            .is_valid_path(&path)
+            .expect("authoritative path query")
+    );
+
+    source_daemon.stop().expect("source daemon stops");
+    source_fixture.cleanup().expect("source fixture cleans");
+}
 
 #[test]
 fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
@@ -436,4 +550,60 @@ fn push_string(output: &mut Vec<u8>, value: &[u8]) {
 
 fn hex_hash(hash: [u8; 32]) -> String {
     hash.into_iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn helper_path() -> PathBuf {
+    std::env::var_os("TELCHAR_NIX_STORE_PROMOTE")
+        .map(PathBuf::from)
+        .expect("TELCHAR_NIX_STORE_PROMOTE points to the flake-built helper")
+}
+
+fn sri_sha256(value: &str) -> [u8; 32] {
+    use base64::Engine;
+
+    let encoded = value.strip_prefix("sha256-").expect("SHA-256 SRI hash");
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("valid SRI base64")
+        .try_into()
+        .expect("SHA-256 length")
+}
+
+fn raw_nar_from_export(exported: &[u8]) -> Vec<u8> {
+    let mut offset = 8;
+    parse_nar_node(exported, &mut offset);
+    exported[8..offset].to_vec()
+}
+
+fn parse_nar_node(input: &[u8], offset: &mut usize) {
+    assert_eq!(read_string(input, offset), b"nix-archive-1");
+    parse_node(input, offset);
+}
+
+fn parse_node(input: &[u8], offset: &mut usize) {
+    assert_eq!(read_string(input, offset), b"(");
+    assert_eq!(read_string(input, offset), b"type");
+    match read_string(input, offset).as_slice() {
+        b"regular" => {
+            let marker = read_string(input, offset);
+            if marker == b"executable" {
+                assert!(read_string(input, offset).is_empty());
+                assert_eq!(read_string(input, offset), b"contents");
+            } else {
+                assert_eq!(marker, b"contents");
+            }
+            read_string(input, offset);
+            assert_eq!(read_string(input, offset), b")");
+        }
+        other => panic!("unsupported fixture root node: {other:?}"),
+    }
+}
+
+fn read_string(input: &[u8], offset: &mut usize) -> Vec<u8> {
+    let length = u64::from_le_bytes(input[*offset..*offset + 8].try_into().expect("length"));
+    *offset += 8;
+    let end = *offset + length as usize;
+    let value = input[*offset..end].to_vec();
+    *offset = end.next_multiple_of(8);
+    value
 }

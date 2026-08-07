@@ -17,6 +17,8 @@ pub struct NixDaemon {
     diagnostic_operations: Option<Vec<u64>>,
     environment: BTreeMap<&'static str, String>,
     socket_path: PathBuf,
+    store_dir: PathBuf,
+    temp_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -204,6 +206,8 @@ impl NixFixture {
                     diagnostic_operations: diagnostics_enabled.then(Vec::new),
                     environment,
                     socket_path: self.socket_path.clone(),
+                    store_dir: self.store_dir.clone(),
+                    temp_dir: self.temp_dir.clone(),
                 });
             }
             if let Some(status) = child.try_wait()? {
@@ -284,6 +288,27 @@ impl NixDaemon {
 
     pub fn store_url(&self) -> String {
         format!("unix://{}", self.socket_path.display())
+    }
+
+    pub fn store_dir(&self) -> &Path {
+        &self.store_dir
+    }
+
+    pub fn temp_dir(&self) -> &Path {
+        &self.temp_dir
+    }
+
+    pub fn promotion_backend(
+        &self,
+        helper: impl Into<PathBuf>,
+    ) -> crate::store_promotion::NixStorePromotionBackend {
+        crate::store_promotion::NixStorePromotionBackend::new(
+            helper,
+            self.store_url(),
+            self.environment
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone())),
+        )
     }
 
     pub fn is_valid_path(&self, path: &Path) -> io::Result<bool> {
