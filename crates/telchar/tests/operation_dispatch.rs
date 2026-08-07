@@ -201,6 +201,40 @@ fn query_valid_paths_returns_only_authoritative_valid_paths() {
 }
 
 #[test]
+fn empty_query_valid_paths_returns_empty_set_without_store_lookup() {
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///definitely/missing/store.sock",
+        std::iter::empty::<(&str, String)>(),
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 31);
+    write_integer(&mut input, 0);
+    write_integer(&mut input, 0);
+    input
+        .flush()
+        .expect("empty QueryValidPaths request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(
+        read_integer(&mut output),
+        0,
+        "empty request has empty result"
+    );
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.query_valid_paths.completed"),
+        "missing completion telemetry: {stderr}"
+    );
+}
+
+#[test]
 fn oversized_query_valid_paths_count_fails_before_reading_path_bodies() {
     let mut fixture = FrontendFixture::spawn(Some(100));
     let child = &mut fixture.frontend;
