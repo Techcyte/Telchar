@@ -909,14 +909,14 @@ Evidence: paths and output facts to record
   - Verify: outcome/docs consistency test.
   - Evidence: assertion location.
 
-- [ ] T086A Map classic-build operations to focused implementation tasks
+- [x] T086A Map classic-build operations to focused implementation tasks
   - Depends on: T016
   - Outcome: every operation required by the typed classic-build fixture inventory maps to one narrow production packet covering decoder, dispatcher, store behavior, response framing, and focused compatibility tests. Observer relay evidence cannot satisfy production coverage.
   - Red: operation coverage checker finds a required operation without a bounded implementation packet.
   - Verify: operation coverage script against allowlist and packet manifest.
   - Evidence: zero uncovered required operations and packet IDs.
 
-- [ ] T086B Add stock-Nix build walking-skeleton test
+- [x] T086B Add stock-Nix build walking-skeleton test
   - Depends on: T061, T086A
   - Outcome: shared `nixosTest` contains a deliberately failing acceptance path from a stock client that cannot build locally, through restricted OpenSSH and production IPC, to one local gateway-store execution and client-visible output. This test defines the vertical contract before operation implementations begin.
   - Red: test fails at the first unsupported production worker operation and records its typed operation code; local fallback is independently proven unavailable.
