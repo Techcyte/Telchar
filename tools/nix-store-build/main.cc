@@ -38,12 +38,9 @@ std::string requiredString(const json & object, const char * key)
     return object.at(key).get<std::string>();
 }
 
-nix::StorePath parseDeclaredPath(const std::string & value)
+nix::StorePath parseDeclaredPath(const nix::Store & store, const std::string & value)
 {
-    constexpr std::string_view prefix = "/nix/store/";
-    if (!value.starts_with(prefix) || value.find('/', prefix.size()) != std::string::npos)
-        throw std::runtime_error("invalid declared store path");
-    return nix::StorePath(value.substr(prefix.size()));
+    return store.parseStorePath(value);
 }
 
 int run(const std::string & storeUri, const json & request)
@@ -53,12 +50,12 @@ int run(const std::string & storeUri, const json & request)
         throw std::runtime_error("unsupported build request");
 
     auto store = nix::openStore(storeUri);
-    auto drvPath = parseDeclaredPath(requiredString(request, "derivation_path"));
+    auto drvPath = parseDeclaredPath(*store, requiredString(request, "derivation_path"));
     drvPath.requireDerivation();
     nix::BasicDerivation drv;
     drv.name = std::string(nix::BasicDerivation::nameFromPath(drvPath));
     for (const auto & source : request.at("input_sources"))
-        drv.inputSrcs.insert(parseDeclaredPath(source.get<std::string>()));
+        drv.inputSrcs.insert(parseDeclaredPath(*store, source.get<std::string>()));
     drv.platform = requiredString(request, "system");
     drv.builder = requiredString(request, "builder");
     for (const auto & argument : request.at("arguments"))
@@ -67,14 +64,8 @@ int run(const std::string & storeUri, const json & request)
         drv.env.emplace(requiredString(entry, "key"), requiredString(entry, "value"));
     for (const auto & output : request.at("outputs")) {
         auto name = requiredString(output, "name");
-        auto path = parseDeclaredPath(requiredString(output, "path"));
+        auto path = parseDeclaredPath(*store, requiredString(output, "path"));
         drv.outputs.emplace(std::move(name), nix::DerivationOutput::InputAddressed{std::move(path)});
-    }
-    for (auto & [name, output] : drv.outputs) {
-        auto path = std::get<nix::DerivationOutput::InputAddressed>(output.raw).path;
-        auto environment = drv.env.find(name);
-        if (environment != drv.env.end())
-            environment->second = store->printStorePath(path);
     }
     if (!std::holds_alternative<nix::DerivationType::InputAddressed>(drv.type().raw)
         || std::get<nix::DerivationType::InputAddressed>(drv.type().raw).deferred)
@@ -97,7 +88,7 @@ int run(const std::string & storeUri, const json & request)
     for (const auto & output : request.at("outputs")) {
         auto name = requiredString(output, "name");
         auto path = requiredString(output, "path");
-        auto parsed = parseDeclaredPath(path);
+        auto parsed = parseDeclaredPath(*store, path);
         if (!store->isValidPath(parsed) || !declared.insert(name).second)
             throw std::runtime_error("build output verification failed");
         outputs.push_back({name, path});
