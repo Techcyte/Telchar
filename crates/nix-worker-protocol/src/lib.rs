@@ -1406,17 +1406,18 @@ impl<R: WorkerInput> WorkerReader<R> {
             std::mem::size_of::<BuildDerivationOutput>(),
             &self.budget,
         )?;
-        let mut output_values = Vec::with_capacity(outputs);
+        let mut output_values: Vec<BuildDerivationOutput> = Vec::with_capacity(outputs);
         let mut string_charges = Vec::new();
-        let mut output_names = Vec::with_capacity(outputs);
-        let mut output_paths = Vec::with_capacity(outputs);
         for _ in 0..outputs {
             let (name, name_charge) = read_build_string(
                 &mut self.input,
                 MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES,
                 &self.budget,
             )?;
-            if name.is_empty() || name.contains(&0) || output_names.iter().any(|v| v == &name) {
+            if name.is_empty()
+                || name.contains(&0)
+                || output_values.iter().any(|output| output.name == name)
+            {
                 return Err(invalid("invalid BuildDerivation request"));
             }
             let (path, path_charge) = read_build_string(
@@ -1425,7 +1426,7 @@ impl<R: WorkerInput> WorkerReader<R> {
                 &self.budget,
             )?;
             validate_store_path(&path).map_err(|_| invalid("invalid BuildDerivation request"))?;
-            if output_paths.iter().any(|v| v == &path) {
+            if output_values.iter().any(|output| output.path == path) {
                 return Err(invalid("invalid BuildDerivation request"));
             }
             let (hash_algorithm, hash_algorithm_charge) = read_build_string(
@@ -1444,8 +1445,6 @@ impl<R: WorkerInput> WorkerReader<R> {
                     "invalid BuildDerivation request",
                 ));
             }
-            output_names.push(name.clone());
-            output_paths.push(path.clone());
             output_values.push(BuildDerivationOutput {
                 name,
                 path,
@@ -1520,7 +1519,6 @@ impl<R: WorkerInput> WorkerReader<R> {
             &self.budget,
         )?;
         let mut environment = Vec::with_capacity(environment_count);
-        let mut environment_keys = Vec::with_capacity(environment_count);
         for _ in 0..environment_count {
             let (key, key_charge) = read_build_string(
                 &mut self.input,
@@ -1530,7 +1528,9 @@ impl<R: WorkerInput> WorkerReader<R> {
             if key.is_empty()
                 || key.contains(&0)
                 || key.contains(&b'=')
-                || environment_keys.iter().any(|v| v == &key)
+                || environment
+                    .iter()
+                    .any(|(existing_key, _)| existing_key == &key)
             {
                 return Err(invalid("invalid BuildDerivation request"));
             }
@@ -1542,7 +1542,6 @@ impl<R: WorkerInput> WorkerReader<R> {
             if value.contains(&0) {
                 return Err(invalid("invalid BuildDerivation request"));
             }
-            environment_keys.push(key.clone());
             string_charges.push(key_charge);
             string_charges.push(value_charge);
             environment.push((key, value));
