@@ -832,21 +832,21 @@ Evidence: paths and output facts to record
   - Verify: configuration parsing and admission-boundary tests.
   - Evidence: configured system, feature set, and rejection result.
 
-- [ ] T076 Parse supported derivation build operation
+- [x] T076 Parse supported derivation build operation
   - Depends on: T016, T065, T075A
   - Outcome: gateway normalizes the stock-Nix Gate 3 `BuildDerivation` operation into `BuildRequest` without backend objects.
   - Red: bounded `BasicDerivation` contract and Gate 3 request fail to parse.
   - Verify: `build_derivation_contract`, `build_request`, and focused operation-dispatch tests.
   - Evidence: normalized derivation path, outputs, inputs, system, builder, arguments, environment, and mode.
 
-- [ ] T077 Reject unsupported build option
+- [x] T077 Reject unsupported build option
   - Depends on: T076
   - Outcome: unsafe or unsupported client option fails deterministically.
   - Red: option passes through silently.
   - Verify: build-option allowlist test.
   - Evidence: rejected option and error.
 
-- [ ] T078 Normalize supported build options
+- [x] T078 Normalize supported build options
   - Depends on: T077
   - Outcome: allowed options map to explicit internal values and defaults.
   - Red: table-driven option tests fail.
