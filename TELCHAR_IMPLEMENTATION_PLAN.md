@@ -700,7 +700,7 @@ Evidence: paths and output facts to record
   - Verify: real-store metadata test.
   - Evidence: asserted fields.
 
-- [ ] T066 Import one validated NAR with path metadata
+- [x] T066 Import one validated NAR with path metadata
   - Depends on: T065
   - Outcome: after Telchar validates the streamed NAR against the client-declared NAR hash, size, path, references, deriver, and content-address metadata, Nix `Store::addToStore(ValidPathInfo, Source)` accepts it and the real gateway store reports matching registered path info.
   - Red: import integration test either bypasses pre-registration validation or registers metadata differing from the declared envelope.
@@ -714,7 +714,7 @@ Evidence: paths and output facts to record
   - Verify: fixed NAR stream parser/hash tests plus malformed/trailing-input cases.
   - Evidence: computed hash/size, bounded buffer maximum, and rejection offset.
 
-- [ ] T067 Reject corrupt NAR before authoritative registration
+- [x] T067 Reject corrupt NAR before authoritative registration
   - Depends on: T066A
   - Outcome: content or declared-metadata mismatch fails before the authoritative gateway store receives the object; no valid path registration or partial promoted state remains.
   - Red: mutated fixture payload imports successfully through legacy `nix-store --import`, proving that import alone is not validation.
