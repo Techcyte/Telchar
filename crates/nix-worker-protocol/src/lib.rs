@@ -2,8 +2,8 @@
 
 use std::io::{self, Read, Write};
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::time::Duration;
 
@@ -23,6 +23,12 @@ pub const MAXIMUM_STRUCTURED_FRAME_FIELDS: usize = 64;
 pub const MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES: usize = 4 * 1024;
 const MAXIMUM_HANDSHAKE_FEATURES: usize = 64;
 const MAXIMUM_HANDSHAKE_FEATURE_LENGTH: usize = 1024;
+const NIX_STORE_DIRECTORY: &[u8] = b"/nix/store/";
+const NIX_STORE_HASH_LENGTH: usize = 32;
+const NIX_STORE_HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+pub const MAXIMUM_QUERY_VALID_PATHS: usize = 256;
+pub const MAXIMUM_WORKER_STORE_PATH_BYTES: usize = NIX_STORE_DIRECTORY.len() + 211;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolSessionLimits {
@@ -1069,6 +1075,92 @@ impl<R: WorkerInput> WorkerReader<R> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "unknown worker operation"))
     }
 
+    pub fn complete_query_valid_paths(
+        &mut self,
+        version: WorkerVersion,
+    ) -> io::Result<QueryValidPathsRequest> {
+        let count = usize::try_from(self.read_integer()?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid QueryValidPaths request",
+            )
+        })?;
+        if count > MAXIMUM_QUERY_VALID_PATHS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid QueryValidPaths request",
+            ));
+        }
+        let collection_charge = self
+            .budget
+            .charge(
+                count
+                    .checked_mul(std::mem::size_of::<Vec<u8>>())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid QueryValidPaths request",
+                        )
+                    })?,
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid QueryValidPaths request",
+                )
+            })?;
+        let mut paths = Vec::with_capacity(count);
+        let mut value_charges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (path, charge) = read_worker_byte_string_with_charge_from(
+                &mut self.input,
+                MAXIMUM_WORKER_STORE_PATH_BYTES,
+                &self.budget,
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid QueryValidPaths request",
+                )
+            })?;
+            validate_store_path(&path)?;
+            if paths.iter().any(|existing| existing == &path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid QueryValidPaths request",
+                ));
+            }
+            paths.push(path);
+            value_charges.push(charge);
+        }
+        let substitute = if version >= WorkerVersion::new(1, 27) {
+            match self.read_integer()? {
+                0 => false,
+                1 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid QueryValidPaths request",
+                    ));
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid QueryValidPaths request",
+                    ));
+                }
+            }
+        } else {
+            false
+        };
+        self.input.complete_message();
+        Ok(QueryValidPathsRequest {
+            paths,
+            substitute,
+            _collection_charge: collection_charge,
+            _value_charges: value_charges,
+        })
+    }
+
     pub fn complete_set_options(&mut self) -> io::Result<()> {
         let span = tracing::info_span!("worker.set_options");
         let _entered = span.enter();
@@ -1282,6 +1374,88 @@ fn read_worker_byte_string_with_charge_from(
     Ok((framed, charge))
 }
 
+#[derive(Debug)]
+pub struct QueryValidPathsRequest {
+    paths: Vec<Vec<u8>>,
+    substitute: bool,
+    _collection_charge: SessionAllocationCharge,
+    _value_charges: Vec<SessionAllocationCharge>,
+}
+
+impl QueryValidPathsRequest {
+    pub fn paths(&self) -> &[Vec<u8>] {
+        &self.paths
+    }
+
+    pub fn substitute(&self) -> bool {
+        self.substitute
+    }
+}
+
+fn validate_store_path(path: &[u8]) -> io::Result<()> {
+    if path.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
+        || !path.starts_with(b"/")
+        || path.len() <= NIX_STORE_HASH_LENGTH + 2
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid QueryValidPaths request",
+        ));
+    }
+    let base = path.rsplit(|byte| *byte == b'/').next().unwrap_or_default();
+    if base.len() <= NIX_STORE_HASH_LENGTH + 1
+        || base[NIX_STORE_HASH_LENGTH] != b'-'
+        || !base[..NIX_STORE_HASH_LENGTH]
+            .iter()
+            .all(|byte| NIX_STORE_HASH_ALPHABET.contains(byte))
+        || !base[NIX_STORE_HASH_LENGTH + 1..].iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid QueryValidPaths request",
+        ));
+    }
+    Ok(())
+}
+
+pub fn write_query_valid_paths_response(
+    output: &mut impl Write,
+    paths: impl IntoIterator<Item = impl AsRef<[u8]>>,
+) -> io::Result<()> {
+    let mut paths = paths
+        .into_iter()
+        .map(|path| path.as_ref().to_vec())
+        .collect::<Vec<_>>();
+    if paths.len() > MAXIMUM_QUERY_VALID_PATHS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many QueryValidPaths results",
+        ));
+    }
+    for path in &paths {
+        validate_store_path(path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid QueryValidPaths response",
+            )
+        })?;
+    }
+    paths.sort();
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "duplicate QueryValidPaths result",
+        ));
+    }
+    write_worker_integer_to(output, paths.len() as u64)?;
+    for path in paths {
+        write_worker_byte_string_to(output, &path)?;
+    }
+    Ok(())
+}
+
 fn write_worker_integer_to(output: &mut impl Write, value: u64) -> io::Result<()> {
     output.write_all(&value.to_le_bytes())
 }
@@ -1348,16 +1522,16 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        ActivityField, CLIENT_WORKER_MAGIC, FixtureStderrFrame, LATEST_WORKER_VERSION,
-        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, MINIMUM_WORKER_VERSION, ProtocolError,
-        ProtocolSessionLimits, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT, STDERR_RESULT,
-        STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY, SessionAllocationBudget, StderrFrame,
-        WorkerOperation, WorkerReader, WorkerVersion, protocol_name, read_client_worker_magic,
-        read_fixture_client_handshake, read_fixture_client_post_handshake,
-        read_fixture_server_handshake_info, read_fixture_set_options, read_fixture_stderr_frame,
-        read_fixture_terminal_frame, read_worker_byte_string, read_worker_integer,
-        read_worker_operation, write_server_worker_magic, write_stderr_frame,
-        write_worker_byte_string, write_worker_integer,
+        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
+        read_fixture_client_post_handshake, read_fixture_server_handshake_info,
+        read_fixture_set_options, read_fixture_stderr_frame, read_fixture_terminal_frame,
+        read_worker_byte_string, read_worker_integer, read_worker_operation,
+        write_server_worker_magic, write_stderr_frame, write_worker_byte_string,
+        write_worker_integer, ActivityField, FixtureStderrFrame, ProtocolError,
+        ProtocolSessionLimits, SessionAllocationBudget, StderrFrame, WorkerOperation, WorkerReader,
+        WorkerVersion, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION,
+        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, MINIMUM_WORKER_VERSION, SERVER_WORKER_MAGIC,
+        STDERR_LAST, STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY,
     };
 
     #[test]

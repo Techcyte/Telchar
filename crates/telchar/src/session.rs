@@ -1,7 +1,12 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use nix_worker_protocol::{ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader};
+use nix_worker_protocol::{
+    write_query_valid_paths_response, ProtocolSessionLimits, WorkerInput, WorkerOperation,
+    WorkerReader,
+};
+
+use crate::store_query::QueryValidPathsStore;
 
 pub struct SessionInput {
     input: std::os::unix::net::UnixStream,
@@ -53,6 +58,7 @@ pub fn run_worker_session(
     input: std::os::unix::net::UnixStream,
     mut output: std::os::unix::net::UnixStream,
     limits: ProtocolSessionLimits,
+    store_query: &mut dyn QueryValidPathsStore,
 ) -> io::Result<()> {
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
@@ -71,6 +77,49 @@ pub fn run_worker_session(
             }
             Err(_) => {
                 return reject(&mut output, "unknown-operation", "unknown worker operation");
+            }
+            Ok(WorkerOperation::QueryValidPaths) => {
+                let request = match reader.complete_query_valid_paths(negotiated.version) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.operation.rejected",
+                            rejection = "invalid-query-valid-paths",
+                            reason = error.to_string(),
+                            "QueryValidPaths request rejected"
+                        );
+                        return reject(
+                            &mut output,
+                            "invalid-query-valid-paths",
+                            "invalid QueryValidPaths request",
+                        );
+                    }
+                };
+                let requested_count = request.paths().len();
+                let valid_paths = match store_query.query_valid_paths(request.paths()) {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.query_valid_paths.failed",
+                            reason = error.to_string(),
+                            "gateway store QueryValidPaths failed"
+                        );
+                        return reject(
+                            &mut output,
+                            "query-valid-paths-store-failure",
+                            "QueryValidPaths store query failed",
+                        );
+                    }
+                };
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                write_query_valid_paths_response(&mut output, &valid_paths)?;
+                output.flush()?;
+                tracing::info!(
+                    event = "worker.query_valid_paths.completed",
+                    requested_count,
+                    valid_count = valid_paths.len(),
+                    "QueryValidPaths request completed"
+                );
             }
             Ok(WorkerOperation::SetOptions) => {
                 match reader.complete_set_options() {

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use telchar::identity::{IdentityInput, normalize_requester};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+use telchar::identity::{normalize_requester, IdentityInput};
+use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
@@ -187,10 +187,12 @@ fn serve_accepted_connection(mut connection: telchar::ipc::IpcConnection) -> io:
         "authenticated frontend session started"
     );
     let input = connection.stream_mut().try_clone()?;
+    let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
     telchar::session::run_worker_session(
         input,
         connection.stream_mut().try_clone()?,
         protocol_session_limits(),
+        &mut store_query,
     )
 }
 
