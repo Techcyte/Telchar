@@ -981,13 +981,25 @@ pub fn negotiate_worker_version(
 
 pub trait WorkerInput: Read {
     fn complete_message(&mut self) {}
+
+    fn has_unread_message_data(&self) -> bool {
+        false
+    }
 }
 
-impl WorkerInput for &[u8] {}
+impl WorkerInput for &[u8] {
+    fn has_unread_message_data(&self) -> bool {
+        !self.is_empty()
+    }
+}
 
 impl<R: WorkerInput + ?Sized> WorkerInput for &mut R {
     fn complete_message(&mut self) {
         (**self).complete_message();
+    }
+
+    fn has_unread_message_data(&self) -> bool {
+        (**self).has_unread_message_data()
     }
 }
 
@@ -1395,7 +1407,8 @@ impl<R: WorkerInput> WorkerReader<R> {
             &self.budget,
         )
         .map_err(|_| invalid("invalid BuildDerivation request"))?;
-        validate_store_path(&drv_path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+        validate_build_store_path(&drv_path)
+            .map_err(|_| invalid("invalid BuildDerivation request"))?;
         if !drv_path.ends_with(b".drv") {
             return Err(invalid("invalid BuildDerivation request"));
         }
@@ -1425,7 +1438,8 @@ impl<R: WorkerInput> WorkerReader<R> {
                 MAXIMUM_WORKER_STORE_PATH_BYTES,
                 &self.budget,
             )?;
-            validate_store_path(&path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+            validate_build_store_path(&path)
+                .map_err(|_| invalid("invalid BuildDerivation request"))?;
             if output_values.iter().any(|output| output.path == path) {
                 return Err(invalid("invalid BuildDerivation request"));
             }
@@ -1469,7 +1483,8 @@ impl<R: WorkerInput> WorkerReader<R> {
                 MAXIMUM_WORKER_STORE_PATH_BYTES,
                 &self.budget,
             )?;
-            validate_store_path(&path).map_err(|_| invalid("invalid BuildDerivation request"))?;
+            validate_build_store_path(&path)
+                .map_err(|_| invalid("invalid BuildDerivation request"))?;
             if input_sources.iter().any(|v| v == &path) {
                 return Err(invalid("invalid BuildDerivation request"));
             }
@@ -1554,6 +1569,9 @@ impl<R: WorkerInput> WorkerReader<R> {
                 io::ErrorKind::InvalidInput,
                 "invalid BuildDerivation request",
             ));
+        }
+        if self.input.has_unread_message_data() {
+            return Err(invalid("invalid BuildDerivation request"));
         }
         self.input.complete_message();
         Ok(BuildDerivationRequest {
@@ -1657,6 +1675,17 @@ impl From<io::Error> for AddMultipleToStoreRequestError {
     fn from(error: io::Error) -> Self {
         Self::Invalid(error.kind(), error.to_string())
     }
+}
+
+fn validate_build_store_path(path: &[u8]) -> io::Result<()> {
+    validate_store_path(path)?;
+    if !path.starts_with(NIX_STORE_DIRECTORY) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid store path",
+        ));
+    }
+    Ok(())
 }
 
 fn read_build_count(
