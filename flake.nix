@@ -170,7 +170,7 @@
                 stock_client.succeed("grep -q 'unsupported worker operation' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
                 gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_valid_paths.completed' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
                 gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.add_multiple_to_store.completed' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
-                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'operation=IsValidPath' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
+                gateway.succeed("journalctl -u telchar-daemon.service --no-pager | grep -q 'operation=BuildDerivation' || { journalctl -u telchar-daemon.service --no-pager >&2; exit 1; }")
                 gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
               '';
             };
