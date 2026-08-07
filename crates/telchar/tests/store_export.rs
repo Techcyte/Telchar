@@ -110,6 +110,37 @@ fn rejects_export_size_mismatch_after_streaming() {
 }
 
 #[test]
+fn rejects_truncated_raw_nar_from_backend() {
+    let mut nar = regular_nar(CONTENT);
+    nar.pop();
+    let mut backend = RecordingExportBackend::successful(registered_path_info(), nar);
+    let mut output = Vec::new();
+
+    let error = export_verified_nar(Path::new(PATH), &mut output, &mut backend)
+        .expect_err("truncated NAR must fail");
+
+    assert!(
+        error.kind() == io::ErrorKind::UnexpectedEof || error.to_string().contains("truncated"),
+        "unexpected truncation error: {error}"
+    );
+    assert!(!output.is_empty(), "truncated bytes did not reach parser");
+}
+
+#[test]
+fn rejects_trailing_bytes_after_raw_nar() {
+    let mut nar = regular_nar(CONTENT);
+    nar.push(0xff);
+    let mut backend = RecordingExportBackend::successful(registered_path_info(), nar);
+    let mut output = Vec::new();
+
+    let error = export_verified_nar(Path::new(PATH), &mut output, &mut backend)
+        .expect_err("trailing bytes must fail");
+
+    assert!(error.to_string().contains("trailing bytes"));
+    assert_eq!(output.len(), 136, "trailing byte reached caller");
+}
+
+#[test]
 fn rejects_malformed_raw_nar_from_backend() {
     let mut backend =
         RecordingExportBackend::successful(registered_path_info(), b"not a NAR".to_vec());
