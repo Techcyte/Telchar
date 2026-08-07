@@ -263,16 +263,18 @@ impl Read for ExportReader {
             self.offset = 0;
         }
         let message = self.pending.as_ref().expect("pending export message");
-        buffer[0] = message.bytes[self.offset];
-        self.offset += 1;
-        message
-            .acknowledgement
-            .send(Ok(()))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
+        let remaining = &message.bytes[self.offset..];
+        let read = remaining.len().min(buffer.len());
+        buffer[..read].copy_from_slice(&remaining[..read]);
+        self.offset += read;
         if self.offset == message.bytes.len() {
-            self.pending.take();
+            let message = self.pending.take().expect("pending export message");
+            message
+                .acknowledgement
+                .send(Ok(()))
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
         }
-        Ok(1)
+        Ok(read)
     }
 }
 
@@ -293,18 +295,16 @@ struct ExportWriter {
 
 impl Write for ExportWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let (acknowledgement, result) = std::sync::mpsc::sync_channel(buffer.len());
+        let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
         self.sender
             .send(ExportMessage {
                 bytes: buffer.to_vec(),
                 acknowledgement,
             })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
-        for _ in buffer {
-            result.recv().map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped")
-            })??;
-        }
+        result
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))??;
         Ok(buffer.len())
     }
 
