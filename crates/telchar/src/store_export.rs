@@ -284,7 +284,8 @@ pub fn export_verified_nar(
     let limits = crate::transfer_limits::TransferLimits::from_environment()?;
     let mut session =
         crate::transfer_limits::TransferBudget::new(limits.maximum_outbound_session_bytes);
-    export_verified_nar_with_limits(path, sink, backend, &limits, &mut session)
+    let rates = crate::transfer_limits::RateAdmissionState::new(&limits);
+    export_verified_nar_with_limits_and_rate(path, sink, backend, &limits, &mut session, &rates)
 }
 
 pub fn export_verified_nar_with_limits(
@@ -293,6 +294,18 @@ pub fn export_verified_nar_with_limits(
     backend: &mut (impl StoreExportBackend + ?Sized),
     limits: &crate::transfer_limits::TransferLimits,
     session: &mut crate::transfer_limits::TransferBudget,
+) -> io::Result<VerifiedStoreExport> {
+    let rates = crate::transfer_limits::RateAdmissionState::new(limits);
+    export_verified_nar_with_limits_and_rate(path, sink, backend, limits, session, &rates)
+}
+
+pub fn export_verified_nar_with_limits_and_rate(
+    path: &Path,
+    sink: &mut impl Write,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+    limits: &crate::transfer_limits::TransferLimits,
+    session: &mut crate::transfer_limits::TransferBudget,
+    rates: &crate::transfer_limits::RateAdmissionState,
 ) -> io::Result<VerifiedStoreExport> {
     let metadata = backend
         .query_path_info(path)
@@ -309,8 +322,12 @@ pub fn export_verified_nar_with_limits(
         offset: 0,
     };
     let mut writer = ExportWriter { sender };
-    let mut limited_sink =
-        crate::transfer_limits::LimitedWriter::new(sink, limits.maximum_object_bytes, session);
+    let mut limited_sink = crate::transfer_limits::LimitedWriter::with_rate(
+        sink,
+        limits.maximum_object_bytes,
+        session,
+        rates.clone(),
+    );
     let fingerprint = std::thread::scope(|scope| {
         let export = scope.spawn(move || backend.export_nar(&request, &mut writer));
         let parsed = stage_nar(reader, &mut limited_sink);

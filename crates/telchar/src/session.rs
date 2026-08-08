@@ -100,6 +100,7 @@ pub fn run_worker_session(
     request_id: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
     object_admission: &crate::transfer_limits::ObjectAdmissionState,
+    rate_admission: &crate::transfer_limits::RateAdmissionState,
 ) -> io::Result<()> {
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
@@ -344,12 +345,13 @@ pub fn run_worker_session(
                 object_counts.admit_outbound(transfer_limits.maximum_outbound_session_objects)?;
                 let _permit = object_admission.admit_outbound()?;
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
-                let verified = match crate::store_export::export_verified_nar_with_limits(
+                let verified = match crate::store_export::export_verified_nar_with_limits_and_rate(
                     path,
                     &mut output,
                     store_export,
                     transfer_limits,
                     &mut outbound_budget,
+                    rate_admission,
                 ) {
                     Ok(verified) => verified,
                     Err(error) => {
@@ -375,10 +377,11 @@ pub fn run_worker_session(
                         object_counts
                             .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                         let _permit = object_admission.admit_inbound()?;
-                        let mut limited = crate::transfer_limits::LimitedReader::new(
+                        let mut limited = crate::transfer_limits::LimitedReader::with_rate(
                             source,
                             transfer_limits.maximum_object_bytes,
                             &mut inbound_budget,
+                            rate_admission.clone(),
                         );
                         store_import.import(info, &mut limited)
                     },

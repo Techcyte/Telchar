@@ -118,6 +118,7 @@ fn run_daemon() -> io::Result<()> {
     let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
+    let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
         event = "deployment.configured",
         system = deployment.system(),
@@ -140,6 +141,7 @@ fn run_daemon() -> io::Result<()> {
             &deployment,
             &transfer_limits,
             &object_admission,
+            &rate_admission,
         );
     }
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
@@ -166,6 +168,7 @@ fn run_daemon() -> io::Result<()> {
         };
         let deployment = deployment.clone();
         let object_admission = object_admission.clone();
+        let rate_admission = rate_admission.clone();
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
@@ -176,6 +179,7 @@ fn run_daemon() -> io::Result<()> {
                         &deployment,
                         &transfer_limits,
                         &object_admission,
+                        &rate_admission,
                     )
                 });
             if let Err(error) = result {
@@ -196,12 +200,14 @@ fn serve_connection(
     deployment: &telchar::deployment::DeploymentConfig,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
+    rate_admission: &telchar::transfer_limits::RateAdmissionState,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
         deployment,
         transfer_limits,
         object_admission,
+        rate_admission,
     )
 }
 
@@ -210,6 +216,7 @@ fn serve_accepted_connection(
     deployment: &telchar::deployment::DeploymentConfig,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
+    rate_admission: &telchar::transfer_limits::RateAdmissionState,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -244,6 +251,7 @@ fn serve_accepted_connection(
         &request_id,
         transfer_limits,
         object_admission,
+        rate_admission,
     )
 }
 

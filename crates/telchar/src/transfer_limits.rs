@@ -1,10 +1,13 @@
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub const DEFAULT_MAXIMUM_NAR_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS: u64 = 256;
+pub const DEFAULT_NAR_RATE_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024 * 1024;
+pub const DEFAULT_NAR_BURST_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransferLimits {
@@ -15,6 +18,10 @@ pub struct TransferLimits {
     pub maximum_outbound_session_objects: u64,
     pub maximum_active_inbound_objects: u64,
     pub maximum_active_outbound_objects: u64,
+    pub inbound_rate_bytes_per_second: u64,
+    pub inbound_burst_bytes: u64,
+    pub outbound_rate_bytes_per_second: u64,
+    pub outbound_burst_bytes: u64,
 }
 
 impl Default for TransferLimits {
@@ -27,6 +34,10 @@ impl Default for TransferLimits {
             maximum_outbound_session_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
             maximum_active_inbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
             maximum_active_outbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
+            inbound_rate_bytes_per_second: DEFAULT_NAR_RATE_BYTES_PER_SECOND,
+            inbound_burst_bytes: DEFAULT_NAR_BURST_BYTES,
+            outbound_rate_bytes_per_second: DEFAULT_NAR_RATE_BYTES_PER_SECOND,
+            outbound_burst_bytes: DEFAULT_NAR_BURST_BYTES,
         }
     }
 }
@@ -50,12 +61,27 @@ impl TransferLimits {
             maximum_outbound_session_objects: positive(outbound_session_objects)?,
             maximum_active_inbound_objects: positive(active_inbound_objects)?,
             maximum_active_outbound_objects: positive(active_outbound_objects)?,
+            ..Self::default()
         })
+    }
+
+    pub fn parse_rates(
+        inbound_rate: &str,
+        inbound_burst: &str,
+        outbound_rate: &str,
+        outbound_burst: &str,
+    ) -> io::Result<(u64, u64, u64, u64)> {
+        Ok((
+            positive(inbound_rate)?,
+            positive(inbound_burst)?,
+            positive(outbound_rate)?,
+            positive(outbound_burst)?,
+        ))
     }
 
     pub fn from_environment() -> io::Result<Self> {
         let defaults = Self::default();
-        Self::parse(
+        let mut limits = Self::parse(
             &std::env::var("TELCHAR_MAX_NAR_OBJECT_BYTES")
                 .unwrap_or_else(|_| defaults.maximum_object_bytes.to_string()),
             &std::env::var("TELCHAR_MAX_NAR_INBOUND_SESSION_BYTES")
@@ -70,7 +96,23 @@ impl TransferLimits {
                 .unwrap_or_else(|_| defaults.maximum_active_inbound_objects.to_string()),
             &std::env::var("TELCHAR_MAX_NAR_ACTIVE_OUTBOUND_OBJECTS")
                 .unwrap_or_else(|_| defaults.maximum_active_outbound_objects.to_string()),
-        )
+        )?;
+        (
+            limits.inbound_rate_bytes_per_second,
+            limits.inbound_burst_bytes,
+            limits.outbound_rate_bytes_per_second,
+            limits.outbound_burst_bytes,
+        ) = Self::parse_rates(
+            &std::env::var("TELCHAR_NAR_INBOUND_RATE_BYTES_PER_SECOND")
+                .unwrap_or_else(|_| defaults.inbound_rate_bytes_per_second.to_string()),
+            &std::env::var("TELCHAR_NAR_INBOUND_BURST_BYTES")
+                .unwrap_or_else(|_| defaults.inbound_burst_bytes.to_string()),
+            &std::env::var("TELCHAR_NAR_OUTBOUND_RATE_BYTES_PER_SECOND")
+                .unwrap_or_else(|_| defaults.outbound_rate_bytes_per_second.to_string()),
+            &std::env::var("TELCHAR_NAR_OUTBOUND_BURST_BYTES")
+                .unwrap_or_else(|_| defaults.outbound_burst_bytes.to_string()),
+        )?;
+        Ok(limits)
     }
 }
 
@@ -82,6 +124,220 @@ fn positive(value: &str) -> io::Result<u64> {
         return Err(invalid("NAR transfer limit must be positive"));
     }
     Ok(value)
+}
+
+pub trait MonotonicClock: Send + Sync {
+    fn elapsed_nanoseconds(&self) -> u128;
+}
+
+#[derive(Debug)]
+struct InstantClock {
+    started: Instant,
+}
+
+impl InstantClock {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl MonotonicClock for InstantClock {
+    fn elapsed_nanoseconds(&self) -> u128 {
+        self.started.elapsed().as_nanos()
+    }
+}
+
+#[derive(Clone)]
+pub struct RateAdmissionState {
+    buckets: Arc<Mutex<RateBuckets>>,
+    clock: Arc<dyn MonotonicClock>,
+}
+
+struct RateBuckets {
+    inbound: TokenBucket,
+    outbound: TokenBucket,
+    last_observation_nanoseconds: u128,
+}
+
+struct TokenBucket {
+    rate_bytes_per_second: u64,
+    burst_bytes: u64,
+    available_bytes: u64,
+    fractional_credit: u128,
+}
+
+impl RateAdmissionState {
+    pub fn new(limits: &TransferLimits) -> Self {
+        Self::with_clock(limits, Arc::new(InstantClock::new()))
+    }
+
+    pub fn with_clock(limits: &TransferLimits, clock: Arc<dyn MonotonicClock>) -> Self {
+        Self {
+            buckets: Arc::new(Mutex::new(RateBuckets {
+                inbound: TokenBucket::full(
+                    limits.inbound_rate_bytes_per_second,
+                    limits.inbound_burst_bytes,
+                ),
+                outbound: TokenBucket::full(
+                    limits.outbound_rate_bytes_per_second,
+                    limits.outbound_burst_bytes,
+                ),
+                last_observation_nanoseconds: clock.elapsed_nanoseconds(),
+            })),
+            clock,
+        }
+    }
+
+    pub fn reserve_inbound(&self, requested: usize) -> io::Result<Option<RateReservation>> {
+        self.reserve(requested, true)
+    }
+
+    pub fn reserve_outbound(&self, requested: usize) -> io::Result<Option<RateReservation>> {
+        self.reserve(requested, false)
+    }
+
+    fn reserve(&self, requested: usize, inbound: bool) -> io::Result<Option<RateReservation>> {
+        if requested == 0 {
+            return Ok(None);
+        }
+        let requested = u64::try_from(requested).map_err(|_| invalid("transfer is too large"))?;
+        let mut buckets = self
+            .buckets
+            .lock()
+            .map_err(|_| io::Error::other("rate admission state is unavailable"))?;
+        let observed = self.clock.elapsed_nanoseconds();
+        let elapsed = observed.saturating_sub(buckets.last_observation_nanoseconds);
+        buckets.last_observation_nanoseconds = buckets.last_observation_nanoseconds.max(observed);
+        buckets.inbound.refill(elapsed);
+        buckets.outbound.refill(elapsed);
+        let bucket = if inbound {
+            &mut buckets.inbound
+        } else {
+            &mut buckets.outbound
+        };
+        let reserved = requested.min(bucket.available_bytes);
+        if reserved == 0 {
+            return Ok(None);
+        }
+        bucket.available_bytes -= reserved;
+        Ok(Some(RateReservation {
+            buckets: Arc::clone(&self.buckets),
+            inbound,
+            reserved,
+            committed: 0,
+        }))
+    }
+
+    pub fn reject_inbound(&self) {
+        self.reject("inbound")
+    }
+
+    pub fn reject_outbound(&self) {
+        self.reject("outbound")
+    }
+
+    fn reject(&self, direction: &'static str) {
+        let Ok(buckets) = self.buckets.lock() else {
+            return;
+        };
+        let bucket = if direction == "inbound" {
+            &buckets.inbound
+        } else {
+            &buckets.outbound
+        };
+        let rate_bytes_per_second = bucket.rate_bytes_per_second;
+        let burst_bytes = bucket.burst_bytes;
+        drop(buckets);
+        tracing::warn!(
+            event = "worker.transfer.rate_rejected",
+            direction,
+            rate_bytes_per_second,
+            burst_bytes,
+            "raw NAR transfer rate rejected"
+        );
+    }
+}
+
+impl TokenBucket {
+    fn full(rate_bytes_per_second: u64, burst_bytes: u64) -> Self {
+        Self {
+            rate_bytes_per_second,
+            burst_bytes,
+            available_bytes: burst_bytes,
+            fractional_credit: 0,
+        }
+    }
+
+    fn refill(&mut self, elapsed_nanoseconds: u128) {
+        if self.available_bytes == self.burst_bytes {
+            self.fractional_credit = 0;
+            return;
+        }
+        let refill = elapsed_nanoseconds
+            .checked_mul(u128::from(self.rate_bytes_per_second))
+            .and_then(|value| value.checked_add(self.fractional_credit));
+        let Some(refill) = refill else {
+            self.available_bytes = self.burst_bytes;
+            self.fractional_credit = 0;
+            return;
+        };
+        let bytes = refill / 1_000_000_000;
+        self.fractional_credit = refill % 1_000_000_000;
+        let available = u128::from(self.available_bytes).saturating_add(bytes);
+        self.available_bytes = available.min(u128::from(self.burst_bytes)) as u64;
+        if self.available_bytes == self.burst_bytes {
+            self.fractional_credit = 0;
+        }
+    }
+}
+
+pub struct RateReservation {
+    buckets: Arc<Mutex<RateBuckets>>,
+    inbound: bool,
+    reserved: u64,
+    committed: u64,
+}
+
+impl RateReservation {
+    pub fn reserved(&self) -> u64 {
+        self.reserved
+    }
+
+    pub fn commit(&mut self, amount: usize) -> io::Result<()> {
+        let amount = u64::try_from(amount).map_err(|_| invalid("transfer is too large"))?;
+        if amount > self.reserved - self.committed {
+            return Err(invalid("rate reservation exceeded"));
+        }
+        self.committed += amount;
+        Ok(())
+    }
+}
+
+impl Drop for RateReservation {
+    fn drop(&mut self) {
+        let unused = self.reserved - self.committed;
+        if unused == 0 {
+            return;
+        }
+        let Ok(mut buckets) = self.buckets.lock() else {
+            tracing::error!(
+                event = "worker.transfer.rate_admission_unavailable",
+                "rate reservation could not be returned"
+            );
+            return;
+        };
+        let bucket = if self.inbound {
+            &mut buckets.inbound
+        } else {
+            &mut buckets.outbound
+        };
+        bucket.available_bytes = bucket
+            .available_bytes
+            .saturating_add(unused)
+            .min(bucket.burst_bytes);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -241,6 +497,7 @@ pub struct LimitedReader<'a, R> {
     object_limit: u64,
     object_charged: u64,
     session: &'a mut TransferBudget,
+    rates: Option<RateAdmissionState>,
 }
 
 impl<'a, R> LimitedReader<'a, R> {
@@ -250,6 +507,22 @@ impl<'a, R> LimitedReader<'a, R> {
             object_limit,
             object_charged: 0,
             session,
+            rates: None,
+        }
+    }
+
+    pub fn with_rate(
+        source: R,
+        object_limit: u64,
+        session: &'a mut TransferBudget,
+        rates: RateAdmissionState,
+    ) -> Self {
+        Self {
+            source,
+            object_limit,
+            object_charged: 0,
+            session,
+            rates: Some(rates),
         }
     }
 }
@@ -280,6 +553,25 @@ impl<R: Read> Read for LimitedReader<'_, R> {
         let requested = buffer
             .len()
             .min(usize::try_from(object_remaining.min(session_remaining)).unwrap_or(usize::MAX));
+        let mut reservation = if let Some(rates) = &self.rates {
+            match rates.reserve_inbound(requested)? {
+                Some(reservation) => Some(reservation),
+                None => {
+                    let mut probe = [0_u8; 1];
+                    if self.source.read(&mut probe)? != 0 {
+                        rates.reject_inbound();
+                        return Err(invalid("NAR inbound rate limit exceeded"));
+                    }
+                    return Ok(0);
+                }
+            }
+        } else {
+            None
+        };
+        let requested = reservation
+            .as_ref()
+            .map(|reservation| usize::try_from(reservation.reserved()).unwrap_or(usize::MAX))
+            .unwrap_or(requested);
         let read = self.source.read(&mut buffer[..requested])?;
         if read == 0 {
             return Ok(0);
@@ -289,6 +581,9 @@ impl<R: Read> Read for LimitedReader<'_, R> {
             .object_charged
             .checked_add(u64::try_from(read).map_err(|_| invalid("transfer is too large"))?)
             .ok_or_else(|| invalid("NAR object byte limit exceeded"))?;
+        if let Some(reservation) = &mut reservation {
+            reservation.commit(read)?;
+        }
         Ok(read)
     }
 }
@@ -298,6 +593,7 @@ pub struct LimitedWriter<'a, W> {
     object_limit: u64,
     object_charged: u64,
     session: &'a mut TransferBudget,
+    rates: Option<RateAdmissionState>,
 }
 
 impl<'a, W> LimitedWriter<'a, W> {
@@ -307,6 +603,22 @@ impl<'a, W> LimitedWriter<'a, W> {
             object_limit,
             object_charged: 0,
             session,
+            rates: None,
+        }
+    }
+
+    pub fn with_rate(
+        sink: W,
+        object_limit: u64,
+        session: &'a mut TransferBudget,
+        rates: RateAdmissionState,
+    ) -> Self {
+        Self {
+            sink,
+            object_limit,
+            object_charged: 0,
+            session,
+            rates: Some(rates),
         }
     }
 }
@@ -329,13 +641,38 @@ impl<W: Write> Write for LimitedWriter<'_, W> {
             reject("outbound", "object", self.object_limit);
             return Err(invalid("NAR object byte limit exceeded"));
         }
+        let mut reservation = if let Some(rates) = &self.rates {
+            match rates.reserve_outbound(allowed)? {
+                Some(reservation) => Some(reservation),
+                None => {
+                    rates.reject_outbound();
+                    return Err(invalid("NAR outbound rate limit exceeded"));
+                }
+            }
+        } else {
+            None
+        };
+        let rate_allowed = reservation
+            .as_ref()
+            .map(|reservation| usize::try_from(reservation.reserved()).unwrap_or(usize::MAX));
+        let rate_limited = rate_allowed.is_some_and(|rate_allowed| rate_allowed < allowed);
+        let allowed = rate_allowed.unwrap_or(allowed);
         let written = self.sink.write(&buffer[..allowed])?;
         self.session.charge(written)?;
         self.object_charged = self
             .object_charged
             .checked_add(u64::try_from(written).map_err(|_| invalid("transfer is too large"))?)
             .ok_or_else(|| invalid("NAR object byte limit exceeded"))?;
+        if let Some(reservation) = &mut reservation {
+            reservation.commit(written)?;
+        }
         if allowed < buffer.len() && written == allowed {
+            if rate_limited {
+                if let Some(rates) = &self.rates {
+                    rates.reject_outbound();
+                }
+                return Err(invalid("NAR outbound rate limit exceeded"));
+            }
             if session_remaining <= object_remaining {
                 reject("outbound", "session", self.session.limit);
                 return Err(invalid("transfer session byte limit exceeded"));
