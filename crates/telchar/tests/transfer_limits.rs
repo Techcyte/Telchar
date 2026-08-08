@@ -51,3 +51,25 @@ fn session_budget_rejects_at_remaining_byte_boundary() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(budget.charged(), 2);
 }
+
+#[test]
+fn inbound_budget_is_shared_across_objects() {
+    let mut session = TransferBudget::new(5);
+    let mut first_output = Vec::new();
+    {
+        let mut first = LimitedReader::new(Cursor::new([1, 2, 3]), 4, &mut session);
+        first
+            .read_to_end(&mut first_output)
+            .expect("first object fits session budget");
+    }
+
+    let mut second = LimitedReader::new(Cursor::new([4, 5, 6]), 4, &mut session);
+    let mut second_output = Vec::new();
+    second
+        .read_to_end(&mut second_output)
+        .expect_err("later object exceeds remaining session budget");
+
+    assert_eq!(first_output, vec![1, 2, 3]);
+    assert_eq!(second_output, vec![4, 5]);
+    assert_eq!(session.charged(), 5);
+}

@@ -121,8 +121,12 @@ impl<R: Read> Read for LimitedReader<'_, R> {
         }
         let session_remaining = self.session.remaining();
         if session_remaining == 0 {
-            reject("inbound", "session", self.session.limit);
-            return Err(invalid("transfer session byte limit exceeded"));
+            let mut probe = [0_u8; 1];
+            if self.source.read(&mut probe)? != 0 {
+                reject("inbound", "session", self.session.limit);
+                return Err(invalid("transfer session byte limit exceeded"));
+            }
+            return Ok(0);
         }
         let requested = buffer
             .len()
