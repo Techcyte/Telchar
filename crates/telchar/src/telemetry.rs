@@ -16,6 +16,7 @@ use opentelemetry_sdk::trace::{
     BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
 };
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -185,6 +186,7 @@ impl Telemetry {
         global::set_meter_provider(meter_provider.clone());
 
         tracing_subscriber::registry()
+            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
             .with(tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(SERVICE_NAME)))
             .with(OpenTelemetryTracingBridge::new(&logger_provider))
             .with(

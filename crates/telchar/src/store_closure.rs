@@ -373,7 +373,11 @@ mod tests {
             if !process.exists() {
                 break;
             }
-            let status = fs::read_to_string(process.join("status")).expect("process state reads");
+            let status = match fs::read_to_string(process.join("status")) {
+                Ok(status) => status,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Err(error) => panic!("process state reads: {error}"),
+            };
             if status
                 .lines()
                 .any(|line| line.starts_with("State:") && line.contains("Z (zombie)"))
