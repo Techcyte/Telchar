@@ -14,6 +14,7 @@ use crate::local_executor::{BuildExecutor, LocalBuildStatus, LocalExecutionReque
 use crate::store_query::QueryValidPathsStore;
 
 static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static DERIVATION_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct SessionInput {
     input: std::os::unix::net::UnixStream,
@@ -220,6 +221,21 @@ pub fn run_worker_session(
                     operation = "create",
                     "build request persisted"
                 );
+                let lease_id = derivation_lease_id();
+                if let Err(_error) = crate::persistence::create_store_lease(
+                    database_url,
+                    &lease_id,
+                    crate::persistence::StoreLeaseOwnerKind::Request,
+                    &request_id,
+                    derivation_path,
+                    crate::persistence::StoreLeasePurpose::Derivation,
+                ) {
+                    return reject(
+                        &mut output,
+                        "store-lease-state",
+                        "store lease state operation failed",
+                    );
+                }
                 if let Err(error) =
                     crate::persistence::attach_request(database_url, session_id, &request_id)
                 {
@@ -618,6 +634,18 @@ fn build_request_id() -> String {
             .unwrap_or_default()
             .as_nanos(),
         BUILD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    )
+}
+
+fn derivation_lease_id() -> String {
+    format!(
+        "lease-{:x}-{:x}-{:x}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        DERIVATION_LEASE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
     )
 }
 

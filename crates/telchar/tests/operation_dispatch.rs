@@ -519,6 +519,85 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
 }
 
 #[test]
+fn derivation_lease_precedes_helper_execution() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-derivation-lease-order-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let request_path = root.join("request");
+    let started = root.join("helper-started");
+    let complete = root.join("complete-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            request_path.display(),
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let helper_request: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&request_path).expect("helper request reads"))
+            .expect("helper request is JSON");
+    let request_id = helper_request["request_id"]
+        .as_str()
+        .expect("helper request ID is a string");
+    let lease = fixture
+        .database
+        .connect()
+        .query_opt(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state FROM store_leases WHERE owner_id = $1",
+            &[&request_id],
+        )
+        .expect("lease query succeeds")
+        .expect("active derivation lease exists before helper execution");
+    assert!(lease.get::<_, String>(0).starts_with("lease-"));
+    assert_eq!(lease.get::<_, String>(1), "request");
+    assert_eq!(lease.get::<_, String>(2), request_id);
+    assert_eq!(
+        lease.get::<_, String>(3),
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+    );
+    assert_eq!(lease.get::<_, String>(4), "derivation");
+    assert_eq!(lease.get::<_, String>(5), "active");
+
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 0, "Built status");
+    assert_eq!(read_string(&mut output), "", "empty build error message");
+    for _ in 0..7 {
+        read_integer(&mut output);
+    }
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+    fixture.finish();
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-attachment-order-{}-{}",
@@ -591,6 +670,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
             .state,
         telchar::persistence::ProtocolSessionState::Open
     );
+    assert_active_derivation_lease(&fixture.database, request_id);
 
     fs::write(&complete, b"complete").expect("helper completion releases");
     assert_eq!(read_integer(&mut output), STDERR_LAST);
@@ -613,6 +693,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
         .state,
         telchar::persistence::RequestAttachmentState::Detached
     );
+    assert_active_derivation_lease(&fixture.database, request_id);
     let stderr = fixture.finish();
     assert!(!stderr.contains(&session_id), "{stderr}");
     assert!(!stderr.contains(request_id), "{stderr}");
@@ -830,9 +911,118 @@ fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
             *request_id
         );
     }
+    let mut database = fixture.database.connect();
+    let mut leases = database
+        .query(
+            "SELECT lease_id, owner_id FROM store_leases ORDER BY owner_id",
+            &[],
+        )
+        .expect("leases read")
+        .into_iter()
+        .map(|lease| (lease.get::<_, String>(0), lease.get::<_, String>(1)))
+        .collect::<Vec<_>>();
+    leases.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(leases.len(), 2);
+    assert_ne!(leases[0].0, leases[1].0);
+    for (lease_id, request_id) in leases {
+        assert!(lease_id.starts_with("lease-"), "{lease_id}");
+        assert_ne!(lease_id, request_id);
+        assert!(lease_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+    }
     let stderr = fixture.finish();
     assert!(
         stderr.contains("database.build_request.created"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn derivation_lease_persistence_failure_retains_request_before_attachment_or_helper() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-derivation-lease-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > '{}'\nprintf 'unexpected-log\\n' >&2\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_derivation_lease_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject derivation lease insert'; END $$; CREATE TRIGGER reject_derivation_lease_insert BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_derivation_lease_insert();",
+        )
+        .expect("failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "store lease state operation failed"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    assert!(!marker.exists(), "lease failure started the build helper");
+    let mut database = fixture.database.connect();
+    assert_eq!(
+        database
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        1,
+        "lease failure must retain the immutable request"
+    );
+    assert_eq!(
+        database
+            .query_one("SELECT count(*) FROM request_attachments", &[])
+            .expect("attachment count reads")
+            .get::<_, i64>(0),
+        0,
+        "lease failure must not create an attachment"
+    );
+    assert_eq!(
+        database
+            .query_one("SELECT count(*) FROM store_leases", &[])
+            .expect("lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "failed lease transaction must not persist a lease"
+    );
+    let stderr = fixture.finish();
+    assert!(stderr.contains("database.store_lease.failed"), "{stderr}");
+    assert!(stderr.contains("operation=\"create\""), "{stderr}");
+    assert!(stderr.contains("failure_class=\"query\""), "{stderr}");
+    assert!(!stderr.contains("unexpected-log"), "{stderr}");
+    assert!(
+        !stderr.contains("reject derivation lease insert"),
         "{stderr}"
     );
     fs::remove_dir_all(root).expect("fixture cleans");
@@ -984,6 +1174,7 @@ fn request_attachment_failure_rejects_before_helper_and_retains_request() {
         0,
         "attachment failure persisted attachment"
     );
+    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("database.request_attachment.failed"),
@@ -1073,6 +1264,7 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
         "detached",
         "requester disconnect left attachment attached"
     );
+    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.failed"),
@@ -1123,6 +1315,7 @@ fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
         "detached",
         "execution failure left attachment attached"
     );
+    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.admitted"),
@@ -1334,6 +1527,31 @@ impl FrontendFixture {
             String::from_utf8_lossy(&daemon_output.stderr)
         )
     }
+}
+
+fn request_id(database: &mut postgres::Client) -> String {
+    database
+        .query_one("SELECT request_id FROM build_requests", &[])
+        .expect("request ID reads")
+        .get(0)
+}
+
+fn assert_active_derivation_lease(database: &PostgresFixture, request_id: &str) {
+    let lease = database
+        .connect()
+        .query_one(
+            "SELECT owner_kind, owner_id, store_path, purpose, state FROM store_leases WHERE owner_id = $1",
+            &[&request_id],
+        )
+        .expect("active derivation lease reads");
+    assert_eq!(lease.get::<_, String>(0), "request");
+    assert_eq!(lease.get::<_, String>(1), request_id);
+    assert_eq!(
+        lease.get::<_, String>(2),
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+    );
+    assert_eq!(lease.get::<_, String>(3), "derivation");
+    assert_eq!(lease.get::<_, String>(4), "active");
 }
 
 fn send_operation(operation: u64) -> OperationResponse {
