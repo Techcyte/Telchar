@@ -188,14 +188,7 @@ impl StoreClosureBackend for NixStoreClosureBackend {
 fn normalize_paths(paths: Vec<String>) -> io::Result<Vec<String>> {
     let mut paths = paths;
     for path in &paths {
-        if path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
-            || !path.starts_with("/nix/store/")
-            || path
-                .bytes()
-                .any(|byte| matches!(byte, b'\0' | b'\n' | b'\r'))
-        {
-            return Err(query_error());
-        }
+        validate_store_path(path)?;
     }
     paths.sort_unstable();
     paths.dedup();
@@ -203,6 +196,30 @@ fn normalize_paths(paths: Vec<String>) -> io::Result<Vec<String>> {
         return Err(query_error());
     }
     Ok(paths)
+}
+
+fn validate_store_path(path: &str) -> io::Result<()> {
+    const STORE_DIRECTORY: &str = "/nix/store/";
+    const HASH_LENGTH: usize = 32;
+    const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+    let Some(base) = path.strip_prefix(STORE_DIRECTORY) else {
+        return Err(query_error());
+    };
+    let bytes = base.as_bytes();
+    if path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || bytes.len() <= HASH_LENGTH + 1
+        || bytes[HASH_LENGTH] != b'-'
+        || !bytes[..HASH_LENGTH]
+            .iter()
+            .all(|byte| HASH_ALPHABET.contains(byte))
+        || !bytes[HASH_LENGTH + 1..].iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+        })
+    {
+        return Err(query_error());
+    }
+    Ok(())
 }
 
 fn query_error() -> io::Error {
@@ -219,6 +236,10 @@ impl ChildGuard {
     }
 
     fn kill_and_reap(&mut self) {
+        let pid = rustix::process::Pid::from_raw(self.child.id() as rustix::process::RawPid);
+        if let Some(pid) = pid {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -251,7 +272,18 @@ fn drain_bounded(mut source: impl Read, maximum: usize) -> io::Result<(Vec<u8>, 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn configure_child_lifecycle(command: &mut Command) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(io::Error::from)?;
+            rustix::process::setpgid(None, None).map_err(io::Error::from)?;
+            if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
+                return Err(io::Error::other("closure owner exited before helper start"));
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -296,6 +328,65 @@ mod tests {
         assert!(!marker.exists(), "empty closure spawned helper");
         let _ = fs::remove_file(helper);
         let _ = fs::remove_file(marker);
+    }
+
+    #[test]
+    fn malformed_response_store_paths_are_rejected() {
+        for path in [
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a/nested",
+            "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-a",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a!",
+        ] {
+            assert!(
+                normalize_paths(vec![path.to_owned()]).is_err(),
+                "accepted malformed store path: {path}"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn child_guard_kills_helper_process_group_and_reaps_helper() {
+        let pid_path = temporary_path("grandchild-pid");
+        let script = format!("sleep 30 & printf '%s' $! > '{}'; wait", pid_path.display());
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        configure_child_lifecycle(&mut command);
+        let child = command.spawn().expect("helper starts");
+        let mut guard = ChildGuard::new(child);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let grandchild_pid = loop {
+            assert!(Instant::now() < deadline, "grandchild PID was not recorded");
+            if let Ok(contents) = fs::read_to_string(&pid_path)
+                && let Ok(pid) = contents.parse::<i32>()
+            {
+                break pid;
+            }
+            thread::yield_now();
+        };
+
+        guard.kill_and_reap();
+
+        let process = std::path::PathBuf::from(format!("/proc/{grandchild_pid}"));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if !process.exists() {
+                break;
+            }
+            let status = fs::read_to_string(process.join("status")).expect("process state reads");
+            if status
+                .lines()
+                .any(|line| line.starts_with("State:") && line.contains("Z (zombie)"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "helper grandchild survived owner cleanup: {status}"
+            );
+            thread::yield_now();
+        }
+        let _ = fs::remove_file(pid_path);
     }
 
     #[test]
