@@ -74,6 +74,17 @@ let
     role = "gateway";
     extraConfig = {
       environment.systemPackages = [ telchar ];
+      services.postgresql = {
+        enable = true;
+        package = pkgs.postgresql;
+        ensureDatabases = [ "telchar-ingress" ];
+        ensureUsers = [
+          {
+            name = "telchar-ingress";
+            ensureDBOwnership = true;
+          }
+        ];
+      };
       services.openssh = {
         enable = true;
         settings = {
@@ -103,8 +114,16 @@ let
       systemd.services.telchar-daemon = {
         description = "Telchar integration daemon";
         wantedBy = [ "multi-user.target" ];
+        after = [
+          "network-online.target"
+          "postgresql.service"
+        ];
+        wants = [ "network-online.target" ];
+        requires = [ "postgresql.service" ];
         environment = {
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
+          TELCHAR_DATABASE_URL = "postgresql://telchar-ingress@/telchar-ingress?host=/run/postgresql";
+          TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TMPDIR = "/var/lib/telchar-import";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";

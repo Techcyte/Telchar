@@ -17,7 +17,13 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       craneLib = crane.mkLib pkgs;
-      source = craneLib.cleanCargoSource ./.;
+      source = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter =
+          path: type:
+          craneLib.filterCargoSources path type
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" (toString path);
+      };
       mkNixStoreHelper =
         name: sourceDirectory:
         pkgs.stdenv.mkDerivation {
@@ -68,6 +74,7 @@
             pname = "telchar";
             version = "0.1.0";
             inherit cargoArtifacts;
+            nativeBuildInputs = [ pkgs.postgresql ];
             cargoTestExtraArgs = "--lib";
           };
           nixos-test-library =
@@ -226,6 +233,7 @@
           pname = "telchar";
           version = "0.1.0";
           cargoExtraArgs = "-p telchar";
+          nativeBuildInputs = [ pkgs.postgresql ];
           cargoTestExtraArgs = "--lib";
           postInstall = ''
             mkdir -p $out/libexec/telchar
