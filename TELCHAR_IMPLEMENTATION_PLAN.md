@@ -749,7 +749,7 @@ Evidence: paths and output facts to record
   - Verify: time-bounded transfer-rate integration test.
   - Evidence: configured rate and observed behavior.
 
-- [ ] T070 Enforce gateway disk reserve
+- [x] T070 Enforce gateway disk reserve
   - Depends on: T063
   - Outcome: new transfer/build admission fails before configured free-space reserve is crossed.
   - Red: low-space fixture admits work.
