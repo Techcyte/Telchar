@@ -35,6 +35,7 @@ int run(const json & request)
 {
     if (!request.is_object() || request.value("version", 0u) != 1
         || !request.contains("store_uri") || !request.at("store_uri").is_string()
+        || request.at("store_uri").get<std::string>().empty()
         || !request.contains("roots") || !request.at("roots").is_array())
         throw std::runtime_error("invalid closure request");
     const auto & rootsJson = request.at("roots");
@@ -49,6 +50,8 @@ int run(const json & request)
     }
     nix::StorePathSet closure;
     store->computeFSClosure(roots, closure, false, false, false);
+    if (closure.size() > maximumRoots)
+        throw std::runtime_error("closure path count exceeds limit");
 
     json paths = json::array();
     for (const auto & path : closure)

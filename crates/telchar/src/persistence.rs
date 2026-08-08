@@ -853,6 +853,88 @@ fn create_store_lease_inner(
     Ok(lease)
 }
 
+pub fn create_request_input_leases(
+    database_url: &str,
+    request_id: &str,
+    leases: &[(String, String)],
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    if leases.is_empty() {
+        return Ok(Vec::new());
+    }
+    let result = create_request_input_leases_inner(database_url, request_id, leases);
+    emit_store_lease_batch_failure(result.as_ref().map(|_| ()), leases.len());
+    result
+}
+
+fn create_request_input_leases_inner(
+    database_url: &str,
+    request_id: &str,
+    leases: &[(String, String)],
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    if database_url.trim().is_empty()
+        || request_id.is_empty()
+        || request_id.len() > MAX_IPC_COMPONENT_BYTES
+        || leases.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut paths = std::collections::HashSet::new();
+    for (lease_id, store_path) in leases {
+        validate_store_lease_id(lease_id)?;
+        validate_store_lease_inputs("validated", lease_id, request_id, store_path)?;
+        if !ids.insert(lease_id) || !paths.insert(store_path) {
+            return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+        }
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let request = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match request {
+        None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+        Some(row) => {
+            decode_build_request(&row).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+        }
+    }
+    let mut records = Vec::with_capacity(leases.len());
+    for (lease_id, store_path) in leases {
+        let row = transaction
+            .query_one(
+                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES ($1, 'request', $2, $3, 'input', 'active', transaction_timestamp(), NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+                &[&lease_id, &request_id, &store_path],
+            )
+            .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
+        records.push(decode_store_lease(&row).map_err(StoreLeaseError)?);
+    }
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    Ok(records)
+}
+
+fn emit_store_lease_batch_failure(result: Result<(), &StoreLeaseError>, path_count: usize) {
+    if let Err(error) = result {
+        tracing::warn!(
+            event = "database.store_lease.failed",
+            operation = "create-input-closure",
+            owner_kind = "request",
+            purpose = "input",
+            state = "active",
+            path_count,
+            failure_class = error.failure().as_str(),
+            "store lease persistence failed"
+        );
+    }
+}
+
 pub fn release_store_lease(
     database_url: &str,
     lease_id: &str,

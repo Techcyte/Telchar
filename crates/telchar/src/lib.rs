@@ -8,6 +8,7 @@ pub mod nar;
 pub mod nix_fixture;
 pub mod persistence;
 pub mod session;
+pub mod store_closure;
 pub mod store_export;
 pub mod store_import;
 pub mod store_promotion;

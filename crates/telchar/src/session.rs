@@ -102,6 +102,7 @@ pub fn run_worker_session(
     build_executor: &mut dyn BuildExecutor,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
+    store_closure: &mut dyn crate::store_closure::StoreClosureBackend,
     database_url: &str,
     session_id: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
@@ -230,6 +231,34 @@ pub fn run_worker_session(
                     derivation_path,
                     crate::persistence::StoreLeasePurpose::Derivation,
                 ) {
+                    return reject(
+                        &mut output,
+                        "store-lease-state",
+                        "store lease state operation failed",
+                    );
+                }
+                let closure = match store_closure.input_closure(admitted.input_sources()) {
+                    Ok(closure) => closure,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "input-closure-query",
+                            "input closure query failed",
+                        );
+                    }
+                };
+                let input_leases = closure
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, path)| (format!("input-{request_id}-{index}"), path))
+                    .collect::<Vec<_>>();
+                if crate::persistence::create_request_input_leases(
+                    database_url,
+                    &request_id,
+                    &input_leases,
+                )
+                .is_err()
+                {
                     return reject(
                         &mut output,
                         "store-lease-state",
