@@ -1029,10 +1029,57 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         .released_at
         .is_some_and(|at| at >= created.created_at));
     assert_eq!(
+        telchar::persistence::release_store_lease(fixture.url(), "release-lease")
+            .expect_err("released lease does not release again")
+            .failure(),
+        telchar::persistence::StoreLeaseFailure::InvalidState
+    );
+    assert_eq!(
         telchar::persistence::release_store_lease(fixture.url(), "missing")
             .expect_err("absent lease rejects")
             .failure(),
         telchar::persistence::StoreLeaseFailure::Missing
+    );
+}
+
+#[test]
+fn duplicate_store_lease_id_rejects_without_mutating_original() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "duplicate-owner",
+        "/nix/store/11111111111111111111111111111111-original.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let original = telchar::persistence::create_store_lease(
+        fixture.url(),
+        "duplicate-lease",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "duplicate-owner",
+        "/nix/store/11111111111111111111111111111111-original.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+
+    assert_eq!(
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            "duplicate-lease",
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "duplicate-owner",
+            "/nix/store/22222222222222222222222222222222-different",
+            telchar::persistence::StoreLeasePurpose::Output,
+        )
+        .expect_err("duplicate lease rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Conflict
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "duplicate-lease")
+            .expect("lease reads"),
+        Some(original)
     );
 }
 
