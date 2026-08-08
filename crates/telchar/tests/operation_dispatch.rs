@@ -582,6 +582,17 @@ fn derivation_lease_precedes_helper_execution() {
     );
     assert_eq!(lease.get::<_, String>(4), "derivation");
     assert_eq!(lease.get::<_, String>(5), "active");
+    let gc_root = fixture
+        .root
+        .join("gc-roots")
+        .join(lease.get::<_, String>(0));
+    assert!(
+        fs::symlink_metadata(&gc_root)
+            .expect("derivation root metadata reads")
+            .file_type()
+            .is_symlink(),
+        "derivation root missing before helper execution"
+    );
 
     fs::write(&complete, b"complete").expect("helper completion releases");
     assert_eq!(read_integer(&mut output), STDERR_LAST);
@@ -1015,6 +1026,14 @@ fn derivation_lease_persistence_failure_retains_request_before_attachment_or_hel
             .get::<_, i64>(0),
         0,
         "failed lease transaction must not persist a lease"
+    );
+    let gc_roots = fixture.root.join("gc-roots");
+    assert_eq!(
+        fs::read_dir(&gc_roots)
+            .expect("GC root directory reads")
+            .count(),
+        0,
+        "derivation persistence failure retained a root"
     );
     let stderr = fixture.finish();
     assert!(stderr.contains("database.store_lease.failed"), "{stderr}");
@@ -1450,6 +1469,21 @@ impl FrontendFixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("fixture root permissions set");
         let socket = root.join("daemon.sock");
+        let gc_roots = root.join("gc-roots");
+        fs::create_dir(&gc_roots).expect("GC root directory creates");
+        fs::set_permissions(&gc_roots, fs::Permissions::from_mode(0o700))
+            .expect("GC root directory permissions set");
+        let retain_helper = root.join("retain-helper");
+        fs::write(
+            &retain_helper,
+            format!(
+                "#!/bin/sh\n/usr/bin/python3 -c 'import json, os, sys; request = json.load(sys.stdin); root = sys.argv[1]; [os.symlink(entry[\"store_path\"], os.path.join(root, entry[\"lease_id\"])) for entry in request[\"entries\"]]; print(json.dumps({{\"version\": 1, \"retained\": [{{\"lease_id\": entry[\"lease_id\"], \"store_path\": entry[\"store_path\"], \"root_path\": os.path.join(root, entry[\"lease_id\"])}} for entry in request[\"entries\"]]}}))' '{}'\n",
+                gc_roots.display()
+            ),
+        )
+        .expect("retention helper writes");
+        fs::set_permissions(&retain_helper, fs::Permissions::from_mode(0o700))
+            .expect("retention helper executable");
         let database = PostgresFixture::start();
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command
@@ -1470,7 +1504,9 @@ impl FrontendFixture {
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_NIX_STORE_BUILD")
             .env_remove("TELCHAR_NIX_STORE_EXPORT")
-            .env_remove("TELCHAR_NIX_STORE_PROMOTE");
+            .env_remove("TELCHAR_NIX_STORE_PROMOTE")
+            .env("TELCHAR_NIX_STORE_RETAIN", &retain_helper)
+            .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &gc_roots);
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }

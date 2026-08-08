@@ -103,6 +103,7 @@ pub fn run_worker_session(
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     store_closure: &mut dyn crate::store_closure::StoreClosureBackend,
+    store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
     database_url: &str,
     session_id: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
@@ -223,6 +224,20 @@ pub fn run_worker_session(
                     "build request persisted"
                 );
                 let lease_id = derivation_lease_id();
+                let derivation_entries = [crate::store_retention::RetentionEntry::new(
+                    lease_id.clone(),
+                    derivation_path,
+                )];
+                let retained_derivation = match store_retention.retain(&derivation_entries) {
+                    Ok(retained) => retained,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
+                };
                 if let Err(_error) = crate::persistence::create_store_lease(
                     database_url,
                     &lease_id,
@@ -231,6 +246,13 @@ pub fn run_worker_session(
                     derivation_path,
                     crate::persistence::StoreLeasePurpose::Derivation,
                 ) {
+                    if store_retention.rollback(&retained_derivation).is_err() {
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
                     return reject(
                         &mut output,
                         "store-lease-state",
@@ -252,6 +274,22 @@ pub fn run_worker_session(
                     .enumerate()
                     .map(|(index, path)| (format!("input-{request_id}-{index}"), path))
                     .collect::<Vec<_>>();
+                let input_entries = input_leases
+                    .iter()
+                    .map(|(lease_id, store_path)| {
+                        crate::store_retention::RetentionEntry::new(lease_id, store_path)
+                    })
+                    .collect::<Vec<_>>();
+                let retained_inputs = match store_retention.retain(&input_entries) {
+                    Ok(retained) => retained,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
+                };
                 if crate::persistence::create_request_input_leases(
                     database_url,
                     &request_id,
@@ -259,6 +297,13 @@ pub fn run_worker_session(
                 )
                 .is_err()
                 {
+                    if store_retention.rollback(&retained_inputs).is_err() {
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
                     return reject(
                         &mut output,
                         "store-lease-state",

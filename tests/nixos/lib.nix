@@ -131,6 +131,8 @@ let
           TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
           TELCHAR_NIX_STORE_PROMOTE = "${telchar}/libexec/telchar/nix-store-promote";
           TELCHAR_NIX_STORE_CLOSURE = "${telchar}/libexec/telchar/nix-store-closure";
+          TELCHAR_NIX_STORE_RETAIN = "${telchar}/libexec/telchar/nix-store-retain";
+          TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-gc-roots";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";
           NIX_CONFIG = ''
@@ -144,7 +146,8 @@ let
           Group = "telchar";
           RuntimeDirectory = "telchar";
           RuntimeDirectoryMode = "0700";
-          StateDirectory = "telchar-import";
+          StateDirectory = [ "telchar-import" "telchar-gc-roots" ];
+          StateDirectoryMode = "0700";
           ExecStart = "${telchar}/bin/telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995";
         };
       };
