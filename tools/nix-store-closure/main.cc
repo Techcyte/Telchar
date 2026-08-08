@@ -8,6 +8,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -53,9 +54,14 @@ int run(const json & request)
     if (closure.size() > maximumRoots)
         throw std::runtime_error("closure path count exceeds limit");
 
-    json paths = json::array();
+    std::vector<std::string> printedPaths;
+    printedPaths.reserve(closure.size());
     for (const auto & path : closure)
-        paths.push_back(store->printStorePath(path));
+        printedPaths.push_back(store->printStorePath(path));
+    std::sort(printedPaths.begin(), printedPaths.end());
+    json paths = json::array();
+    for (const auto & path : printedPaths)
+        paths.push_back(path);
     json response = {{"version", 1}, {"paths", paths}};
     auto encoded = response.dump();
     if (encoded.size() > maximumResponseBytes)

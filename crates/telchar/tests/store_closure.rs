@@ -77,5 +77,7 @@ fn pinned_helper_returns_complete_transitive_input_closure() {
         .iter()
         .map(|path| path.as_str().expect("store path string"))
         .collect();
-    assert_eq!(paths, vec![leaf, root]);
+    let mut expected = vec![leaf, root];
+    expected.sort_unstable();
+    assert_eq!(paths, expected);
 }

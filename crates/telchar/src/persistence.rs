@@ -917,6 +917,15 @@ fn create_request_input_leases_inner(
     transaction
         .commit()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    tracing::info!(
+        event = "database.store_lease.created",
+        operation = "create-input-closure",
+        owner_kind = "request",
+        purpose = "input",
+        state = "active",
+        path_count = records.len(),
+        "store lease batch persisted"
+    );
     Ok(records)
 }
 
