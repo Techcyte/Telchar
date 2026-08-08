@@ -102,6 +102,7 @@ pub fn run_worker_session(
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     database_url: &str,
+    session_id: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
     object_admission: &crate::transfer_limits::ObjectAdmissionState,
     rate_admission: &crate::transfer_limits::RateAdmissionState,
@@ -219,6 +220,27 @@ pub fn run_worker_session(
                     operation = "create",
                     "build request persisted"
                 );
+                if let Err(error) =
+                    crate::persistence::attach_request(database_url, session_id, &request_id)
+                {
+                    tracing::warn!(
+                        event = "database.request_attachment.failed",
+                        operation = "attach",
+                        failure_class = error.failure().as_str(),
+                        "request attachment persistence failed"
+                    );
+                    return reject(
+                        &mut output,
+                        "request-attachment-state",
+                        "request attachment state operation failed",
+                    );
+                }
+                tracing::info!(
+                    event = "database.request_attachment.attached",
+                    operation = "attach",
+                    state = "attached",
+                    "request attachment persisted"
+                );
                 tracing::info!(
                     event = "worker.build_derivation.admitted",
                     output_count = admitted.expected_outputs().len(),
@@ -230,11 +252,17 @@ pub fn run_worker_session(
                     build_mode = request.build_mode(),
                     "BuildDerivation request admitted"
                 );
-                let execution = LocalExecutionRequest::new(
+                let execution = match LocalExecutionRequest::new(
                     &request_id,
                     &admitted,
                     Duration::from_secs(30 * 60),
-                )?;
+                ) {
+                    Ok(execution) => execution,
+                    Err(error) => {
+                        let _ = detach_request_attachment(database_url, session_id, &request_id);
+                        return Err(error);
+                    }
+                };
                 let result = match build_executor.execute_with_logs(
                     &execution,
                     &mut |chunk| {
@@ -260,6 +288,7 @@ pub fn run_worker_session(
                             reason = execution_error_reason(&error),
                             "BuildDerivation execution failed"
                         );
+                        let _ = detach_request_attachment(database_url, session_id, &request_id);
                         if error.kind() == io::ErrorKind::ConnectionAborted {
                             return Ok(());
                         }
@@ -278,11 +307,14 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                nix_worker_protocol::write_build_derivation_success_response(
+                let response = nix_worker_protocol::write_build_derivation_success_response(
                     &mut output,
                     negotiated.version,
                     result.status() == LocalBuildStatus::AlreadyValid,
-                )?;
+                );
+                let detach = detach_request_attachment(database_url, session_id, &request_id);
+                response?;
+                detach?;
                 tracing::info!(
                     event = "worker.build_derivation.completed",
                     output_count = result.outputs().len(),
@@ -632,6 +664,35 @@ fn disk_reserve_rejected(
             reason,
             "gateway disk reserve rejected admission"
         );
+    }
+}
+
+fn detach_request_attachment(
+    database_url: &str,
+    session_id: &str,
+    request_id: &str,
+) -> io::Result<()> {
+    match crate::persistence::detach_request(database_url, session_id, request_id) {
+        Ok(_) => {
+            tracing::info!(
+                event = "database.request_attachment.detached",
+                operation = "detach",
+                state = "detached",
+                "request attachment persisted"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            tracing::warn!(
+                event = "database.request_attachment.failed",
+                operation = "detach",
+                failure_class = error.failure().as_str(),
+                "request attachment persistence failed"
+            );
+            Err(io::Error::other(
+                "request attachment state operation failed",
+            ))
+        }
     }
 }
 

@@ -314,6 +314,7 @@ fn serve_accepted_connection(
             store_export.as_mut(),
             store_import.as_mut(),
             database_url,
+            &session_id,
             transfer_limits,
             object_admission,
             rate_admission,

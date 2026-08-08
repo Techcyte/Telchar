@@ -519,6 +519,107 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
 }
 
 #[test]
+fn build_request_attachment_precedes_helper_and_detaches_after_response() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-attachment-order-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let request_path = root.join("request-id");
+    let started = root.join("helper-started");
+    let complete = root.join("complete-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            request_path.display(),
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let helper_request: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&request_path).expect("helper request reads"))
+            .expect("helper request is JSON");
+    let request_id = helper_request["request_id"]
+        .as_str()
+        .expect("helper request ID is a string");
+    let session_id = fixture
+        .database
+        .connect()
+        .query_one(
+            "SELECT session_id FROM request_attachments WHERE request_id = $1",
+            &[&request_id],
+        )
+        .expect("attachment exists before helper result")
+        .get::<_, String>(0);
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.database.url(),
+            &session_id,
+            request_id
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Attached
+    );
+    assert_eq!(
+        telchar::persistence::read_protocol_session(fixture.database.url(), &session_id)
+            .expect("session reads")
+            .expect("session exists")
+            .state,
+        telchar::persistence::ProtocolSessionState::Open
+    );
+
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 0, "Built status");
+    assert_eq!(read_string(&mut output), "", "empty build error message");
+    for _ in 0..7 {
+        read_integer(&mut output);
+    }
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.database.url(),
+            &session_id,
+            request_id
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+    let stderr = fixture.finish();
+    assert!(!stderr.contains(&session_id), "{stderr}");
+    assert!(!stderr.contains(request_id), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",
@@ -750,6 +851,88 @@ fn build_request_persistence_failure_rejects_before_helper_or_log_frame() {
 }
 
 #[test]
+fn request_attachment_failure_rejects_before_helper_and_retains_request() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-attachment-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > '{}'\nprintf 'unexpected-log\\n' >&2\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_attachment_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject insert'; END $$; CREATE TRIGGER reject_attachment_insert BEFORE INSERT ON request_attachments FOR EACH ROW EXECUTE FUNCTION reject_attachment_insert();",
+        )
+        .expect("attachment failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "request attachment state operation failed"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    assert!(!marker.exists(), "attachment failure started helper");
+    let mut client = fixture.database.connect();
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        1,
+        "attachment failure discarded immutable request"
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM request_attachments", &[])
+            .expect("attachment count reads")
+            .get::<_, i64>(0),
+        0,
+        "attachment failure persisted attachment"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("database.request_attachment.failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("operation=\"attach\""), "{stderr}");
+    assert!(stderr.contains("failure_class=\"query\""), "{stderr}");
+    assert!(!stderr.contains("unexpected-log"), "{stderr}");
+    assert!(!stderr.contains("reject insert"), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-cancel-helper-{}-{}",
@@ -809,15 +992,22 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
         );
         thread::sleep(Duration::from_millis(5));
     }
+    let mut client = fixture.database.connect();
     assert_eq!(
-        fixture
-            .database
-            .connect()
+        client
             .query_one("SELECT count(*) FROM build_requests", &[])
             .expect("request count reads")
             .get::<_, i64>(0),
         1,
         "requester disconnect discarded the immutable build request"
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT state FROM request_attachments", &[])
+            .expect("attachment state reads")
+            .get::<_, String>(0),
+        "detached",
+        "requester disconnect left attachment attached"
     );
     let stderr = fixture.finish();
     assert!(
@@ -852,15 +1042,22 @@ fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
     drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
+    let mut client = fixture.database.connect();
     assert_eq!(
-        fixture
-            .database
-            .connect()
+        client
             .query_one("SELECT count(*) FROM build_requests", &[])
             .expect("request count reads")
             .get::<_, i64>(0),
         1,
         "execution failure discarded the immutable build request"
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT state FROM request_attachments", &[])
+            .expect("attachment state reads")
+            .get::<_, String>(0),
+        "detached",
+        "execution failure left attachment attached"
     );
     let stderr = fixture.finish();
     assert!(
