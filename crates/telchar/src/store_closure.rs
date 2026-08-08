@@ -256,3 +256,74 @@ fn configure_child_lifecycle(command: &mut Command) {
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_command: &mut Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "telchar-store-closure-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock follows epoch")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn empty_roots_do_not_spawn_helper() {
+        let helper = temporary_path("empty-helper");
+        let marker = temporary_path("empty-marker");
+        fs::write(
+            &helper,
+            format!("#!/bin/sh\nprintf x > '{}'\n", marker.display()),
+        )
+        .expect("helper writes");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+            .expect("helper permissions set");
+        let mut backend =
+            NixStoreClosureBackend::new(&helper, "unix:///fixed").expect("backend configures");
+
+        assert_eq!(
+            backend.input_closure(&[]).expect("empty closure succeeds"),
+            Vec::<String>::new()
+        );
+        assert!(!marker.exists(), "empty closure spawned helper");
+        let _ = fs::remove_file(helper);
+        let _ = fs::remove_file(marker);
+    }
+
+    #[test]
+    fn duplicate_response_paths_are_sorted_and_deduplicated() {
+        let helper = temporary_path("normalization-helper");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"version":1,"paths":["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a"]}'
+"#,
+        )
+        .expect("helper writes");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+            .expect("helper permissions set");
+        let mut backend =
+            NixStoreClosureBackend::new(&helper, "unix:///fixed").expect("backend configures");
+
+        let closure = backend
+            .input_closure(&[b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_vec()])
+            .expect("closure response normalizes");
+        assert_eq!(
+            closure,
+            vec![
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_owned(),
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b".to_owned(),
+            ]
+        );
+        let _ = fs::remove_file(helper);
+    }
+}
