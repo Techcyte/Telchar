@@ -862,7 +862,12 @@ pub fn create_request_input_leases(
         return Ok(Vec::new());
     }
     let result = create_request_input_leases_inner(database_url, request_id, leases);
-    emit_store_lease_batch_failure(result.as_ref().map(|_| ()), leases.len());
+    emit_store_lease_batch_failure(
+        result.as_ref().map(|_| ()),
+        leases
+            .len()
+            .min(nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES),
+    );
     result
 }
 
