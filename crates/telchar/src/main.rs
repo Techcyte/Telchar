@@ -165,6 +165,7 @@ fn run_daemon() -> io::Result<()> {
         return serve_connection(
             &listener,
             envelope_timeout,
+            &database_url,
             &deployment,
             &transfer_limits,
             &object_admission,
@@ -195,6 +196,7 @@ fn run_daemon() -> io::Result<()> {
                 continue;
             }
         };
+        let database_url = database_url.clone();
         let deployment = deployment.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
@@ -205,6 +207,7 @@ fn run_daemon() -> io::Result<()> {
                 .and_then(|connection| {
                     serve_accepted_connection(
                         connection,
+                        &database_url,
                         &deployment,
                         &transfer_limits,
                         &object_admission,
@@ -229,6 +232,7 @@ fn run_daemon() -> io::Result<()> {
 fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
+    database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
@@ -238,6 +242,7 @@ fn serve_connection(
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
+        database_url,
         deployment,
         transfer_limits,
         object_admission,
@@ -247,8 +252,10 @@ fn serve_connection(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
+    database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
@@ -267,32 +274,73 @@ fn serve_accepted_connection(
             "frontend reported an IPC envelope error",
         ));
     }
+    let session_id = connection.envelope().session_id.clone();
+    let requester_reference =
+        telchar::persistence::requester_reference(&connection.envelope().requester);
+    if let Err(error) =
+        telchar::persistence::open_protocol_session(database_url, &session_id, &requester_reference)
+    {
+        tracing::warn!(
+            event = "database.protocol_session.failed",
+            operation = "open",
+            failure_class = error.failure().as_str(),
+            "protocol session persistence failed"
+        );
+        return Err(invalid("protocol session state operation failed"));
+    }
+    tracing::info!(
+        event = "database.protocol_session.opened",
+        operation = "open",
+        state = "open",
+        "protocol session persisted"
+    );
     tracing::info!(
         event = "ipc.daemon.session_started",
         "authenticated frontend session started"
     );
-    let input = connection.stream_mut().try_clone()?;
-    let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
-    let mut build_executor = telchar::local_executor::executor_from_environment()?;
-    let mut store_export = telchar::store_export::backend_from_environment()?;
-    let mut store_import = telchar::store_import::importer_from_environment()?;
-    let request_id = session_id();
-    telchar::session::run_worker_session(
-        input,
-        connection.stream_mut().try_clone()?,
-        protocol_session_limits(),
-        deployment,
-        &mut store_query,
-        build_executor.as_mut(),
-        store_export.as_mut(),
-        store_import.as_mut(),
-        &request_id,
-        transfer_limits,
-        object_admission,
-        rate_admission,
-        disk_reserve,
-        disk_probe,
-    )
+    let result = (|| {
+        let input = connection.stream_mut().try_clone()?;
+        let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
+        let mut build_executor = telchar::local_executor::executor_from_environment()?;
+        let mut store_export = telchar::store_export::backend_from_environment()?;
+        let mut store_import = telchar::store_import::importer_from_environment()?;
+        telchar::session::run_worker_session(
+            input,
+            connection.stream_mut().try_clone()?,
+            protocol_session_limits(),
+            deployment,
+            &mut store_query,
+            build_executor.as_mut(),
+            store_export.as_mut(),
+            store_import.as_mut(),
+            &session_id,
+            transfer_limits,
+            object_admission,
+            rate_admission,
+            disk_reserve,
+            disk_probe,
+        )
+    })();
+    match telchar::persistence::close_protocol_session(database_url, &session_id) {
+        Ok(_) => tracing::info!(
+            event = "database.protocol_session.closed",
+            operation = "close",
+            state = "closed",
+            "protocol session persisted"
+        ),
+        Err(error) => {
+            tracing::warn!(
+                event = "database.protocol_session.failed",
+                operation = "close",
+                failure_class = error.failure().as_str(),
+                "protocol session persistence failed"
+            );
+            if result.is_ok() {
+                return Err(invalid("protocol session state operation failed"));
+            }
+        }
+    }
+    result
 }
 
 fn prepare_socket_path(socket: &std::path::Path) -> io::Result<()> {

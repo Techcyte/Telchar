@@ -1,7 +1,11 @@
 use std::fmt;
 
-use postgres::{Client, NoTls};
+use std::time::SystemTime;
+
+use postgres::{Client, NoTls, Row};
 use sha2::{Digest, Sha256};
+
+use crate::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
 const MIGRATION_LEDGER_SQL: &str = "\
@@ -77,6 +81,212 @@ pub struct MigrationOutcome {
 
 pub fn migrate(database_url: &str) -> Result<MigrationOutcome, MigrationError> {
     migrate_list(database_url, MIGRATIONS)
+}
+
+pub fn requester_reference(requester: &RequesterMetadata) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"telchar-requester-v1\0");
+    digest.update(requester.credential_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(requester.audit_subject.as_bytes());
+    digest.update(b"\0");
+    digest.update(requester.quota_subject.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProtocolSessionFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    NotFound,
+    InvalidTransition,
+    Query,
+    Commit,
+}
+
+impl ProtocolSessionFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::NotFound => "not-found",
+            Self::InvalidTransition => "invalid-transition",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProtocolSessionError(ProtocolSessionFailure);
+
+impl ProtocolSessionError {
+    pub fn failure(&self) -> ProtocolSessionFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for ProtocolSessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("protocol session state operation failed")
+    }
+}
+
+impl std::error::Error for ProtocolSessionError {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProtocolSessionState {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ProtocolSession {
+    pub session_id: String,
+    pub requester_reference: String,
+    pub state: ProtocolSessionState,
+    pub created_at: SystemTime,
+    pub closed_at: Option<SystemTime>,
+}
+
+pub fn open_protocol_session(
+    database_url: &str,
+    session_id: &str,
+    requester_reference: &str,
+) -> Result<ProtocolSession, ProtocolSessionError> {
+    validate_protocol_session_inputs(database_url, session_id, requester_reference)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let row = transaction
+        .query_one(
+            "INSERT INTO protocol_sessions (session_id, requester_reference, state, created_at, closed_at) VALUES ($1, $2, 'open', transaction_timestamp(), NULL) RETURNING session_id, requester_reference, state, created_at, closed_at",
+            &[&session_id, &requester_reference],
+        )
+        .map_err(|error| ProtocolSessionError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { ProtocolSessionFailure::Conflict } else { ProtocolSessionFailure::Query }))?;
+    let session = decode_protocol_session(&row).map_err(ProtocolSessionError)?;
+    transaction
+        .commit()
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Commit))?;
+    Ok(session)
+}
+
+pub fn close_protocol_session(
+    database_url: &str,
+    session_id: &str,
+) -> Result<ProtocolSession, ProtocolSessionError> {
+    validate_session_id(session_id)?;
+    if database_url.trim().is_empty() {
+        return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let row = transaction
+        .query_opt(
+            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE session_id = $1 AND state = 'open' RETURNING session_id, requester_reference, state, created_at, closed_at",
+            &[&session_id],
+        )
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?;
+    let session = match row {
+        Some(row) => decode_protocol_session(&row).map_err(ProtocolSessionError)?,
+        None => {
+            let state = transaction
+                .query_opt(
+                    "SELECT state FROM protocol_sessions WHERE session_id = $1",
+                    &[&session_id],
+                )
+                .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?;
+            return Err(ProtocolSessionError(match state {
+                None => ProtocolSessionFailure::NotFound,
+                Some(_) => ProtocolSessionFailure::InvalidTransition,
+            }));
+        }
+    };
+    transaction
+        .commit()
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Commit))?;
+    Ok(session)
+}
+
+pub fn read_protocol_session(
+    database_url: &str,
+    session_id: &str,
+) -> Result<Option<ProtocolSession>, ProtocolSessionError> {
+    validate_session_id(session_id)?;
+    if database_url.trim().is_empty() {
+        return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT session_id, requester_reference, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
+            &[&session_id],
+        )
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?
+        .map(|row| decode_protocol_session(&row).map_err(ProtocolSessionError))
+        .transpose()
+}
+
+fn validate_protocol_session_inputs(
+    database_url: &str,
+    session_id: &str,
+    requester_reference: &str,
+) -> Result<(), ProtocolSessionError> {
+    validate_session_id(session_id)?;
+    if database_url.trim().is_empty() || !is_requester_reference(requester_reference) {
+        return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn validate_session_id(session_id: &str) -> Result<(), ProtocolSessionError> {
+    if session_id.is_empty() || session_id.len() > MAX_IPC_COMPONENT_BYTES {
+        return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn is_requester_reference(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSessionFailure> {
+    let session_id: String = row.try_get(0).map_err(|_| ProtocolSessionFailure::Query)?;
+    let requester_reference: String = row.try_get(1).map_err(|_| ProtocolSessionFailure::Query)?;
+    let state: String = row.try_get(2).map_err(|_| ProtocolSessionFailure::Query)?;
+    let created_at: SystemTime = row.try_get(3).map_err(|_| ProtocolSessionFailure::Query)?;
+    let closed_at: Option<SystemTime> =
+        row.try_get(4).map_err(|_| ProtocolSessionFailure::Query)?;
+    let state = match state.as_str() {
+        "open" if closed_at.is_none() && is_requester_reference(&requester_reference) => {
+            ProtocolSessionState::Open
+        }
+        "closed"
+            if closed_at.is_some_and(|closed_at| closed_at >= created_at)
+                && is_requester_reference(&requester_reference) =>
+        {
+            ProtocolSessionState::Closed
+        }
+        _ => return Err(ProtocolSessionFailure::Query),
+    };
+    Ok(ProtocolSession {
+        session_id,
+        requester_reference,
+        state,
+        created_at,
+        closed_at,
+    })
 }
 
 fn migrate_list(
