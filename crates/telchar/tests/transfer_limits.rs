@@ -1,4 +1,5 @@
 use std::io::{Cursor, Read, Write};
+use std::sync::Arc;
 
 use telchar::transfer_limits::{
     LimitedReader, LimitedWriter, ObjectAdmissionState, TransferBudget, TransferLimits,
@@ -29,6 +30,39 @@ fn active_object_capacity_is_directional_and_released() {
     assert!(state.admit_outbound().is_ok());
     drop(inbound);
     assert!(state.admit_inbound().is_ok());
+}
+
+#[test]
+fn active_object_capacity_is_shared_across_threads() {
+    let limits = TransferLimits::parse("1", "1", "1", "1", "1", "1", "1").unwrap();
+    let state = Arc::new(ObjectAdmissionState::new(&limits));
+    let held = state.admit_inbound().expect("first session holds permit");
+    let contender = Arc::clone(&state);
+
+    let rejected = std::thread::spawn(move || contender.admit_inbound().is_err())
+        .join()
+        .expect("contending session does not panic");
+
+    assert!(rejected, "daemon-wide capacity was not shared");
+    drop(held);
+    assert!(state.admit_inbound().is_ok());
+}
+
+#[test]
+fn active_object_permit_releases_during_panic_unwind() {
+    let limits = TransferLimits::parse("1", "1", "1", "1", "1", "1", "1").unwrap();
+    let state = ObjectAdmissionState::new(&limits);
+
+    let unwind = std::panic::catch_unwind({
+        let state = state.clone();
+        move || {
+            let _permit = state.admit_outbound().expect("permit acquired");
+            panic!("backend panicked");
+        }
+    });
+
+    assert!(unwind.is_err());
+    assert!(state.admit_outbound().is_ok());
 }
 
 #[test]

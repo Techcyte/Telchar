@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_MAXIMUM_NAR_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
@@ -83,8 +84,6 @@ fn positive(value: &str) -> io::Result<u64> {
     Ok(value)
 }
 
-use std::sync::{Arc, Mutex};
-
 #[derive(Clone, Debug)]
 pub struct ObjectAdmissionState {
     active: Arc<Mutex<ActiveObjects>>,
@@ -106,7 +105,7 @@ pub struct ObjectSessionCounts {
 
 impl ObjectSessionCounts {
     pub fn admit_inbound(&mut self, limit: u64) -> io::Result<()> {
-        self.inbound = charge_object_count(self.inbound, limit, "inbound").map_err(|_| {
+        self.inbound = charge_object_count(self.inbound, limit).map_err(|_| {
             reject("inbound", "session", limit);
             invalid("NAR inbound session object limit exceeded")
         })?;
@@ -114,7 +113,7 @@ impl ObjectSessionCounts {
     }
 
     pub fn admit_outbound(&mut self, limit: u64) -> io::Result<()> {
-        self.outbound = charge_object_count(self.outbound, limit, "outbound").map_err(|_| {
+        self.outbound = charge_object_count(self.outbound, limit).map_err(|_| {
             reject("outbound", "session", limit);
             invalid("NAR outbound session object limit exceeded")
         })?;
@@ -122,7 +121,7 @@ impl ObjectSessionCounts {
     }
 }
 
-fn charge_object_count(current: u64, limit: u64, _direction: &'static str) -> io::Result<u64> {
+fn charge_object_count(current: u64, limit: u64) -> io::Result<u64> {
     let next = current
         .checked_add(1)
         .ok_or_else(|| invalid("object count exceeded"))?;
@@ -158,7 +157,7 @@ impl ObjectAdmissionState {
         let mut active = self
             .active
             .lock()
-            .expect("object admission mutex is not poisoned");
+            .map_err(|_| io::Error::other("object admission state is unavailable"))?;
         let count = if inbound {
             &mut active.inbound
         } else {
@@ -187,16 +186,19 @@ pub struct ActiveObjectPermit {
 
 impl Drop for ActiveObjectPermit {
     fn drop(&mut self) {
-        let mut active = self
-            .active
-            .lock()
-            .expect("object admission mutex is not poisoned");
+        let Ok(mut active) = self.active.lock() else {
+            tracing::error!(
+                event = "worker.transfer.object_admission_unavailable",
+                "object admission permit could not be released"
+            );
+            return;
+        };
         let count = if self.inbound {
             &mut active.inbound
         } else {
             &mut active.outbound
         };
-        *count -= 1;
+        *count = count.saturating_sub(1);
     }
 }
 
