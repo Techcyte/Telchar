@@ -281,6 +281,19 @@ pub fn export_verified_nar(
     sink: &mut impl Write,
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<VerifiedStoreExport> {
+    let limits = crate::transfer_limits::TransferLimits::from_environment()?;
+    let mut session =
+        crate::transfer_limits::TransferBudget::new(limits.maximum_outbound_session_bytes);
+    export_verified_nar_with_limits(path, sink, backend, &limits, &mut session)
+}
+
+pub fn export_verified_nar_with_limits(
+    path: &Path,
+    sink: &mut impl Write,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+    limits: &crate::transfer_limits::TransferLimits,
+    session: &mut crate::transfer_limits::TransferBudget,
+) -> io::Result<VerifiedStoreExport> {
     let metadata = backend
         .query_path_info(path)
         .map_err(|error| io::Error::other(format!("path info query failed: {error}")))?;
@@ -296,9 +309,11 @@ pub fn export_verified_nar(
         offset: 0,
     };
     let mut writer = ExportWriter { sender };
+    let mut limited_sink =
+        crate::transfer_limits::LimitedWriter::new(sink, limits.maximum_object_bytes, session);
     let fingerprint = std::thread::scope(|scope| {
         let export = scope.spawn(move || backend.export_nar(&request, &mut writer));
-        let parsed = stage_nar(reader, sink);
+        let parsed = stage_nar(reader, &mut limited_sink);
         let exported = export
             .join()
             .map_err(|_| io::Error::other("export backend thread panicked"))?;

@@ -99,6 +99,11 @@ pub fn run_worker_session(
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     request_id: &str,
 ) -> io::Result<()> {
+    let transfer_limits = crate::transfer_limits::TransferLimits::from_environment()?;
+    let mut inbound_budget =
+        crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
+    let mut outbound_budget =
+        crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_outbound_session_bytes);
     let mut cancellation_input = input.try_clone()?;
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
@@ -335,19 +340,23 @@ pub fn run_worker_session(
                     }
                 };
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
-                let verified =
-                    match crate::store_export::export_verified_nar(path, &mut output, store_export)
-                    {
-                        Ok(verified) => verified,
-                        Err(error) => {
-                            tracing::error!(
-                                event = "worker.nar_from_path.failed",
-                                reason = execution_error_reason(&error),
-                                "gateway store NarFromPath failed"
-                            );
-                            return Err(error);
-                        }
-                    };
+                let verified = match crate::store_export::export_verified_nar_with_limits(
+                    path,
+                    &mut output,
+                    store_export,
+                    &transfer_limits,
+                    &mut outbound_budget,
+                ) {
+                    Ok(verified) => verified,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.nar_from_path.failed",
+                            reason = execution_error_reason(&error),
+                            "gateway store NarFromPath failed"
+                        );
+                        return Err(error);
+                    }
+                };
                 output.flush()?;
                 tracing::info!(
                     event = "worker.nar_from_path.completed",
@@ -356,10 +365,17 @@ pub fn run_worker_session(
                 );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
-                let request = match reader
-                    .complete_add_multiple_to_store(negotiated.version, |info, source| {
-                        store_import.import(info, source)
-                    }) {
+                let request = match reader.complete_add_multiple_to_store(
+                    negotiated.version,
+                    |info, source| {
+                        let mut limited = crate::transfer_limits::LimitedReader::new(
+                            source,
+                            transfer_limits.maximum_object_bytes,
+                            &mut inbound_budget,
+                        );
+                        store_import.import(info, &mut limited)
+                    },
+                ) {
                     Ok(request) => request,
                     Err(error) => {
                         tracing::error!(
