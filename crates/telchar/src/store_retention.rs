@@ -51,6 +51,31 @@ pub trait StoreRetentionBackend: Send {
     fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()>;
 }
 
+pub fn reconcile_released_request_leases(
+    database_url: &str,
+    backend: &mut dyn StoreRetentionBackend,
+) -> io::Result<()> {
+    let mut after_lease_id = None;
+    loop {
+        let leases = crate::persistence::read_released_request_leases_page(
+            database_url,
+            after_lease_id.as_deref(),
+            256,
+        )
+        .map_err(|_| retention_error())?;
+        let page_len = leases.len();
+        let entries = leases
+            .iter()
+            .map(|lease| ReleasedRetentionEntry::new(&lease.lease_id, &lease.store_path))
+            .collect::<Vec<_>>();
+        backend.release(&entries)?;
+        if page_len < 256 {
+            return Ok(());
+        }
+        after_lease_id = leases.last().map(|lease| lease.lease_id.clone());
+    }
+}
+
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
     let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").ok();
     let root_directory = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");

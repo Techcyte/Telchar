@@ -143,6 +143,19 @@ fn run_daemon() -> io::Result<()> {
         resulting_schema_version = migration.resulting_version,
         "database migration completed"
     );
+    let mut store_retention = telchar::store_retention::backend_from_environment()?;
+    telchar::store_retention::reconcile_released_request_leases(
+        &database_url,
+        store_retention.as_mut(),
+    )?;
+    tracing::info!(
+        event = "gateway.request_lease_release.completed",
+        operation = "reconcile-release",
+        owner_kind = "request",
+        state = "released",
+        result = "success",
+        "released request roots reconciled"
+    );
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
