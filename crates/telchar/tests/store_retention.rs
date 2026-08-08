@@ -155,7 +155,9 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
         "initial retain fails"
     );
     daemon.collect_garbage().expect("first private GC succeeds");
-    assert!(daemon.is_valid_path(&leased).expect("first GC preserves lease"));
+    assert!(daemon
+        .is_valid_path(&leased)
+        .expect("first GC preserves lease"));
     daemon.stop().expect("fixture daemon stops");
 
     let mut restarted = fixture
@@ -165,11 +167,9 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     restarted
         .collect_garbage()
         .expect("second private GC succeeds");
-    assert!(
-        restarted
-            .is_valid_path(&leased)
-            .expect("second GC preserves lease")
-    );
+    assert!(restarted
+        .is_valid_path(&leased)
+        .expect("second GC preserves lease"));
     assert_eq!(fs::read(&leased).expect("leased content reads"), b"restart");
 
     restarted.stop().expect("restarted daemon stops");

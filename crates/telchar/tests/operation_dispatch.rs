@@ -725,7 +725,10 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
         "unix:///fixed-gateway.sock",
         [
             ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
-            ("TELCHAR_NIX_STORE_CLOSURE", closure_helper.display().to_string()),
+            (
+                "TELCHAR_NIX_STORE_CLOSURE",
+                closure_helper.display().to_string(),
+            ),
         ],
     );
     fixture
@@ -746,7 +749,10 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     assert_eq!(read_string(&mut output), "Error");
     let _level = read_integer(&mut output);
     assert_eq!(read_string(&mut output), "Error");
-    assert_eq!(read_string(&mut output), "store lease state operation failed");
+    assert_eq!(
+        read_string(&mut output),
+        "store lease state operation failed"
+    );
     assert_eq!(read_integer(&mut output), 0, "error has no position");
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
     drop(input);
@@ -757,7 +763,10 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     let mut database = fixture.database.connect();
     assert_eq!(
         database
-            .query_one("SELECT count(*) FROM store_leases WHERE purpose = 'derivation'", &[])
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE purpose = 'derivation'",
+                &[]
+            )
             .expect("derivation lease count reads")
             .get::<_, i64>(0),
         1,
@@ -765,7 +774,10 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     );
     assert_eq!(
         database
-            .query_one("SELECT count(*) FROM store_leases WHERE purpose = 'input'", &[])
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE purpose = 'input'",
+                &[]
+            )
             .expect("input lease count reads")
             .get::<_, i64>(0),
         0,
