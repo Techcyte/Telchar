@@ -5,6 +5,31 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::postgres::PostgresFixture;
+
+#[test]
+fn serve_stdio_does_not_require_database_configuration() {
+    let fixture = Fixture::start("database-free");
+    let output = fixture
+        .nix_command()
+        .env_remove("TELCHAR_DATABASE_URL")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            "ssh-ng://telchar-database-free-test",
+            "store",
+            "info",
+        ])
+        .output()
+        .expect("pinned Nix client runs");
+
+    assert!(output.status.success(), "pinned Nix failed: {output:?}");
+    fixture.finish();
+}
+
 #[test]
 fn pinned_nix_completes_worker_handshake_with_serve_stdio() {
     let fixture = Fixture::start("handshake");
@@ -66,6 +91,7 @@ struct Fixture {
     root: PathBuf,
     socket: PathBuf,
     daemon: Child,
+    _database: PostgresFixture,
 }
 
 impl Fixture {
@@ -84,7 +110,10 @@ impl Fixture {
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700))
             .expect("SSH shim is executable");
         let socket = root.join("daemon.sock");
+        let database = PostgresFixture::start();
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env("TELCHAR_DATABASE_URL", database.url())
+            .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .args([
@@ -104,6 +133,7 @@ impl Fixture {
             root,
             socket,
             daemon,
+            _database: database,
         }
     }
 

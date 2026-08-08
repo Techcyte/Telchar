@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod local_executor;
 pub mod nar;
 pub mod nix_fixture;
+pub mod persistence;
 pub mod session;
 pub mod store_export;
 pub mod store_import;

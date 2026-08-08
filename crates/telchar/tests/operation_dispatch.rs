@@ -12,6 +12,10 @@ use nix_worker_protocol::{
 };
 use telchar::nix_fixture::{NixFixture, TrustMode};
 
+mod support;
+
+use support::postgres::PostgresFixture;
+
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
@@ -717,6 +721,7 @@ struct FrontendFixture {
     root: PathBuf,
     frontend: Child,
     daemon: Child,
+    _database: PostgresFixture,
 }
 
 impl FrontendFixture {
@@ -772,6 +777,7 @@ impl FrontendFixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("fixture root permissions set");
         let socket = root.join("daemon.sock");
+        let database = PostgresFixture::start();
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command
             .args([
@@ -786,6 +792,7 @@ impl FrontendFixture {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         daemon_command
+            .env("TELCHAR_DATABASE_URL", database.url())
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_NIX_STORE_BUILD")
@@ -824,6 +831,7 @@ impl FrontendFixture {
             root,
             frontend,
             daemon,
+            _database: database,
         }
     }
 

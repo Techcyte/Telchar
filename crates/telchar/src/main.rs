@@ -118,6 +118,31 @@ fn run_daemon() -> io::Result<()> {
     let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
+    let database_url = required_database_url()?;
+    tracing::info!(
+        event = "database.migration.started",
+        latest_migration_version = 1_i64,
+        "database migration started"
+    );
+    let migration = match telchar::persistence::migrate(&database_url) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::error!(
+                event = "database.migration.failed",
+                failure_class = error.failure().as_str(),
+                "database migration failed"
+            );
+            return Err(invalid("database migration failed"));
+        }
+    };
+    tracing::info!(
+        event = "database.migration.completed",
+        latest_migration_version = 1_i64,
+        previously_applied_count = migration.previously_applied,
+        applied_this_run_count = migration.applied_this_run,
+        resulting_schema_version = migration.resulting_version,
+        "database migration completed"
+    );
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
@@ -383,6 +408,15 @@ fn required_path(name: &'static str) -> io::Result<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .ok_or_else(|| invalid("required frontend environment is absent"))
+}
+
+fn required_database_url() -> io::Result<String> {
+    let value =
+        std::env::var("TELCHAR_DATABASE_URL").map_err(|_| invalid("database migration failed"))?;
+    if value.trim().is_empty() {
+        return Err(invalid("database migration failed"));
+    }
+    Ok(value)
 }
 
 fn required_string(name: &'static str) -> io::Result<String> {

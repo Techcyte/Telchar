@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::postgres::PostgresFixture;
+
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
 use telchar::ipc::{IpcEnvelope, IpcError, IpcListener, RequesterMetadata, IPC_VERSION};
 
@@ -177,12 +181,13 @@ fn daemon_secures_socket_path_and_cleans_up_after_once() {
 fn second_daemon_cannot_replace_live_socket() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");
-    let mut first = daemon_command(&socket, 1_000, false)
+    let database = PostgresFixture::start();
+    let mut first = daemon_command(&socket, 1_000, false, database.url())
         .spawn()
         .expect("first daemon starts");
     wait_for_socket(&socket, &mut first);
 
-    let mut second = daemon_command(&socket, 1_000, true)
+    let mut second = daemon_command(&socket, 1_000, true, database.url())
         .spawn()
         .expect("second daemon runs");
     let output = wait_with_deadline(&mut second, Duration::from_millis(500));
@@ -219,12 +224,74 @@ fn daemon_refuses_to_replace_non_socket_path() {
         .expect("fixture root permissions set");
     let socket = root.join("daemon.sock");
     fs::write(&socket, b"preserve").expect("sentinel writes");
-    let output = daemon_command(&socket, 1_000, true)
+    let database = PostgresFixture::start();
+    let output = daemon_command(&socket, 1_000, true, database.url())
         .output()
         .expect("daemon command runs");
     assert!(!output.status.success(), "daemon replaced non-socket path");
     assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_rejects_missing_database_before_socket_preparation() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
+    let socket = root.join("daemon.sock");
+    fs::write(&socket, b"preserve").expect("sentinel writes");
+
+    let output = daemon_command_without_database(&socket, 1_000, true)
+        .output()
+        .expect("daemon command runs");
+
+    assert!(
+        !output.status.success(),
+        "daemon accepts missing database URL"
+    );
+    assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr)
+            .matches("database migration failed")
+            .count(),
+        1
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_rejects_empty_and_unreachable_database_before_socket_preparation() {
+    for database_url in [
+        "",
+        "postgresql://telchar@localhost:1/telchar",
+        "not-a-postgresql-url",
+    ] {
+        let root = temporary_root();
+        fs::create_dir(&root).expect("fixture root creates");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("fixture root permissions set");
+        let socket = root.join("daemon.sock");
+        fs::write(&socket, b"preserve").expect("sentinel writes");
+        let output = daemon_command(&socket, 1_000, true, database_url)
+            .output()
+            .expect("daemon command runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !output.status.success(),
+            "daemon accepts invalid database configuration"
+        );
+        assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+        assert!(stderr.contains("database migration failed"), "{stderr}");
+        if !database_url.is_empty() {
+            assert!(
+                !stderr.contains(database_url),
+                "database URL leaked: {stderr}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]
@@ -234,7 +301,8 @@ fn daemon_reports_startup_failure_without_panicking() {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
         .expect("fixture root permissions set");
     let socket = root.join("daemon.sock");
-    let output = daemon_command(&socket, 1_000, true)
+    let database = PostgresFixture::start();
+    let output = daemon_command(&socket, 1_000, true, database.url())
         .output()
         .expect("daemon command runs");
     assert!(!output.status.success());
@@ -254,7 +322,8 @@ fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))
         .expect("fixture root permissions set");
     let socket = root.join("daemon.sock");
-    let mut daemon = daemon_command(&socket, 1_000, true)
+    let database = PostgresFixture::start();
+    let mut daemon = daemon_command(&socket, 1_000, true, database.url())
         .spawn()
         .expect("daemon command runs");
     let output = wait_with_deadline(&mut daemon, Duration::from_millis(500));
@@ -279,11 +348,13 @@ fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
 fn rejected_peer_does_not_terminate_persistent_daemon() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");
+    let database = PostgresFixture::start();
     let mut daemon = daemon_command_with_uid(
         &socket,
         1_000,
         false,
         rustix::process::getuid().as_raw().wrapping_add(1),
+        database.url(),
     )
     .spawn()
     .expect("daemon starts");
@@ -303,6 +374,7 @@ struct Fixture {
     root: PathBuf,
     socket: PathBuf,
     daemon: Child,
+    _database: PostgresFixture,
 }
 
 impl Fixture {
@@ -325,7 +397,8 @@ impl Fixture {
     fn start_mode(envelope_timeout_ms: u64, once: bool, session_limit: usize) -> Self {
         let root = temporary_root();
         let socket = root.join("daemon.sock");
-        let mut daemon = daemon_command(&socket, envelope_timeout_ms, once)
+        let database = PostgresFixture::start();
+        let mut daemon = daemon_command(&socket, envelope_timeout_ms, once, database.url())
             .env("TELCHAR_IPC_MAX_SESSIONS", session_limit.to_string())
             .spawn()
             .expect("daemon starts");
@@ -334,6 +407,7 @@ impl Fixture {
             root,
             socket,
             daemon,
+            _database: database,
         }
     }
 
@@ -444,13 +518,44 @@ fn complete_handshake(frontend: &mut Child) {
     assert!(frontend.wait().expect("frontend exits").success());
 }
 
-fn daemon_command(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Command {
+fn daemon_command(
+    socket: &Path,
+    envelope_timeout_ms: u64,
+    once: bool,
+    database_url: &str,
+) -> Command {
     daemon_command_with_uid(
         socket,
         envelope_timeout_ms,
         once,
         rustix::process::getuid().as_raw(),
+        database_url,
     )
+}
+
+fn daemon_command_without_database(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+    command.args([
+        "daemon",
+        "--socket",
+        socket.to_str().expect("UTF-8 socket path"),
+        "--frontend-uid",
+        &rustix::process::getuid().as_raw().to_string(),
+    ]);
+    if once {
+        command.arg("--once");
+    }
+    command
+        .env("TELCHAR_SYSTEM", "x86_64-linux")
+        .env("TELCHAR_SUPPORTED_FEATURES", "")
+        .env(
+            "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
+            envelope_timeout_ms.to_string(),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 fn daemon_command_with_uid(
@@ -458,6 +563,7 @@ fn daemon_command_with_uid(
     envelope_timeout_ms: u64,
     once: bool,
     frontend_uid: u32,
+    database_url: &str,
 ) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
     command.args([
@@ -471,6 +577,8 @@ fn daemon_command_with_uid(
         command.arg("--once");
     }
     command
+        .env("TELCHAR_DATABASE_URL", database_url)
+        .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
         .env("TELCHAR_SYSTEM", "x86_64-linux")
         .env("TELCHAR_SUPPORTED_FEATURES", "")
         .env(

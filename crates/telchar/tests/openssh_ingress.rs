@@ -6,6 +6,10 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::postgres::PostgresFixture;
+
 #[test]
 fn arbitrary_ssh_command_is_replaced_by_forced_command() {
     let fixture = Fixture::start();
@@ -244,6 +248,7 @@ struct Fixture {
     daemon: Child,
     sshd: Child,
     nix: PathBuf,
+    _database: PostgresFixture,
 }
 
 impl Fixture {
@@ -257,8 +262,11 @@ impl Fixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("fixture root permissions set");
         let socket = root.join("daemon.sock");
+        let database = PostgresFixture::start();
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_telchar"));
         let mut daemon = Command::new(&binary)
+            .env("TELCHAR_DATABASE_URL", database.url())
+            .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .args([
@@ -392,6 +400,7 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
             daemon,
             sshd: sshd_child,
             nix,
+            _database: database,
         }
     }
 

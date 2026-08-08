@@ -249,6 +249,7 @@
         TELCHAR_NIX_STORE_PROMOTE = "${nixStorePromote}/libexec/telchar/nix-store-promote";
         packages = [
           pkgs.openssh
+          pkgs.postgresql
           pkgs.cargo
           pkgs.clippy
           pkgs.rustc
