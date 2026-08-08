@@ -1778,3 +1778,133 @@ fn request_input_lease_batch_rolls_back_deferred_commit_failure() {
         0
     );
 }
+
+#[test]
+fn request_lease_release_rejects_statement_failure_without_mutation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(fixture.url(), "release-failure-session", requester)
+        .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "release-failure-request",
+        "/nix/store/11111111111111111111111111111111-release-failure.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::attach_request(
+        fixture.url(),
+        "release-failure-session",
+        "release-failure-request",
+    )
+    .expect("request attaches");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "release-failure-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "release-failure-request",
+        "/nix/store/11111111111111111111111111111111-release-failure.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+    fixture
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_request_lease_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject request lease release'; END $$; CREATE TRIGGER reject_request_lease_release BEFORE UPDATE ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_request_lease_release();",
+        )
+        .expect("failure trigger installs");
+
+    assert_eq!(
+        telchar::persistence::detach_request_and_release_leases(
+            fixture.url(),
+            "release-failure-session",
+            "release-failure-request",
+        )
+        .expect_err("lease update rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Query
+    );
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "release-failure-session",
+            "release-failure-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Attached
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "release-failure-derivation")
+            .expect("lease reads")
+            .expect("lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+}
+
+#[test]
+fn request_lease_release_detaches_and_releases_complete_active_set_atomically() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(fixture.url(), "release-session", requester)
+        .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "release-request",
+        "/nix/store/11111111111111111111111111111111-release.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::attach_request(fixture.url(), "release-session", "release-request")
+        .expect("request attaches");
+    for (lease_id, store_path, purpose) in [
+        (
+            "release-derivation",
+            "/nix/store/11111111111111111111111111111111-release.drv",
+            telchar::persistence::StoreLeasePurpose::Derivation,
+        ),
+        (
+            "release-input",
+            "/nix/store/22222222222222222222222222222222-release-input",
+            telchar::persistence::StoreLeasePurpose::Input,
+        ),
+    ] {
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            lease_id,
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "release-request",
+            store_path,
+            purpose,
+        )
+        .expect("lease persists");
+    }
+
+    let released = telchar::persistence::detach_request_and_release_leases(
+        fixture.url(),
+        "release-session",
+        "release-request",
+    )
+    .expect("complete request lease set releases");
+
+    assert_eq!(released.leases.len(), 2);
+    assert!(released.leases.iter().all(|lease| {
+        lease.state == telchar::persistence::StoreLeaseState::Released
+            && lease.released_at.is_some()
+    }));
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "release-session",
+            "release-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+}

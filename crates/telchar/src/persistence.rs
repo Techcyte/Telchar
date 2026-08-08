@@ -949,6 +949,200 @@ fn emit_store_lease_batch_failure(result: Result<(), &StoreLeaseError>, path_cou
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ReleasedRequestLeases {
+    pub leases: Vec<StoreLeaseRecord>,
+}
+
+pub fn detach_request_and_release_leases(
+    database_url: &str,
+    session_id: &str,
+    request_id: &str,
+) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    validate_request_lease_release_inputs(database_url, session_id, request_id)?;
+    let result = detach_request_and_release_leases_inner(database_url, session_id, request_id);
+    emit_request_lease_release_result(
+        "detach-release",
+        result.as_ref().map(|released| released.leases.len()),
+        &result,
+    );
+    result
+}
+
+fn detach_request_and_release_leases_inner(
+    database_url: &str,
+    session_id: &str,
+    request_id: &str,
+) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let request = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match request {
+        None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+        Some(row) => {
+            decode_build_request(&row).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        }
+    };
+    let attachment = transaction
+        .query_opt(
+            "SELECT session_id, request_id, state, attached_at, detached_at FROM request_attachments WHERE session_id = $1 AND request_id = $2 FOR UPDATE",
+            &[&session_id, &request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match attachment {
+        None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+        Some(row) => match decode_request_attachment(&row) {
+            Ok(RequestAttachment {
+                state: RequestAttachmentState::Attached,
+                ..
+            }) => {}
+            Ok(_) => return Err(StoreLeaseError(StoreLeaseFailure::InvalidState)),
+            Err(_) => return Err(StoreLeaseError(StoreLeaseFailure::Query)),
+        },
+    }
+    let locked = lock_active_request_leases(&mut transaction, request_id)?;
+    let attachment = transaction
+        .query_one(
+            "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at",
+            &[&session_id, &request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match decode_request_attachment(&attachment) {
+        Ok(RequestAttachment {
+            state: RequestAttachmentState::Detached,
+            ..
+        }) => {}
+        _ => return Err(StoreLeaseError(StoreLeaseFailure::Query)),
+    }
+    let released = release_locked_request_leases(&mut transaction, request_id, &locked)?;
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    Ok(ReleasedRequestLeases { leases: released })
+}
+
+fn lock_active_request_leases(
+    transaction: &mut postgres::Transaction<'_>,
+    request_id: &str,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let rows = transaction
+        .query(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 ORDER BY lease_id FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let leases = rows
+        .iter()
+        .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
+        .collect::<Result<Vec<_>, _>>()?;
+    if leases
+        .iter()
+        .filter(|lease| lease.purpose == StoreLeasePurpose::Derivation)
+        .count()
+        != 1
+        || leases.is_empty()
+        || leases.iter().any(|lease| {
+            lease.owner_kind != StoreLeaseOwnerKind::Request
+                || lease.owner_id != request_id
+                || lease.state != StoreLeaseState::Active
+                || !matches!(
+                    lease.purpose,
+                    StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+                )
+        })
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Query));
+    }
+    Ok(leases)
+}
+
+fn release_locked_request_leases(
+    transaction: &mut postgres::Transaction<'_>,
+    request_id: &str,
+    locked: &[StoreLeaseRecord],
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let rows = transaction
+        .query(
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE owner_kind = 'request' AND owner_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let mut released = rows
+        .iter()
+        .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
+        .collect::<Result<Vec<_>, _>>()?;
+    released.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
+    if released.len() != locked.len()
+        || released.iter().zip(locked).any(|(released, locked)| {
+            released.lease_id != locked.lease_id
+                || released.owner_kind != locked.owner_kind
+                || released.owner_id != locked.owner_id
+                || released.store_path != locked.store_path
+                || released.purpose != locked.purpose
+                || released.state != StoreLeaseState::Released
+                || released.created_at != locked.created_at
+        })
+        || released
+            .iter()
+            .any(|lease| lease.released_at != released[0].released_at)
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Query));
+    }
+    Ok(released)
+}
+
+fn validate_request_lease_release_inputs(
+    database_url: &str,
+    session_id: &str,
+    request_id: &str,
+) -> Result<(), StoreLeaseError> {
+    if database_url.trim().is_empty()
+        || session_id.is_empty()
+        || session_id.len() > MAX_IPC_COMPONENT_BYTES
+        || request_id.is_empty()
+        || request_id.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn emit_request_lease_release_result(
+    operation: &'static str,
+    path_count: Result<usize, &StoreLeaseError>,
+    result: &Result<ReleasedRequestLeases, StoreLeaseError>,
+) {
+    match result {
+        Ok(_) => tracing::info!(
+            event = "database.request_lease_release.completed",
+            operation,
+            owner_kind = "request",
+            state = "released",
+            path_count = path_count.unwrap_or(0),
+            result = "success",
+            "request leases released"
+        ),
+        Err(error) => tracing::warn!(
+            event = "database.request_lease_release.failed",
+            operation,
+            owner_kind = "request",
+            state = "released",
+            path_count = 0_usize,
+            result = "failure",
+            failure_class = error.failure().as_str(),
+            "request lease release failed"
+        ),
+    }
+}
+
 pub fn release_store_lease(
     database_url: &str,
     lease_id: &str,
