@@ -434,6 +434,72 @@ fn build_derivation_streams_helper_logs_before_success_result() {
 }
 
 #[test]
+fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-cancel-helper-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let pid_path = root.join("pid");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$$\" > '{}'\ncat >/dev/null\nsleep 30\n",
+            pid_path.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !pid_path.exists() {
+        assert!(Instant::now() < deadline, "helper did not record PID");
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    child.kill().expect("frontend terminates");
+    child.wait().expect("frontend reaps");
+    drop(input);
+    drop(output);
+
+    let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .expect("process liveness query runs")
+            .success();
+        if !alive {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "disconnected helper remains alive"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.failed"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
     let mut fixture = FrontendFixture::spawn(None);
     let child = &mut fixture.frontend;

@@ -185,6 +185,45 @@ fn log_writer_failure_kills_and_reaps_the_helper() {
 }
 
 #[test]
+fn cancellation_kills_and_reaps_a_silent_helper() {
+    let root = unique_root("cancelled");
+    fs::create_dir_all(&root).expect("fixture root creates");
+    let helper = root.join("cancelled-helper");
+    let pid_path = root.join("pid");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$$\" > '{}'\ncat >/dev/null\nsleep 30\n",
+            pid_path.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
+    let build = admitted_request();
+    let request = LocalExecutionRequest::new("cancelled", &build, Duration::from_secs(5))
+        .expect("execution request is valid");
+    let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+        .expect("executor config is valid");
+
+    let mut cancellation_checks = 0;
+    let error = executor
+        .execute_with_cancellation(&request, &mut |_| Ok(()), &mut || {
+            cancellation_checks += 1;
+            Ok(cancellation_checks > 1)
+        })
+        .expect_err("cancelled request must stop execution");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
+    let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
+    let status = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .expect("process liveness query runs");
+    assert!(!status.success(), "cancelled helper remains alive");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn executor_rejects_oversized_or_malformed_helper_output() {
     for label in ["oversized", "malformed"] {
         let root = unique_root(label);

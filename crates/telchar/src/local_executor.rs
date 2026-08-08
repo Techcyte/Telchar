@@ -100,10 +100,11 @@ pub trait BuildExecutor {
         &mut self,
         request: &LocalExecutionRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<LocalBuildResult>;
 
     fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
-        self.execute_with_logs(request, &mut |_| Ok(()))
+        self.execute_with_logs(request, &mut |_| Ok(()), &mut || Ok(false))
     }
 
     fn helper(&self) -> Option<&Path> {
@@ -122,6 +123,7 @@ impl BuildExecutor for UnavailableBuildExecutor {
         &mut self,
         _request: &LocalExecutionRequest<'_>,
         _logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        _cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<LocalBuildResult> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -166,6 +168,7 @@ impl NixStoreExecutor {
         &mut self,
         request: &LocalExecutionRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<LocalBuildResult> {
         let payload = encode_request(request)?;
         let mut command = std::process::Command::new(&self.helper);
@@ -216,6 +219,15 @@ impl NixStoreExecutor {
                 let _ = join_reader(stdout_reader, "stdout");
                 let _ = join_log_reader(stderr_reader);
                 return Err(error);
+            }
+            if cancelled()? {
+                child.kill_and_reap();
+                let _ = join_reader(stdout_reader, "stdout");
+                let _ = join_log_reader(stderr_reader);
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "build requester disconnected",
+                ));
             }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -284,8 +296,9 @@ impl BuildExecutor for NixStoreExecutor {
         &mut self,
         request: &LocalExecutionRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<LocalBuildResult> {
-        self.execute_request(request, logs)
+        self.execute_request(request, logs, cancelled)
     }
 
     fn helper(&self) -> Option<&Path> {
@@ -307,7 +320,16 @@ impl NixStoreExecutor {
         request: &LocalExecutionRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<LocalBuildResult> {
-        BuildExecutor::execute_with_logs(self, request, logs)
+        BuildExecutor::execute_with_logs(self, request, logs, &mut || Ok(false))
+    }
+
+    pub fn execute_with_cancellation(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<LocalBuildResult> {
+        BuildExecutor::execute_with_logs(self, request, logs, cancelled)
     }
 }
 

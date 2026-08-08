@@ -27,6 +27,36 @@ impl SessionInput {
     }
 }
 
+fn requester_disconnected(stream: &mut std::os::unix::net::UnixStream) -> io::Result<bool> {
+    let mut descriptor = [rustix::event::PollFd::new(
+        &*stream,
+        rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
+    )];
+    let timeout = rustix::time::Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    rustix::event::poll(&mut descriptor, Some(&timeout))?;
+    let events = descriptor[0].revents();
+    if events.contains(rustix::event::PollFlags::HUP) {
+        return Ok(true);
+    }
+    if events.contains(rustix::event::PollFlags::IN) {
+        let mut byte = [std::mem::MaybeUninit::uninit(); 1];
+        match rustix::net::recv(
+            &*stream,
+            &mut byte,
+            rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
+        ) {
+            Ok((_, 0)) => return Ok(true),
+            Ok(_) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    Ok(false)
+}
+
 impl io::Read for SessionInput {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let timeout = self
@@ -69,6 +99,7 @@ pub fn run_worker_session(
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     request_id: &str,
 ) -> io::Result<()> {
+    let mut cancellation_input = input.try_clone()?;
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
     let negotiated = reader.perform_server_handshake(&mut output, &[])?;
@@ -145,15 +176,19 @@ pub fn run_worker_session(
                     &admitted,
                     Duration::from_secs(30 * 60),
                 )?;
-                let result = match build_executor.execute_with_logs(&execution, &mut |chunk| {
-                    nix_worker_protocol::write_stderr_frame(
-                        &mut output,
-                        nix_worker_protocol::StderrFrame::Next {
-                            message: chunk.to_vec(),
-                        },
-                    )?;
-                    output.flush()
-                }) {
+                let result = match build_executor.execute_with_logs(
+                    &execution,
+                    &mut |chunk| {
+                        nix_worker_protocol::write_stderr_frame(
+                            &mut output,
+                            nix_worker_protocol::StderrFrame::Next {
+                                message: chunk.to_vec(),
+                            },
+                        )?;
+                        output.flush()
+                    },
+                    &mut || requester_disconnected(&mut cancellation_input),
+                ) {
                     Ok(result) => result,
                     Err(error) => {
                         let unavailable = error.kind() == io::ErrorKind::Unsupported;
@@ -166,6 +201,9 @@ pub fn run_worker_session(
                             reason = execution_error_reason(&error),
                             "BuildDerivation execution failed"
                         );
+                        if error.kind() == io::ErrorKind::ConnectionAborted {
+                            return Ok(());
+                        }
                         return reject(
                             &mut output,
                             if unavailable {
