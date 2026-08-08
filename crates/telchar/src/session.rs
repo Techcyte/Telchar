@@ -145,7 +145,15 @@ pub fn run_worker_session(
                     &admitted,
                     Duration::from_secs(30 * 60),
                 )?;
-                let result = match build_executor.execute(&execution) {
+                let result = match build_executor.execute_with_logs(&execution, &mut |chunk| {
+                    nix_worker_protocol::write_stderr_frame(
+                        &mut output,
+                        nix_worker_protocol::StderrFrame::Next {
+                            message: chunk.to_vec(),
+                        },
+                    )?;
+                    output.flush()
+                }) {
                     Ok(result) => result,
                     Err(error) => {
                         let unavailable = error.kind() == io::ErrorKind::Unsupported;

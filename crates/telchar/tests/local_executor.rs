@@ -80,6 +80,111 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
 }
 
 #[test]
+fn executor_streams_bounded_helper_logs_before_returning_result() {
+    let root = unique_root("logs");
+    fs::create_dir_all(&root).expect("fixture root creates");
+    let helper = root.join("log-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf 'first log\\n' >&2\nprintf 'second log\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"{}\"]]}}\\n'\n",
+            String::from_utf8_lossy(OUTPUT_PATH),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
+    let build = admitted_request();
+    let request = LocalExecutionRequest::new("logs", &build, Duration::from_secs(5))
+        .expect("execution request is valid");
+    let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+        .expect("executor config is valid");
+    let mut logs = Vec::new();
+
+    let result = executor
+        .execute_with_logs(&request, &mut |chunk| {
+            logs.extend_from_slice(chunk);
+            Ok(())
+        })
+        .expect("fake helper succeeds");
+
+    assert_eq!(result.status(), LocalBuildStatus::Built);
+    assert_eq!(logs, b"first log\nsecond log\n");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn executor_streams_logs_larger_than_the_result_limit() {
+    let root = unique_root("large-logs");
+    fs::create_dir_all(&root).expect("fixture root creates");
+    let helper = root.join("log-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nhead -c 131072 /dev/zero | tr '\\0' x >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"{}\"]]}}\\n'\n",
+            String::from_utf8_lossy(OUTPUT_PATH),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
+    let build = admitted_request();
+    let request = LocalExecutionRequest::new("large-logs", &build, Duration::from_secs(5))
+        .expect("execution request is valid");
+    let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+        .expect("executor config is valid");
+    let mut log_bytes = 0;
+
+    executor
+        .execute_with_logs(&request, &mut |chunk| {
+            log_bytes += chunk.len();
+            Ok(())
+        })
+        .expect("large logs stream without retained-output failure");
+
+    assert_eq!(log_bytes, 131072);
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn log_writer_failure_kills_and_reaps_the_helper() {
+    let root = unique_root("log-writer-failure");
+    fs::create_dir_all(&root).expect("fixture root creates");
+    let helper = root.join("log-helper");
+    let pid_path = root.join("pid");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$$\" > '{}'\ncat >/dev/null\nprintf 'build log\\n' >&2\nsleep 30\n",
+            pid_path.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
+    let build = admitted_request();
+    let request = LocalExecutionRequest::new("log-writer-failure", &build, Duration::from_secs(5))
+        .expect("execution request is valid");
+    let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+        .expect("executor config is valid");
+
+    let error = executor
+        .execute_with_logs(&request, &mut |_| {
+            Err(std::io::Error::other("writer closed"))
+        })
+        .expect_err("log writer failure must fail execution");
+
+    assert_eq!(error.to_string(), "writer closed");
+    let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
+    let status = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .expect("process liveness query runs");
+    assert!(
+        !status.success(),
+        "helper remains alive after log writer failure"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn executor_rejects_oversized_or_malformed_helper_output() {
     for label in ["oversized", "malformed"] {
         let root = unique_root(label);

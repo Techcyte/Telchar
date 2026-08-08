@@ -390,6 +390,50 @@ fn incomplete_nonempty_add_multiple_to_store_fails_before_first_item_body() {
 }
 
 #[test]
+fn build_derivation_streams_helper_logs_before_success_result() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-log-helper-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    fs::write(
+        &helper,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf 'build-log-line\\n' >&2\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
+    assert_eq!(read_string(&mut output), "build-log-line\n");
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.completed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("build-log-line"), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
     let mut fixture = FrontendFixture::spawn(None);
     let child = &mut fixture.frontend;
@@ -554,7 +598,8 @@ impl FrontendFixture {
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_NIX_STORE_BUILD")
-            .env_remove("TELCHAR_NIX_STORE_EXPORT");
+            .env_remove("TELCHAR_NIX_STORE_EXPORT")
+            .env_remove("TELCHAR_NIX_STORE_PROMOTE");
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }

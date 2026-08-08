@@ -149,7 +149,7 @@
                   name = "telchar-gate-3-contract";
                   system = builtins.currentSystem;
                   builder = "/bin/sh";
-                  args = [ "-c" "test -e $source; printf telchar-source-input > $out" ];
+                  args = [ "-c" "printf telchar-gate-3-build-log >&2; test -e $source; printf telchar-source-input > $out" ];
                   inherit source;
                 }
               '';
@@ -172,6 +172,7 @@
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
                 stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 60 nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1 || { cat /tmp/remote-build.out >&2; exit 1; }")
+                stock_client.succeed("grep -q 'telchar-gate-3-build-log' /tmp/remote-build.out || { cat /tmp/remote-build.out >&2; exit 1; }")
                 output_path = stock_client.succeed("tail -n 1 /tmp/remote-build.out").strip()
                 stock_client.succeed("test \"$(cat " + output_path + ")\" = telchar-source-input")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_valid_paths.completed'")

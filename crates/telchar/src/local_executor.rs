@@ -96,7 +96,15 @@ pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
 }
 
 pub trait BuildExecutor {
-    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult>;
+    fn execute_with_logs(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<LocalBuildResult>;
+
+    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+        self.execute_with_logs(request, &mut |_| Ok(()))
+    }
 
     fn helper(&self) -> Option<&Path> {
         None
@@ -110,7 +118,11 @@ pub trait BuildExecutor {
 pub struct UnavailableBuildExecutor;
 
 impl BuildExecutor for UnavailableBuildExecutor {
-    fn execute(&mut self, _request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
+    fn execute_with_logs(
+        &mut self,
+        _request: &LocalExecutionRequest<'_>,
+        _logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<LocalBuildResult> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "BuildDerivation execution is unavailable",
@@ -153,6 +165,7 @@ impl NixStoreExecutor {
     fn execute_request(
         &mut self,
         request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<LocalBuildResult> {
         let payload = encode_request(request)?;
         let mut command = std::process::Command::new(&self.helper);
@@ -177,15 +190,16 @@ impl NixStoreExecutor {
             .take()
             .ok_or_else(|| io::Error::other("build helper stderr not configured"))?;
         let (reader_error_sender, reader_error_receiver) = std::sync::mpsc::channel();
-        let stdout_reader = spawn_reader(stdout, reader_error_sender.clone());
-        let stderr_reader = spawn_reader(stderr, reader_error_sender);
+        let stdout_reader = spawn_reader(stdout, reader_error_sender);
+        let (log_sender, log_receiver) = std::sync::mpsc::sync_channel(8);
+        let stderr_reader = spawn_log_reader(stderr, log_sender);
 
         let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
         drop(stdin);
         if let Err(error) = write_result {
             child.kill_and_reap();
             join_reader(stdout_reader, "stdout")?;
-            join_reader(stderr_reader, "stderr")?;
+            join_log_reader(stderr_reader)?;
             return Err(error);
         }
 
@@ -194,7 +208,13 @@ impl NixStoreExecutor {
             if let Ok(error) = reader_error_receiver.try_recv() {
                 child.kill_and_reap();
                 let _ = join_reader(stdout_reader, "stdout");
-                let _ = join_reader(stderr_reader, "stderr");
+                let _ = join_log_reader(stderr_reader);
+                return Err(error);
+            }
+            if let Err(error) = forward_logs(&log_receiver, logs) {
+                child.kill_and_reap();
+                let _ = join_reader(stdout_reader, "stdout");
+                let _ = join_log_reader(stderr_reader);
                 return Err(error);
             }
             match child.try_wait() {
@@ -202,13 +222,13 @@ impl NixStoreExecutor {
                 Err(error) => {
                     child.kill_and_reap();
                     let _ = join_reader(stdout_reader, "stdout");
-                    let _ = join_reader(stderr_reader, "stderr");
+                    let _ = join_log_reader(stderr_reader);
                     return Err(error);
                 }
                 Ok(None) if Instant::now() >= deadline => {
                     child.kill_and_reap();
                     join_reader(stdout_reader, "stdout")?;
-                    join_reader(stderr_reader, "stderr")?;
+                    join_log_reader(stderr_reader)?;
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         "build helper timed out",
@@ -218,21 +238,16 @@ impl NixStoreExecutor {
             }
         };
         let stdout = join_reader(stdout_reader, "stdout")?;
-        let stderr = join_reader(stderr_reader, "stderr")?;
-        if stdout.1 || stderr.1 {
+        join_log_reader(stderr_reader)?;
+        forward_logs(&log_receiver, logs)?;
+        if stdout.1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "build helper output exceeds limit",
             ));
         }
         if !status.success() {
-            let diagnostic = String::from_utf8_lossy(&stderr.0);
-            let diagnostic = diagnostic.trim();
-            return Err(io::Error::other(if diagnostic.is_empty() {
-                "build helper failed".to_owned()
-            } else {
-                format!("build helper failed: {diagnostic}")
-            }));
+            return Err(io::Error::other("build helper failed"));
         }
         parse_response(&stdout.0, request.build())
     }
@@ -265,8 +280,12 @@ struct EnvironmentRequest<'a> {
 }
 
 impl BuildExecutor for NixStoreExecutor {
-    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
-        self.execute_request(request)
+    fn execute_with_logs(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<LocalBuildResult> {
+        self.execute_request(request, logs)
     }
 
     fn helper(&self) -> Option<&Path> {
@@ -280,7 +299,15 @@ impl BuildExecutor for NixStoreExecutor {
 
 impl NixStoreExecutor {
     pub fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
-        self.execute_request(request)
+        BuildExecutor::execute(self, request)
+    }
+
+    pub fn execute_with_logs(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<LocalBuildResult> {
+        BuildExecutor::execute_with_logs(self, request, logs)
     }
 }
 
@@ -472,6 +499,40 @@ fn join_reader(
     reader
         .join()
         .map_err(|_| io::Error::other(format!("build helper {stream} reader panicked")))?
+}
+
+fn spawn_log_reader(
+    mut source: impl Read + Send + 'static,
+    sender: std::sync::mpsc::SyncSender<Vec<u8>>,
+) -> std::thread::JoinHandle<io::Result<()>> {
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(());
+            }
+            if sender.send(buffer[..read].to_vec()).is_err() {
+                return Ok(());
+            }
+        }
+    })
+}
+
+fn forward_logs(
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+    logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    while let Ok(chunk) = receiver.try_recv() {
+        logs(&chunk)?;
+    }
+    Ok(())
+}
+
+fn join_log_reader(reader: std::thread::JoinHandle<io::Result<()>>) -> io::Result<()> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("build helper stderr reader panicked"))?
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
