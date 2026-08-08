@@ -361,6 +361,15 @@ pub fn run_worker_session(
                         failure_class = error.failure().as_str(),
                         "request attachment persistence failed"
                     );
+                    if release_unattached_request_leases(store_retention, database_url, &request_id)
+                        .is_err()
+                    {
+                        return reject(
+                            &mut output,
+                            "store-lease-state",
+                            "store lease state operation failed",
+                        );
+                    }
                     return reject(
                         &mut output,
                         "request-attachment-state",
@@ -391,7 +400,20 @@ pub fn run_worker_session(
                 ) {
                     Ok(execution) => execution,
                     Err(error) => {
-                        let _ = detach_request_attachment(database_url, session_id, &request_id);
+                        if release_attached_request_leases(
+                            store_retention,
+                            database_url,
+                            session_id,
+                            &request_id,
+                        )
+                        .is_err()
+                        {
+                            return reject(
+                                &mut output,
+                                "store-lease-state",
+                                "store lease state operation failed",
+                            );
+                        }
                         return Err(error);
                     }
                 };
@@ -420,7 +442,20 @@ pub fn run_worker_session(
                             reason = execution_error_reason(&error),
                             "BuildDerivation execution failed"
                         );
-                        let _ = detach_request_attachment(database_url, session_id, &request_id);
+                        if release_attached_request_leases(
+                            store_retention,
+                            database_url,
+                            session_id,
+                            &request_id,
+                        )
+                        .is_err()
+                        {
+                            return reject(
+                                &mut output,
+                                "store-lease-state",
+                                "store lease state operation failed",
+                            );
+                        }
                         if error.kind() == io::ErrorKind::ConnectionAborted {
                             return Ok(());
                         }
@@ -439,7 +474,20 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                detach_request_attachment(database_url, session_id, &request_id)?;
+                if release_attached_request_leases(
+                    store_retention,
+                    database_url,
+                    session_id,
+                    &request_id,
+                )
+                .is_err()
+                {
+                    return reject(
+                        &mut output,
+                        "store-lease-state",
+                        "store lease state operation failed",
+                    );
+                }
                 nix_worker_protocol::write_build_derivation_success_response(
                     &mut output,
                     negotiated.version,
@@ -827,33 +875,66 @@ fn disk_reserve_rejected(
     }
 }
 
-fn detach_request_attachment(
+fn release_attached_request_leases(
+    store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
     database_url: &str,
     session_id: &str,
     request_id: &str,
 ) -> io::Result<()> {
-    match crate::persistence::detach_request(database_url, session_id, request_id) {
-        Ok(_) => {
-            tracing::info!(
-                event = "database.request_attachment.detached",
-                operation = "detach",
-                state = "detached",
-                "request attachment persisted"
-            );
-            Ok(())
-        }
-        Err(error) => {
+    let released =
+        crate::persistence::detach_request_and_release_leases(database_url, session_id, request_id)
+            .map_err(|error| {
+                tracing::warn!(
+                    event = "database.request_lease_release.failed",
+                    operation = "detach-release",
+                    failure_class = error.failure().as_str(),
+                    "request lease release failed"
+                );
+                io::Error::other("store lease state operation failed")
+            })?;
+    release_committed_request_roots(store_retention, &released.leases)
+}
+
+fn release_unattached_request_leases(
+    store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
+    database_url: &str,
+    request_id: &str,
+) -> io::Result<()> {
+    let released = crate::persistence::release_unattached_request_leases(database_url, request_id)
+        .map_err(|error| {
             tracing::warn!(
-                event = "database.request_attachment.failed",
-                operation = "detach",
+                event = "database.request_lease_release.failed",
+                operation = "unattached-release",
                 failure_class = error.failure().as_str(),
-                "request attachment persistence failed"
+                "request lease release failed"
             );
-            Err(io::Error::other(
-                "request attachment state operation failed",
-            ))
-        }
-    }
+            io::Error::other("store lease state operation failed")
+        })?;
+    release_committed_request_roots(store_retention, &released.leases)
+}
+
+fn release_committed_request_roots(
+    store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
+    leases: &[crate::persistence::StoreLeaseRecord],
+) -> io::Result<()> {
+    let entries = leases
+        .iter()
+        .map(|lease| {
+            crate::store_retention::ReleasedRetentionEntry::new(
+                lease.lease_id.clone(),
+                lease.store_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    store_retention.release(&entries).map_err(|_| {
+        tracing::warn!(
+            event = "gateway.request_lease_release.failed",
+            operation = "detach-release",
+            failure_class = "retention",
+            "request root release failed"
+        );
+        io::Error::other("gateway store retention failed")
+    })
 }
 
 fn execution_error_reason(error: &io::Error) -> &'static str {

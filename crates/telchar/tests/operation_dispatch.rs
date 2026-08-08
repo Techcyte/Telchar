@@ -913,7 +913,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
         .state,
         telchar::persistence::RequestAttachmentState::Detached
     );
-    assert_active_derivation_lease(&fixture.database, request_id);
+    assert_released_derivation_lease(&fixture.database, request_id);
     let stderr = fixture.finish();
     assert!(!stderr.contains(&session_id), "{stderr}");
     assert!(!stderr.contains(request_id), "{stderr}");
@@ -960,9 +960,21 @@ fn detach_failure_does_not_send_successful_build_result() {
         .read_to_end(&mut response)
         .expect("response stream closes");
     assert!(
-        response.is_empty(),
-        "detach failure exposed a successful build result: {response:?}"
+        !response.is_empty(),
+        "detach failure sent no terminal error"
     );
+    let mut response = response.as_slice();
+    assert_eq!(read_integer(&mut response), STDERR_ERROR);
+    assert_eq!(read_string(&mut response), "Error");
+    let _level = read_integer(&mut response);
+    assert_eq!(read_string(&mut response), "Error");
+    assert_eq!(
+        read_string(&mut response),
+        "store lease state operation failed"
+    );
+    assert_eq!(read_integer(&mut response), 0, "error has no position");
+    assert_eq!(read_integer(&mut response), 0, "error has no trace");
+    assert!(response.is_empty(), "terminal error has trailing bytes");
     assert!(child.wait().expect("Telchar exits").success());
     assert_eq!(
         fixture
@@ -976,10 +988,10 @@ fn detach_failure_does_not_send_successful_build_result() {
     );
     let stderr = fixture.finish();
     assert!(
-        stderr.contains("database.request_attachment.failed"),
+        stderr.contains("database.request_lease_release.failed"),
         "{stderr}"
     );
-    assert!(stderr.contains("operation=\"detach\""), "{stderr}");
+    assert!(stderr.contains("operation=\"detach-release\""), "{stderr}");
     assert!(!stderr.contains("reject detach"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
@@ -1357,7 +1369,7 @@ fn build_request_persistence_failure_rejects_before_helper_or_log_frame() {
 }
 
 #[test]
-fn request_attachment_failure_rejects_before_helper_and_retains_request() {
+fn request_attachment_failure_releases_roots_before_helper() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-attachment-failure-{}-{}",
         std::process::id(),
@@ -1426,7 +1438,7 @@ fn request_attachment_failure_rejects_before_helper_and_retains_request() {
         0,
         "attachment failure persisted attachment"
     );
-    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
+    assert_released_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("database.request_attachment.failed"),
@@ -1523,7 +1535,7 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
         );
         thread::sleep(Duration::from_millis(5));
     }
-    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
+    assert_released_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.failed"),
@@ -1578,7 +1590,7 @@ fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
         "detached",
         "execution failure left attachment attached"
     );
-    assert_active_derivation_lease(&fixture.database, &request_id(&mut client));
+    assert_released_derivation_lease(&fixture.database, &request_id(&mut client));
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.admitted"),
@@ -1831,6 +1843,18 @@ fn assert_active_derivation_lease(database: &PostgresFixture, request_id: &str) 
     );
     assert_eq!(lease.get::<_, String>(3), "derivation");
     assert_eq!(lease.get::<_, String>(4), "active");
+}
+
+fn assert_released_derivation_lease(database: &PostgresFixture, request_id: &str) {
+    let lease = database
+        .connect()
+        .query_one(
+            "SELECT state, released_at FROM store_leases WHERE owner_id = $1 AND purpose = 'derivation'",
+            &[&request_id],
+        )
+        .expect("released derivation lease reads");
+    assert_eq!(lease.get::<_, String>(0), "released");
+    assert!(lease.get::<_, Option<SystemTime>>(1).is_some());
 }
 
 fn send_operation(operation: u64) -> OperationResponse {

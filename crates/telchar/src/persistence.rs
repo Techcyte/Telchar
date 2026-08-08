@@ -1258,6 +1258,48 @@ fn release_store_lease_inner(
     Ok(lease)
 }
 
+const MAXIMUM_RELEASED_REQUEST_LEASES_PAGE_ROWS: usize = 256;
+
+pub fn read_released_request_leases_page(
+    database_url: &str,
+    after_lease_id: Option<&str>,
+    maximum_rows: usize,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    if database_url.trim().is_empty() {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    if let Some(after_lease_id) = after_lease_id {
+        validate_store_lease_id(after_lease_id)?;
+    }
+    let maximum_rows = maximum_rows.min(MAXIMUM_RELEASED_REQUEST_LEASES_PAGE_ROWS);
+    if maximum_rows == 0 {
+        return Ok(Vec::new());
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let rows = client
+        .query(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE owner_kind = 'request' AND purpose IN ('derivation', 'input') AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
+            &[&after_lease_id, &(maximum_rows as i64)],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    rows.iter()
+        .map(|row| {
+            let lease = decode_store_lease(row).map_err(StoreLeaseError)?;
+            if lease.owner_kind != StoreLeaseOwnerKind::Request
+                || !matches!(
+                    lease.purpose,
+                    StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+                )
+                || lease.state != StoreLeaseState::Released
+            {
+                return Err(StoreLeaseError(StoreLeaseFailure::Query));
+            }
+            Ok(lease)
+        })
+        .collect()
+}
+
 pub fn read_store_lease(
     database_url: &str,
     lease_id: &str,

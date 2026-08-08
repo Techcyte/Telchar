@@ -1850,6 +1850,89 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
 }
 
 #[test]
+fn request_lease_release_page_is_bounded_keyset_ordered_and_excludes_other_leases() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "released-page-request",
+        "/nix/store/11111111111111111111111111111111-released-page.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "released-page-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "released-page-request",
+        "/nix/store/11111111111111111111111111111111-released-page.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation persists");
+    let inputs = (0..256)
+        .map(|index| {
+            (
+                format!("released-page-input-{index:03}"),
+                format!("/nix/store/{index:032x}-released-page-input-{index:03}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "released-page-request",
+        &inputs,
+    )
+    .expect("inputs persist");
+    telchar::persistence::release_unattached_request_leases(fixture.url(), "released-page-request")
+        .expect("request leases release");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "released-page-other",
+        "/nix/store/ffffffffffffffffffffffffffffffff-released-page-other",
+        "x86_64-linux",
+    )
+    .expect("other request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "released-page-output",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "released-page-other",
+        "/nix/store/ffffffffffffffffffffffffffffffff-released-page-other",
+        telchar::persistence::StoreLeasePurpose::Output,
+    )
+    .expect("output persists");
+    telchar::persistence::release_store_lease(fixture.url(), "released-page-output")
+        .expect("output releases");
+
+    let first = telchar::persistence::read_released_request_leases_page(fixture.url(), None, 999)
+        .expect("first page reads");
+    assert_eq!(first.len(), 256);
+    assert!(
+        first
+            .windows(2)
+            .all(|window| window[0].lease_id < window[1].lease_id)
+    );
+    assert!(first.iter().all(|lease| {
+        lease.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
+            && matches!(
+                lease.purpose,
+                telchar::persistence::StoreLeasePurpose::Derivation
+                    | telchar::persistence::StoreLeasePurpose::Input
+            )
+            && lease.state == telchar::persistence::StoreLeaseState::Released
+    }));
+    let last = first.last().expect("first page has rows");
+    let second = telchar::persistence::read_released_request_leases_page(
+        fixture.url(),
+        Some(&last.lease_id),
+        256,
+    )
+    .expect("second page reads");
+    assert_eq!(second.len(), 1);
+    assert!(second[0].lease_id > last.lease_id);
+}
+
+#[test]
 fn request_lease_release_unattached_releases_only_without_attachment() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
