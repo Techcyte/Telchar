@@ -197,14 +197,14 @@ impl NixStoreExecutor {
             .take()
             .ok_or_else(|| io::Error::other("build helper stderr not configured"))?;
         let (reader_error_sender, reader_error_receiver) = std::sync::mpsc::channel();
-        let stdout_reader = spawn_reader(stdout, reader_error_sender);
+        let stdout_reader = spawn_reader(stdout, reader_error_sender.clone());
         debug_assert_eq!(
             MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
             MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
         );
         let (log_sender, log_receiver) =
             std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
-        let stderr_reader = spawn_log_reader(stderr, log_sender);
+        let stderr_reader = spawn_log_reader(stderr, log_sender, reader_error_sender);
 
         let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
         drop(stdin);
@@ -535,16 +535,33 @@ fn join_reader(
 fn spawn_log_reader(
     mut source: impl Read + Send + 'static,
     sender: std::sync::mpsc::SyncSender<Vec<u8>>,
+    error_sender: std::sync::mpsc::Sender<io::Error>,
 ) -> std::thread::JoinHandle<io::Result<()>> {
     std::thread::spawn(move || {
-        let mut buffer = [0_u8; MAXIMUM_BUILD_LOG_CHUNK_BYTES];
-        loop {
-            let read = source.read(&mut buffer)?;
-            if read == 0 {
-                return Ok(());
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+                let mut buffer = [0_u8; MAXIMUM_BUILD_LOG_CHUNK_BYTES];
+                loop {
+                    let read = source.read(&mut buffer)?;
+                    if read == 0 {
+                        return Ok(());
+                    }
+                    if sender.send(buffer[..read].to_vec()).is_err() {
+                        return Ok(());
+                    }
+                }
+            }));
+        match result {
+            Ok(result) => {
+                if let Err(error) = &result {
+                    let _ = error_sender.send(io::Error::new(error.kind(), error.to_string()));
+                }
+                result
             }
-            if sender.send(buffer[..read].to_vec()).is_err() {
-                return Ok(());
+            Err(_) => {
+                let error = io::Error::other("build helper stderr reader panicked");
+                let _ = error_sender.send(io::Error::other(error.to_string()));
+                Err(error)
             }
         }
     })
@@ -588,10 +605,28 @@ fn configure_child_lifecycle(_command: &mut std::process::Command) {}
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::{
         MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
     };
+
+    struct FailingLogReader;
+
+    impl io::Read for FailingLogReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("log read failed"))
+        }
+    }
+
+    struct PanickingLogReader;
+
+    impl io::Read for PanickingLogReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            panic!("log read panicked")
+        }
+    }
 
     #[test]
     fn build_log_channel_has_fixed_payload_bound() {
@@ -600,6 +635,54 @@ mod tests {
         assert_eq!(
             MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
             MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
+        );
+    }
+
+    #[test]
+    fn build_log_reader_reports_io_failure_to_execution_owner() {
+        let (log_sender, _log_receiver) = std::sync::mpsc::sync_channel(1);
+        let (error_sender, error_receiver) = std::sync::mpsc::channel();
+
+        let reader = spawn_log_reader(FailingLogReader, log_sender, error_sender);
+
+        assert_eq!(
+            error_receiver
+                .recv()
+                .expect("reader failure is reported")
+                .to_string(),
+            "log read failed"
+        );
+        assert_eq!(
+            reader
+                .join()
+                .expect("reader thread does not panic")
+                .expect_err("reader fails")
+                .to_string(),
+            "log read failed"
+        );
+    }
+
+    #[test]
+    fn build_log_reader_reports_panic_to_execution_owner() {
+        let (log_sender, _log_receiver) = std::sync::mpsc::sync_channel(1);
+        let (error_sender, error_receiver) = std::sync::mpsc::channel();
+
+        let reader = spawn_log_reader(PanickingLogReader, log_sender, error_sender);
+
+        assert_eq!(
+            error_receiver
+                .recv()
+                .expect("reader panic is reported")
+                .to_string(),
+            "build helper stderr reader panicked"
+        );
+        assert_eq!(
+            reader
+                .join()
+                .expect("reader panic is contained")
+                .expect_err("reader fails")
+                .to_string(),
+            "build helper stderr reader panicked"
         );
     }
 }
