@@ -12,7 +12,13 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry-appender-tracing.workspace = true
 tokio.workspace = true
-rustix = { version = "1.1.4", features = ["event", "fs", "net", "process", "time"] }
+rustix = { version = "1.1.4", features = [
+  "event",
+  "fs",
+  "net",
+  "process",
+  "time",
+] }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
