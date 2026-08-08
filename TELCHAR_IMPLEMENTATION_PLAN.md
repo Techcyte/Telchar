@@ -802,7 +802,7 @@ Evidence: paths and output facts to record
   - Verify: transaction integration test.
   - Evidence: request and root records.
 
-- [ ] T073 Acquire complete input-closure leases
+- [x] T073 Acquire complete input-closure leases
   - Depends on: T072
   - Outcome: accepted request roots every required input path.
   - Red: closure fixture contains unleased path.
