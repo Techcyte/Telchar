@@ -779,7 +779,7 @@ Evidence: paths and output facts to record
   - Verify: request persistence test.
   - Evidence: request row and identifier.
 
-- [ ] T070D Persist minimum request attachment
+- [x] T070D Persist minimum request attachment
   - Depends on: T070C
   - Outcome: protocol session attachment is durable and distinct from request state.
   - Red: detach/restart test conflates session and request.
@@ -2336,6 +2336,20 @@ Evidence: paths and output facts to record
   - Red: resource measurement exceeds limits.
   - Verify: transfer load test.
   - Evidence: peak resource use.
+
+- [ ] T272A Measure synchronous concurrency pressure
+  - Depends on: T148, T149, T270, T272
+  - Outcome: load evidence records active/idle/rejected sessions, active builds, daemon thread count and RSS, PostgreSQL connection/operation latency and pressure, admission-to-helper latency, slow-reader wait, and context-switch/resource behavior with bounded low-cardinality telemetry.
+  - Red: benchmark cannot explain whether thread-per-session, blocking PostgreSQL calls, or build/transfer work is the observed bottleneck.
+  - Verify: mixed idle-session, build, slow-log-consumer, transfer, and injected-database-latency load suite.
+  - Evidence: instrument names, workload/concurrency, observed maxima and percentiles, PostgreSQL limits, thread/RSS measurements, and identified bottleneck or explicit absence.
+
+- [ ] T272B Decide post-MVP concurrency architecture from measurements
+  - Depends on: T272A
+  - Outcome: ADR retains bounded synchronous thread-per-session operation or approves async coordination with explicit bounded blocking workers for Nix/store/process work; implementation is prohibited without measured benefit and cancellation/resource semantics.
+  - Red: proposal adopts async by convention, lacks threshold evidence, or treats blocking Nix/store work as async.
+  - Verify: architecture decision checklist against T272A evidence.
+  - Evidence: measured thresholds, selected model, rejected alternative, migration boundary, or explicit continued deferral.
 
 - [ ] T273 Soak-test restart reconciliation
   - Depends on: T198, T224, T101D
