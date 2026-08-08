@@ -46,6 +46,7 @@
       nixStoreBuild = mkNixStoreHelper "build" ./tools/nix-store-build;
       nixStoreExport = mkNixStoreHelper "export" ./tools/nix-store-export;
       nixStorePromote = mkNixStoreHelper "promote" ./tools/nix-store-promote;
+      nixStoreClosure = mkNixStoreHelper "closure" ./tools/nix-store-closure;
     in
     {
       checks.${system} =
@@ -240,11 +241,13 @@
             cp ${nixStoreBuild}/libexec/telchar/nix-store-build $out/libexec/telchar/nix-store-build
             cp ${nixStoreExport}/libexec/telchar/nix-store-export $out/libexec/telchar/nix-store-export
             cp ${nixStorePromote}/libexec/telchar/nix-store-promote $out/libexec/telchar/nix-store-promote
+            cp ${nixStoreClosure}/libexec/telchar/nix-store-closure $out/libexec/telchar/nix-store-closure
           '';
         };
         nix-store-build = nixStoreBuild;
         nix-store-export = nixStoreExport;
         nix-store-promote = nixStorePromote;
+        nix-store-closure = nixStoreClosure;
         nix-reference = pkgs.nix;
         default = self.packages.${system}.telchar;
       };
@@ -255,6 +258,7 @@
         TELCHAR_NIX_STORE_BUILD = "${nixStoreBuild}/libexec/telchar/nix-store-build";
         TELCHAR_NIX_STORE_EXPORT = "${nixStoreExport}/libexec/telchar/nix-store-export";
         TELCHAR_NIX_STORE_PROMOTE = "${nixStorePromote}/libexec/telchar/nix-store-promote";
+        TELCHAR_NIX_STORE_CLOSURE = "${nixStoreClosure}/libexec/telchar/nix-store-closure";
         packages = [
           pkgs.openssh
           pkgs.postgresql
