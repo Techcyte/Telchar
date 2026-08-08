@@ -772,7 +772,7 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL session state-operation test.
   - Evidence: persisted fields and transaction boundary.
 
-- [ ] T070C Persist minimum build request
+- [x] T070C Persist minimum build request
   - Depends on: T070B
   - Outcome: accepted build has durable immutable request identity before leases or execution.
   - Red: accepted request disappears after restart.
