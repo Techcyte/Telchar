@@ -2,8 +2,8 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_worker_integer, ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion,
-    LATEST_WORKER_VERSION,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
+    WorkerReader, WorkerVersion, LATEST_WORKER_VERSION,
 };
 
 #[test]
@@ -46,20 +46,50 @@ fn decodes_inner_count_split_across_protocol_frames() {
 }
 
 #[test]
-fn rejects_nonempty_batch_before_reading_first_item() {
+fn streams_one_declared_path_body_without_retaining_it() {
+    let path = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-source";
+    let nar = b"streamed-nar";
+    let mut logical = Vec::new();
+    write_worker_integer(&mut logical, 1);
+    write_worker_byte_string(&mut logical, path);
+    write_worker_byte_string(&mut logical, b"");
+    write_worker_byte_string(
+        &mut logical,
+        b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
+    write_worker_integer(&mut logical, 0);
+    write_worker_integer(&mut logical, 123);
+    write_worker_integer(&mut logical, nar.len() as u64);
+    write_worker_integer(&mut logical, 0);
+    write_worker_integer(&mut logical, 0);
+    write_worker_byte_string(&mut logical, b"");
+    logical.extend_from_slice(nar);
+
     let mut wire = request_prefix(0, 1);
-    append_frame(&mut wire, &1_u64.to_le_bytes());
+    append_frame(&mut wire, &logical[..17]);
+    append_frame(&mut wire, &logical[17..]);
+    write_worker_integer(&mut wire, 0);
     let mut reader = reader(&wire);
     assert_eq!(
         reader.read_operation().unwrap(),
         WorkerOperation::AddMultipleToStore
     );
 
-    let error = reader
-        .complete_empty_add_multiple_to_store(LATEST_WORKER_VERSION)
-        .expect_err("nonempty batch is a separate security boundary");
+    let mut body = Vec::new();
+    let request = reader
+        .complete_add_multiple_to_store(LATEST_WORKER_VERSION, |info, source| {
+            assert_eq!(info.path(), path);
+            assert_eq!(info.nar_size(), nar.len() as u64);
+            assert!(info.references().is_empty());
+            assert!(!info.ultimate());
+            std::io::Read::read_to_end(source, &mut body)?;
+            Ok(())
+        })
+        .expect("nonempty batch decodes");
 
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(request.object_count(), 1);
+    assert!(request.dont_check_signatures());
+    assert_eq!(body, nar);
 }
 
 #[test]

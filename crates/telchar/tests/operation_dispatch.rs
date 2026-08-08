@@ -354,7 +354,7 @@ fn empty_add_multiple_to_store_completes_and_keeps_session_open() {
 }
 
 #[test]
-fn nonempty_add_multiple_to_store_fails_before_first_item_body() {
+fn incomplete_nonempty_add_multiple_to_store_fails_before_first_item_body() {
     let mut fixture = FrontendFixture::spawn(Some(100));
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -374,7 +374,7 @@ fn nonempty_add_multiple_to_store_fails_before_first_item_body() {
     assert_eq!(read_string(&mut output), "Error");
     assert_eq!(
         read_string(&mut output),
-        "nonempty AddMultipleToStore is unsupported"
+        "invalid AddMultipleToStore request"
     );
     assert_eq!(read_integer(&mut output), 0, "error has no position");
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
@@ -383,7 +383,7 @@ fn nonempty_add_multiple_to_store_fails_before_first_item_body() {
     assert!(child.wait().expect("Telchar exits").success());
     let stderr = fixture.finish();
     assert!(
-        stderr.contains("nonempty-add-multiple-to-store"),
+        stderr.contains("invalid-add-multiple-to-store"),
         "missing fail-before-body evidence: {stderr}"
     );
     assert!(!stderr.contains("worker.session.timed_out"), "{stderr}");

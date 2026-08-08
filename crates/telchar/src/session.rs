@@ -66,6 +66,7 @@ pub fn run_worker_session(
     store_query: &mut dyn QueryValidPathsStore,
     build_executor: &mut dyn BuildExecutor,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
+    store_import: &mut dyn crate::store_import::StoreImportBackend,
     request_id: &str,
 ) -> io::Result<()> {
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
@@ -309,21 +310,11 @@ pub fn run_worker_session(
                 );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
-                let request = match reader.complete_empty_add_multiple_to_store(negotiated.version)
-                {
+                let request = match reader
+                    .complete_add_multiple_to_store(negotiated.version, |info, source| {
+                        store_import.import(info, source)
+                    }) {
                     Ok(request) => request,
-                    Err(nix_worker_protocol::AddMultipleToStoreRequestError::Nonempty) => {
-                        tracing::error!(
-                            event = "worker.operation.rejected",
-                            rejection = "nonempty-add-multiple-to-store",
-                            "nonempty AddMultipleToStore request rejected"
-                        );
-                        return reject(
-                            &mut output,
-                            "nonempty-add-multiple-to-store",
-                            "nonempty AddMultipleToStore is unsupported",
-                        );
-                    }
                     Err(error) => {
                         tracing::error!(
                             event = "worker.operation.rejected",
@@ -342,10 +333,10 @@ pub fn run_worker_session(
                 output.flush()?;
                 tracing::info!(
                     event = "worker.add_multiple_to_store.completed",
-                    object_count = 0_u64,
+                    object_count = request.object_count(),
                     repair = request.repair(),
                     dont_check_signatures = request.dont_check_signatures(),
-                    "empty AddMultipleToStore request completed"
+                    "AddMultipleToStore request completed"
                 );
             }
             Ok(WorkerOperation::QueryValidPaths) => {

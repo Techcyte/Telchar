@@ -142,11 +142,15 @@
                 telchar = self.packages.${system}.telchar;
               };
               remoteOnlyDerivation = pkgs.writeText "telchar-remote-only-derivation.nix" ''
+                let
+                  source = builtins.toFile "telchar-gate-3-input" "telchar-source-input";
+                in
                 derivation {
                   name = "telchar-gate-3-contract";
                   system = builtins.currentSystem;
                   builder = "/bin/sh";
-                  args = [ "-c" "printf telchar-remote-build > $out" ];
+                  args = [ "-c" "test -e $source; printf telchar-source-input > $out" ];
+                  inherit source;
                 }
               '';
             in
@@ -167,9 +171,9 @@
                 stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/remote-only.nix")
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
-                stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 30 nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1 || { cat /tmp/remote-build.out >&2; exit 1; }")
-                stock_client.succeed("grep -q '/nix/store/h12821vyyw22vp659ays72njyg1rrfcw-telchar-gate-3-contract' /tmp/remote-build.out")
-                stock_client.succeed("test \"$(cat /nix/store/h12821vyyw22vp659ays72njyg1rrfcw-telchar-gate-3-contract)\" = telchar-remote-build")
+                stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 60 nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/remote-only.nix > /tmp/remote-build.out 2>&1 || { cat /tmp/remote-build.out >&2; exit 1; }")
+                output_path = stock_client.succeed("tail -n 1 /tmp/remote-build.out").strip()
+                stock_client.succeed("test \"$(cat " + output_path + ")\" = telchar-source-input")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_valid_paths.completed'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.add_multiple_to_store.completed'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.admitted'")
@@ -226,6 +230,7 @@
             mkdir -p $out/libexec/telchar
             cp ${nixStoreBuild}/libexec/telchar/nix-store-build $out/libexec/telchar/nix-store-build
             cp ${nixStoreExport}/libexec/telchar/nix-store-export $out/libexec/telchar/nix-store-export
+            cp ${nixStorePromote}/libexec/telchar/nix-store-promote $out/libexec/telchar/nix-store-promote
           '';
         };
         nix-store-build = nixStoreBuild;
@@ -240,6 +245,7 @@
         TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
         TELCHAR_NIX_STORE_BUILD = "${nixStoreBuild}/libexec/telchar/nix-store-build";
         TELCHAR_NIX_STORE_EXPORT = "${nixStoreExport}/libexec/telchar/nix-store-export";
+        TELCHAR_NIX_STORE_PROMOTE = "${nixStorePromote}/libexec/telchar/nix-store-promote";
         packages = [
           pkgs.openssh
           pkgs.cargo

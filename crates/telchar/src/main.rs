@@ -208,6 +208,7 @@ fn serve_accepted_connection(
     let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
     let mut build_executor = telchar::local_executor::executor_from_environment()?;
     let mut store_export = telchar::store_export::backend_from_environment()?;
+    let mut store_import = telchar::store_import::importer_from_environment()?;
     let request_id = session_id();
     telchar::session::run_worker_session(
         input,
@@ -217,6 +218,7 @@ fn serve_accepted_connection(
         &mut store_query,
         build_executor.as_mut(),
         store_export.as_mut(),
+        store_import.as_mut(),
         &request_id,
     )
 }

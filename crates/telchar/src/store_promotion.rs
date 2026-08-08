@@ -55,6 +55,7 @@ struct StorePathJson {
 pub struct NixStorePromotionBackend {
     environment: Vec<(String, String)>,
     helper: PathBuf,
+    nix: PathBuf,
     store_uri: String,
 }
 
@@ -64,9 +65,15 @@ impl NixStorePromotionBackend {
         store_uri: impl Into<String>,
         environment: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
+        let environment: Vec<_> = environment.into_iter().collect();
+        let nix = environment
+            .iter()
+            .find_map(|(name, value)| (name == "TELCHAR_NIX").then(|| PathBuf::from(value)))
+            .unwrap_or_else(|| PathBuf::from("nix"));
         Self {
-            environment: environment.into_iter().collect(),
+            environment,
             helper: helper.into(),
+            nix,
             store_uri: store_uri.into(),
         }
     }
@@ -88,10 +95,17 @@ impl StorePromotionBackend for NixStorePromotionBackend {
     }
 
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool> {
-        let mut command = std::process::Command::new("nix");
+        let mut command = std::process::Command::new(&self.nix);
         command
             .envs(self.environment.iter().cloned())
-            .args(["--store", &self.store_uri, "path-info", "--json"])
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "--store",
+                &self.store_uri,
+                "path-info",
+                "--json",
+            ])
             .arg(path);
         let output = run_bounded_command(command, None)?;
         if output.exceeded_limit {
@@ -147,10 +161,17 @@ impl StorePromotionBackend for NixStorePromotionBackend {
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        let mut command = std::process::Command::new("nix");
+        let mut command = std::process::Command::new(&self.nix);
         command
             .envs(self.environment.iter().cloned())
-            .args(["--store", &self.store_uri, "path-info", "--json"])
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "--store",
+                &self.store_uri,
+                "path-info",
+                "--json",
+            ])
             .arg(path);
         let output = run_bounded_command(command, None)?;
         if !output.status.success() || output.exceeded_limit {

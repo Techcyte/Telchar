@@ -106,11 +106,17 @@ let
         environment = {
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
+          TMPDIR = "/var/lib/telchar-import";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           TELCHAR_NIX_STORE_BUILD = "${telchar}/libexec/telchar/nix-store-build";
           TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
+          TELCHAR_NIX_STORE_PROMOTE = "${telchar}/libexec/telchar/nix-store-promote";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";
+          NIX_CONFIG = ''
+            post-build-hook =
+            substituters =
+          '';
         };
         before = [ "sshd.service" ];
         serviceConfig = {
@@ -118,6 +124,7 @@ let
           Group = "telchar";
           RuntimeDirectory = "telchar";
           RuntimeDirectoryMode = "0700";
+          StateDirectory = "telchar-import";
           ExecStart = "${telchar}/bin/telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995";
         };
       };

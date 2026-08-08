@@ -28,6 +28,12 @@ const NIX_STORE_HASH_LENGTH: usize = 32;
 const NIX_STORE_HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 pub const MAXIMUM_QUERY_VALID_PATHS: usize = 256;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_OBJECTS: usize = 256;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES: usize = 256;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURES: usize = 256;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES: usize = 64;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURE_BYTES: usize = 4096;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_CONTENT_ADDRESS_BYTES: usize = 4096;
 pub const MAXIMUM_WORKER_STORE_PATH_BYTES: usize = NIX_STORE_DIRECTORY.len() + 211;
 pub const MAXIMUM_BUILD_DERIVATION_OUTPUTS: usize = 16;
 pub const MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES: usize = 4096;
@@ -1004,17 +1010,11 @@ impl<R: WorkerInput + ?Sized> WorkerInput for &mut R {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum AddMultipleToStoreRequestError {
-    Nonempty,
-    Invalid(io::ErrorKind, String),
-}
+pub struct AddMultipleToStoreRequestError(io::ErrorKind, String);
 
 impl std::fmt::Display for AddMultipleToStoreRequestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Nonempty => formatter.write_str("nonempty AddMultipleToStore is unsupported"),
-            Self::Invalid(_, message) => formatter.write_str(message),
-        }
+        formatter.write_str(&self.1)
     }
 }
 
@@ -1022,28 +1022,74 @@ impl std::error::Error for AddMultipleToStoreRequestError {}
 
 impl AddMultipleToStoreRequestError {
     pub const fn kind(&self) -> io::ErrorKind {
-        match self {
-            Self::Nonempty => io::ErrorKind::InvalidInput,
-            Self::Invalid(kind, _) => *kind,
-        }
+        self.0
+    }
+}
+
+#[derive(Debug)]
+pub struct AddMultipleToStorePathInfo {
+    path: Vec<u8>,
+    deriver: Option<Vec<u8>>,
+    nar_hash: Vec<u8>,
+    references: Vec<Vec<u8>>,
+    registration_time: u64,
+    nar_size: u64,
+    ultimate: bool,
+    signatures: Vec<Vec<u8>>,
+    content_address: Option<Vec<u8>>,
+    _charges: Vec<SessionAllocationCharge>,
+}
+
+impl AddMultipleToStorePathInfo {
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+    pub fn deriver(&self) -> Option<&[u8]> {
+        self.deriver.as_deref()
+    }
+    pub fn nar_hash(&self) -> &[u8] {
+        &self.nar_hash
+    }
+    pub fn references(&self) -> &[Vec<u8>] {
+        &self.references
+    }
+    pub const fn registration_time(&self) -> u64 {
+        self.registration_time
+    }
+    pub const fn nar_size(&self) -> u64 {
+        self.nar_size
+    }
+    pub const fn ultimate(&self) -> bool {
+        self.ultimate
+    }
+    pub fn signatures(&self) -> &[Vec<u8>] {
+        &self.signatures
+    }
+    pub fn content_address(&self) -> Option<&[u8]> {
+        self.content_address.as_deref()
     }
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct EmptyAddMultipleToStoreRequest {
+pub struct AddMultipleToStoreRequest {
     repair: bool,
     dont_check_signatures: bool,
+    object_count: usize,
 }
 
-impl EmptyAddMultipleToStoreRequest {
+impl AddMultipleToStoreRequest {
     pub const fn repair(&self) -> bool {
         self.repair
     }
-
     pub const fn dont_check_signatures(&self) -> bool {
         self.dont_check_signatures
     }
+    pub const fn object_count(&self) -> usize {
+        self.object_count
+    }
 }
+
+pub type EmptyAddMultipleToStoreRequest = AddMultipleToStoreRequest;
 
 #[derive(Debug)]
 pub struct BuildDerivationOutput {
@@ -1330,86 +1376,63 @@ impl<R: WorkerInput> WorkerReader<R> {
         &mut self,
         version: WorkerVersion,
     ) -> Result<EmptyAddMultipleToStoreRequest, AddMultipleToStoreRequestError> {
+        self.complete_add_multiple_to_store(version, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "nonempty AddMultipleToStore is unsupported",
+            ))
+        })
+    }
+
+    pub fn complete_add_multiple_to_store<F>(
+        &mut self,
+        version: WorkerVersion,
+        mut receive: F,
+    ) -> Result<AddMultipleToStoreRequest, AddMultipleToStoreRequestError>
+    where
+        F: FnMut(&AddMultipleToStorePathInfo, &mut dyn Read) -> io::Result<()>,
+    {
         if version < WorkerVersion::new(1, 32) {
-            return Err(AddMultipleToStoreRequestError::Invalid(
+            return Err(AddMultipleToStoreRequestError(
                 io::ErrorKind::InvalidInput,
                 "AddMultipleToStore requires worker protocol 1.32".to_owned(),
             ));
         }
-
-        let repair = read_strict_worker_boolean(&mut self.input, "repair")
-            .map_err(AddMultipleToStoreRequestError::from)?;
-        let dont_check_signatures = read_strict_worker_boolean(&mut self.input, "dontCheckSigs")
-            .map_err(AddMultipleToStoreRequestError::from)?;
+        let repair = read_strict_worker_boolean(&mut self.input, "repair")?;
+        let dont_check_signatures = read_strict_worker_boolean(&mut self.input, "dontCheckSigs")?;
         if repair {
-            return Err(AddMultipleToStoreRequestError::Invalid(
+            return Err(AddMultipleToStoreRequestError(
                 io::ErrorKind::InvalidInput,
                 "repair is unsupported for AddMultipleToStore".to_owned(),
             ));
         }
 
-        let mut remaining = 0_u64;
-        let mut count_bytes = [0_u8; 8];
-        let mut count_read = 0;
-
-        let frame_terminated = loop {
-            if remaining == 0 {
-                let frame_length = self
-                    .read_integer()
-                    .map_err(|error| {
-                        if error.kind() == io::ErrorKind::UnexpectedEof {
-                            io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "truncated AddMultipleToStore frame",
-                            )
-                        } else {
-                            error
-                        }
-                    })
-                    .map_err(AddMultipleToStoreRequestError::from)?;
-                if frame_length == 0 {
-                    break true;
-                }
-                remaining = frame_length;
+        let budget = self.budget.clone();
+        let mut source = FramedReader::new(&mut self.input);
+        let object_count = read_bounded_count(&mut source, MAXIMUM_ADD_MULTIPLE_TO_STORE_OBJECTS)?;
+        for _ in 0..object_count {
+            let info = read_add_multiple_path_info(&mut source, &budget)?;
+            let mut nar = (&mut source).take(info.nar_size);
+            receive(&info, &mut nar)?;
+            if nar.limit() != 0 {
+                return Err(AddMultipleToStoreRequestError(
+                    io::ErrorKind::UnexpectedEof,
+                    "AddMultipleToStore NAR body is truncated".to_owned(),
+                ));
             }
-
-            let mut buffer = [0_u8; 256];
-            let read_length = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
-            self.input
-                .read_exact(&mut buffer[..read_length])
-                .map_err(AddMultipleToStoreRequestError::from)?;
-            remaining -= read_length as u64;
-
-            for byte in &buffer[..read_length] {
-                if count_read < count_bytes.len() {
-                    count_bytes[count_read] = *byte;
-                    count_read += 1;
-                    if count_read == count_bytes.len() {
-                        let count = u64::from_le_bytes(count_bytes);
-                        if count != 0 {
-                            return Err(AddMultipleToStoreRequestError::Nonempty);
-                        }
-                    }
-                } else {
-                    return Err(AddMultipleToStoreRequestError::Invalid(
-                        io::ErrorKind::InvalidData,
-                        "trailing AddMultipleToStore logical bytes".to_owned(),
-                    ));
-                }
-            }
-        };
-
-        if !frame_terminated || count_read != count_bytes.len() {
-            return Err(AddMultipleToStoreRequestError::Invalid(
-                io::ErrorKind::UnexpectedEof,
-                "truncated AddMultipleToStore logical stream".to_owned(),
+        }
+        let mut trailing = [0_u8; 1];
+        if source.read(&mut trailing)? != 0 {
+            return Err(AddMultipleToStoreRequestError(
+                io::ErrorKind::InvalidData,
+                "trailing AddMultipleToStore logical bytes".to_owned(),
             ));
         }
-
         self.input.complete_message();
-        Ok(EmptyAddMultipleToStoreRequest {
+        Ok(AddMultipleToStoreRequest {
             repair,
             dont_check_signatures,
+            object_count,
         })
     }
 
@@ -1687,8 +1710,181 @@ impl<R: WorkerInput> WorkerReader<R> {
 
 impl From<io::Error> for AddMultipleToStoreRequestError {
     fn from(error: io::Error) -> Self {
-        Self::Invalid(error.kind(), error.to_string())
+        Self(error.kind(), error.to_string())
     }
+}
+
+struct FramedReader<'a, R> {
+    input: &'a mut R,
+    remaining: u64,
+    finished: bool,
+}
+
+impl<'a, R> FramedReader<'a, R> {
+    fn new(input: &'a mut R) -> Self {
+        Self {
+            input,
+            remaining: 0,
+            finished: false,
+        }
+    }
+}
+
+impl<R: Read> Read for FramedReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.finished {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            self.remaining = read_worker_integer_from(self.input).map_err(|error| {
+                if error.kind() == io::ErrorKind::UnexpectedEof {
+                    io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "truncated AddMultipleToStore frame",
+                    )
+                } else {
+                    error
+                }
+            })?;
+            if self.remaining == 0 {
+                self.finished = true;
+                return Ok(0);
+            }
+        }
+        let count = output
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        self.input.read_exact(&mut output[..count])?;
+        self.remaining -= count as u64;
+        Ok(count)
+    }
+}
+
+fn read_bounded_count(
+    input: &mut impl Read,
+    maximum: usize,
+) -> Result<usize, AddMultipleToStoreRequestError> {
+    let value = read_worker_integer_from(input)?;
+    usize::try_from(value)
+        .ok()
+        .filter(|value| *value <= maximum)
+        .ok_or_else(|| {
+            AddMultipleToStoreRequestError(
+                io::ErrorKind::InvalidData,
+                "AddMultipleToStore count exceeds limit".to_owned(),
+            )
+        })
+}
+
+fn read_add_multiple_string(
+    input: &mut impl Read,
+    maximum: usize,
+    budget: &SessionAllocationBudget,
+    charges: &mut Vec<SessionAllocationCharge>,
+) -> Result<Vec<u8>, AddMultipleToStoreRequestError> {
+    let (value, charge) = read_worker_byte_string_with_charge_from(input, maximum, budget)?;
+    charges.push(charge);
+    Ok(value)
+}
+
+fn read_optional_add_multiple_path(
+    input: &mut impl Read,
+    budget: &SessionAllocationBudget,
+    charges: &mut Vec<SessionAllocationCharge>,
+) -> Result<Option<Vec<u8>>, AddMultipleToStoreRequestError> {
+    let value = read_add_multiple_string(input, MAXIMUM_WORKER_STORE_PATH_BYTES, budget, charges)?;
+    if value.is_empty() {
+        return Ok(None);
+    }
+    validate_store_path(&value)?;
+    Ok(Some(value))
+}
+
+fn read_add_multiple_path_info(
+    input: &mut impl Read,
+    budget: &SessionAllocationBudget,
+) -> Result<AddMultipleToStorePathInfo, AddMultipleToStoreRequestError> {
+    let mut charges = Vec::new();
+    let path =
+        read_add_multiple_string(input, MAXIMUM_WORKER_STORE_PATH_BYTES, budget, &mut charges)?;
+    validate_store_path(&path)?;
+    let deriver = read_optional_add_multiple_path(input, budget, &mut charges)?;
+    let nar_hash = read_add_multiple_string(
+        input,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES,
+        budget,
+        &mut charges,
+    )?;
+    let reference_count = read_bounded_count(input, MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES)?;
+    let mut references = Vec::with_capacity(reference_count);
+    let reference_bytes = reference_count
+        .checked_mul(std::mem::size_of::<Vec<u8>>())
+        .ok_or_else(|| {
+            AddMultipleToStoreRequestError(
+                io::ErrorKind::InvalidData,
+                "AddMultipleToStore metadata exceeds limit".to_owned(),
+            )
+        })?;
+    charges.push(budget.charge(reference_bytes).map_err(|_| {
+        AddMultipleToStoreRequestError(
+            io::ErrorKind::InvalidData,
+            "AddMultipleToStore metadata exceeds limit".to_owned(),
+        )
+    })?);
+    for _ in 0..reference_count {
+        let reference =
+            read_add_multiple_string(input, MAXIMUM_WORKER_STORE_PATH_BYTES, budget, &mut charges)?;
+        validate_store_path(&reference)?;
+        references.push(reference);
+    }
+    let registration_time = read_worker_integer_from(input)?;
+    let nar_size = read_worker_integer_from(input)?;
+    let ultimate = read_strict_worker_boolean(input, "ultimate")?;
+    let signature_count = read_bounded_count(input, MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURES)?;
+    let mut signatures = Vec::with_capacity(signature_count);
+    let signature_bytes = signature_count
+        .checked_mul(std::mem::size_of::<Vec<u8>>())
+        .ok_or_else(|| {
+            AddMultipleToStoreRequestError(
+                io::ErrorKind::InvalidData,
+                "AddMultipleToStore metadata exceeds limit".to_owned(),
+            )
+        })?;
+    charges.push(budget.charge(signature_bytes).map_err(|_| {
+        AddMultipleToStoreRequestError(
+            io::ErrorKind::InvalidData,
+            "AddMultipleToStore metadata exceeds limit".to_owned(),
+        )
+    })?);
+    for _ in 0..signature_count {
+        signatures.push(read_add_multiple_string(
+            input,
+            MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURE_BYTES,
+            budget,
+            &mut charges,
+        )?);
+    }
+    let content_address = {
+        let value = read_add_multiple_string(
+            input,
+            MAXIMUM_ADD_MULTIPLE_TO_STORE_CONTENT_ADDRESS_BYTES,
+            budget,
+            &mut charges,
+        )?;
+        (!value.is_empty()).then_some(value)
+    };
+    Ok(AddMultipleToStorePathInfo {
+        path,
+        deriver,
+        nar_hash,
+        references,
+        registration_time,
+        nar_size,
+        ultimate,
+        signatures,
+        content_address,
+        _charges: charges,
+    })
 }
 
 fn validate_build_store_path(path: &[u8]) -> io::Result<()> {
