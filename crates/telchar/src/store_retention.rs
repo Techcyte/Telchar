@@ -75,15 +75,40 @@ impl serde::Serialize for RetentionEntry {
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
-    let helper = std::env::var_os("TELCHAR_NIX_STORE_RETAIN").ok_or_else(retention_error)?;
-    let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| retention_error())?;
-    let root_directory = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY")
-        .ok_or_else(retention_error)?;
+    let Some(helper) = std::env::var_os("TELCHAR_NIX_STORE_RETAIN") else {
+        return Ok(Box::new(UnavailableStoreRetentionBackend));
+    };
+    let Some(root_directory) = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY") else {
+        return Ok(Box::new(UnavailableStoreRetentionBackend));
+    };
+    let Ok(store_uri) = std::env::var("TELCHAR_GATEWAY_STORE_URI") else {
+        return Ok(Box::new(UnavailableStoreRetentionBackend));
+    };
     Ok(Box::new(NixStoreRetentionBackend::new(
         helper,
         store_uri,
         root_directory,
     )?))
+}
+
+struct UnavailableStoreRetentionBackend;
+
+impl StoreRetentionBackend for UnavailableStoreRetentionBackend {
+    fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
+        if entries.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(retention_error())
+        }
+    }
+
+    fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
+        if retained.is_empty() {
+            Ok(())
+        } else {
+            Err(retention_error())
+        }
+    }
 }
 
 pub struct NixStoreRetentionBackend {
@@ -131,7 +156,8 @@ impl NixStoreRetentionBackend {
             return Err(retention_error());
         }
         let output = run_helper(&self.helper, &payload)?;
-        let response: RetentionResponse = serde_json::from_slice(&output).map_err(|_| retention_error())?;
+        let response: RetentionResponse =
+            serde_json::from_slice(&output).map_err(|_| retention_error())?;
         if response.version != 1 || response.retained.len() != entries.len() {
             return Err(retention_error());
         }
@@ -210,7 +236,10 @@ fn validate_entries(entries: &[RetentionEntry], root_directory: &Path) -> io::Re
     for entry in entries {
         if entry.lease_id.is_empty()
             || entry.lease_id.len() > crate::ipc::MAX_IPC_COMPONENT_BYTES
-            || entry.lease_id.bytes().any(|byte| matches!(byte, b'/' | b'\0' | b'\n' | b'\r'))
+            || entry
+                .lease_id
+                .bytes()
+                .any(|byte| matches!(byte, b'/' | b'\0' | b'\n' | b'\r'))
             || !valid_store_path(&entry.store_path)
             || root_directory.join(&entry.lease_id).parent() != Some(root_directory)
         {
@@ -238,7 +267,10 @@ fn valid_store_path(path: &str) -> bool {
 fn run_helper(helper: &Path, payload: &[u8]) -> io::Result<Vec<u8>> {
     let mut command = Command::new(helper);
     configure_child_lifecycle(&mut command);
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let child = command.spawn().map_err(|_| retention_error())?;
     let mut child = ChildGuard::new(child);
     let mut stdin = child.child.stdin.take().ok_or_else(retention_error)?;
@@ -246,7 +278,11 @@ fn run_helper(helper: &Path, payload: &[u8]) -> io::Result<Vec<u8>> {
     let stderr = child.child.stderr.take().ok_or_else(retention_error)?;
     let stdout_reader = thread::spawn(|| drain_bounded(stdout, MAXIMUM_MESSAGE_BYTES));
     let stderr_reader = thread::spawn(|| drain_bounded(stderr, MAXIMUM_DIAGNOSTIC_BYTES));
-    if stdin.write_all(payload).and_then(|_| stdin.flush()).is_err() {
+    if stdin
+        .write_all(payload)
+        .and_then(|_| stdin.flush())
+        .is_err()
+    {
         child.kill_and_reap();
         let _ = stdout_reader.join();
         let _ = stderr_reader.join();
@@ -279,10 +315,14 @@ struct ChildGuard {
 }
 
 impl ChildGuard {
-    fn new(child: Child) -> Self { Self { child } }
+    fn new(child: Child) -> Self {
+        Self { child }
+    }
 
     fn kill_and_reap(&mut self) {
-        if let Some(pid) = rustix::process::Pid::from_raw(self.child.id() as rustix::process::RawPid) {
+        if let Some(pid) =
+            rustix::process::Pid::from_raw(self.child.id() as rustix::process::RawPid)
+        {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
         let _ = self.child.kill();
@@ -291,7 +331,9 @@ impl ChildGuard {
 }
 
 impl Drop for ChildGuard {
-    fn drop(&mut self) { self.kill_and_reap(); }
+    fn drop(&mut self) {
+        self.kill_and_reap();
+    }
 }
 
 fn drain_bounded(mut source: impl Read, maximum: usize) -> io::Result<(Vec<u8>, bool)> {
@@ -300,8 +342,14 @@ fn drain_bounded(mut source: impl Read, maximum: usize) -> io::Result<(Vec<u8>, 
     let mut overflow = false;
     loop {
         let count = source.read(&mut buffer)?;
-        if count == 0 { break; }
-        if output.len().saturating_add(count) > maximum { overflow = true; } else { output.extend_from_slice(&buffer[..count]); }
+        if count == 0 {
+            break;
+        }
+        if output.len().saturating_add(count) > maximum {
+            overflow = true;
+        } else {
+            output.extend_from_slice(&buffer[..count]);
+        }
     }
     Ok((output, overflow))
 }
@@ -311,10 +359,13 @@ fn configure_child_lifecycle(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     unsafe {
         command.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL)).map_err(io::Error::from)?;
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(io::Error::from)?;
             rustix::process::setpgid(None, None).map_err(io::Error::from)?;
             if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
-                return Err(io::Error::other("retention owner exited before helper start"));
+                return Err(io::Error::other(
+                    "retention owner exited before helper start",
+                ));
             }
             Ok(())
         });
@@ -324,4 +375,6 @@ fn configure_child_lifecycle(command: &mut Command) {
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_: &mut Command) {}
 
-fn retention_error() -> io::Error { io::Error::other("gateway store retention failed") }
+fn retention_error() -> io::Error {
+    io::Error::other("gateway store retention failed")
+}

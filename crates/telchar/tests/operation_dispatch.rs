@@ -1468,7 +1468,11 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
 
 #[test]
 fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
-    let mut fixture = FrontendFixture::spawn(None);
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        std::iter::empty::<(&str, String)>(),
+    );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
@@ -1643,21 +1647,24 @@ impl FrontendFixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("fixture root permissions set");
         let socket = root.join("daemon.sock");
-        let gc_roots = root.join("gc-roots");
-        fs::create_dir(&gc_roots).expect("GC root directory creates");
-        fs::set_permissions(&gc_roots, fs::Permissions::from_mode(0o700))
-            .expect("GC root directory permissions set");
-        let retain_helper = root.join("retain-helper");
-        fs::write(
-            &retain_helper,
-            format!(
-                "#!/bin/sh\n/usr/bin/python3 -c 'import json, os, sys; request = json.load(sys.stdin); root = sys.argv[1]; [os.symlink(entry[\"store_path\"], os.path.join(root, entry[\"lease_id\"])) for entry in request[\"entries\"]]; print(json.dumps({{\"version\": 1, \"retained\": [{{\"lease_id\": entry[\"lease_id\"], \"store_path\": entry[\"store_path\"], \"root_path\": os.path.join(root, entry[\"lease_id\"])}} for entry in request[\"entries\"]]}}))' '{}'\n",
-                gc_roots.display()
-            ),
-        )
-        .expect("retention helper writes");
-        fs::set_permissions(&retain_helper, fs::Permissions::from_mode(0o700))
-            .expect("retention helper executable");
+        let gc_roots = store_uri.map(|_| root.join("gc-roots"));
+        let retain_helper = gc_roots.as_ref().map(|gc_roots| {
+            fs::create_dir(gc_roots).expect("GC root directory creates");
+            fs::set_permissions(gc_roots, fs::Permissions::from_mode(0o700))
+                .expect("GC root directory permissions set");
+            let retain_helper = root.join("retain-helper");
+            fs::write(
+                &retain_helper,
+                format!(
+                    "#!/bin/sh\n/usr/bin/python3 -c 'import json, os, sys; request = json.load(sys.stdin); root = sys.argv[1]; [os.symlink(entry[\"store_path\"], os.path.join(root, entry[\"lease_id\"])) for entry in request[\"entries\"]]; print(json.dumps({{\"version\": 1, \"retained\": [{{\"lease_id\": entry[\"lease_id\"], \"store_path\": entry[\"store_path\"], \"root_path\": os.path.join(root, entry[\"lease_id\"])}} for entry in request[\"entries\"]]}}))' '{}'\n",
+                    gc_roots.display()
+                ),
+            )
+            .expect("retention helper writes");
+            fs::set_permissions(&retain_helper, fs::Permissions::from_mode(0o700))
+                .expect("retention helper executable");
+            retain_helper
+        });
         let database = PostgresFixture::start();
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command
@@ -1679,8 +1686,16 @@ impl FrontendFixture {
             .env_remove("TELCHAR_NIX_STORE_BUILD")
             .env_remove("TELCHAR_NIX_STORE_EXPORT")
             .env_remove("TELCHAR_NIX_STORE_PROMOTE")
-            .env("TELCHAR_NIX_STORE_RETAIN", &retain_helper)
-            .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &gc_roots);
+            .env_remove("TELCHAR_NIX_STORE_RETAIN")
+            .env_remove("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
+        if let Some(retain_helper) = retain_helper {
+            daemon_command
+                .env("TELCHAR_NIX_STORE_RETAIN", retain_helper)
+                .env(
+                    "TELCHAR_GATEWAY_GC_ROOT_DIRECTORY",
+                    gc_roots.expect("GC root directory exists"),
+                );
+        }
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());
         }

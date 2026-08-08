@@ -146,7 +146,10 @@ let
           Group = "telchar";
           RuntimeDirectory = "telchar";
           RuntimeDirectoryMode = "0700";
-          StateDirectory = [ "telchar-import" "telchar-gc-roots" ];
+          StateDirectory = [
+            "telchar-import"
+            "telchar-gc-roots"
+          ];
           StateDirectoryMode = "0700";
           ExecStart = "${telchar}/bin/telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995";
         };
