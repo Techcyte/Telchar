@@ -867,7 +867,7 @@ Evidence: paths and output facts to record
   - Verify: real-store local build test.
   - Evidence: derivation and exit/result data.
 
-- [ ] T081 Capture local build log
+- [x] T081 Capture local build log
   - Depends on: T080
   - Outcome: build log is streamed into bounded internal log channel.
   - Red: integration test cannot observe expected builder line.
