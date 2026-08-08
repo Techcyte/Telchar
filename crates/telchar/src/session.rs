@@ -274,6 +274,17 @@ pub fn run_worker_session(
                 let closure = match store_closure.input_closure(admitted.input_sources()) {
                     Ok(closure) => closure,
                     Err(_) => {
+                        if let Err(error) = release_unattached_request_leases(
+                            store_retention,
+                            database_url,
+                            &request_id,
+                        ) {
+                            return reject(
+                                &mut output,
+                                "request-lease-release",
+                                release_error_message(&error),
+                            );
+                        }
                         return reject(
                             &mut output,
                             "input-closure-query",
@@ -311,6 +322,17 @@ pub fn run_worker_session(
                             "failed",
                             Some("helper"),
                         );
+                        if let Err(error) = release_unattached_request_leases(
+                            store_retention,
+                            database_url,
+                            &request_id,
+                        ) {
+                            return reject(
+                                &mut output,
+                                "request-lease-release",
+                                release_error_message(&error),
+                            );
+                        }
                         return reject(
                             &mut output,
                             "gateway-store-retention",
@@ -346,6 +368,17 @@ pub fn run_worker_session(
                         "succeeded",
                         None,
                     );
+                    if let Err(error) = release_unattached_request_leases(
+                        store_retention,
+                        database_url,
+                        &request_id,
+                    ) {
+                        return reject(
+                            &mut output,
+                            "request-lease-release",
+                            release_error_message(&error),
+                        );
+                    }
                     return reject(
                         &mut output,
                         "store-lease-state",
@@ -361,13 +394,15 @@ pub fn run_worker_session(
                         failure_class = error.failure().as_str(),
                         "request attachment persistence failed"
                     );
-                    if release_unattached_request_leases(store_retention, database_url, &request_id)
-                        .is_err()
-                    {
+                    if let Err(error) = release_unattached_request_leases(
+                        store_retention,
+                        database_url,
+                        &request_id,
+                    ) {
                         return reject(
                             &mut output,
-                            "store-lease-state",
-                            "store lease state operation failed",
+                            "request-lease-release",
+                            release_error_message(&error),
                         );
                     }
                     return reject(
@@ -400,18 +435,16 @@ pub fn run_worker_session(
                 ) {
                     Ok(execution) => execution,
                     Err(error) => {
-                        if release_attached_request_leases(
+                        if let Err(release_error) = release_attached_request_leases(
                             store_retention,
                             database_url,
                             session_id,
                             &request_id,
-                        )
-                        .is_err()
-                        {
+                        ) {
                             return reject(
                                 &mut output,
-                                "store-lease-state",
-                                "store lease state operation failed",
+                                "request-lease-release",
+                                release_error_message(&release_error),
                             );
                         }
                         return Err(error);
@@ -442,18 +475,16 @@ pub fn run_worker_session(
                             reason = execution_error_reason(&error),
                             "BuildDerivation execution failed"
                         );
-                        if release_attached_request_leases(
+                        if let Err(release_error) = release_attached_request_leases(
                             store_retention,
                             database_url,
                             session_id,
                             &request_id,
-                        )
-                        .is_err()
-                        {
+                        ) {
                             return reject(
                                 &mut output,
-                                "store-lease-state",
-                                "store lease state operation failed",
+                                "request-lease-release",
+                                release_error_message(&release_error),
                             );
                         }
                         if error.kind() == io::ErrorKind::ConnectionAborted {
@@ -474,18 +505,16 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                if release_attached_request_leases(
+                if let Err(error) = release_attached_request_leases(
                     store_retention,
                     database_url,
                     session_id,
                     &request_id,
-                )
-                .is_err()
-                {
+                ) {
                     return reject(
                         &mut output,
-                        "store-lease-state",
-                        "store lease state operation failed",
+                        "request-lease-release",
+                        release_error_message(&error),
                     );
                 }
                 nix_worker_protocol::write_build_derivation_success_response(
@@ -935,6 +964,14 @@ fn release_committed_request_roots(
         );
         io::Error::other("gateway store retention failed")
     })
+}
+
+fn release_error_message(error: &io::Error) -> &'static str {
+    if error.to_string() == "gateway store retention failed" {
+        "gateway store retention failed"
+    } else {
+        "store lease state operation failed"
+    }
 }
 
 fn execution_error_reason(error: &io::Error) -> &'static str {
