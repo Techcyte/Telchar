@@ -620,6 +620,70 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
 }
 
 #[test]
+fn detach_failure_does_not_send_successful_build_result() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-detach-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    fs::write(
+        &helper,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_attachment_detach() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject detach'; END $$; CREATE TRIGGER reject_attachment_detach BEFORE UPDATE ON request_attachments FOR EACH ROW EXECUTE FUNCTION reject_attachment_detach();",
+        )
+        .expect("detach failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+    drop(input);
+
+    let mut response = Vec::new();
+    output
+        .read_to_end(&mut response)
+        .expect("response stream closes");
+    assert!(
+        response.is_empty(),
+        "detach failure exposed a successful build result: {response:?}"
+    );
+    assert!(child.wait().expect("Telchar exits").success());
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT state FROM request_attachments", &[])
+            .expect("attachment state reads")
+            .get::<_, String>(0),
+        "attached",
+        "failed detach changed attachment state"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("database.request_attachment.failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("operation=\"detach\""), "{stderr}");
+    assert!(!stderr.contains("reject detach"), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",

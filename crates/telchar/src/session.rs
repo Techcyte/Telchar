@@ -307,14 +307,12 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                let response = nix_worker_protocol::write_build_derivation_success_response(
+                detach_request_attachment(database_url, session_id, &request_id)?;
+                nix_worker_protocol::write_build_derivation_success_response(
                     &mut output,
                     negotiated.version,
                     result.status() == LocalBuildStatus::AlreadyValid,
-                );
-                let detach = detach_request_attachment(database_url, session_id, &request_id);
-                response?;
-                detach?;
+                )?;
                 tracing::info!(
                     event = "worker.build_derivation.completed",
                     output_count = result.outputs().len(),
