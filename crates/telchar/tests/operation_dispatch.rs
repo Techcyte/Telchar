@@ -697,6 +697,92 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
 }
 
 #[test]
+fn input_lease_persistence_failure_rolls_back_input_roots() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-input-lease-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let closure_helper = root.join("closure-helper");
+    fs::write(
+        &closure_helper,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"paths\":[\"/nix/store/22222222222222222222222222222222-telchar-input\"]}'\n",
+    )
+    .expect("closure helper writes");
+    fs::set_permissions(&closure_helper, fs::Permissions::from_mode(0o700))
+        .expect("closure helper executable");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!("#!/bin/sh\nprintf invoked > '{}'\n", marker.display()),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
+            ("TELCHAR_NIX_STORE_CLOSURE", closure_helper.display().to_string()),
+        ],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_input_lease_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.purpose = 'input' THEN RAISE EXCEPTION 'reject input lease insert'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_input_lease_insert BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_input_lease_insert();",
+        )
+        .expect("input failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_input_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "store lease state operation failed");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    assert!(!marker.exists(), "input lease failure started helper");
+    let mut database = fixture.database.connect();
+    assert_eq!(
+        database
+            .query_one("SELECT count(*) FROM store_leases WHERE purpose = 'derivation'", &[])
+            .expect("derivation lease count reads")
+            .get::<_, i64>(0),
+        1,
+        "input lease failure removed derivation lease"
+    );
+    assert_eq!(
+        database
+            .query_one("SELECT count(*) FROM store_leases WHERE purpose = 'input'", &[])
+            .expect("input lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "input lease failure persisted an input lease"
+    );
+    assert_eq!(
+        fs::read_dir(fixture.root.join("gc-roots"))
+            .expect("GC root directory reads")
+            .count(),
+        1,
+        "input lease failure left an input root"
+    );
+    fixture.finish();
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-attachment-order-{}-{}",
