@@ -795,7 +795,7 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL migration and lease-operation tests.
   - Evidence: fields, constraints, and transaction ownership.
 
-- [ ] T072 Acquire derivation lease on accepted build
+- [x] T072 Acquire derivation lease on accepted build
   - Depends on: T071
   - Outcome: accepted request roots derivation before queue visibility.
   - Red: state transition lacks root.
