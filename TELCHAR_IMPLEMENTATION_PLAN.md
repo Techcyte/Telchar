@@ -809,7 +809,7 @@ Evidence: paths and output facts to record
   - Verify: closure lease test.
   - Evidence: exact closure set.
 
-- [ ] T074 Preserve leased paths across GC
+- [x] T074 Preserve leased paths across GC
   - Depends on: T073
   - Outcome: real GC cannot remove queued/running request inputs.
   - Red: GC removes fixture path.
