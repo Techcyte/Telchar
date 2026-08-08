@@ -816,7 +816,7 @@ Evidence: paths and output facts to record
   - Verify: real-store GC test.
   - Evidence: path valid before/after GC.
 
-- [ ] T075 Release request leases transactionally
+- [x] T075 Release request leases transactionally
   - Depends on: T074
   - Outcome: terminal cleanup releases only eligible request roots after delivery/detachment policy.
   - Red: early release or leaked lease test fails.
