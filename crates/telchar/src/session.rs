@@ -229,8 +229,12 @@ pub fn run_worker_session(
                     derivation_path,
                 )];
                 let retained_derivation = match store_retention.retain(&derivation_entries) {
-                    Ok(retained) => retained,
+                    Ok(retained) => {
+                        retention_batch_event("retain", "derivation", 1, "succeeded", None);
+                        retained
+                    }
                     Err(_) => {
+                        retention_batch_event("retain", "derivation", 1, "failed", Some("helper"));
                         return reject(
                             &mut output,
                             "gateway-store-retention",
@@ -247,12 +251,14 @@ pub fn run_worker_session(
                     crate::persistence::StoreLeasePurpose::Derivation,
                 ) {
                     if store_retention.rollback(&retained_derivation).is_err() {
+                        retention_batch_event("rollback", "derivation", 1, "failed", Some("rollback"));
                         return reject(
                             &mut output,
                             "gateway-store-retention",
                             "gateway store retention failed",
                         );
                     }
+                    retention_batch_event("rollback", "derivation", 1, "succeeded", None);
                     return reject(
                         &mut output,
                         "store-lease-state",
@@ -281,8 +287,12 @@ pub fn run_worker_session(
                     })
                     .collect::<Vec<_>>();
                 let retained_inputs = match store_retention.retain(&input_entries) {
-                    Ok(retained) => retained,
+                    Ok(retained) => {
+                        retention_batch_event("retain", "input", input_entries.len(), "succeeded", None);
+                        retained
+                    }
                     Err(_) => {
+                        retention_batch_event("retain", "input", input_entries.len(), "failed", Some("helper"));
                         return reject(
                             &mut output,
                             "gateway-store-retention",
@@ -298,12 +308,14 @@ pub fn run_worker_session(
                 .is_err()
                 {
                     if store_retention.rollback(&retained_inputs).is_err() {
+                        retention_batch_event("rollback", "input", input_entries.len(), "failed", Some("rollback"));
                         return reject(
                             &mut output,
                             "gateway-store-retention",
                             "gateway store retention failed",
                         );
                     }
+                    retention_batch_event("rollback", "input", input_entries.len(), "succeeded", None);
                     return reject(
                         &mut output,
                         "store-lease-state",
@@ -721,6 +733,24 @@ fn derivation_lease_id() -> String {
             .as_nanos(),
         DERIVATION_LEASE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
     )
+}
+
+fn retention_batch_event(
+    operation: &'static str,
+    purpose: &'static str,
+    path_count: usize,
+    result: &'static str,
+    failure_class: Option<&'static str>,
+) {
+    tracing::info!(
+        event = "gateway.store_retention",
+        operation,
+        purpose,
+        path_count,
+        result,
+        failure_class,
+        "gateway store retention batch completed"
+    );
 }
 
 fn disk_reserve_error(error: crate::disk_reserve::AdmissionFailure) -> &'static str {

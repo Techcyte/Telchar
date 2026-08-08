@@ -778,7 +778,18 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
         1,
         "input lease failure left an input root"
     );
-    fixture.finish();
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("gateway.store_retention")
+            && stderr.contains("operation=\"retain\"")
+            && stderr.contains("purpose=\"input\"")
+            && stderr.contains("path_count=1")
+            && stderr.contains("operation=\"rollback\"")
+            && stderr.contains("result=\"succeeded\""),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("/nix/store/"), "{stderr}");
+    assert!(!stderr.contains("gc-roots"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -1211,6 +1222,19 @@ fn derivation_lease_persistence_failure_retains_request_before_attachment_or_hel
     );
     let stderr = fixture.finish();
     assert!(stderr.contains("database.store_lease.failed"), "{stderr}");
+    assert!(
+        stderr.contains("gateway.store_retention")
+            && stderr.contains("operation=\"retain\"")
+            && stderr.contains("purpose=\"derivation\"")
+            && stderr.contains("path_count=1")
+            && stderr.contains("result=\"succeeded\"")
+            && stderr.contains("operation=\"rollback\"")
+            && stderr.contains("result=\"succeeded\""),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("lease-"), "{stderr}");
+    assert!(!stderr.contains("/nix/store/"), "{stderr}");
+    assert!(!stderr.contains("gc-roots"), "{stderr}");
     assert!(stderr.contains("operation=\"create\""), "{stderr}");
     assert!(stderr.contains("failure_class=\"query\""), "{stderr}");
     assert!(!stderr.contains("unexpected-log"), "{stderr}");
