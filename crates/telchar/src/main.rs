@@ -117,6 +117,8 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn run_daemon() -> io::Result<()> {
     let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
+    let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
+    let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
@@ -142,6 +144,8 @@ fn run_daemon() -> io::Result<()> {
             &transfer_limits,
             &object_admission,
             &rate_admission,
+            disk_reserve,
+            &disk_probe,
         );
     }
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
@@ -180,6 +184,8 @@ fn run_daemon() -> io::Result<()> {
                         &transfer_limits,
                         &object_admission,
                         &rate_admission,
+                        disk_reserve,
+                        &telchar::disk_reserve::OsDiskReserveProbe,
                     )
                 });
             if let Err(error) = result {
@@ -194,6 +200,7 @@ fn run_daemon() -> io::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
@@ -201,6 +208,8 @@ fn serve_connection(
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
+    disk_reserve: telchar::disk_reserve::DiskReserve,
+    disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
@@ -208,6 +217,8 @@ fn serve_connection(
         transfer_limits,
         object_admission,
         rate_admission,
+        disk_reserve,
+        disk_probe,
     )
 }
 
@@ -217,6 +228,8 @@ fn serve_accepted_connection(
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
+    disk_reserve: telchar::disk_reserve::DiskReserve,
+    disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -252,6 +265,8 @@ fn serve_accepted_connection(
         transfer_limits,
         object_admission,
         rate_admission,
+        disk_reserve,
+        disk_probe,
     )
 }
 

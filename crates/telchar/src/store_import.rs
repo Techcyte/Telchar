@@ -19,6 +19,8 @@ pub fn importer_from_environment() -> io::Result<Box<dyn StoreImportBackend>> {
 }
 
 pub trait StoreImportBackend {
+    fn staging_directory(&self) -> Option<&Path>;
+
     fn import(
         &mut self,
         info: &AddMultipleToStorePathInfo,
@@ -29,6 +31,10 @@ pub trait StoreImportBackend {
 struct UnavailableStoreImport;
 
 impl StoreImportBackend for UnavailableStoreImport {
+    fn staging_directory(&self) -> Option<&Path> {
+        None
+    }
+
     fn import(
         &mut self,
         _info: &AddMultipleToStorePathInfo,
@@ -89,6 +95,10 @@ impl GatewayStoreImport {
 }
 
 impl StoreImportBackend for GatewayStoreImport {
+    fn staging_directory(&self) -> Option<&Path> {
+        Some(&self.staging_directory)
+    }
+
     fn import(
         &mut self,
         info: &AddMultipleToStorePathInfo,

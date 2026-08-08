@@ -1,9 +1,10 @@
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_query_valid_paths_response, ProtocolSessionLimits, WorkerInput, WorkerOperation,
-    WorkerReader,
+    ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader,
+    write_query_valid_paths_response,
 };
 
 use crate::build_request::BuildRequest;
@@ -101,6 +102,8 @@ pub fn run_worker_session(
     transfer_limits: &crate::transfer_limits::TransferLimits,
     object_admission: &crate::transfer_limits::ObjectAdmissionState,
     rate_admission: &crate::transfer_limits::RateAdmissionState,
+    disk_reserve: crate::disk_reserve::DiskReserve,
+    disk_probe: &dyn crate::disk_reserve::DiskReserveProbe,
 ) -> io::Result<()> {
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
@@ -168,6 +171,17 @@ pub fn run_worker_session(
                         );
                     }
                 };
+                if let Err(error) = disk_reserve.admit_build(
+                    disk_probe,
+                    std::path::Path::new(crate::disk_reserve::GATEWAY_STORE_DIRECTORY),
+                ) {
+                    disk_reserve_rejected("build", disk_reserve, error);
+                    return reject(
+                        &mut output,
+                        "gateway-disk-reserve",
+                        disk_reserve_error(error),
+                    );
+                }
                 tracing::info!(
                     event = "worker.build_derivation.admitted",
                     output_count = admitted.expected_outputs().len(),
@@ -371,12 +385,26 @@ pub fn run_worker_session(
                 );
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
+                let mut disk_rejection = None;
+                let staging_directory = store_import.staging_directory().map(Path::to_path_buf);
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
                     |info, source| {
                         object_counts
                             .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                         let _permit = object_admission.admit_inbound()?;
+                        if let Some(staging_directory) = staging_directory.as_deref()
+                            && let Err(error) = disk_reserve.admit_transfer(
+                                disk_probe,
+                                std::path::Path::new(crate::disk_reserve::GATEWAY_STORE_DIRECTORY),
+                                staging_directory,
+                                info.nar_size(),
+                            )
+                        {
+                            disk_reserve_rejected("transfer", disk_reserve, error);
+                            disk_rejection = Some(error);
+                            return Err(io::Error::other("disk reserve rejected"));
+                        }
                         let mut limited = crate::transfer_limits::LimitedReader::with_rate(
                             source,
                             transfer_limits.maximum_object_bytes,
@@ -388,6 +416,13 @@ pub fn run_worker_session(
                 ) {
                     Ok(request) => request,
                     Err(error) => {
+                        if let Some(error) = disk_rejection {
+                            return reject(
+                                &mut output,
+                                "gateway-disk-reserve",
+                                disk_reserve_error(error),
+                            );
+                        }
                         tracing::error!(
                             event = "worker.operation.rejected",
                             rejection = "invalid-add-multiple-to-store",
@@ -504,6 +539,50 @@ pub fn run_worker_session(
                 );
             }
         }
+    }
+}
+
+fn disk_reserve_error(error: crate::disk_reserve::AdmissionFailure) -> &'static str {
+    match error.reason() {
+        crate::disk_reserve::RejectionReason::InsufficientSpace => "gateway disk reserve exceeded",
+        crate::disk_reserve::RejectionReason::ProbeFailed
+        | crate::disk_reserve::RejectionReason::ArithmeticOverflow => {
+            "gateway disk reserve check failed"
+        }
+    }
+}
+
+fn disk_reserve_rejected(
+    operation: &'static str,
+    reserve: crate::disk_reserve::DiskReserve,
+    error: crate::disk_reserve::AdmissionFailure,
+) {
+    let reason = match error.reason() {
+        crate::disk_reserve::RejectionReason::InsufficientSpace => "insufficient-space",
+        crate::disk_reserve::RejectionReason::ProbeFailed => "probe-failed",
+        crate::disk_reserve::RejectionReason::ArithmeticOverflow => "arithmetic-overflow",
+    };
+    if let Some(available_bytes) = error.available_bytes() {
+        tracing::warn!(
+            event = "worker.disk_reserve.rejected",
+            operation,
+            filesystem = error.filesystem(),
+            configured_reserve_bytes = reserve.bytes(),
+            required_bytes = error.required_bytes(),
+            available_bytes,
+            reason,
+            "gateway disk reserve rejected admission"
+        );
+    } else {
+        tracing::warn!(
+            event = "worker.disk_reserve.rejected",
+            operation,
+            filesystem = error.filesystem(),
+            configured_reserve_bytes = reserve.bytes(),
+            required_bytes = error.required_bytes(),
+            reason,
+            "gateway disk reserve rejected admission"
+        );
     }
 }
 

@@ -390,6 +390,121 @@ fn incomplete_nonempty_add_multiple_to_store_fails_before_first_item_body() {
 }
 
 #[test]
+fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-disk-import-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("promote-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > {}\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_NIX_STORE_PROMOTE", helper.display().to_string()),
+            ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_add_multiple_to_store_metadata(&mut input, 1);
+    input.flush().expect("AddMultipleToStore metadata flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "gateway disk reserve check failed"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(!marker.exists(), "disk rejection started promotion helper");
+    assert!(stderr.contains("worker.disk_reserve.rejected"), "{stderr}");
+    assert!(stderr.contains("operation=\"transfer\""), "{stderr}");
+    assert!(
+        stderr.contains("reason=\"arithmetic-overflow\""),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn disk_reserve_rejects_build_before_helper_or_log_frame() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-disk-reserve-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > {}\nprintf 'unexpected-log\\n' >&2\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
+            ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "gateway disk reserve exceeded");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(!marker.exists(), "disk rejection started the build helper");
+    assert!(stderr.contains("worker.disk_reserve.rejected"), "{stderr}");
+    assert!(stderr.contains("operation=\"build\""), "{stderr}");
+    assert!(stderr.contains("filesystem=\"gateway-store\""), "{stderr}");
+    assert!(stderr.contains("reason=\"insufficient-space\""), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",
@@ -794,6 +909,29 @@ fn write_integer(output: &mut impl Write, value: u64) {
     output
         .write_all(&value.to_le_bytes())
         .expect("worker integer writes");
+}
+
+fn write_add_multiple_to_store_metadata(output: &mut impl Write, nar_size: u64) {
+    let mut metadata = Vec::new();
+    write_integer(&mut metadata, 1);
+    write_string(
+        &mut metadata,
+        b"/nix/store/11111111111111111111111111111111-telchar-disk-reserve",
+    );
+    write_string(&mut metadata, b"");
+    write_string(&mut metadata, b"");
+    write_integer(&mut metadata, 0);
+    write_integer(&mut metadata, 0);
+    write_integer(&mut metadata, nar_size);
+    write_integer(&mut metadata, 0);
+    write_integer(&mut metadata, 0);
+    write_string(&mut metadata, b"");
+
+    write_integer(output, 44);
+    write_integer(output, 0);
+    write_integer(output, 0);
+    write_integer(output, metadata.len() as u64);
+    output.write_all(&metadata).expect("metadata frame writes");
 }
 
 fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
