@@ -130,6 +130,7 @@ let
           TELCHAR_NIX_STORE_BUILD = "${telchar}/libexec/telchar/nix-store-build";
           TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
           TELCHAR_NIX_STORE_PROMOTE = "${telchar}/libexec/telchar/nix-store-promote";
+          TELCHAR_NIX_STORE_CLOSURE = "${telchar}/libexec/telchar/nix-store-closure";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";
           NIX_CONFIG = ''
