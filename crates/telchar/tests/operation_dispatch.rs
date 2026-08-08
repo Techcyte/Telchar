@@ -779,17 +779,29 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
         "input lease failure left an input root"
     );
     let stderr = fixture.finish();
+    let retention_events = stderr
+        .lines()
+        .filter(|line| line.contains("event=\"gateway.store_retention\""))
+        .collect::<Vec<_>>();
     assert!(
-        stderr.contains("gateway.store_retention")
-            && stderr.contains("operation=\"retain\"")
-            && stderr.contains("purpose=\"input\"")
-            && stderr.contains("path_count=1")
-            && stderr.contains("operation=\"rollback\"")
-            && stderr.contains("result=\"succeeded\""),
+        retention_events.iter().any(|line| {
+            line.contains("operation=\"retain\"")
+                && line.contains("purpose=\"input\"")
+                && line.contains("path_count=1")
+                && line.contains("result=\"succeeded\"")
+        }) && retention_events.iter().any(|line| {
+            line.contains("operation=\"rollback\"")
+                && line.contains("purpose=\"input\"")
+                && line.contains("path_count=1")
+                && line.contains("result=\"succeeded\"")
+        }),
         "{stderr}"
     );
-    assert!(!stderr.contains("/nix/store/"), "{stderr}");
-    assert!(!stderr.contains("gc-roots"), "{stderr}");
+    for event in retention_events {
+        assert!(!event.contains("lease-"), "{event}");
+        assert!(!event.contains("/nix/store/"), "{event}");
+        assert!(!event.contains("gc-roots"), "{event}");
+    }
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -1222,19 +1234,30 @@ fn derivation_lease_persistence_failure_retains_request_before_attachment_or_hel
     );
     let stderr = fixture.finish();
     assert!(stderr.contains("database.store_lease.failed"), "{stderr}");
+    let retention_events = stderr
+        .lines()
+        .filter(|line| line.contains("event=\"gateway.store_retention\""))
+        .collect::<Vec<_>>();
+    assert_eq!(retention_events.len(), 2, "{stderr}");
     assert!(
-        stderr.contains("gateway.store_retention")
-            && stderr.contains("operation=\"retain\"")
-            && stderr.contains("purpose=\"derivation\"")
-            && stderr.contains("path_count=1")
-            && stderr.contains("result=\"succeeded\"")
-            && stderr.contains("operation=\"rollback\"")
-            && stderr.contains("result=\"succeeded\""),
+        retention_events.iter().any(|line| {
+            line.contains("operation=\"retain\"")
+                && line.contains("purpose=\"derivation\"")
+                && line.contains("path_count=1")
+                && line.contains("result=\"succeeded\"")
+        }) && retention_events.iter().any(|line| {
+            line.contains("operation=\"rollback\"")
+                && line.contains("purpose=\"derivation\"")
+                && line.contains("path_count=1")
+                && line.contains("result=\"succeeded\"")
+        }),
         "{stderr}"
     );
-    assert!(!stderr.contains("lease-"), "{stderr}");
-    assert!(!stderr.contains("/nix/store/"), "{stderr}");
-    assert!(!stderr.contains("gc-roots"), "{stderr}");
+    for event in retention_events {
+        assert!(!event.contains("lease-"), "{event}");
+        assert!(!event.contains("/nix/store/"), "{event}");
+        assert!(!event.contains("gc-roots"), "{event}");
+    }
     assert!(stderr.contains("operation=\"create\""), "{stderr}");
     assert!(stderr.contains("failure_class=\"query\""), "{stderr}");
     assert!(!stderr.contains("unexpected-log"), "{stderr}");
