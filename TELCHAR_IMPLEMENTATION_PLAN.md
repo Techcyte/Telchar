@@ -788,7 +788,7 @@ Evidence: paths and output facts to record
 
 ### GC leases
 
-- [ ] T071 Define store lease record
+- [x] T071 Define store lease record
   - Depends on: T070C
   - Outcome: durable PostgreSQL lease identifies request/publication owner, path, purpose, and release state behind domain-specific lease operations.
   - Red: schema and operation tests fail.
