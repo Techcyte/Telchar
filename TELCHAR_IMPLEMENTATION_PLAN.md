@@ -728,7 +728,7 @@ Evidence: paths and output facts to record
   - Verify: streamed export hash/size and round-trip test.
   - Evidence: content, computed hash/size, and registered metadata equality.
 
-- [ ] T069 Bound NAR transfer bytes
+- [x] T069 Bound NAR transfer bytes
   - Depends on: T066, T068
   - Outcome: inbound and outbound transfers obey configured per-object and per-session limits.
   - Red: over-limit transfer succeeds.
