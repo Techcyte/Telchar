@@ -3,7 +3,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use telchar::nix_fixture::{NixDaemon, NixFixture, TrustMode};
-use telchar::store_retention::{NixStoreRetentionBackend, RetentionEntry, StoreRetentionBackend};
+use telchar::store_retention::{
+    NixStoreRetentionBackend, ReleasedRetentionEntry, RetentionEntry, StoreRetentionBackend,
+};
 
 #[test]
 fn empty_retention_set_does_not_connect_to_daemon() {
@@ -21,6 +23,83 @@ fn empty_retention_set_does_not_connect_to_daemon() {
             .is_empty()
     );
     fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn release_removes_only_matching_durable_root() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let released = build_fixture_path(&fixture, &daemon, "released-root", "released");
+    let active = build_fixture_path(&fixture, &daemon, "active-root", "active");
+    let root_directory = fixture.root().join("gc-roots");
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
+        .expect("retention backend configures");
+    backend
+        .retain(&[RetentionEntry::new(
+            "released-root",
+            released.to_string_lossy(),
+        )])
+        .expect("released root retains");
+    backend
+        .retain(&[RetentionEntry::new("active-root", active.to_string_lossy())])
+        .expect("active root retains");
+
+    backend
+        .release(&[ReleasedRetentionEntry::new(
+            "released-root",
+            released.to_string_lossy(),
+        )])
+        .expect("released root removes");
+
+    assert!(!root_directory.join("released-root").exists());
+    assert_eq!(
+        fs::read_link(root_directory.join("active-root")).expect("active root remains"),
+        active
+    );
+    daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+}
+
+#[test]
+fn release_rejects_conflicts_without_removing_any_root() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let released = build_fixture_path(&fixture, &daemon, "release-conflict", "released");
+    let other = build_fixture_path(&fixture, &daemon, "release-conflict-other", "other");
+    let root_directory = fixture.root().join("gc-roots");
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
+        .expect("retention backend configures");
+    backend
+        .retain(&[RetentionEntry::new(
+            "release-conflict",
+            released.to_string_lossy(),
+        )])
+        .expect("root retains");
+    let root = root_directory.join("release-conflict");
+    fs::remove_file(&root).expect("root removes");
+    std::os::unix::fs::symlink(&other, &root).expect("conflicting root creates");
+
+    assert!(
+        backend
+            .release(&[ReleasedRetentionEntry::new(
+                "release-conflict",
+                released.to_string_lossy(),
+            )])
+            .is_err()
+    );
+    assert_eq!(fs::read_link(&root).expect("conflict persists"), other);
+    daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
 }
 
 #[test]

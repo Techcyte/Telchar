@@ -30,9 +30,25 @@ pub struct RetainedPath {
     created: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleasedRetentionEntry {
+    lease_id: String,
+    store_path: String,
+}
+
+impl ReleasedRetentionEntry {
+    pub fn new(lease_id: impl Into<String>, store_path: impl Into<String>) -> Self {
+        Self {
+            lease_id: lease_id.into(),
+            store_path: store_path.into(),
+        }
+    }
+}
+
 pub trait StoreRetentionBackend: Send {
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>>;
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()>;
+    fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()>;
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
@@ -86,6 +102,10 @@ impl StoreRetentionBackend for FilesystemStoreRetentionBackend {
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
         rollback_paths(&self.root_directory, retained)
     }
+
+    fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()> {
+        release_paths(&self.root_directory, released)
+    }
 }
 
 struct UnavailableStoreRetentionBackend;
@@ -101,6 +121,14 @@ impl StoreRetentionBackend for UnavailableStoreRetentionBackend {
 
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
         if retained.is_empty() {
+            Ok(())
+        } else {
+            Err(retention_error())
+        }
+    }
+
+    fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()> {
+        if released.is_empty() {
             Ok(())
         } else {
             Err(retention_error())
@@ -195,6 +223,10 @@ impl StoreRetentionBackend for NixStoreRetentionBackend {
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
         rollback_paths(&self.root_directory, retained)
     }
+
+    fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()> {
+        release_paths(&self.root_directory, released)
+    }
 }
 
 fn rollback_paths(root_directory: &Path, retained: &[RetainedPath]) -> io::Result<()> {
@@ -206,6 +238,31 @@ fn rollback_paths(root_directory: &Path, retained: &[RetainedPath]) -> io::Resul
             return Err(retention_error());
         }
         fs::remove_file(&path.root_path).map_err(|_| retention_error())?;
+    }
+    Ok(())
+}
+
+fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> io::Result<()> {
+    if released.is_empty() {
+        return Ok(());
+    }
+    let mut released = released.to_vec();
+    validate_released_entries(&released, root_directory)?;
+    released.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
+    for entry in released {
+        let root_path = root_directory.join(&entry.lease_id);
+        match fs::symlink_metadata(&root_path) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && fs::read_link(&root_path).map_err(|_| retention_error())?
+                        == Path::new(&entry.store_path) =>
+            {
+                fs::remove_file(&root_path).map_err(|_| retention_error())?;
+            }
+            Ok(_) => return Err(retention_error()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(retention_error()),
+        }
     }
     Ok(())
 }
@@ -263,6 +320,33 @@ fn validate_entries(entries: &[RetentionEntry], root_directory: &Path) -> io::Re
                 .any(|byte| matches!(byte, b'/' | b'\0' | b'\n' | b'\r'))
             || !valid_store_path(&entry.store_path)
             || root_directory.join(&entry.lease_id).parent() != Some(root_directory)
+        {
+            return Err(retention_error());
+        }
+    }
+    Ok(())
+}
+
+fn validate_released_entries(
+    released: &[ReleasedRetentionEntry],
+    root_directory: &Path,
+) -> io::Result<()> {
+    if released.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 1 {
+        return Err(retention_error());
+    }
+    let mut lease_ids = std::collections::HashSet::new();
+    let mut store_paths = std::collections::HashSet::new();
+    for entry in released {
+        if entry.lease_id.is_empty()
+            || entry.lease_id.len() > crate::ipc::MAX_IPC_COMPONENT_BYTES
+            || entry
+                .lease_id
+                .bytes()
+                .any(|byte| matches!(byte, b'/' | b'\0' | b'\n' | b'\r'))
+            || !valid_store_path(&entry.store_path)
+            || root_directory.join(&entry.lease_id).parent() != Some(root_directory)
+            || !lease_ids.insert(&entry.lease_id)
+            || !store_paths.insert(&entry.store_path)
         {
             return Err(retention_error());
         }

@@ -1784,8 +1784,12 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "release-failure-session", requester)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "release-failure-session",
+        requester,
+    )
+    .expect("session opens");
     telchar::persistence::create_build_request(
         fixture.url(),
         "release-failure-request",
@@ -1838,6 +1842,85 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
     );
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.url(), "release-failure-derivation")
+            .expect("lease reads")
+            .expect("lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+}
+
+#[test]
+fn request_lease_release_unattached_releases_only_without_attachment() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "unattached-release-request",
+        "/nix/store/11111111111111111111111111111111-unattached-release.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "unattached-release-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "unattached-release-request",
+        "/nix/store/11111111111111111111111111111111-unattached-release.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+
+    let released = telchar::persistence::release_unattached_request_leases(
+        fixture.url(),
+        "unattached-release-request",
+    )
+    .expect("unattached lease releases");
+    assert_eq!(released.leases.len(), 1);
+    assert_eq!(
+        released.leases[0].state,
+        telchar::persistence::StoreLeaseState::Released
+    );
+
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "attached-release-request",
+        "/nix/store/22222222222222222222222222222222-attached-release.drv",
+        "x86_64-linux",
+    )
+    .expect("attached request persists");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "attached-release-session",
+        "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+    )
+    .expect("session opens");
+    telchar::persistence::attach_request(
+        fixture.url(),
+        "attached-release-session",
+        "attached-release-request",
+    )
+    .expect("request attaches");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "attached-release-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "attached-release-request",
+        "/nix/store/22222222222222222222222222222222-attached-release.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+
+    assert_eq!(
+        telchar::persistence::release_unattached_request_leases(
+            fixture.url(),
+            "attached-release-request",
+        )
+        .expect_err("attachment blocks unattached release")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "attached-release-derivation")
             .expect("lease reads")
             .expect("lease exists")
             .state,

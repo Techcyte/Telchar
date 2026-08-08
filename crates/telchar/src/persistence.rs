@@ -1029,6 +1029,64 @@ fn detach_request_and_release_leases_inner(
     Ok(ReleasedRequestLeases { leases: released })
 }
 
+pub fn release_unattached_request_leases(
+    database_url: &str,
+    request_id: &str,
+) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    if database_url.trim().is_empty()
+        || request_id.is_empty()
+        || request_id.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let result = release_unattached_request_leases_inner(database_url, request_id);
+    emit_request_lease_release_result(
+        "unattached-release",
+        result.as_ref().map(|released| released.leases.len()),
+        &result,
+    );
+    result
+}
+
+fn release_unattached_request_leases_inner(
+    database_url: &str,
+    request_id: &str,
+) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let request = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match request {
+        None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+        Some(row) => {
+            decode_build_request(&row).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        }
+    };
+    if transaction
+        .query_opt(
+            "SELECT session_id, request_id, state, attached_at, detached_at FROM request_attachments WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        .is_some()
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::InvalidState));
+    }
+    let locked = lock_active_request_leases(&mut transaction, request_id)?;
+    let released = release_locked_request_leases(&mut transaction, request_id, &locked)?;
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    Ok(ReleasedRequestLeases { leases: released })
+}
+
 fn lock_active_request_leases(
     transaction: &mut postgres::Transaction<'_>,
     request_id: &str,
