@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
@@ -175,6 +176,7 @@ fn log_writer_failure_kills_and_reaps_the_helper() {
     let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
     let status = std::process::Command::new("kill")
         .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
         .status()
         .expect("process liveness query runs");
     assert!(
@@ -217,6 +219,7 @@ fn cancellation_kills_and_reaps_a_silent_helper() {
     let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
     let status = std::process::Command::new("kill")
         .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
         .status()
         .expect("process liveness query runs");
     assert!(!status.success(), "cancelled helper remains alive");
@@ -291,6 +294,7 @@ fn executor_times_out_and_reaps_the_helper() {
     let pid = fs::read_to_string(&pid_path).expect("helper recorded PID");
     let status = std::process::Command::new("kill")
         .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
         .status()
         .expect("process liveness query runs");
     assert!(!status.success(), "timed-out helper remains alive");

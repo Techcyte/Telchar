@@ -6,6 +6,10 @@ use crate::build_request::BuildRequest;
 
 const MAXIMUM_REQUEST_ID_BYTES: usize = 4096;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
+const MAXIMUM_BUILD_LOG_CHUNK_BYTES: usize = 8192;
+const MAXIMUM_QUEUED_BUILD_LOG_CHUNKS: usize = 8;
+const MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES: usize =
+    MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalExecutionRequest<'a> {
@@ -194,7 +198,12 @@ impl NixStoreExecutor {
             .ok_or_else(|| io::Error::other("build helper stderr not configured"))?;
         let (reader_error_sender, reader_error_receiver) = std::sync::mpsc::channel();
         let stdout_reader = spawn_reader(stdout, reader_error_sender);
-        let (log_sender, log_receiver) = std::sync::mpsc::sync_channel(8);
+        debug_assert_eq!(
+            MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+            MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
+        );
+        let (log_sender, log_receiver) =
+            std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
         let stderr_reader = spawn_log_reader(stderr, log_sender);
 
         let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
@@ -481,7 +490,7 @@ impl Drop for ChildGuard {
 fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
     let mut retained = Vec::new();
     let mut exceeded = false;
-    let mut buffer = [0_u8; 8192];
+    let mut buffer = [0_u8; MAXIMUM_BUILD_LOG_CHUNK_BYTES];
     loop {
         let read = source.read(&mut buffer)?;
         if read == 0 {
@@ -528,7 +537,7 @@ fn spawn_log_reader(
     sender: std::sync::mpsc::SyncSender<Vec<u8>>,
 ) -> std::thread::JoinHandle<io::Result<()>> {
     std::thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
+        let mut buffer = [0_u8; MAXIMUM_BUILD_LOG_CHUNK_BYTES];
         loop {
             let read = source.read(&mut buffer)?;
             if read == 0 {
@@ -576,3 +585,21 @@ fn configure_child_lifecycle(command: &mut std::process::Command) {
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_command: &mut std::process::Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+    };
+
+    #[test]
+    fn build_log_channel_has_fixed_payload_bound() {
+        assert_eq!(MAXIMUM_BUILD_LOG_CHUNK_BYTES, 8192);
+        assert_eq!(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS, 8);
+        assert_eq!(
+            MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+            MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
+        );
+    }
+}
