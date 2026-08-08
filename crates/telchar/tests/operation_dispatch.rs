@@ -499,6 +499,16 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
     drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        0,
+        "disk rejection persisted a build request"
+    );
     let stderr = fixture.finish();
     assert!(!marker.exists(), "disk rejection started the build helper");
     assert!(stderr.contains("worker.disk_reserve.rejected"), "{stderr}");
@@ -517,9 +527,13 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     ));
     fs::create_dir(&root).expect("fixture root creates");
     let helper = root.join("build-helper");
+    let request_path = root.join("request-id");
     fs::write(
         &helper,
-        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf 'build-log-line\\n' >&2\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+        format!(
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf 'build-log-line\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            request_path.display()
+        ),
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
@@ -552,6 +566,23 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     drop(output);
 
     let status = child.wait().expect("Telchar exits");
+    let request_id = fs::read_to_string(&request_path).expect("helper records request ID");
+    let helper_request: serde_json::Value =
+        serde_json::from_str(&request_id).expect("helper request is JSON");
+    let request_id = helper_request["request_id"]
+        .as_str()
+        .expect("helper request ID is a string");
+    assert!(request_id.starts_with("request-"), "{request_id}");
+    assert!(request_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+    let persisted = telchar::persistence::read_build_request(fixture.database.url(), request_id)
+        .expect("build request reads")
+        .expect("build request exists before helper result");
+    assert_eq!(persisted.request_id, request_id);
+    assert_eq!(
+        persisted.derivation_path,
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+    );
+    assert_eq!(persisted.system, "x86_64-linux");
     let stderr = fixture.finish();
     assert!(status.success(), "Telchar failed with {status}: {stderr}");
     assert!(
@@ -559,6 +590,162 @@ fn build_derivation_streams_helper_logs_before_success_result() {
         "{stderr}"
     );
     assert!(!stderr.contains("build-log-line"), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-request-identities-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let request_directory = root.join("requests");
+    fs::create_dir(&request_directory).expect("request directory creates");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nrequest=$(mktemp '{}'/request-XXXXXX)\ncat > \"$request\"\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            request_directory.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    for _ in 0..2 {
+        write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+        input.flush().expect("BuildDerivation request flushes");
+        assert_eq!(read_integer(&mut output), STDERR_LAST);
+        assert_eq!(read_integer(&mut output), 0, "Built status");
+        assert_eq!(read_string(&mut output), "", "empty build error message");
+        for _ in 0..7 {
+            read_integer(&mut output);
+        }
+    }
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    let mut request_ids = fs::read_dir(&request_directory)
+        .expect("request directory reads")
+        .map(|entry| fs::read_to_string(entry.expect("request entry").path()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("helper requests read")
+        .into_iter()
+        .map(|request| {
+            serde_json::from_str::<serde_json::Value>(&request).expect("helper request is JSON")
+                ["request_id"]
+                .as_str()
+                .expect("helper request ID is a string")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    request_ids.sort();
+    assert_eq!(request_ids.len(), 2);
+    assert_ne!(request_ids[0], request_ids[1]);
+    for request_id in &request_ids {
+        assert!(request_id.starts_with("request-"), "{request_id}");
+        assert!(request_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+        assert_eq!(
+            telchar::persistence::read_build_request(fixture.database.url(), request_id)
+                .expect("build request reads")
+                .expect("build request persists")
+                .request_id,
+            *request_id
+        );
+    }
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("database.build_request.created"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn build_request_persistence_failure_rejects_before_helper_or_log_frame() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-build-request-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > '{}'\nprintf 'unexpected-log\\n' >&2\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_build_request_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject insert'; END $$; CREATE TRIGGER reject_build_request_insert BEFORE INSERT ON build_requests FOR EACH ROW EXECUTE FUNCTION reject_build_request_insert();",
+        )
+        .expect("failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "build request state operation failed"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+
+    assert!(child.wait().expect("Telchar exits").success());
+    assert!(
+        !marker.exists(),
+        "persistence failure started the build helper"
+    );
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        0,
+        "persistence failure created a build request"
+    );
+    let stderr = fixture.finish();
+    assert!(stderr.contains("database.build_request.failed"), "{stderr}");
+    assert!(stderr.contains("operation=\"create\""), "{stderr}");
+    assert!(stderr.contains("failure_class=\"query\""), "{stderr}");
+    assert!(!stderr.contains("unexpected-log"), "{stderr}");
+    assert!(!stderr.contains("reject insert"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -622,6 +809,16 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
         );
         thread::sleep(Duration::from_millis(5));
     }
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        1,
+        "requester disconnect discarded the immutable build request"
+    );
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.failed"),
@@ -655,6 +852,16 @@ fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
     drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        1,
+        "execution failure discarded the immutable build request"
+    );
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.admitted"),
@@ -692,6 +899,16 @@ fn mismatched_build_derivation_system_is_rejected_before_execution() {
     drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
+    assert_eq!(
+        fixture
+            .database
+            .connect()
+            .query_one("SELECT count(*) FROM build_requests", &[])
+            .expect("request count reads")
+            .get::<_, i64>(0),
+        0,
+        "rejected system persisted a build request"
+    );
     let stderr = fixture.finish();
     assert!(stderr.contains("unsupported-build-derivation"), "{stderr}");
     assert!(
@@ -723,7 +940,7 @@ struct FrontendFixture {
     root: PathBuf,
     frontend: Child,
     daemon: Child,
-    _database: PostgresFixture,
+    database: PostgresFixture,
 }
 
 impl FrontendFixture {
@@ -833,7 +1050,7 @@ impl FrontendFixture {
             root,
             frontend,
             daemon,
-            _database: database,
+            database,
         }
     }
 

@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
     ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader,
@@ -11,6 +12,8 @@ use crate::build_request::BuildRequest;
 use crate::deployment::DeploymentConfig;
 use crate::local_executor::{BuildExecutor, LocalBuildStatus, LocalExecutionRequest};
 use crate::store_query::QueryValidPathsStore;
+
+static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct SessionInput {
     input: std::os::unix::net::UnixStream,
@@ -98,7 +101,7 @@ pub fn run_worker_session(
     build_executor: &mut dyn BuildExecutor,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
-    request_id: &str,
+    database_url: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
     object_admission: &crate::transfer_limits::ObjectAdmissionState,
     rate_admission: &crate::transfer_limits::RateAdmissionState,
@@ -182,6 +185,40 @@ pub fn run_worker_session(
                         disk_reserve_error(error),
                     );
                 }
+                let derivation_path = match std::str::from_utf8(admitted.derivation_path()) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                };
+                let request_id = build_request_id();
+                if let Err(error) = crate::persistence::create_build_request(
+                    database_url,
+                    &request_id,
+                    derivation_path,
+                    admitted.system(),
+                ) {
+                    tracing::warn!(
+                        event = "database.build_request.failed",
+                        operation = "create",
+                        failure_class = error.failure().as_str(),
+                        "build request persistence failed"
+                    );
+                    return reject(
+                        &mut output,
+                        "build-request-state",
+                        "build request state operation failed",
+                    );
+                }
+                tracing::info!(
+                    event = "database.build_request.created",
+                    operation = "create",
+                    "build request persisted"
+                );
                 tracing::info!(
                     event = "worker.build_derivation.admitted",
                     output_count = admitted.expected_outputs().len(),
@@ -194,7 +231,7 @@ pub fn run_worker_session(
                     "BuildDerivation request admitted"
                 );
                 let execution = LocalExecutionRequest::new(
-                    request_id,
+                    &request_id,
                     &admitted,
                     Duration::from_secs(30 * 60),
                 )?;
@@ -540,6 +577,18 @@ pub fn run_worker_session(
             }
         }
     }
+}
+
+fn build_request_id() -> String {
+    format!(
+        "request-{:x}-{:x}-{:x}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        BUILD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    )
 }
 
 fn disk_reserve_error(error: crate::disk_reserve::AdmissionFailure) -> &'static str {

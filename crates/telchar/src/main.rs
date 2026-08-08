@@ -313,7 +313,7 @@ fn serve_accepted_connection(
             build_executor.as_mut(),
             store_export.as_mut(),
             store_import.as_mut(),
-            &session_id,
+            database_url,
             transfer_limits,
             object_admission,
             rate_admission,

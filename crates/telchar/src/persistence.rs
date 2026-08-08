@@ -95,6 +95,137 @@ pub fn requester_reference(requester: &RequesterMetadata) -> String {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BuildRequestFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Query,
+    Commit,
+}
+
+impl BuildRequestFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BuildRequestError(BuildRequestFailure);
+
+impl BuildRequestError {
+    pub fn failure(&self) -> BuildRequestFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for BuildRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("build request state operation failed")
+    }
+}
+
+impl std::error::Error for BuildRequestError {}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BuildRequestState {
+    pub request_id: String,
+    pub derivation_path: String,
+    pub system: String,
+    pub created_at: SystemTime,
+}
+
+pub fn create_build_request(
+    database_url: &str,
+    request_id: &str,
+    derivation_path: &str,
+    system: &str,
+) -> Result<BuildRequestState, BuildRequestError> {
+    validate_build_request_inputs(database_url, request_id, derivation_path, system)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let row = transaction
+        .query_one(
+            "INSERT INTO build_requests (request_id, derivation_path, system, created_at) VALUES ($1, $2, $3, transaction_timestamp()) RETURNING request_id, derivation_path, system, created_at",
+            &[&request_id, &derivation_path, &system],
+        )
+        .map_err(|error| BuildRequestError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { BuildRequestFailure::Conflict } else { BuildRequestFailure::Query }))?;
+    let request = decode_build_request(&row).map_err(BuildRequestError)?;
+    transaction
+        .commit()
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Commit))?;
+    Ok(request)
+}
+
+pub fn read_build_request(
+    database_url: &str,
+    request_id: &str,
+) -> Result<Option<BuildRequestState>, BuildRequestError> {
+    validate_build_request_id(request_id)?;
+    if database_url.trim().is_empty() {
+        return Err(BuildRequestError(BuildRequestFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1",
+            &[&request_id],
+        )
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?
+        .map(|row| decode_build_request(&row).map_err(BuildRequestError))
+        .transpose()
+}
+
+fn validate_build_request_inputs(
+    database_url: &str,
+    request_id: &str,
+    derivation_path: &str,
+    system: &str,
+) -> Result<(), BuildRequestError> {
+    validate_build_request_id(request_id)?;
+    if database_url.trim().is_empty()
+        || derivation_path.is_empty()
+        || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || system.is_empty()
+        || system.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(BuildRequestError(BuildRequestFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn validate_build_request_id(request_id: &str) -> Result<(), BuildRequestError> {
+    if request_id.is_empty() || request_id.len() > MAX_IPC_COMPONENT_BYTES {
+        return Err(BuildRequestError(BuildRequestFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn decode_build_request(row: &Row) -> Result<BuildRequestState, BuildRequestFailure> {
+    let request_id: String = row.try_get(0).map_err(|_| BuildRequestFailure::Query)?;
+    let derivation_path: String = row.try_get(1).map_err(|_| BuildRequestFailure::Query)?;
+    let system: String = row.try_get(2).map_err(|_| BuildRequestFailure::Query)?;
+    let created_at: SystemTime = row.try_get(3).map_err(|_| BuildRequestFailure::Query)?;
+    validate_build_request_inputs("validated", &request_id, &derivation_path, &system)
+        .map_err(|_| BuildRequestFailure::Query)?;
+    Ok(BuildRequestState {
+        request_id,
+        derivation_path,
+        system,
+        created_at,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProtocolSessionFailure {
     Configuration,
     Connection,
