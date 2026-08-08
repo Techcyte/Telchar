@@ -608,6 +608,8 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
     loop {
         let alive = Command::new("kill")
             .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .expect("process liveness query runs")
             .success();
