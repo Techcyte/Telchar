@@ -4,6 +4,52 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
 use telchar::nix_fixture::{NixDaemon, NixFixture, TrustMode};
+use telchar::store_retention::{NixStoreRetentionBackend, RetentionEntry, StoreRetentionBackend};
+
+#[test]
+fn empty_retention_set_does_not_spawn_helper() {
+    let root = std::env::temp_dir().join(format!("telchar-retention-empty-{}", std::process::id()));
+    fs::create_dir_all(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
+    let helper = root.join("helper");
+    let marker = root.join("marker");
+    fs::write(&helper, format!("#!/bin/sh\nprintf invoked > '{}'\n", marker.display()))
+        .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut backend = NixStoreRetentionBackend::new(&helper, "unix:///fixed", &root)
+        .expect("backend configures");
+
+    assert!(backend.retain(&[]).expect("empty retain succeeds").is_empty());
+    assert!(!marker.exists(), "empty retain spawned helper");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn altered_helper_response_is_rejected() {
+    let root = std::env::temp_dir().join(format!("telchar-retention-response-{}", std::process::id()));
+    fs::create_dir_all(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
+    let helper = root.join("helper");
+    fs::write(
+        &helper,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"retained\":[{\"lease_id\":\"altered\",\"store_path\":\"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a\",\"root_path\":\"/tmp/altered\"}]}'\n",
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut backend = NixStoreRetentionBackend::new(&helper, "unix:///fixed", &root)
+        .expect("backend configures");
+
+    let error = backend
+        .retain(&[RetentionEntry::new(
+            "lease-request-1",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a",
+        )])
+        .expect_err("altered response rejects");
+    assert_eq!(error.to_string(), "gateway store retention failed");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
 
 #[test]
 fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control() {
