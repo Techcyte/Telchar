@@ -765,7 +765,7 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL migration integration test.
   - Evidence: PostgreSQL version, schema version, and tables.
 
-- [ ] T070B Persist minimum protocol session
+- [x] T070B Persist minimum protocol session
   - Depends on: T070A
   - Outcome: domain-specific session state operation persists session ID, requester reference, and open/closed state across process restart.
   - Red: session round-trip/restart test fails.
@@ -2103,26 +2103,26 @@ Evidence: paths and output facts to record
 
 ### Best-effort centralized publication
 
-- [ ] T241 Define optional publisher command contract
+- [ ] T241 Define optional complete-closure publisher contract
   - Depends on: T231, T107
-  - Outcome: configuration defines a disabled-by-default bounded publisher command for verified output paths, credential file references, timeout, concurrency, and allow/deny policy without durable publication state.
-  - Red: configuration permits plaintext credentials, unbounded execution, uploaded-input publication, or publication before verified success.
-  - Verify: publisher configuration and policy tests.
-  - Evidence: valid/invalid examples and approved argument/environment surface.
+  - Outcome: configuration defines a disabled-by-default bounded centralized publisher for an approved complete build closure: derivation paths, complete required input closure, and verified output closure; credential file references, timeout, and concurrency remain bounded without durable publication state.
+  - Red: configuration permits plaintext credentials, unbounded execution, unrelated store paths, executor-held write credentials, or publication before verified success.
+  - Verify: publisher configuration, closure-policy, and command-surface tests.
+  - Evidence: valid/invalid examples, approved closure scope, and argument/environment surface.
 
-- [ ] T242 Invoke publisher after verified client success
+- [ ] T242 Invoke complete-closure publisher after verified client success
   - Depends on: T241
-  - Outcome: Telchar starts one bounded best-effort publication attempt only after outputs are imported, verified, and the build result is committed; publication completion is not required for client success.
-  - Red: publisher runs before verification, blocks result delivery, or changes a successful build outcome.
-  - Verify: real cache fixture with ordering assertions.
-  - Evidence: client-success timestamp precedes publication completion and output appears when publisher succeeds.
+  - Outcome: Telchar starts one bounded best-effort publication attempt only after outputs are imported, verified, and the build result is committed; it publishes registered closure members dependency-first and requested output roots last, while completion remains unnecessary for client success.
+  - Red: publisher runs before verification, blocks result delivery, publishes a root before a referenced dependency, or changes a successful build outcome.
+  - Verify: real cache fixture with client-success and dependency-order assertions.
+  - Evidence: client-success timestamp, dependency-before-root sequence, and substitutable closure when publisher succeeds.
 
-- [ ] T243 Publish only approved verified outputs
+- [ ] T243 Publish only the approved complete build closure
   - Depends on: T242
-  - Outcome: publisher receives only policy-approved verified result paths and never client-uploaded inputs, derivations, or unrelated closure paths.
-  - Red: cache fixture receives a denied or non-output path.
-  - Verify: publication manifest privacy/policy tests.
-  - Evidence: allowed outputs and absent denied/input paths.
+  - Outcome: publisher receives exactly policy-approved derivation paths, complete required input closure, and verified output closure from authoritative gateway-store references, and never unrelated store paths.
+  - Red: cache fixture misses an authorized toolchain/input/runtime member or receives an unrelated path.
+  - Verify: full build-closure manifest and real-cache substitution tests.
+  - Evidence: derivation, toolchain/input, output/runtime members present; unrelated paths absent.
 
 - [ ] T244 Bound publisher failure and shutdown
   - Depends on: T242
@@ -2140,12 +2140,12 @@ Evidence: paths and output facts to record
 
 ### Optional cache acceptance
 
-- [ ] T246 Verify optional cache lookup and publication
+- [ ] T246 Verify optional cache lookup and complete-closure publication
   - Depends on: T234, T235, T236, T237, T239, T240, T243, T244, T245
-  - Outcome: cache improves hits and may publish verified outputs while miss, outage, private input, publication failure, and restart preserve the direct correctness path.
-  - Red: suite finds cache-dependent correctness or publication credential exposure.
-  - Verify: full real-cache integration suite.
-  - Evidence: exact commands and pristine output.
+  - Outcome: cache improves hits and may publish complete build closures so ordinary developer/CI Nix clients substitute toolchains, inputs, and outputs without using Telchar; miss, outage, publication failure, and restart preserve the direct correctness path.
+  - Red: suite finds cache-dependent correctness, incomplete successful closure publication, or publication credential exposure.
+  - Verify: full real-cache integration suite with non-Telchar client substitution.
+  - Evidence: exact commands, pristine output, and cache-only developer/CI closure reuse.
 
 - [ ] T247 Design durable publication only if required
   - Depends on: T246

@@ -188,9 +188,11 @@ Binary-cache support is optional and separated from execution:
 - Executors may use configured read-only caches for inputs.
 - After a verified successful build, the daemon may invoke one bounded centralized publisher command.
 
-Cache miss, outage, or publication failure never changes build correctness. Verified outputs are committed and returned first. The initial architecture does not require durable publication queues, independent publication leases, automatic publication retries, or restart recovery for publication. Those mechanisms require measured operational need.
+For the initial organizational deployment, publication policy may warm the shared cache with the complete build closure known to the gateway: derivation paths, the complete required input closure, and the verified output closure. This intentionally includes reusable toolchains and build dependencies so ordinary developer and CI Nix commands benefit even when they do not execute through Telchar. Publication traverses references dependency-first and makes requested output roots visible last, reducing partially visible closures without making cache completion part of build correctness.
 
-Cache visibility must not broaden access beyond deployment policy. Shared cache namespaces are appropriate only within the same trust domain; stronger tenant isolation requires separate namespaces, credentials, and authorization.
+Cache miss, outage, or publication failure never changes build correctness. Verified outputs are committed and returned first. Initial publication may remain bounded and best-effort; durable publication records, independent leases, retries, and restart recovery require a later measured-need decision.
+
+The initial deployment is one mutually trusted organizational cache domain. Per-path privacy policy is not an initial requirement; stronger tenant isolation requires separate namespaces, credentials, and authorization.
 
 ## Observability
 

@@ -618,41 +618,37 @@ This preserves support for:
 - Private inputs.
 - Deployments without a shared cache.
 
-### Output publication
+### Complete build-closure publication
 
-Successful outputs may be published from Telchar to Attic or another Nix-compatible cache. Publication is optional post-MVP behavior and remains an optimization.
+Telchar may publish to Attic or another Nix-compatible cache after a successful build. Publication is optional post-MVP behavior and remains an optimization.
 
-The initial publisher is deliberately small:
+For the initial developer-and-CI organizational use case, the useful publication unit is the complete build closure observed and validated at the gateway:
+
+```text
+derivation paths
++ complete required input closure
++ verified output closure
+```
+
+This intentionally warms compilers, SDKs, build tools, source inputs, runtime dependencies, and intermediate paths. Ordinary developer and CI Nix commands can then substitute those paths directly even when they do not execute through Telchar. The policy operates over registered Nix references and closure metadata, not filesystem scanning.
+
+The initial publisher remains deliberately small:
 
 1. Import and verify outputs in the gateway store.
 2. Commit and return the successful result to the waiting client.
-3. If policy allows, invoke one bounded publisher command for the verified output paths.
-4. Record bounded telemetry; timeout, failure, shutdown, or restart may lose the publication attempt without changing the build outcome.
+3. If policy allows, calculate the approved complete build closure already registered in the gateway store.
+4. Publish closure members dependency-first and publish requested output roots last.
+5. Record bounded telemetry; timeout, failure, shutdown, or restart may lose the publication attempt without changing the build outcome.
 
-The publisher is disabled by default, has bounded concurrency and runtime, performs no internal retry, and creates no durable publication job or independent lease. Normal output retention gives the attempt a finite opportunity to finish. External periodic tooling or an operator may republish missed outputs.
+The publisher is disabled by default, has bounded concurrency and runtime, performs no internal retry, and initially creates no durable publication job or independent lease. Dependency-first/root-last ordering reduces partially visible cache roots but does not make publication atomic. Normal store retention gives the attempt a finite opportunity to finish. External periodic tooling or an operator may republish missed closures.
 
 Telchar centralizes cache write credentials. Executors should normally have read access to shared caches and request-scoped access to Telchar inputs, but no organization-wide cache publication credential. Durable publication records, leases, retries, and restart recovery require a separate post-MVP decision backed by observed lost-publication impact.
 
-### Privacy policy
+### Cache trust policy
 
-Telchar must not automatically publish every client-uploaded input path.
+The initial deployment uses one mutually trusted organizational store and cache domain. Nix store content is treated as non-secret, so per-path privacy classification and project-specific publication ACLs are not initial requirements. Publication enablement and closure scope remain configurable so an operator can disable publication or choose a narrower policy without adding tenant-isolation machinery.
 
-Inputs may contain:
-
-- Proprietary source code.
-- Local worktrees.
-- Generated sources.
-- Sensitive names or content.
-- Material intended only for one build.
-
-A safe publication default is:
-
-```text
-client-uploaded inputs: never publish automatically
-successful outputs: publish only according to explicit policy
-```
-
-The initial shared-store trust domain does not promise confidentiality between authenticated clients. Selected executors receive only the closure required for their request, but all executor hosts remain trusted infrastructure. Even outputs may contain proprietary material, so publication policy must remain configurable.
+Hostile multi-tenant cache isolation, confidential store paths, and per-project namespaces are separate architectures and remain out of scope.
 
 ### Cache implementation boundary
 
