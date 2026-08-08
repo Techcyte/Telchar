@@ -13,13 +13,13 @@ daemon_pid=""
 frontend_pid=""
 
 cleanup() {
-  if [[ -n "$frontend_pid" ]]; then kill "$frontend_pid" 2>/dev/null || true; fi
-  if [[ -n "$daemon_pid" ]]; then kill "$daemon_pid" 2>/dev/null || true; fi
-  wait "$frontend_pid" 2>/dev/null || true
-  wait "$daemon_pid" 2>/dev/null || true
-  docker rm -f "$container" >/dev/null 2>&1 || true
-  docker volume rm "$volume" >/dev/null 2>&1 || true
-  rm -rf "$base"
+	if [[ -n "$frontend_pid" ]]; then kill "$frontend_pid" 2>/dev/null || true; fi
+	if [[ -n "$daemon_pid" ]]; then kill "$daemon_pid" 2>/dev/null || true; fi
+	wait "$frontend_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+	docker rm -f "$container" >/dev/null 2>&1 || true
+	docker volume rm "$volume" >/dev/null 2>&1 || true
+	rm -rf "$base"
 }
 trap cleanup EXIT INT TERM
 
@@ -28,22 +28,22 @@ ipc_socket="$root/telchar.sock"
 mkdir -p "$socket_dir"
 chmod 0777 "$socket_dir"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-  docker pull "$image" >/dev/null
+	docker pull "$image" >/dev/null
 fi
 docker volume create "$volume" >/dev/null
 docker run -d \
-  --name "$container" \
-  --privileged \
-  -e NIX_CONFIG='trusted-users = root 1000' \
-  -v "$volume:/nix/store" \
-  -v "$socket_dir:/nix/var/nix/daemon-socket" \
-  "$image" \
-  sh -lc 'mkdir -p /nix/var/nix/db /nix/var/log/nix/drvs /nix/var/nix/profiles/per-user/root; exec nix-daemon' \
-  >/dev/null
+	--name "$container" \
+	--privileged \
+	-e NIX_CONFIG='trusted-users = root 1000' \
+	-v "$volume:/nix/store" \
+	-v "$socket_dir:/nix/var/nix/daemon-socket" \
+	"$image" \
+	sh -lc 'mkdir -p /nix/var/nix/db /nix/var/log/nix/drvs /nix/var/nix/profiles/per-user/root; exec nix-daemon' \
+	>/dev/null
 
 for _ in $(seq 1 100); do
-  [[ -S "$socket_dir/socket" ]] && break
-  sleep 0.1
+	[[ -S "$socket_dir/socket" ]] && break
+	sleep 0.1
 done
 [[ -S "$socket_dir/socket" ]]
 
@@ -59,22 +59,22 @@ export TELCHAR_IPC_SOCKET="$ipc_socket"
 export TELCHAR_AUTHENTICATED_KEY="SHA256:local-docker-alpha"
 
 "$telchar/bin/telchar" daemon \
-  --socket "$ipc_socket" \
-  --frontend-uid "$(id -u)" \
-  >"$root/daemon.stdout" 2>"$root/daemon.stderr" &
+	--socket "$ipc_socket" \
+	--frontend-uid "$(id -u)" \
+	>"$root/daemon.stdout" 2>"$root/daemon.stderr" &
 daemon_pid=$!
 for _ in $(seq 1 100); do
-  [[ -S "$ipc_socket" ]] && break
-  sleep 0.05
+	[[ -S "$ipc_socket" ]] && break
+	sleep 0.05
 done
 if [[ ! -S "$ipc_socket" ]]; then
-  cat "$root/daemon.stderr" >&2
-  exit 1
+	cat "$root/daemon.stderr" >&2
+	exit 1
 fi
 
 mkfifo "$root/request" "$root/response"
 "$telchar/bin/telchar" serve-stdio \
-  <"$root/request" >"$root/response" 2>"$root/frontend.stderr" &
+	<"$root/request" >"$root/response" 2>"$root/frontend.stderr" &
 frontend_pid=$!
 
 exec 3>"$root/request" 4<"$root/response"
@@ -147,10 +147,10 @@ assert struct.unpack('<Q', read_exact(8))[0] == 0
 assert struct.unpack('<Q', read_exact(8))[0] == 0
 PY
 if ! python3 "$root/client.py" "$root" >&3 <&4; then
-  cat "$root/daemon.stderr" >&2
-  cat "$root/frontend.stderr" >&2
-  docker logs "$container" >&2
-  exit 1
+	cat "$root/daemon.stderr" >&2
+	cat "$root/frontend.stderr" >&2
+	docker logs "$container" >&2
+	exit 1
 fi
 exec 3>&- 4<&-
 wait "$frontend_pid"
