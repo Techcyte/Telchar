@@ -845,6 +845,7 @@ fn create_store_lease_inner(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
     tracing::info!(
         event = "database.store_lease.created",
+        operation = "create",
         owner_kind = owner_kind.as_str(),
         purpose = purpose.as_str(),
         state = "active"
@@ -901,6 +902,7 @@ fn release_store_lease_inner(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
     tracing::info!(
         event = "database.store_lease.released",
+        operation = "release",
         owner_kind = lease.owner_kind.as_str(),
         purpose = lease.purpose.as_str(),
         state = "released"

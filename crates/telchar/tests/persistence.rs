@@ -1162,10 +1162,12 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
     let events = captured.events();
     assert!(events
         .iter()
-        .any(|event| event.contains("database.store_lease.created")));
+        .any(|event| event.contains("database.store_lease.created")
+            && event.contains("operation=\"create\"")));
     assert!(events
         .iter()
-        .any(|event| event.contains("database.store_lease.released")));
+        .any(|event| event.contains("database.store_lease.released")
+            && event.contains("operation=\"release\"")));
     assert!(events
         .iter()
         .any(|event| event.contains("database.store_lease.failed")
