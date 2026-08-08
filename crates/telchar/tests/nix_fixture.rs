@@ -183,6 +183,27 @@ fn real_store_query_reports_valid_and_invalid_paths() {
 }
 
 #[test]
+fn real_garbage_collection_removes_unrooted_private_store_path() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("fixture daemon starts");
+    let path = daemon
+        .build_classic_derivation()
+        .expect("fixture daemon builds classic derivation");
+
+    assert!(daemon.is_valid_path(&path).expect("path valid before GC"));
+    daemon.collect_garbage().expect("fixture garbage collects");
+    assert!(
+        !daemon.is_valid_path(&path).expect("path validity after GC"),
+        "unrooted path survived private-store GC: {path:?}"
+    );
+
+    daemon.stop().expect("fixture daemon stops");
+    fixture.cleanup().expect("fixture cleans up");
+}
+
+#[test]
 fn real_store_validity_query_does_not_hide_daemon_failure() {
     let fixture = NixFixture::create().expect("fixture creates");
     let mut daemon = fixture

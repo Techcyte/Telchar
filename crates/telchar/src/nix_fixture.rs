@@ -408,6 +408,20 @@ impl NixDaemon {
         Ok(())
     }
 
+    pub fn collect_garbage(&self) -> io::Result<()> {
+        let output = Command::new("nix-store")
+            .envs(&self.environment)
+            .args(["--store", &self.store_url(), "--gc"])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "fixture garbage collection failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn import_nar(&self, mut body: impl Read + Send) -> io::Result<()> {
         let mut command = Command::new("nix-store");
         command
