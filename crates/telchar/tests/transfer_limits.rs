@@ -1,6 +1,8 @@
 use std::io::{Cursor, Read, Write};
 
-use telchar::transfer_limits::{LimitedReader, LimitedWriter, TransferBudget, TransferLimits};
+use telchar::transfer_limits::{
+    LimitedReader, LimitedWriter, ObjectAdmissionState, TransferBudget, TransferLimits,
+};
 
 #[test]
 fn finite_defaults_and_strict_parsing() {
@@ -8,10 +10,25 @@ fn finite_defaults_and_strict_parsing() {
     assert!(defaults.maximum_object_bytes > 0);
     assert!(defaults.maximum_inbound_session_bytes > 0);
     assert!(defaults.maximum_outbound_session_bytes > 0);
+    assert_eq!(defaults.maximum_inbound_session_objects, 256);
+    assert_eq!(defaults.maximum_outbound_session_objects, 256);
+    assert_eq!(defaults.maximum_active_inbound_objects, 256);
+    assert_eq!(defaults.maximum_active_outbound_objects, 256);
 
-    assert!(TransferLimits::parse("0", "1", "1").is_err());
-    assert!(TransferLimits::parse("not-a-number", "1", "1").is_err());
-    assert!(TransferLimits::parse("18446744073709551616", "1", "1").is_err());
+    assert!(TransferLimits::parse("0", "1", "1", "1", "1", "1", "1").is_err());
+    assert!(TransferLimits::parse("not-a-number", "1", "1", "1", "1", "1", "1").is_err());
+    assert!(TransferLimits::parse("18446744073709551616", "1", "1", "1", "1", "1", "1").is_err());
+}
+
+#[test]
+fn active_object_capacity_is_directional_and_released() {
+    let limits = TransferLimits::parse("1", "1", "1", "1", "1", "1", "1").unwrap();
+    let state = ObjectAdmissionState::new(&limits);
+    let inbound = state.admit_inbound().expect("first inbound object fits");
+    assert!(state.admit_inbound().is_err());
+    assert!(state.admit_outbound().is_ok());
+    drop(inbound);
+    assert!(state.admit_inbound().is_ok());
 }
 
 #[test]

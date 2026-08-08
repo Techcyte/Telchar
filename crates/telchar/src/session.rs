@@ -98,12 +98,14 @@ pub fn run_worker_session(
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     request_id: &str,
+    transfer_limits: &crate::transfer_limits::TransferLimits,
+    object_admission: &crate::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
-    let transfer_limits = crate::transfer_limits::TransferLimits::from_environment()?;
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
     let mut outbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_outbound_session_bytes);
+    let mut object_counts = crate::transfer_limits::ObjectSessionCounts::default();
     let mut cancellation_input = input.try_clone()?;
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
@@ -339,12 +341,14 @@ pub fn run_worker_session(
                         );
                     }
                 };
+                object_counts.admit_outbound(transfer_limits.maximum_outbound_session_objects)?;
+                let _permit = object_admission.admit_outbound()?;
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
                 let verified = match crate::store_export::export_verified_nar_with_limits(
                     path,
                     &mut output,
                     store_export,
-                    &transfer_limits,
+                    transfer_limits,
                     &mut outbound_budget,
                 ) {
                     Ok(verified) => verified,
@@ -368,6 +372,9 @@ pub fn run_worker_session(
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
                     |info, source| {
+                        object_counts
+                            .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
+                        let _permit = object_admission.admit_inbound()?;
                         let mut limited = crate::transfer_limits::LimitedReader::new(
                             source,
                             transfer_limits.maximum_object_bytes,

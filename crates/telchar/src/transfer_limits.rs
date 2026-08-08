@@ -3,12 +3,17 @@ use std::io::{self, Read, Write};
 pub const DEFAULT_MAXIMUM_NAR_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+pub const DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS: u64 = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransferLimits {
     pub maximum_object_bytes: u64,
     pub maximum_inbound_session_bytes: u64,
     pub maximum_outbound_session_bytes: u64,
+    pub maximum_inbound_session_objects: u64,
+    pub maximum_outbound_session_objects: u64,
+    pub maximum_active_inbound_objects: u64,
+    pub maximum_active_outbound_objects: u64,
 }
 
 impl Default for TransferLimits {
@@ -17,16 +22,33 @@ impl Default for TransferLimits {
             maximum_object_bytes: DEFAULT_MAXIMUM_NAR_OBJECT_BYTES,
             maximum_inbound_session_bytes: DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES,
             maximum_outbound_session_bytes: DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES,
+            maximum_inbound_session_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
+            maximum_outbound_session_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
+            maximum_active_inbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
+            maximum_active_outbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
         }
     }
 }
 
 impl TransferLimits {
-    pub fn parse(object: &str, inbound: &str, outbound: &str) -> io::Result<Self> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn parse(
+        object: &str,
+        inbound: &str,
+        outbound: &str,
+        inbound_session_objects: &str,
+        outbound_session_objects: &str,
+        active_inbound_objects: &str,
+        active_outbound_objects: &str,
+    ) -> io::Result<Self> {
         Ok(Self {
             maximum_object_bytes: positive(object)?,
             maximum_inbound_session_bytes: positive(inbound)?,
             maximum_outbound_session_bytes: positive(outbound)?,
+            maximum_inbound_session_objects: positive(inbound_session_objects)?,
+            maximum_outbound_session_objects: positive(outbound_session_objects)?,
+            maximum_active_inbound_objects: positive(active_inbound_objects)?,
+            maximum_active_outbound_objects: positive(active_outbound_objects)?,
         })
     }
 
@@ -39,6 +61,14 @@ impl TransferLimits {
                 .unwrap_or_else(|_| defaults.maximum_inbound_session_bytes.to_string()),
             &std::env::var("TELCHAR_MAX_NAR_OUTBOUND_SESSION_BYTES")
                 .unwrap_or_else(|_| defaults.maximum_outbound_session_bytes.to_string()),
+            &std::env::var("TELCHAR_MAX_NAR_INBOUND_SESSION_OBJECTS")
+                .unwrap_or_else(|_| defaults.maximum_inbound_session_objects.to_string()),
+            &std::env::var("TELCHAR_MAX_NAR_OUTBOUND_SESSION_OBJECTS")
+                .unwrap_or_else(|_| defaults.maximum_outbound_session_objects.to_string()),
+            &std::env::var("TELCHAR_MAX_NAR_ACTIVE_INBOUND_OBJECTS")
+                .unwrap_or_else(|_| defaults.maximum_active_inbound_objects.to_string()),
+            &std::env::var("TELCHAR_MAX_NAR_ACTIVE_OUTBOUND_OBJECTS")
+                .unwrap_or_else(|_| defaults.maximum_active_outbound_objects.to_string()),
         )
     }
 }
@@ -51,6 +81,123 @@ fn positive(value: &str) -> io::Result<u64> {
         return Err(invalid("NAR transfer limit must be positive"));
     }
     Ok(value)
+}
+
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Debug)]
+pub struct ObjectAdmissionState {
+    active: Arc<Mutex<ActiveObjects>>,
+    inbound_limit: u64,
+    outbound_limit: u64,
+}
+
+#[derive(Debug, Default)]
+struct ActiveObjects {
+    inbound: u64,
+    outbound: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct ObjectSessionCounts {
+    inbound: u64,
+    outbound: u64,
+}
+
+impl ObjectSessionCounts {
+    pub fn admit_inbound(&mut self, limit: u64) -> io::Result<()> {
+        self.inbound = charge_object_count(self.inbound, limit, "inbound").map_err(|_| {
+            reject("inbound", "session", limit);
+            invalid("NAR inbound session object limit exceeded")
+        })?;
+        Ok(())
+    }
+
+    pub fn admit_outbound(&mut self, limit: u64) -> io::Result<()> {
+        self.outbound = charge_object_count(self.outbound, limit, "outbound").map_err(|_| {
+            reject("outbound", "session", limit);
+            invalid("NAR outbound session object limit exceeded")
+        })?;
+        Ok(())
+    }
+}
+
+fn charge_object_count(current: u64, limit: u64, _direction: &'static str) -> io::Result<u64> {
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| invalid("object count exceeded"))?;
+    if next > limit {
+        return Err(invalid("object count exceeded"));
+    }
+    Ok(next)
+}
+
+impl ObjectAdmissionState {
+    pub fn new(limits: &TransferLimits) -> Self {
+        Self {
+            active: Arc::new(Mutex::new(ActiveObjects::default())),
+            inbound_limit: limits.maximum_active_inbound_objects,
+            outbound_limit: limits.maximum_active_outbound_objects,
+        }
+    }
+
+    pub fn admit_inbound(&self) -> io::Result<ActiveObjectPermit> {
+        self.admit("inbound", self.inbound_limit, true)
+    }
+
+    pub fn admit_outbound(&self) -> io::Result<ActiveObjectPermit> {
+        self.admit("outbound", self.outbound_limit, false)
+    }
+
+    fn admit(
+        &self,
+        direction: &'static str,
+        limit: u64,
+        inbound: bool,
+    ) -> io::Result<ActiveObjectPermit> {
+        let mut active = self
+            .active
+            .lock()
+            .expect("object admission mutex is not poisoned");
+        let count = if inbound {
+            &mut active.inbound
+        } else {
+            &mut active.outbound
+        };
+        let next = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("active object count exceeded"))?;
+        if next > limit {
+            reject(direction, "deployment-active", limit);
+            return Err(invalid("active object count exceeded"));
+        }
+        *count = next;
+        Ok(ActiveObjectPermit {
+            active: Arc::clone(&self.active),
+            inbound,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ActiveObjectPermit {
+    active: Arc<Mutex<ActiveObjects>>,
+    inbound: bool,
+}
+
+impl Drop for ActiveObjectPermit {
+    fn drop(&mut self) {
+        let mut active = self
+            .active
+            .lock()
+            .expect("object admission mutex is not poisoned");
+        let count = if self.inbound {
+            &mut active.inbound
+        } else {
+            &mut active.outbound
+        };
+        *count -= 1;
+    }
 }
 
 #[derive(Debug)]

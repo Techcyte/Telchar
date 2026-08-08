@@ -84,6 +84,10 @@ fn object_limit_stops_export_producer_at_exact_boundary() {
         maximum_object_bytes: 135,
         maximum_inbound_session_bytes: 1,
         maximum_outbound_session_bytes: 1_000,
+        maximum_inbound_session_objects: 256,
+        maximum_outbound_session_objects: 256,
+        maximum_active_inbound_objects: 256,
+        maximum_active_outbound_objects: 256,
     };
     let mut session = TransferBudget::new(limits.maximum_outbound_session_bytes);
     let mut output = Vec::new();
@@ -110,6 +114,10 @@ fn session_limit_is_shared_across_verified_exports() {
         maximum_object_bytes: 200,
         maximum_inbound_session_bytes: 1,
         maximum_outbound_session_bytes: 200,
+        maximum_inbound_session_objects: 256,
+        maximum_outbound_session_objects: 256,
+        maximum_active_inbound_objects: 256,
+        maximum_active_outbound_objects: 256,
     };
     let mut session = TransferBudget::new(limits.maximum_outbound_session_bytes);
     let mut first_backend = RecordingExportBackend::successful(registered_path_info(), nar.clone());

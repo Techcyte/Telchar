@@ -116,6 +116,8 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 fn run_daemon() -> io::Result<()> {
     let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
+    let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
+    let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     tracing::info!(
         event = "deployment.configured",
         system = deployment.system(),
@@ -132,7 +134,13 @@ fn run_daemon() -> io::Result<()> {
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
     if once {
-        return serve_connection(&listener, envelope_timeout, &deployment);
+        return serve_connection(
+            &listener,
+            envelope_timeout,
+            &deployment,
+            &transfer_limits,
+            &object_admission,
+        );
     }
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
@@ -157,11 +165,19 @@ fn run_daemon() -> io::Result<()> {
             }
         };
         let deployment = deployment.clone();
+        let object_admission = object_admission.clone();
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
                 .receive_envelope(envelope_timeout)
-                .and_then(|connection| serve_accepted_connection(connection, &deployment));
+                .and_then(|connection| {
+                    serve_accepted_connection(
+                        connection,
+                        &deployment,
+                        &transfer_limits,
+                        &object_admission,
+                    )
+                });
             if let Err(error) = result {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
@@ -178,16 +194,22 @@ fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
     deployment: &telchar::deployment::DeploymentConfig,
+    transfer_limits: &telchar::transfer_limits::TransferLimits,
+    object_admission: &telchar::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
         deployment,
+        transfer_limits,
+        object_admission,
     )
 }
 
 fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
     deployment: &telchar::deployment::DeploymentConfig,
+    transfer_limits: &telchar::transfer_limits::TransferLimits,
+    object_admission: &telchar::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -220,6 +242,8 @@ fn serve_accepted_connection(
         store_export.as_mut(),
         store_import.as_mut(),
         &request_id,
+        transfer_limits,
+        object_admission,
     )
 }
 
