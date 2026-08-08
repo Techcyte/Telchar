@@ -114,6 +114,24 @@ fn transfer_admits_at_shared_filesystem_boundary() {
 }
 
 #[test]
+fn shared_filesystem_uses_lower_observed_availability() {
+    let reserve = DiskReserve::parse("10").expect("positive reserve parses");
+    let probe = ControlledProbe {
+        store: filesystem(1, 16),
+        staging: filesystem(1, 15),
+    };
+
+    let rejection = reserve
+        .admit_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 3)
+        .expect_err("lower shared-filesystem observation rejects");
+
+    assert_eq!(rejection.reason(), RejectionReason::InsufficientSpace);
+    assert_eq!(rejection.filesystem(), "shared");
+    assert_eq!(rejection.required_bytes(), 16);
+    assert_eq!(rejection.available_bytes(), Some(15));
+}
+
+#[test]
 fn transfer_rejects_one_byte_below_requirements() {
     let reserve = DiskReserve::parse("10").expect("positive reserve parses");
     let different = ControlledProbe {

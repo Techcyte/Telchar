@@ -167,6 +167,15 @@ impl DiskReserve {
         let staging = probe
             .probe(staging_directory)
             .map_err(|error| failure("staging", error))?;
+        self.admit_transfer_filesystems(store, staging, nar_size)
+    }
+
+    fn admit_transfer_filesystems(
+        self,
+        store: Filesystem,
+        staging: Filesystem,
+        nar_size: u64,
+    ) -> Result<(), AdmissionFailure> {
         if store.identity == staging.identity {
             let required = nar_size
                 .checked_mul(2)
@@ -174,7 +183,11 @@ impl DiskReserve {
                 .ok_or_else(|| {
                     AdmissionFailure::failed("shared", RejectionReason::ArithmeticOverflow)
                 })?;
-            admit("shared", store.available_bytes, required)
+            admit(
+                "shared",
+                store.available_bytes.min(staging.available_bytes),
+                required,
+            )
         } else {
             let required = self.bytes.checked_add(nar_size).ok_or_else(|| {
                 AdmissionFailure::failed("gateway-store", RejectionReason::ArithmeticOverflow)
