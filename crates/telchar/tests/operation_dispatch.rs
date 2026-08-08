@@ -609,6 +609,94 @@ fn derivation_lease_precedes_helper_execution() {
 }
 
 #[test]
+fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-input-root-order-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let closure_helper = root.join("closure-helper");
+    fs::write(
+        &closure_helper,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"paths\":[\"/nix/store/22222222222222222222222222222222-telchar-input\"]}'\n",
+    )
+    .expect("closure helper writes");
+    fs::set_permissions(&closure_helper, fs::Permissions::from_mode(0o700))
+        .expect("closure helper executable");
+    let started = root.join("helper-started");
+    let complete = root.join("complete-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
+            (
+                "TELCHAR_NIX_STORE_CLOSURE",
+                closure_helper.display().to_string(),
+            ),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_input_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut database = fixture.database.connect();
+    let input_leases = database
+        .query(
+            "SELECT lease_id, store_path FROM store_leases WHERE purpose = 'input' ORDER BY lease_id",
+            &[],
+        )
+        .expect("input leases read");
+    assert_eq!(input_leases.len(), 1, "input lease commits before helper");
+    let lease_id = input_leases[0].get::<_, String>(0);
+    assert_eq!(
+        input_leases[0].get::<_, String>(1),
+        "/nix/store/22222222222222222222222222222222-telchar-input"
+    );
+    let root_path = fixture.root.join("gc-roots").join(lease_id);
+    assert!(
+        fs::symlink_metadata(root_path)
+            .expect("input root metadata reads")
+            .file_type()
+            .is_symlink(),
+        "input root missing before atomic input lease commit"
+    );
+
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 0, "Built status");
+    assert_eq!(read_string(&mut output), "", "empty build error message");
+    for _ in 0..7 {
+        read_integer(&mut output);
+    }
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+    fixture.finish();
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-attachment-order-{}-{}",
@@ -1674,6 +1762,39 @@ fn write_add_multiple_to_store_metadata(output: &mut impl Write, nar_size: u64) 
     write_integer(output, 0);
     write_integer(output, metadata.len() as u64);
     output.write_all(&metadata).expect("metadata frame writes");
+}
+
+fn write_input_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
+    let source = b"/nix/store/22222222222222222222222222222222-telchar-input";
+    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
+    write_integer(output, 36);
+    write_string(
+        output,
+        b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+    );
+    write_integer(output, 1);
+    write_string(output, b"out");
+    write_string(output, store_output);
+    write_string(output, b"");
+    write_string(output, b"");
+    write_integer(output, 1);
+    write_string(output, source);
+    write_string(output, system.as_bytes());
+    write_string(output, b"/bin/sh");
+    write_integer(output, 2);
+    write_string(output, b"-c");
+    write_string(output, b"printf telchar-remote-build > $out");
+    write_integer(output, 4);
+    for (key, value) in [
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (b"out".as_slice(), store_output.as_slice()),
+        (b"system".as_slice(), system.as_bytes()),
+    ] {
+        write_string(output, key);
+        write_string(output, value);
+    }
+    write_integer(output, mode);
 }
 
 fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u64) {

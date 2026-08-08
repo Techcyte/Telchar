@@ -112,9 +112,16 @@ int run(const json & request)
     json retained = json::array();
     for (const auto & entry : entries) {
         const auto storePath = store->parseStorePath(entry.storePath);
-        const auto rooted = rootStore->addPermRoot(storePath, entry.rootPath);
-        if (rooted != entry.rootPath)
-            throw std::runtime_error("unexpected root path");
+        const auto linkStatus = std::filesystem::symlink_status(entry.rootPath);
+        if (linkStatus.type() != std::filesystem::file_type::not_found) {
+            if (!std::filesystem::is_symlink(linkStatus)
+                || std::filesystem::read_symlink(entry.rootPath) != store->printStorePath(storePath))
+                throw std::runtime_error("conflicting root path");
+        } else {
+            const auto rooted = rootStore->addPermRoot(storePath, entry.rootPath);
+            if (rooted != entry.rootPath)
+                throw std::runtime_error("unexpected root path");
+        }
         retained.push_back({
             {"lease_id", entry.leaseId},
             {"store_path", entry.storePath},
