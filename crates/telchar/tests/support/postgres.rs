@@ -45,7 +45,7 @@ impl PostgresFixture {
             .expect("initdb succeeds");
 
         let port = available_port();
-        let server = start_server(&data, &socket, port);
+        let server = start_server(&root, &data, &socket, port);
 
         let database = format!("telchar_{}", SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let mut admin = connect(&socket, port, "postgres");
@@ -74,7 +74,12 @@ impl PostgresFixture {
     #[allow(dead_code)]
     pub fn restart(&mut self) {
         self.stop();
-        self.server = Some(start_server(&self.data, &self.socket, self.port));
+        self.server = Some(start_server(
+            &self.root,
+            &self.data,
+            &self.socket,
+            self.port,
+        ));
     }
 
     #[allow(dead_code)]
@@ -111,8 +116,15 @@ impl PostgresFixture {
     }
 }
 
-fn start_server(data: &std::path::Path, socket: &std::path::Path, port: u16) -> Child {
-    let server = Command::new("postgres")
+fn start_server(
+    root: &std::path::Path,
+    data: &std::path::Path,
+    socket: &std::path::Path,
+    port: u16,
+) -> Child {
+    let log_path = root.join("postgres.log");
+    let log = fs::File::create(&log_path).expect("PostgreSQL log creates");
+    let mut server = Command::new("postgres")
         .args([
             "-D",
             data.to_str().expect("UTF-8 data directory"),
@@ -131,10 +143,10 @@ fn start_server(data: &std::path::Path, socket: &std::path::Path, port: u16) -> 
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(log)
         .spawn()
         .expect("postgres starts");
-    wait_until_ready(socket, port);
+    wait_until_ready(&mut server, socket, port, &log_path);
     server
 }
 
@@ -149,7 +161,12 @@ fn connect(socket: &std::path::Path, port: u16, database: &str) -> Client {
     .expect("PostgreSQL connects")
 }
 
-fn wait_until_ready(socket: &std::path::Path, port: u16) {
+fn wait_until_ready(
+    server: &mut Child,
+    socket: &std::path::Path,
+    port: u16,
+    log_path: &std::path::Path,
+) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if Client::connect(
@@ -163,10 +180,16 @@ fn wait_until_ready(socket: &std::path::Path, port: u16) {
         {
             return;
         }
-        assert!(
-            Instant::now() < deadline,
-            "PostgreSQL readiness deadline exceeded"
-        );
+        if let Some(status) = server.try_wait().expect("PostgreSQL status reads") {
+            let log = fs::read_to_string(log_path).unwrap_or_default();
+            panic!("PostgreSQL exited before readiness with {status}: {log}");
+        }
+        if Instant::now() >= deadline {
+            let _ = server.kill();
+            let _ = server.wait();
+            let log = fs::read_to_string(log_path).unwrap_or_default();
+            panic!("PostgreSQL readiness deadline exceeded: {log}");
+        }
         std::thread::yield_now();
     }
 }
@@ -180,8 +203,8 @@ fn available_port() -> u16 {
 }
 
 fn temporary_root() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "telchar-postgres-{}-{}-{}",
+    PathBuf::from("/tmp").join(format!(
+        "telchar-pg-{:x}-{:x}-{:x}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
