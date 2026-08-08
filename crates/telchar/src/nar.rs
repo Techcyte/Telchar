@@ -119,7 +119,9 @@ impl<R: Read, W: Write> NarReader<R, W> {
             _ => return Err(invalid("unknown NAR node type")),
         }
         self.string_equals(b")").map_err(|error| {
-            if error.kind() == ErrorKind::InvalidData {
+            if error.kind() == ErrorKind::InvalidData
+                && error.to_string() == "unexpected NAR string"
+            {
                 io::Error::new(ErrorKind::UnexpectedEof, "NAR node is truncated")
             } else {
                 error

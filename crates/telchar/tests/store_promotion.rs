@@ -6,6 +6,7 @@ use telchar::store_promotion::{
     validate_and_promote_nar, DeclaredPathInfo, PromotionRequest, RegisteredPathInfo,
     StorePromotionBackend, MAXIMUM_PROMOTION_REFERENCES,
 };
+use telchar::transfer_limits::{LimitedReader, TransferBudget};
 
 type DeclarationMutation = Box<dyn Fn(&mut DeclaredPathInfo)>;
 type BeforePromote = Box<dyn FnMut(&PromotionRequest) -> io::Result<()>>;
@@ -161,6 +162,33 @@ fn promotes_matching_staged_nar_and_verifies_registered_metadata() {
         backend.queried_paths,
         vec![declared.references[0].clone(), declared.path]
     );
+    assert_directory_empty(staging.path());
+}
+
+#[test]
+fn rejects_nar_above_transfer_limit_before_helper_invocation() {
+    let staging = TestDirectory::create();
+    let declared = declared_path_info();
+    let mut backend = RecordingBackend::accepting(registered_path_info());
+    let mut session = TransferBudget::new(1_000);
+    let mut source = LimitedReader::new(Cursor::new(regular_nar(CONTENT)), 135, &mut session);
+
+    let error = validate_and_promote_nar(
+        &mut source,
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect_err("NAR above object limit must fail before promotion");
+
+    assert!(error.to_string().contains("NAR object byte limit exceeded"));
+    assert_eq!(session.charged(), 135);
+    assert!(
+        backend.request.is_none(),
+        "helper invoked for transfer-limit rejection"
+    );
+    assert!(backend.queried_paths.is_empty());
     assert_directory_empty(staging.path());
 }
 

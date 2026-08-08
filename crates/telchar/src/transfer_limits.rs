@@ -187,6 +187,10 @@ impl<W: Write> Write for LimitedWriter<'_, W> {
             .checked_add(u64::try_from(written).map_err(|_| invalid("transfer is too large"))?)
             .ok_or_else(|| invalid("NAR object byte limit exceeded"))?;
         if allowed < buffer.len() && written == allowed {
+            if session_remaining <= object_remaining {
+                reject("outbound", "session", self.session.limit);
+                return Err(invalid("transfer session byte limit exceeded"));
+            }
             reject("outbound", "object", self.object_limit);
             return Err(invalid("NAR object byte limit exceeded"));
         }

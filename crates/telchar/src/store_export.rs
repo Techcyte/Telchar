@@ -360,6 +360,20 @@ impl Read for ExportReader {
         if buffer.is_empty() {
             return Ok(0);
         }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|message| self.offset == message.bytes.len())
+        {
+            let message = self
+                .pending
+                .take()
+                .ok_or_else(|| io::Error::other("export message missing"))?;
+            message
+                .acknowledgement
+                .send(Ok(()))
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
+        }
         if self.pending.is_none() {
             self.pending = match self.receiver.recv() {
                 Ok(message) => Some(message),
@@ -375,16 +389,6 @@ impl Read for ExportReader {
         let read = remaining.len().min(buffer.len());
         buffer[..read].copy_from_slice(&remaining[..read]);
         self.offset += read;
-        if self.offset == message.bytes.len() {
-            let message = self
-                .pending
-                .take()
-                .ok_or_else(|| io::Error::other("export message missing"))?;
-            message
-                .acknowledgement
-                .send(Ok(()))
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
-        }
         Ok(read)
     }
 }

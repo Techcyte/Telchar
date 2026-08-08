@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_export::{
-    export_verified_nar, NixStoreExportBackend, StoreExportBackend, StoreExportRequest,
-    VerifiedStoreExport,
+    export_verified_nar, export_verified_nar_with_limits, NixStoreExportBackend,
+    StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
 };
 use telchar::store_promotion::RegisteredPathInfo;
+use telchar::transfer_limits::{TransferBudget, TransferLimits};
 
 const CONTENT: &[u8] = b"telchar-classic-fixture";
 const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture";
@@ -73,6 +74,76 @@ fn streams_raw_nar_and_verifies_registered_metadata() {
             path: PATH.into(),
         }]
     );
+}
+
+#[test]
+fn object_limit_stops_export_producer_at_exact_boundary() {
+    let nar = regular_nar(CONTENT);
+    let mut backend = RecordingExportBackend::successful(registered_path_info(), nar);
+    let limits = TransferLimits {
+        maximum_object_bytes: 135,
+        maximum_inbound_session_bytes: 1,
+        maximum_outbound_session_bytes: 1_000,
+    };
+    let mut session = TransferBudget::new(limits.maximum_outbound_session_bytes);
+    let mut output = Vec::new();
+
+    let error = export_verified_nar_with_limits(
+        Path::new(PATH),
+        &mut output,
+        &mut backend,
+        &limits,
+        &mut session,
+    )
+    .expect_err("export above object limit must fail");
+
+    assert_eq!(error.to_string(), "NAR object byte limit exceeded");
+    assert_eq!(output.len(), 135, "excess byte reached worker boundary");
+    assert_eq!(session.charged(), 135);
+    assert!(backend.writer_failed, "export producer did not stop");
+}
+
+#[test]
+fn session_limit_is_shared_across_verified_exports() {
+    let nar = regular_nar(CONTENT);
+    let limits = TransferLimits {
+        maximum_object_bytes: 200,
+        maximum_inbound_session_bytes: 1,
+        maximum_outbound_session_bytes: 200,
+    };
+    let mut session = TransferBudget::new(limits.maximum_outbound_session_bytes);
+    let mut first_backend = RecordingExportBackend::successful(registered_path_info(), nar.clone());
+    let mut first_output = Vec::new();
+
+    export_verified_nar_with_limits(
+        Path::new(PATH),
+        &mut first_output,
+        &mut first_backend,
+        &limits,
+        &mut session,
+    )
+    .expect("first export fits session limit");
+
+    let mut second_backend = RecordingExportBackend::successful(registered_path_info(), nar);
+    let mut second_output = Vec::new();
+    let error = export_verified_nar_with_limits(
+        Path::new(PATH),
+        &mut second_output,
+        &mut second_backend,
+        &limits,
+        &mut session,
+    )
+    .expect_err("second export exceeds remaining session limit");
+
+    assert_eq!(error.to_string(), "transfer session byte limit exceeded");
+    assert_eq!(first_output.len(), 136);
+    assert_eq!(
+        second_output.len(),
+        64,
+        "excess byte reached worker boundary"
+    );
+    assert_eq!(session.charged(), 200);
+    assert!(second_backend.writer_failed, "export producer did not stop");
 }
 
 #[test]

@@ -65,10 +65,34 @@ fn inbound_budget_is_shared_across_objects() {
 
     let mut second = LimitedReader::new(Cursor::new([4, 5, 6]), 4, &mut session);
     let mut second_output = Vec::new();
-    second
+    let error = second
         .read_to_end(&mut second_output)
         .expect_err("later object exceeds remaining session budget");
 
+    assert_eq!(error.to_string(), "transfer session byte limit exceeded");
+    assert_eq!(first_output, vec![1, 2, 3]);
+    assert_eq!(second_output, vec![4, 5]);
+    assert_eq!(session.charged(), 5);
+}
+
+#[test]
+fn outbound_budget_is_shared_across_objects() {
+    let mut session = TransferBudget::new(5);
+    let mut first_output = Vec::new();
+    {
+        let mut first = LimitedWriter::new(&mut first_output, 4, &mut session);
+        first
+            .write_all(&[1, 2, 3])
+            .expect("first object fits session budget");
+    }
+
+    let mut second_output = Vec::new();
+    let mut second = LimitedWriter::new(&mut second_output, 4, &mut session);
+    let error = second
+        .write_all(&[4, 5, 6])
+        .expect_err("later object exceeds remaining session budget");
+
+    assert_eq!(error.to_string(), "transfer session byte limit exceeded");
     assert_eq!(first_output, vec![1, 2, 3]);
     assert_eq!(second_output, vec![4, 5]);
     assert_eq!(session.charged(), 5);
