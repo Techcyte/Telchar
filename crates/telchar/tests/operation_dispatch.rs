@@ -420,11 +420,21 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
     assert_eq!(read_string(&mut output), "build-log-line\n");
     assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 0, "Built status");
+    assert_eq!(read_string(&mut output), "", "empty build error message");
+    assert_eq!(read_integer(&mut output), 0, "times built");
+    assert_eq!(read_integer(&mut output), 0, "not nondeterministic");
+    assert_eq!(read_integer(&mut output), 0, "start time");
+    assert_eq!(read_integer(&mut output), 0, "stop time");
+    assert_eq!(read_integer(&mut output), 0, "no user CPU duration");
+    assert_eq!(read_integer(&mut output), 0, "no system CPU duration");
+    assert_eq!(read_integer(&mut output), 0, "no CA realisations");
     drop(input);
     drop(output);
 
-    assert!(child.wait().expect("Telchar exits").success());
+    let status = child.wait().expect("Telchar exits");
     let stderr = fixture.finish();
+    assert!(status.success(), "Telchar failed with {status}: {stderr}");
     assert!(
         stderr.contains("worker.build_derivation.completed"),
         "{stderr}"
