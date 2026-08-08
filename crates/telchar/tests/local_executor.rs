@@ -317,20 +317,18 @@ fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
         LocalBuildStatus::Built | LocalBuildStatus::AlreadyValid
     ));
     assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT_PATH.to_vec())]);
-    assert!(
-        std::process::Command::new("nix")
-            .args([
-                "--extra-experimental-features",
-                "nix-command",
-                "--store",
-                &store_uri,
-                "path-info",
-                std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
-            ])
-            .status()
-            .expect("path validity query runs")
-            .success()
-    );
+    assert!(std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            &store_uri,
+            "path-info",
+            std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
+        ])
+        .status()
+        .expect("path validity query runs")
+        .success());
     let real_output = fixture
         .root()
         .join("nix/store")
