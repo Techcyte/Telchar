@@ -196,6 +196,18 @@ impl NixFixture {
 
         for _ in 0..100 {
             if self.socket_path.exists() {
+                match std::os::unix::net::UnixStream::connect(&self.socket_path) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        if let Some(status) = child.try_wait()? {
+                            return Err(io::Error::other(format!(
+                                "fixture daemon exited before accepting connections: {status}"
+                            )));
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                }
                 tracing::info!(
                     event = "nix.fixture.daemon.started",
                     trust_mode = ?mode,

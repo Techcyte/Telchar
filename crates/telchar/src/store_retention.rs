@@ -1,13 +1,10 @@
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-const MAXIMUM_MESSAGE_BYTES: usize = 1024 * 1024;
-const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,57 +35,57 @@ pub trait StoreRetentionBackend: Send {
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()>;
 }
 
-#[derive(serde::Serialize)]
-struct RetentionRequest<'a> {
-    version: u32,
-    store_uri: &'a str,
-    root_directory: &'a Path,
-    entries: &'a [RetentionEntry],
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RetentionResponse {
-    version: u32,
-    retained: Vec<RetentionResponseEntry>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RetentionResponseEntry {
-    lease_id: String,
-    store_path: String,
-    root_path: PathBuf,
-}
-
-impl serde::Serialize for RetentionEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("RetentionEntry", 2)?;
-        state.serialize_field("lease_id", &self.lease_id)?;
-        state.serialize_field("store_path", &self.store_path)?;
-        state.end()
+pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
+    let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").ok();
+    let root_directory = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
+    match (store_uri, root_directory) {
+        (Some(_), Some(root_directory))
+            if std::env::var_os("TELCHAR_TEST_STORE_RETENTION").is_some() =>
+        {
+            Ok(Box::new(FilesystemStoreRetentionBackend::new(
+                root_directory,
+            )?))
+        }
+        (Some(store_uri), Some(root_directory)) => Ok(Box::new(NixStoreRetentionBackend::new(
+            store_uri,
+            root_directory,
+        )?)),
+        _ => Ok(Box::new(UnavailableStoreRetentionBackend)),
     }
 }
 
-pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
-    let Some(helper) = std::env::var_os("TELCHAR_NIX_STORE_RETAIN") else {
-        return Ok(Box::new(UnavailableStoreRetentionBackend));
-    };
-    let Some(root_directory) = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY") else {
-        return Ok(Box::new(UnavailableStoreRetentionBackend));
-    };
-    let Ok(store_uri) = std::env::var("TELCHAR_GATEWAY_STORE_URI") else {
-        return Ok(Box::new(UnavailableStoreRetentionBackend));
-    };
-    Ok(Box::new(NixStoreRetentionBackend::new(
-        helper,
-        store_uri,
-        root_directory,
-    )?))
+struct FilesystemStoreRetentionBackend {
+    root_directory: PathBuf,
+}
+
+impl FilesystemStoreRetentionBackend {
+    fn new(root_directory: impl Into<PathBuf>) -> io::Result<Self> {
+        Ok(Self {
+            root_directory: validate_root_directory(root_directory.into())?,
+        })
+    }
+}
+
+impl StoreRetentionBackend for FilesystemStoreRetentionBackend {
+    fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
+        validate_entries(entries, &self.root_directory)?;
+        let mut retained = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let root_path = self.root_directory.join(&entry.lease_id);
+            let created = create_root(&root_path, &entry.store_path)?;
+            retained.push(RetainedPath {
+                lease_id: entry.lease_id.clone(),
+                store_path: entry.store_path.clone(),
+                root_path,
+                created,
+            });
+        }
+        Ok(retained)
+    }
+
+    fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
+        rollback_paths(&self.root_directory, retained)
+    }
 }
 
 struct UnavailableStoreRetentionBackend;
@@ -112,75 +109,78 @@ impl StoreRetentionBackend for UnavailableStoreRetentionBackend {
 }
 
 pub struct NixStoreRetentionBackend {
-    helper: PathBuf,
-    store_uri: String,
+    socket_path: PathBuf,
     root_directory: PathBuf,
 }
 
 impl NixStoreRetentionBackend {
     pub fn new(
-        helper: impl Into<PathBuf>,
         store_uri: impl Into<String>,
         root_directory: impl Into<PathBuf>,
     ) -> io::Result<Self> {
-        let helper = helper.into();
-        if !helper.is_absolute() {
-            return Err(retention_error());
-        }
         let store_uri = store_uri.into();
-        if !store_uri.starts_with("unix://") || store_uri.contains('\0') {
-            return Err(retention_error());
-        }
+        let socket_path = store_uri
+            .strip_prefix("unix://")
+            .filter(|path| path.starts_with('/') && !path.as_bytes().contains(&0))
+            .map(PathBuf::from)
+            .ok_or_else(retention_error)?;
         let root_directory = validate_root_directory(root_directory.into())?;
         Ok(Self {
-            helper,
-            store_uri,
+            socket_path,
             root_directory,
         })
     }
 
     fn retain_entries(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         validate_entries(entries, &self.root_directory)?;
-        let created = entries
-            .iter()
-            .map(|entry| !self.root_directory.join(&entry.lease_id).exists())
-            .collect::<Vec<_>>();
-        let payload = serde_json::to_vec(&RetentionRequest {
-            version: 1,
-            store_uri: &self.store_uri,
-            root_directory: &self.root_directory,
-            entries,
-        })
-        .map_err(|_| retention_error())?;
-        if payload.len() > MAXIMUM_MESSAGE_BYTES {
-            return Err(retention_error());
-        }
-        let output = run_helper(&self.helper, &payload)?;
-        let response: RetentionResponse =
-            serde_json::from_slice(&output).map_err(|_| retention_error())?;
-        if response.version != 1 || response.retained.len() != entries.len() {
-            return Err(retention_error());
-        }
-        response
-            .retained
-            .into_iter()
-            .zip(entries.iter().zip(created))
-            .map(|(returned, (expected, created))| {
-                let root_path = self.root_directory.join(&expected.lease_id);
-                if returned.lease_id != expected.lease_id
-                    || returned.store_path != expected.store_path
-                    || returned.root_path != root_path
-                {
+        let stream = UnixStream::connect(&self.socket_path).map_err(|_| retention_error())?;
+        stream
+            .set_read_timeout(Some(OPERATION_TIMEOUT))
+            .map_err(|_| retention_error())?;
+        stream
+            .set_write_timeout(Some(OPERATION_TIMEOUT))
+            .map_err(|_| retention_error())?;
+        let mut client =
+            nix_worker_protocol::WorkerClient::connect(stream).map_err(|_| retention_error())?;
+        let mut retained = Vec::with_capacity(entries.len());
+        for entry in entries {
+            client
+                .add_temporary_root(entry.store_path.as_bytes())
+                .map_err(|_| {
+                    let _ = self.rollback(&retained);
+                    retention_error()
+                })?;
+            let root_path = self.root_directory.join(&entry.lease_id);
+            let created = match create_root(&root_path, &entry.store_path) {
+                Ok(created) => created,
+                Err(_) => {
+                    let _ = self.rollback(&retained);
                     return Err(retention_error());
                 }
-                Ok(RetainedPath {
-                    lease_id: expected.lease_id.clone(),
-                    store_path: expected.store_path.clone(),
-                    root_path,
-                    created,
-                })
-            })
-            .collect()
+            };
+            let retained_path = RetainedPath {
+                lease_id: entry.lease_id.clone(),
+                store_path: entry.store_path.clone(),
+                root_path,
+                created,
+            };
+            retained.push(retained_path);
+            if client
+                .add_indirect_root(
+                    retained
+                        .last()
+                        .expect("retained path exists")
+                        .root_path
+                        .as_os_str()
+                        .as_encoded_bytes(),
+                )
+                .is_err()
+            {
+                let _ = self.rollback(&retained);
+                return Err(retention_error());
+            }
+        }
+        Ok(retained)
     }
 }
 
@@ -193,17 +193,38 @@ impl StoreRetentionBackend for NixStoreRetentionBackend {
     }
 
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()> {
-        for path in retained.iter().filter(|path| path.created) {
-            if path.root_path.parent() != Some(self.root_directory.as_path())
-                || fs::read_link(&path.root_path).map_err(|_| retention_error())?
-                    != Path::new(&path.store_path)
+        rollback_paths(&self.root_directory, retained)
+    }
+}
+
+fn rollback_paths(root_directory: &Path, retained: &[RetainedPath]) -> io::Result<()> {
+    for path in retained.iter().filter(|path| path.created).rev() {
+        if path.root_path.parent() != Some(root_directory)
+            || fs::read_link(&path.root_path).map_err(|_| retention_error())?
+                != Path::new(&path.store_path)
+        {
+            return Err(retention_error());
+        }
+        fs::remove_file(&path.root_path).map_err(|_| retention_error())?;
+    }
+    Ok(())
+}
+
+fn create_root(root_path: &Path, store_path: &str) -> io::Result<bool> {
+    match fs::symlink_metadata(root_path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_symlink()
+                || fs::read_link(root_path)? != Path::new(store_path)
             {
                 return Err(retention_error());
             }
-            fs::remove_file(&path.root_path).map_err(|_| retention_error())?;
+            return Ok(false);
         }
-        Ok(())
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(retention_error()),
     }
+    std::os::unix::fs::symlink(store_path, root_path).map_err(|_| retention_error())?;
+    Ok(true)
 }
 
 fn validate_root_directory(directory: PathBuf) -> io::Result<PathBuf> {
@@ -251,7 +272,7 @@ fn validate_entries(entries: &[RetentionEntry], root_directory: &Path) -> io::Re
 
 fn valid_store_path(path: &str) -> bool {
     const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
-    let Some(name) = path.strip_prefix("/nix/store/") else {
+    let Some(name) = path.rsplit('/').next() else {
         return false;
     };
     let bytes = name.as_bytes();
@@ -263,117 +284,6 @@ fn valid_store_path(path: &str) -> bool {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
         })
 }
-
-fn run_helper(helper: &Path, payload: &[u8]) -> io::Result<Vec<u8>> {
-    let mut command = Command::new(helper);
-    configure_child_lifecycle(&mut command);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = command.spawn().map_err(|_| retention_error())?;
-    let mut child = ChildGuard::new(child);
-    let mut stdin = child.child.stdin.take().ok_or_else(retention_error)?;
-    let stdout = child.child.stdout.take().ok_or_else(retention_error)?;
-    let stderr = child.child.stderr.take().ok_or_else(retention_error)?;
-    let stdout_reader = thread::spawn(|| drain_bounded(stdout, MAXIMUM_MESSAGE_BYTES));
-    let stderr_reader = thread::spawn(|| drain_bounded(stderr, MAXIMUM_DIAGNOSTIC_BYTES));
-    if stdin
-        .write_all(payload)
-        .and_then(|_| stdin.flush())
-        .is_err()
-    {
-        child.kill_and_reap();
-        let _ = stdout_reader.join();
-        let _ = stderr_reader.join();
-        return Err(retention_error());
-    }
-    drop(stdin);
-    let deadline = Instant::now() + OPERATION_TIMEOUT;
-    let status = loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-            Ok(None) | Err(_) => {
-                child.kill_and_reap();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(retention_error());
-            }
-        }
-    };
-    let (stdout, stdout_overflow) = stdout_reader.join().map_err(|_| retention_error())??;
-    let (_, stderr_overflow) = stderr_reader.join().map_err(|_| retention_error())??;
-    if !status.success() || stdout_overflow || stderr_overflow {
-        return Err(retention_error());
-    }
-    Ok(stdout)
-}
-
-struct ChildGuard {
-    child: Child,
-}
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self { child }
-    }
-
-    fn kill_and_reap(&mut self) {
-        if let Some(pid) =
-            rustix::process::Pid::from_raw(self.child.id() as rustix::process::RawPid)
-        {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        self.kill_and_reap();
-    }
-}
-
-fn drain_bounded(mut source: impl Read, maximum: usize) -> io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 4096];
-    let mut overflow = false;
-    loop {
-        let count = source.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        if output.len().saturating_add(count) > maximum {
-            overflow = true;
-        } else {
-            output.extend_from_slice(&buffer[..count]);
-        }
-    }
-    Ok((output, overflow))
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn configure_child_lifecycle(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(io::Error::from)?;
-            rustix::process::setpgid(None, None).map_err(io::Error::from)?;
-            if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
-                return Err(io::Error::other(
-                    "retention owner exited before helper start",
-                ));
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-fn configure_child_lifecycle(_: &mut Command) {}
 
 fn retention_error() -> io::Error {
     io::Error::other("gateway store retention failed")

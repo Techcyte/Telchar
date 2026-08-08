@@ -131,7 +131,6 @@ let
           TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
           TELCHAR_NIX_STORE_PROMOTE = "${telchar}/libexec/telchar/nix-store-promote";
           TELCHAR_NIX_STORE_CLOSURE = "${telchar}/libexec/telchar/nix-store-closure";
-          TELCHAR_NIX_STORE_RETAIN = "${telchar}/libexec/telchar/nix-store-retain";
           TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-gc-roots";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";

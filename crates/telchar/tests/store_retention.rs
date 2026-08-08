@@ -1,27 +1,18 @@
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use telchar::nix_fixture::{NixDaemon, NixFixture, TrustMode};
 use telchar::store_retention::{NixStoreRetentionBackend, RetentionEntry, StoreRetentionBackend};
 
 #[test]
-fn empty_retention_set_does_not_spawn_helper() {
+fn empty_retention_set_does_not_connect_to_daemon() {
     let root = std::env::temp_dir().join(format!("telchar-retention-empty-{}", std::process::id()));
     fs::create_dir_all(&root).expect("fixture root creates");
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
         .expect("fixture root permissions set");
-    let helper = root.join("helper");
-    let marker = root.join("marker");
-    fs::write(
-        &helper,
-        format!("#!/bin/sh\nprintf invoked > '{}'\n", marker.display()),
-    )
-    .expect("helper writes");
-    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
     let mut backend =
-        NixStoreRetentionBackend::new(&helper, "unix:///fixed", &root).expect("backend configures");
+        NixStoreRetentionBackend::new("unix:///missing", &root).expect("backend configures");
 
     assert!(
         backend
@@ -29,34 +20,6 @@ fn empty_retention_set_does_not_spawn_helper() {
             .expect("empty retain succeeds")
             .is_empty()
     );
-    assert!(!marker.exists(), "empty retain spawned helper");
-    fs::remove_dir_all(root).expect("fixture cleans");
-}
-
-#[test]
-fn altered_helper_response_is_rejected() {
-    let root =
-        std::env::temp_dir().join(format!("telchar-retention-response-{}", std::process::id()));
-    fs::create_dir_all(&root).expect("fixture root creates");
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-        .expect("fixture root permissions set");
-    let helper = root.join("helper");
-    fs::write(
-        &helper,
-        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"retained\":[{\"lease_id\":\"altered\",\"store_path\":\"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a\",\"root_path\":\"/tmp/altered\"}]}'\n",
-    )
-    .expect("helper writes");
-    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
-    let mut backend =
-        NixStoreRetentionBackend::new(&helper, "unix:///fixed", &root).expect("backend configures");
-
-    let error = backend
-        .retain(&[RetentionEntry::new(
-            "lease-request-1",
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a",
-        )])
-        .expect_err("altered response rejects");
-    assert_eq!(error.to_string(), "gateway store retention failed");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -72,35 +35,29 @@ fn existing_exact_root_is_idempotent_but_conflicts_do_not_clobber() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let helper = std::env::var_os("TELCHAR_NIX_STORE_RETAIN")
-        .expect("TELCHAR_NIX_STORE_RETAIN points to the flake-built helper");
     let root = root_directory.join("lease-idempotent");
 
     assert!(
         retain_fixture_path(
-            &helper,
             &fixture,
             &daemon.store_url(),
             &root_directory,
             "lease-idempotent",
             &leased
         )
-        .status
-        .success(),
+        .is_ok(),
         "initial retain fails"
     );
     assert_eq!(fs::read_link(&root).expect("root target reads"), leased);
     assert!(
         retain_fixture_path(
-            &helper,
             &fixture,
             &daemon.store_url(),
             &root_directory,
             "lease-idempotent",
             &leased
         )
-        .status
-        .success(),
+        .is_ok(),
         "same root retain is not idempotent"
     );
     assert_eq!(
@@ -111,14 +68,13 @@ fn existing_exact_root_is_idempotent_but_conflicts_do_not_clobber() {
     fs::remove_file(&root).expect("root removes for conflict test");
     std::os::unix::fs::symlink(&other, &root).expect("conflicting symlink creates");
     let response = retain_fixture_path(
-        &helper,
         &fixture,
         &daemon.store_url(),
         &root_directory,
         "lease-idempotent",
         &leased,
     );
-    assert!(!response.status.success(), "conflicting root succeeds");
+    assert!(response.is_err(), "conflicting root succeeds");
     assert_eq!(
         fs::read_link(&root).expect("conflicting target remains"),
         other
@@ -139,21 +95,17 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let helper = std::env::var_os("TELCHAR_NIX_STORE_RETAIN")
-        .expect("TELCHAR_NIX_STORE_RETAIN points to the flake-built helper");
     let root = root_directory.join("lease-restart");
 
     assert!(
         retain_fixture_path(
-            &helper,
             &fixture,
             &daemon.store_url(),
             &root_directory,
             "lease-restart",
             &leased
         )
-        .status
-        .success(),
+        .is_ok(),
         "initial retain fails"
     );
     daemon.collect_garbage().expect("first private GC succeeds");
@@ -206,53 +158,16 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
             .expect("control path valid before GC")
     );
 
-    let helper = std::env::var_os("TELCHAR_NIX_STORE_RETAIN")
-        .expect("TELCHAR_NIX_STORE_RETAIN points to the flake-built helper");
-    let request = serde_json::json!({
-        "version": 1,
-        "store_uri": daemon.store_url(),
-        "root_directory": root_directory,
-        "entries": [{
-            "lease_id": "lease-retained-fixture",
-            "store_path": leased,
-        }],
-    });
-    let mut helper = Command::new(helper)
-        .envs(fixture.environment())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("retention helper starts");
-    helper
-        .stdin
-        .take()
-        .expect("retention helper stdin")
-        .write_all(request.to_string().as_bytes())
-        .expect("retention helper request writes");
-    let response = helper
-        .wait_with_output()
-        .expect("retention helper completes");
-    assert!(
-        response.status.success(),
-        "retention helper failed: {response:?}"
-    );
-    let response: serde_json::Value =
-        serde_json::from_slice(&response.stdout).expect("retention response parses");
-    assert_eq!(response["version"], 1);
-    assert_eq!(
-        response["retained"][0]["lease_id"],
-        "lease-retained-fixture"
-    );
-    assert_eq!(
-        response["retained"][0]["store_path"].as_str(),
-        Some(leased.to_string_lossy().as_ref())
-    );
+    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
+        .expect("retention backend configures");
+    let retained = backend
+        .retain(&[RetentionEntry::new(
+            "lease-retained-fixture",
+            leased.to_string_lossy(),
+        )])
+        .expect("leased path retains");
+    assert_eq!(retained.len(), 1);
     let root = root_directory.join("lease-retained-fixture");
-    assert_eq!(
-        response["retained"][0]["root_path"].as_str(),
-        Some(root.to_string_lossy().as_ref())
-    );
     assert_eq!(fs::read_link(&root).expect("root symlink reads"), leased);
 
     daemon
@@ -276,35 +191,16 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
 }
 
 fn retain_fixture_path(
-    helper: &std::ffi::OsStr,
-    fixture: &NixFixture,
+    _fixture: &NixFixture,
     store_uri: &str,
     root_directory: &std::path::Path,
     lease_id: &str,
     store_path: &std::path::Path,
-) -> std::process::Output {
-    let request = serde_json::json!({
-        "version": 1,
-        "store_uri": store_uri,
-        "root_directory": root_directory,
-        "entries": [{ "lease_id": lease_id, "store_path": store_path }],
-    });
-    let mut child = Command::new(helper)
-        .envs(fixture.environment())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("retention helper starts");
-    child
-        .stdin
-        .take()
-        .expect("retention helper stdin")
-        .write_all(request.to_string().as_bytes())
-        .expect("retention helper request writes");
-    child
-        .wait_with_output()
-        .expect("retention helper completes")
+) -> std::io::Result<()> {
+    let mut backend = NixStoreRetentionBackend::new(store_uri, root_directory)?;
+    backend
+        .retain(&[RetentionEntry::new(lease_id, store_path.to_string_lossy())])
+        .map(|_| ())
 }
 
 fn build_fixture_path(

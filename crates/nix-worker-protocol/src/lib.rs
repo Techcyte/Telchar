@@ -215,6 +215,48 @@ pub enum WorkerOperation {
 }
 
 impl WorkerOperation {
+    const fn code(self) -> u64 {
+        match self {
+            Self::IsValidPath => 1,
+            Self::QueryReferrers => 6,
+            Self::AddToStore => 7,
+            Self::AddTextToStore => 8,
+            Self::BuildPaths => 9,
+            Self::EnsurePath => 10,
+            Self::AddTempRoot => 11,
+            Self::AddIndirectRoot => 12,
+            Self::SyncWithGc => 13,
+            Self::FindRoots => 14,
+            Self::QueryDeriver => 18,
+            Self::SetOptions => 19,
+            Self::CollectGarbage => 20,
+            Self::QuerySubstitutablePathInfo => 21,
+            Self::QueryDerivationOutputs => 22,
+            Self::QueryAllValidPaths => 23,
+            Self::QueryPathInfo => 26,
+            Self::QueryDerivationOutputNames => 28,
+            Self::QueryPathFromHashPart => 29,
+            Self::QuerySubstitutablePathInfos => 30,
+            Self::QueryValidPaths => 31,
+            Self::QuerySubstitutablePaths => 32,
+            Self::QueryValidDerivers => 33,
+            Self::OptimiseStore => 34,
+            Self::VerifyStore => 35,
+            Self::BuildDerivation => 36,
+            Self::AddSignatures => 37,
+            Self::NarFromPath => 38,
+            Self::AddToStoreNar => 39,
+            Self::QueryMissing => 40,
+            Self::QueryDerivationOutputMap => 41,
+            Self::RegisterDrvOutput => 42,
+            Self::QueryRealisation => 43,
+            Self::AddMultipleToStore => 44,
+            Self::AddBuildLog => 45,
+            Self::BuildPathsWithResults => 46,
+            Self::AddPermRoot => 47,
+        }
+    }
+
     pub const fn is_fixture_allowed(self) -> bool {
         matches!(
             self,
@@ -2119,6 +2161,182 @@ impl QueryValidPathsRequest {
     pub fn substitute(&self) -> bool {
         self.substitute
     }
+}
+
+pub struct WorkerClient<S> {
+    stream: S,
+    version: WorkerVersion,
+}
+
+impl<S: Read + Write> WorkerClient<S> {
+    pub fn connect(mut stream: S) -> io::Result<Self> {
+        const ROOT_REGISTRATION_VERSION: WorkerVersion = WorkerVersion::new(1, 25);
+        write_worker_integer_to(&mut stream, CLIENT_WORKER_MAGIC)?;
+        write_worker_integer_to(&mut stream, ROOT_REGISTRATION_VERSION.to_wire())?;
+        stream.flush()?;
+        if read_worker_integer_from(&mut stream)? != SERVER_WORKER_MAGIC {
+            return Err(protocol_client_error());
+        }
+        let daemon_version = WorkerVersion::from_wire(read_worker_integer_from(&mut stream)?);
+        if daemon_version.major != ROOT_REGISTRATION_VERSION.major
+            || daemon_version < MINIMUM_WORKER_VERSION
+        {
+            return Err(protocol_client_error());
+        }
+        let version = daemon_version.min(ROOT_REGISTRATION_VERSION);
+        if version >= WorkerVersion::new(1, 14) {
+            write_worker_integer_to(&mut stream, 0)?;
+        }
+        if version >= WorkerVersion::new(1, 11) {
+            write_worker_integer_to(&mut stream, 0)?;
+        }
+        stream.flush()?;
+        if version >= WorkerVersion::new(1, 33) {
+            discard_worker_byte_string(&mut stream, 1024)?;
+        }
+        if version >= WorkerVersion::new(1, 35) && read_worker_integer_from(&mut stream)? > 2 {
+            return Err(protocol_client_error());
+        }
+        read_operation_frames(&mut stream, version)?;
+        Ok(Self { stream, version })
+    }
+
+    pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
+        validate_store_path(store_path).map_err(|_| protocol_client_error())?;
+        self.execute_path_operation(WorkerOperation::AddTempRoot, store_path)
+    }
+
+    pub fn add_indirect_root(&mut self, root_path: &[u8]) -> io::Result<()> {
+        if root_path.is_empty()
+            || root_path.len() > MAXIMUM_WORKER_STORE_PATH_BYTES * 4
+            || !root_path.starts_with(b"/")
+            || root_path.contains(&0)
+        {
+            return Err(protocol_client_error());
+        }
+        self.execute_path_operation(WorkerOperation::AddIndirectRoot, root_path)
+    }
+
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    fn execute_path_operation(
+        &mut self,
+        operation: WorkerOperation,
+        path: &[u8],
+    ) -> io::Result<()> {
+        write_worker_integer_to(&mut self.stream, operation.code())?;
+        write_worker_byte_string_to(&mut self.stream, path)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.version)?;
+        if read_worker_integer_from(&mut self.stream)? != 1 {
+            return Err(protocol_client_error());
+        }
+        Ok(())
+    }
+}
+
+fn read_operation_frames(input: &mut impl Read, version: WorkerVersion) -> io::Result<()> {
+    loop {
+        match read_worker_integer_from(input)? {
+            STDERR_NEXT => {
+                discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?
+            }
+            STDERR_START_ACTIVITY => {
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                discard_activity_fields(input)?;
+                read_worker_integer_from(input)?;
+            }
+            STDERR_STOP_ACTIVITY => {
+                read_worker_integer_from(input)?;
+            }
+            STDERR_RESULT => {
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                discard_activity_fields(input)?;
+            }
+            STDERR_ERROR => {
+                if version >= WorkerVersion::new(1, 26) {
+                    discard_worker_error(input, version)?;
+                } else {
+                    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                    read_worker_integer_from(input)?;
+                }
+                return Err(protocol_client_error());
+            }
+            STDERR_LAST => return Ok(()),
+            _ => return Err(protocol_client_error()),
+        }
+    }
+}
+
+fn discard_activity_fields(input: &mut impl Read) -> io::Result<()> {
+    let count =
+        usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
+    if count > MAXIMUM_STRUCTURED_FRAME_FIELDS {
+        return Err(protocol_client_error());
+    }
+    for _ in 0..count {
+        match read_worker_integer_from(input)? {
+            0 => {
+                read_worker_integer_from(input)?;
+            }
+            1 => discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)?,
+            _ => return Err(protocol_client_error()),
+        }
+    }
+    Ok(())
+}
+
+fn discard_worker_error(input: &mut impl Read, version: WorkerVersion) -> io::Result<()> {
+    discard_worker_byte_string(input, 256)?;
+    read_worker_integer_from(input)?;
+    discard_worker_byte_string(input, 256)?;
+    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    read_worker_integer_from(input)?;
+    if version >= WorkerVersion::new(1, 26) {
+        let trace_count = usize::try_from(read_worker_integer_from(input)?)
+            .map_err(|_| protocol_client_error())?;
+        if trace_count > MAXIMUM_STRUCTURED_FRAME_FIELDS {
+            return Err(protocol_client_error());
+        }
+        for _ in 0..trace_count {
+            read_worker_integer_from(input)?;
+            discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+        }
+    }
+    Ok(())
+}
+
+fn discard_worker_byte_string(input: &mut impl Read, maximum: usize) -> io::Result<()> {
+    read_worker_byte_string_from(input, maximum).map(|_| ())
+}
+
+fn read_worker_byte_string_from(input: &mut impl Read, maximum: usize) -> io::Result<Vec<u8>> {
+    let length =
+        usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
+    if length > maximum {
+        return Err(protocol_client_error());
+    }
+    let padding_length = (8 - length % 8) % 8;
+    let framed_length = length
+        .checked_add(padding_length)
+        .ok_or_else(protocol_client_error)?;
+    let mut framed = vec![0_u8; framed_length];
+    input.read_exact(&mut framed)?;
+    if framed[length..].iter().any(|byte| *byte != 0) {
+        return Err(protocol_client_error());
+    }
+    framed.truncate(length);
+    Ok(framed)
+}
+
+fn protocol_client_error() -> io::Error {
+    io::Error::other("Nix daemon operation failed")
 }
 
 fn validate_store_path(path: &[u8]) -> io::Result<()> {
