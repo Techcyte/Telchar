@@ -735,7 +735,7 @@ Evidence: paths and output facts to record
   - Verify: transfer-limit tests.
   - Evidence: limits and rejection points.
 
-- [ ] T069A Bound transferred object counts
+- [x] T069A Bound transferred object counts
   - Depends on: T066, T068
   - Outcome: per-session and global object-count budgets reject excess uploads/downloads before registration or unbounded bookkeeping.
   - Red: sequence above configured count succeeds.
