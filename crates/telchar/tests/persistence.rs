@@ -1,10 +1,14 @@
 mod support;
 
-use std::sync::Arc;
+use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use postgres::types::Type;
 use support::postgres::PostgresFixture;
+use tracing::field::{Field, Visit};
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::prelude::*;
 
 #[test]
 fn requester_reference_is_deterministic_and_component_separated() {
@@ -932,6 +936,408 @@ fn failed_protocol_session_statements_do_not_claim_or_persist_transitions() {
             .state,
         telchar::persistence::ProtocolSessionState::Open
     );
+}
+
+#[test]
+fn store_lease_persists_across_restart() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "lease-request",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+
+    let created = telchar::persistence::create_store_lease(
+        fixture.url(),
+        "lease-1",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "lease-request",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+
+    fixture.restart();
+
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "lease-1").expect("lease reads"),
+        Some(created)
+    );
+}
+
+#[test]
+fn store_lease_releases_once_without_mutating_immutable_fields() {
+    let fixture = Arc::new(PostgresFixture::start());
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "release-request",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let created = telchar::persistence::create_store_lease(
+        fixture.url(),
+        "release-lease",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "release-request",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        telchar::persistence::StoreLeasePurpose::Output,
+    )
+    .expect("lease persists");
+
+    let first_url = fixture.url().to_owned();
+    let second_url = fixture.url().to_owned();
+    let first = thread::spawn(move || {
+        telchar::persistence::release_store_lease(&first_url, "release-lease")
+    });
+    let second = thread::spawn(move || {
+        telchar::persistence::release_store_lease(&second_url, "release-lease")
+    });
+    let outcomes = [
+        first.join().expect("first releaser does not panic"),
+        second.join().expect("second releaser does not panic"),
+    ];
+
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .map(telchar::persistence::StoreLeaseError::failure)
+            .collect::<Vec<_>>(),
+        vec![telchar::persistence::StoreLeaseFailure::InvalidState]
+    );
+    let released = outcomes
+        .into_iter()
+        .find_map(Result::ok)
+        .expect("one release succeeds");
+    assert_eq!(released.lease_id, created.lease_id);
+    assert_eq!(released.owner_kind, created.owner_kind);
+    assert_eq!(released.owner_id, created.owner_id);
+    assert_eq!(released.store_path, created.store_path);
+    assert_eq!(released.purpose, created.purpose);
+    assert_eq!(released.created_at, created.created_at);
+    assert_eq!(
+        released.state,
+        telchar::persistence::StoreLeaseState::Released
+    );
+    assert!(released
+        .released_at
+        .is_some_and(|at| at >= created.created_at));
+    assert_eq!(
+        telchar::persistence::release_store_lease(fixture.url(), "missing")
+            .expect_err("absent lease rejects")
+            .failure(),
+        telchar::persistence::StoreLeaseFailure::Missing
+    );
+}
+
+#[test]
+fn store_lease_rejects_statement_and_commit_failures_without_transition() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "failure-owner",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let mut client = fixture.connect();
+    client.batch_execute(
+        "CREATE FUNCTION reject_store_lease_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject insert'; END $$;
+         CREATE TRIGGER reject_store_lease_insert BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_store_lease_insert();",
+    ).expect("insert trigger installs");
+    assert_eq!(
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            "statement-failure",
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "failure-owner",
+            "/nix/store/11111111111111111111111111111111-path",
+            telchar::persistence::StoreLeasePurpose::Input,
+        )
+        .expect_err("insert rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Query
+    );
+    assert!(
+        telchar::persistence::read_store_lease(fixture.url(), "statement-failure")
+            .expect("absent lease reads")
+            .is_none()
+    );
+    client
+        .batch_execute(
+            "DROP TRIGGER reject_store_lease_insert ON store_leases;
+         DROP FUNCTION reject_store_lease_insert();",
+        )
+        .expect("insert trigger removes");
+    let lease = telchar::persistence::create_store_lease(
+        fixture.url(),
+        "commit-failure",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "failure-owner",
+        "/nix/store/11111111111111111111111111111111-path",
+        telchar::persistence::StoreLeasePurpose::Input,
+    )
+    .expect("lease persists");
+    client.batch_execute(
+        "CREATE FUNCTION reject_store_lease_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject release'; END $$;
+         CREATE TRIGGER reject_store_lease_release BEFORE UPDATE ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_store_lease_release();",
+    ).expect("release trigger installs");
+    assert_eq!(
+        telchar::persistence::release_store_lease(fixture.url(), "commit-failure")
+            .expect_err("release statement rejects")
+            .failure(),
+        telchar::persistence::StoreLeaseFailure::Query
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "commit-failure")
+            .expect("lease reads"),
+        Some(lease.clone())
+    );
+    client.batch_execute(
+        "DROP TRIGGER reject_store_lease_release ON store_leases;
+         DROP FUNCTION reject_store_lease_release();
+         CREATE FUNCTION reject_store_lease_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject commit'; END $$;
+         CREATE CONSTRAINT TRIGGER reject_store_lease_commit AFTER UPDATE ON store_leases DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_store_lease_commit();",
+    ).expect("commit trigger installs");
+    assert_eq!(
+        telchar::persistence::release_store_lease(fixture.url(), "commit-failure")
+            .expect_err("release commit rejects")
+            .failure(),
+        telchar::persistence::StoreLeaseFailure::Commit
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "commit-failure")
+            .expect("lease reads"),
+        Some(lease)
+    );
+}
+
+#[test]
+fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "telemetry-owner",
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let captured = EventCapture::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+    tracing::dispatcher::with_default(&dispatch, || {
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            "telemetry-lease",
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "telemetry-owner",
+            "/nix/store/11111111111111111111111111111111-telemetry",
+            telchar::persistence::StoreLeasePurpose::Output,
+        )
+        .expect("lease persists");
+        telchar::persistence::release_store_lease(fixture.url(), "telemetry-lease")
+            .expect("lease releases");
+        let error = telchar::persistence::create_store_lease(
+            "postgresql://sensitive-url",
+            "sensitive-lease",
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "sensitive-owner",
+            "relative",
+            telchar::persistence::StoreLeasePurpose::Input,
+        )
+        .expect_err("invalid lease rejects");
+        assert_eq!(error.to_string(), "store lease state operation failed");
+        assert_eq!(
+            error.failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    });
+    let events = captured.events();
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.created")));
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.released")));
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.failed")
+            && event.contains("operation=\"create\"")
+            && event.contains("failure_class=\"configuration\"")));
+    for forbidden in [
+        fixture.url(),
+        "sensitive-url",
+        "sensitive-lease",
+        "sensitive-owner",
+        "/nix/store/11111111111111111111111111111111-telemetry",
+    ] {
+        assert!(
+            !events.iter().any(|event| event.contains(forbidden)),
+            "{events:?}"
+        );
+    }
+}
+
+#[test]
+fn store_lease_validates_owners_and_rejects_malformed_rows() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(fixture.url(), "open-owner", requester_reference)
+        .expect("session opens");
+    telchar::persistence::open_protocol_session(fixture.url(), "closed-owner", requester_reference)
+        .expect("session opens");
+    telchar::persistence::close_protocol_session(fixture.url(), "closed-owner")
+        .expect("session closes");
+
+    for (owner_kind, purpose) in [
+        (
+            telchar::persistence::StoreLeaseOwnerKind::Session,
+            telchar::persistence::StoreLeasePurpose::Input,
+        ),
+        (
+            telchar::persistence::StoreLeaseOwnerKind::Session,
+            telchar::persistence::StoreLeasePurpose::Transfer,
+        ),
+    ] {
+        let record = telchar::persistence::create_store_lease(
+            fixture.url(),
+            purpose_name(purpose),
+            owner_kind,
+            "open-owner",
+            "/nix/store/11111111111111111111111111111111-input",
+            purpose,
+        )
+        .expect("session lease persists");
+        assert_eq!(record.owner_kind, owner_kind);
+        assert_eq!(record.purpose, purpose);
+    }
+    assert_eq!(
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            "missing-owner",
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "missing",
+            "/nix/store/11111111111111111111111111111111-path",
+            telchar::persistence::StoreLeasePurpose::Input,
+        )
+        .expect_err("missing owner rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Missing
+    );
+    assert_eq!(
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            "closed-owner",
+            telchar::persistence::StoreLeaseOwnerKind::Session,
+            "closed-owner",
+            "/nix/store/11111111111111111111111111111111-path",
+            telchar::persistence::StoreLeasePurpose::Transfer,
+        )
+        .expect_err("closed owner rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::InvalidState
+    );
+    for (lease_id, store_path) in [
+        ("", "/nix/store/path"),
+        ("invalid-path", "relative"),
+        ("newline-path", "/nix/store/path\n"),
+        ("nul-path", "/nix/store/path\0"),
+    ] {
+        assert_eq!(
+            telchar::persistence::create_store_lease(
+                "postgresql://127.0.0.1:1/no_connection",
+                lease_id,
+                telchar::persistence::StoreLeaseOwnerKind::Session,
+                "open-owner",
+                store_path,
+                telchar::persistence::StoreLeasePurpose::Input,
+            )
+            .expect_err("invalid input rejects before connection")
+            .failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    }
+
+    let mut client = fixture.connect();
+    client
+        .batch_execute(
+            "ALTER TABLE store_leases DROP CONSTRAINT store_leases_owner_kind_check;
+         ALTER TABLE store_leases DROP CONSTRAINT store_leases_purpose_check;
+         ALTER TABLE store_leases DROP CONSTRAINT store_leases_state_check;
+         ALTER TABLE store_leases DROP CONSTRAINT store_leases_store_path_check;
+         ALTER TABLE store_leases DROP CONSTRAINT store_leases_released_at_check;
+         INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state)
+         VALUES ('malformed-lease', 'unknown', 'owner', 'relative', 'unknown', 'active'),
+                ('malformed-active', 'request', 'owner', '/nix/store/path', 'input', 'active'),
+                ('malformed-released', 'request', 'owner', '/nix/store/path', 'input', 'released');
+         UPDATE store_leases SET released_at = transaction_timestamp() WHERE lease_id = 'malformed-active';
+         UPDATE store_leases SET released_at = NULL WHERE lease_id = 'malformed-released';",
+        )
+        .expect("malformed lease writes");
+    for lease_id in ["malformed-lease", "malformed-active", "malformed-released"] {
+        assert_eq!(
+            telchar::persistence::read_store_lease(fixture.url(), lease_id)
+                .expect_err("malformed lease rejects")
+                .failure(),
+            telchar::persistence::StoreLeaseFailure::Query
+        );
+    }
+    assert_eq!(
+        telchar::persistence::release_store_lease(fixture.url(), "malformed-active")
+            .expect_err("malformed active lease rejects")
+            .failure(),
+        telchar::persistence::StoreLeaseFailure::Query
+    );
+}
+
+#[derive(Clone, Default)]
+struct EventCapture(Arc<Mutex<Vec<String>>>);
+
+impl EventCapture {
+    fn events(&self) -> Vec<String> {
+        self.0.lock().expect("events lock").clone()
+    }
+}
+
+impl<S> Layer<S> for EventCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        let mut fields = EventFields::default();
+        event.record(&mut fields);
+        self.0.lock().expect("events lock").push(fields.0);
+    }
+}
+
+#[derive(Default)]
+struct EventFields(String);
+
+impl Visit for EventFields {
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if !self.0.is_empty() {
+            self.0.push(' ');
+        }
+        self.0.push_str(field.name());
+        self.0.push('=');
+        self.0.push_str(&format!("{value:?}"));
+    }
+}
+
+fn purpose_name(purpose: telchar::persistence::StoreLeasePurpose) -> &'static str {
+    match purpose {
+        telchar::persistence::StoreLeasePurpose::Input => "session-input",
+        telchar::persistence::StoreLeasePurpose::Transfer => "session-transfer",
+        _ => unreachable!("tested purpose has a stable fixture name"),
+    }
 }
 
 #[test]

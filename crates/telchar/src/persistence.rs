@@ -647,6 +647,372 @@ fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSession
     })
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StoreLeaseFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Missing,
+    InvalidState,
+    Query,
+    Commit,
+}
+
+impl StoreLeaseFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::Missing => "missing",
+            Self::InvalidState => "invalid_state",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct StoreLeaseError(StoreLeaseFailure);
+
+impl StoreLeaseError {
+    pub fn failure(&self) -> StoreLeaseFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for StoreLeaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("store lease state operation failed")
+    }
+}
+
+impl std::error::Error for StoreLeaseError {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StoreLeaseOwnerKind {
+    Session,
+    Request,
+}
+
+impl StoreLeaseOwnerKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Request => "request",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "session" => Some(Self::Session),
+            "request" => Some(Self::Request),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StoreLeasePurpose {
+    Derivation,
+    Input,
+    Output,
+    Transfer,
+}
+
+impl StoreLeasePurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Derivation => "derivation",
+            Self::Input => "input",
+            Self::Output => "output",
+            Self::Transfer => "transfer",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "derivation" => Some(Self::Derivation),
+            "input" => Some(Self::Input),
+            "output" => Some(Self::Output),
+            "transfer" => Some(Self::Transfer),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StoreLeaseState {
+    Active,
+    Released,
+}
+
+impl StoreLeaseState {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "released" => Some(Self::Released),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoreLeaseRecord {
+    pub lease_id: String,
+    pub owner_kind: StoreLeaseOwnerKind,
+    pub owner_id: String,
+    pub store_path: String,
+    pub purpose: StoreLeasePurpose,
+    pub state: StoreLeaseState,
+    pub created_at: SystemTime,
+    pub released_at: Option<SystemTime>,
+}
+
+pub fn create_store_lease(
+    database_url: &str,
+    lease_id: &str,
+    owner_kind: StoreLeaseOwnerKind,
+    owner_id: &str,
+    store_path: &str,
+    purpose: StoreLeasePurpose,
+) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    let result = create_store_lease_inner(
+        database_url,
+        lease_id,
+        owner_kind,
+        owner_id,
+        store_path,
+        purpose,
+    );
+    emit_store_lease_failure("create", &result);
+    result
+}
+
+fn create_store_lease_inner(
+    database_url: &str,
+    lease_id: &str,
+    owner_kind: StoreLeaseOwnerKind,
+    owner_id: &str,
+    store_path: &str,
+    purpose: StoreLeasePurpose,
+) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    validate_store_lease_inputs(database_url, lease_id, owner_id, store_path)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    match owner_kind {
+        StoreLeaseOwnerKind::Request => match transaction
+            .query_opt(
+                "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1",
+                &[&owner_id],
+            )
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        {
+            None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+            Some(row) if decode_build_request(&row).is_ok() => {}
+            Some(_) => return Err(StoreLeaseError(StoreLeaseFailure::Query)),
+        },
+        StoreLeaseOwnerKind::Session => match transaction
+            .query_opt(
+                "SELECT session_id, requester_reference, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
+                &[&owner_id],
+            )
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        {
+            None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+            Some(row) => match decode_protocol_session(&row) {
+                Ok(ProtocolSession {
+                    state: ProtocolSessionState::Open,
+                    ..
+                }) => {}
+                Ok(_) => return Err(StoreLeaseError(StoreLeaseFailure::InvalidState)),
+                Err(_) => return Err(StoreLeaseError(StoreLeaseFailure::Query)),
+            },
+        },
+    }
+    let row = transaction
+        .query_one(
+            "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES ($1, $2, $3, $4, $5, 'active', transaction_timestamp(), NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            &[&lease_id, &owner_kind.as_str(), &owner_id, &store_path, &purpose.as_str()],
+        )
+        .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
+    let lease = decode_store_lease(&row).map_err(StoreLeaseError)?;
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    tracing::info!(
+        event = "database.store_lease.created",
+        owner_kind = owner_kind.as_str(),
+        purpose = purpose.as_str(),
+        state = "active"
+    );
+    Ok(lease)
+}
+
+pub fn release_store_lease(
+    database_url: &str,
+    lease_id: &str,
+) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    let result = release_store_lease_inner(database_url, lease_id);
+    emit_store_lease_failure("release", &result);
+    result
+}
+
+fn release_store_lease_inner(
+    database_url: &str,
+    lease_id: &str,
+) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    validate_store_lease_id(lease_id)?;
+    if database_url.trim().is_empty() {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let existing = transaction
+        .query_opt(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE lease_id = $1 FOR UPDATE",
+            &[&lease_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    match existing {
+        None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
+        Some(row) => match decode_store_lease(&row).map_err(StoreLeaseError)?.state {
+            StoreLeaseState::Active => {}
+            StoreLeaseState::Released => {
+                return Err(StoreLeaseError(StoreLeaseFailure::InvalidState));
+            }
+        },
+    }
+    let row = transaction
+        .query_one(
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE lease_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            &[&lease_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let lease = decode_store_lease(&row).map_err(StoreLeaseError)?;
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    tracing::info!(
+        event = "database.store_lease.released",
+        owner_kind = lease.owner_kind.as_str(),
+        purpose = lease.purpose.as_str(),
+        state = "released"
+    );
+    Ok(lease)
+}
+
+pub fn read_store_lease(
+    database_url: &str,
+    lease_id: &str,
+) -> Result<Option<StoreLeaseRecord>, StoreLeaseError> {
+    let result = read_store_lease_inner(database_url, lease_id);
+    emit_store_lease_failure("read", &result);
+    result
+}
+
+fn read_store_lease_inner(
+    database_url: &str,
+    lease_id: &str,
+) -> Result<Option<StoreLeaseRecord>, StoreLeaseError> {
+    validate_store_lease_id(lease_id)?;
+    if database_url.trim().is_empty() {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let lease = client
+        .query_opt(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE lease_id = $1",
+            &[&lease_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        .map(|row| decode_store_lease(&row).map_err(StoreLeaseError))
+        .transpose()?;
+    Ok(lease)
+}
+
+fn emit_store_lease_failure<T>(operation: &'static str, result: &Result<T, StoreLeaseError>) {
+    if let Err(error) = result {
+        tracing::warn!(
+            event = "database.store_lease.failed",
+            operation,
+            failure_class = error.failure().as_str(),
+            "store lease persistence failed"
+        );
+    }
+}
+
+fn validate_store_lease_inputs(
+    database_url: &str,
+    lease_id: &str,
+    owner_id: &str,
+    store_path: &str,
+) -> Result<(), StoreLeaseError> {
+    validate_store_lease_id(lease_id)?;
+    if database_url.trim().is_empty()
+        || owner_id.is_empty()
+        || owner_id.len() > MAX_IPC_COMPONENT_BYTES
+        || store_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || store_path
+            .strip_prefix("/nix/store/")
+            .is_none_or(str::is_empty)
+        || store_path
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\n' | b'\r'))
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn validate_store_lease_id(lease_id: &str) -> Result<(), StoreLeaseError> {
+    if lease_id.is_empty() || lease_id.len() > MAX_IPC_COMPONENT_BYTES {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn decode_store_lease(row: &Row) -> Result<StoreLeaseRecord, StoreLeaseFailure> {
+    let lease_id: String = row.try_get(0).map_err(|_| StoreLeaseFailure::Query)?;
+    let owner_kind: String = row.try_get(1).map_err(|_| StoreLeaseFailure::Query)?;
+    let owner_id: String = row.try_get(2).map_err(|_| StoreLeaseFailure::Query)?;
+    let store_path: String = row.try_get(3).map_err(|_| StoreLeaseFailure::Query)?;
+    let purpose: String = row.try_get(4).map_err(|_| StoreLeaseFailure::Query)?;
+    let state: String = row.try_get(5).map_err(|_| StoreLeaseFailure::Query)?;
+    let created_at: SystemTime = row.try_get(6).map_err(|_| StoreLeaseFailure::Query)?;
+    let released_at: Option<SystemTime> = row.try_get(7).map_err(|_| StoreLeaseFailure::Query)?;
+    validate_store_lease_inputs("validated", &lease_id, &owner_id, &store_path)
+        .map_err(|_| StoreLeaseFailure::Query)?;
+    let owner_kind = StoreLeaseOwnerKind::parse(&owner_kind).ok_or(StoreLeaseFailure::Query)?;
+    let purpose = StoreLeasePurpose::parse(&purpose).ok_or(StoreLeaseFailure::Query)?;
+    let state = match StoreLeaseState::parse(&state) {
+        Some(StoreLeaseState::Active) if released_at.is_none() => StoreLeaseState::Active,
+        Some(StoreLeaseState::Released)
+            if released_at.is_some_and(|released_at| released_at >= created_at) =>
+        {
+            StoreLeaseState::Released
+        }
+        _ => return Err(StoreLeaseFailure::Query),
+    };
+    Ok(StoreLeaseRecord {
+        lease_id,
+        owner_kind,
+        owner_id,
+        store_path,
+        purpose,
+        state,
+        created_at,
+        released_at,
+    })
+}
+
 fn migrate_list(
     database_url: &str,
     migrations: &[Migration],
