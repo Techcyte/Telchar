@@ -742,7 +742,7 @@ Evidence: paths and output facts to record
   - Verify: object-count admission tests.
   - Evidence: limits and rejection point.
 
-- [ ] T069B Enforce transfer rate policy
+- [x] T069B Enforce transfer rate policy
   - Depends on: T066, T068
   - Outcome: configured transfer-rate policy throttles or rejects sustained excess traffic without unbounded buffering.
   - Red: controlled sender exceeds policy without throttle/rejection.
