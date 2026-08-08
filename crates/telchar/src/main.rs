@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use telchar::identity::{normalize_requester, IdentityInput};
-use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
+use telchar::identity::{IdentityInput, normalize_requester};
+use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {

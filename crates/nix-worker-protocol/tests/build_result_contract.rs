@@ -1,4 +1,4 @@
-use nix_worker_protocol::{write_build_derivation_success_response, WorkerVersion};
+use nix_worker_protocol::{WorkerVersion, write_build_derivation_success_response};
 
 #[test]
 fn writes_latest_empty_success_result_matching_pinned_field_order() {

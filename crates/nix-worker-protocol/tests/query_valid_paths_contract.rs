@@ -2,9 +2,9 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-    WorkerReader, WorkerVersion, LATEST_WORKER_VERSION, MAXIMUM_QUERY_VALID_PATHS,
-    MAXIMUM_WORKER_STORE_PATH_BYTES,
+    LATEST_WORKER_VERSION, MAXIMUM_QUERY_VALID_PATHS, MAXIMUM_WORKER_STORE_PATH_BYTES,
+    ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion, write_worker_byte_string,
+    write_worker_integer,
 };
 
 const VALID_PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-valid";

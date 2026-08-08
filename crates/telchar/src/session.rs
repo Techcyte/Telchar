@@ -251,7 +251,13 @@ pub fn run_worker_session(
                     crate::persistence::StoreLeasePurpose::Derivation,
                 ) {
                     if store_retention.rollback(&retained_derivation).is_err() {
-                        retention_batch_event("rollback", "derivation", 1, "failed", Some("rollback"));
+                        retention_batch_event(
+                            "rollback",
+                            "derivation",
+                            1,
+                            "failed",
+                            Some("rollback"),
+                        );
                         return reject(
                             &mut output,
                             "gateway-store-retention",
@@ -288,11 +294,23 @@ pub fn run_worker_session(
                     .collect::<Vec<_>>();
                 let retained_inputs = match store_retention.retain(&input_entries) {
                     Ok(retained) => {
-                        retention_batch_event("retain", "input", input_entries.len(), "succeeded", None);
+                        retention_batch_event(
+                            "retain",
+                            "input",
+                            input_entries.len(),
+                            "succeeded",
+                            None,
+                        );
                         retained
                     }
                     Err(_) => {
-                        retention_batch_event("retain", "input", input_entries.len(), "failed", Some("helper"));
+                        retention_batch_event(
+                            "retain",
+                            "input",
+                            input_entries.len(),
+                            "failed",
+                            Some("helper"),
+                        );
                         return reject(
                             &mut output,
                             "gateway-store-retention",
@@ -308,14 +326,26 @@ pub fn run_worker_session(
                 .is_err()
                 {
                     if store_retention.rollback(&retained_inputs).is_err() {
-                        retention_batch_event("rollback", "input", input_entries.len(), "failed", Some("rollback"));
+                        retention_batch_event(
+                            "rollback",
+                            "input",
+                            input_entries.len(),
+                            "failed",
+                            Some("rollback"),
+                        );
                         return reject(
                             &mut output,
                             "gateway-store-retention",
                             "gateway store retention failed",
                         );
                     }
-                    retention_batch_event("rollback", "input", input_entries.len(), "succeeded", None);
+                    retention_batch_event(
+                        "rollback",
+                        "input",
+                        input_entries.len(),
+                        "succeeded",
+                        None,
+                    );
                     return reject(
                         &mut output,
                         "store-lease-state",

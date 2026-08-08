@@ -19,10 +19,12 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
         .output()
         .expect("SSH command runs");
 
-    assert!(!output
-        .stdout
-        .windows(b"arbitrary-command".len())
-        .any(|window| window == b"arbitrary-command"));
+    assert!(
+        !output
+            .stdout
+            .windows(b"arbitrary-command".len())
+            .any(|window| window == b"arbitrary-command")
+    );
     assert!(
         fs::read_to_string(fixture.root.join("forced-command-output"))
             .expect("forced command evidence reads")
@@ -474,11 +476,13 @@ fn which(name: &str) -> String {
 }
 
 fn run<const N: usize>(program: &Path, args: [&str; N]) {
-    assert!(Command::new(program)
-        .args(args)
-        .status()
-        .expect("command runs")
-        .success());
+    assert!(
+        Command::new(program)
+            .args(args)
+            .status()
+            .expect("command runs")
+            .success()
+    );
 }
 
 fn whoami() -> String {

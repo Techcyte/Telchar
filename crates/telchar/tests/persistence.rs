@@ -25,9 +25,11 @@ fn requester_reference_is_deterministic_and_component_separated() {
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e"
     );
     assert_eq!(reference.len(), 64);
-    assert!(reference
-        .bytes()
-        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+    assert!(
+        reference
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    );
     assert_ne!(
         telchar::persistence::requester_reference(&telchar::ipc::RequesterMetadata {
             credential_id: "ab".into(),
@@ -155,13 +157,15 @@ fn request_attachment_persists_exact_pair_across_restart() {
         .expect("attachment reads"),
         Some(attached.clone())
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        &session.session_id,
-        "absent-request",
-    )
-    .expect("absent attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            &session.session_id,
+            "absent-request",
+        )
+        .expect("absent attachment reads")
+        .is_none()
+    );
 
     fixture.restart();
 
@@ -325,9 +329,11 @@ fn request_attachment_detaches_once_without_mutating_references() {
         telchar::persistence::RequestAttachmentState::Detached
     );
     assert_eq!(detached.attached_at, attached.attached_at);
-    assert!(detached
-        .detached_at
-        .is_some_and(|detached_at| detached_at >= attached.attached_at));
+    assert!(
+        detached
+            .detached_at
+            .is_some_and(|detached_at| detached_at >= attached.attached_at)
+    );
     assert_eq!(
         telchar::persistence::detach_request(fixture.url(), "missing", "request")
             .expect_err("missing attachment rejects")
@@ -431,13 +437,15 @@ fn attach_rejects_malformed_referenced_session() {
         .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "invalid-reference-session",
-        "invalid-reference-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "invalid-reference-session",
+            "invalid-reference-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
 }
 
 #[test]
@@ -470,13 +478,15 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
             .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "failure-session",
-        "failure-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "failure-session",
+            "failure-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
     client
         .batch_execute("DROP TRIGGER reject_attachment_insert ON request_attachments; DROP FUNCTION reject_attachment_insert()")
         .expect("insert failure trigger removes");
@@ -772,9 +782,11 @@ fn close_protocol_session_persists_exactly_once() {
         closed.state,
         telchar::persistence::ProtocolSessionState::Closed
     );
-    assert!(closed
-        .closed_at
-        .is_some_and(|closed_at| closed_at >= opened.created_at));
+    assert!(
+        closed
+            .closed_at
+            .is_some_and(|closed_at| closed_at >= opened.created_at)
+    );
     assert_eq!(
         telchar::persistence::close_protocol_session(fixture.url(), "session-1")
             .expect_err("closed session does not close again")
@@ -1025,9 +1037,11 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         released.state,
         telchar::persistence::StoreLeaseState::Released
     );
-    assert!(released
-        .released_at
-        .is_some_and(|at| at >= created.created_at));
+    assert!(
+        released
+            .released_at
+            .is_some_and(|at| at >= created.created_at)
+    );
     assert_eq!(
         telchar::persistence::release_store_lease(fixture.url(), "release-lease")
             .expect_err("released lease does not release again")
@@ -1207,19 +1221,25 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
         );
     });
     let events = captured.events();
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.created")
-            && event.contains("operation=\"create\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.released")
-            && event.contains("operation=\"release\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.failed")
-            && event.contains("operation=\"create\"")
-            && event.contains("failure_class=\"configuration\"")));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.created")
+                && event.contains("operation=\"create\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.released")
+                && event.contains("operation=\"release\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.failed")
+                && event.contains("operation=\"create\"")
+                && event.contains("failure_class=\"configuration\""))
+    );
     for forbidden in [
         fixture.url(),
         "sensitive-url",

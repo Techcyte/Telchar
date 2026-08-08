@@ -2,9 +2,8 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_query_path_info_response, write_worker_byte_string, write_worker_integer,
-    ProtocolSessionLimits, WorkerOperation, WorkerReader, LATEST_WORKER_VERSION,
-    MAXIMUM_WORKER_STORE_PATH_BYTES,
+    LATEST_WORKER_VERSION, MAXIMUM_WORKER_STORE_PATH_BYTES, ProtocolSessionLimits, WorkerOperation,
+    WorkerReader, write_query_path_info_response, write_worker_byte_string, write_worker_integer,
 };
 
 const PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-output";

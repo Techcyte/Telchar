@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
+    ProtocolSessionLimits, WorkerReader, write_worker_byte_string, write_worker_integer,
 };
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
@@ -15,9 +15,11 @@ fn normalizes_gate_3_request_without_backend_objects() {
     let request = BuildRequest::from_worker_request(&worker, &deployment)
         .expect("Gate 3 request is admitted");
 
-    assert!(request
-        .derivation_path()
-        .ends_with(b"-telchar-gate-3-contract.drv"));
+    assert!(
+        request
+            .derivation_path()
+            .ends_with(b"-telchar-gate-3-contract.drv")
+    );
     assert_eq!(request.expected_outputs().len(), 1);
     assert_eq!(request.expected_outputs()[0].0, b"out");
     assert_eq!(request.system(), "x86_64-linux");

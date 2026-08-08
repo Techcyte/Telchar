@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nix_worker_protocol::AddMultipleToStorePathInfo;
 
 use crate::store_promotion::{
-    validate_and_promote_nar, DeclaredPathInfo, NixStorePromotionBackend,
+    DeclaredPathInfo, NixStorePromotionBackend, validate_and_promote_nar,
 };
 
 static IMPORT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);

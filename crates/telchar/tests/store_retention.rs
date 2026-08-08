@@ -23,10 +23,12 @@ fn empty_retention_set_does_not_spawn_helper() {
     let mut backend =
         NixStoreRetentionBackend::new(&helper, "unix:///fixed", &root).expect("backend configures");
 
-    assert!(backend
-        .retain(&[])
-        .expect("empty retain succeeds")
-        .is_empty());
+    assert!(
+        backend
+            .retain(&[])
+            .expect("empty retain succeeds")
+            .is_empty()
+    );
     assert!(!marker.exists(), "empty retain spawned helper");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
@@ -155,9 +157,11 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
         "initial retain fails"
     );
     daemon.collect_garbage().expect("first private GC succeeds");
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("first GC preserves lease"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("first GC preserves lease")
+    );
     daemon.stop().expect("fixture daemon stops");
 
     let mut restarted = fixture
@@ -167,9 +171,11 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     restarted
         .collect_garbage()
         .expect("second private GC succeeds");
-    assert!(restarted
-        .is_valid_path(&leased)
-        .expect("second GC preserves lease"));
+    assert!(
+        restarted
+            .is_valid_path(&leased)
+            .expect("second GC preserves lease")
+    );
     assert_eq!(fs::read(&leased).expect("leased content reads"), b"restart");
 
     restarted.stop().expect("restarted daemon stops");
@@ -189,12 +195,16 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
 
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("leased path valid before GC"));
-    assert!(daemon
-        .is_valid_path(&control)
-        .expect("control path valid before GC"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("leased path valid before GC")
+    );
+    assert!(
+        daemon
+            .is_valid_path(&control)
+            .expect("control path valid before GC")
+    );
 
     let helper = std::env::var_os("TELCHAR_NIX_STORE_RETAIN")
         .expect("TELCHAR_NIX_STORE_RETAIN points to the flake-built helper");
@@ -248,9 +258,11 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     daemon
         .collect_garbage()
         .expect("private store garbage collects");
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("leased path valid after GC"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("leased path valid after GC")
+    );
     assert_eq!(fs::read(&leased).expect("leased path reads"), b"leased");
     assert!(
         !daemon
