@@ -758,7 +758,7 @@ Evidence: paths and output facts to record
 
 ### Minimum durable request and lease state
 
-- [ ] T070A Add minimum PostgreSQL migration runner
+- [x] T070A Add minimum PostgreSQL migration runner
   - Depends on: T063
   - Outcome: Gate 3 daemon applies ordered PostgreSQL migrations for sessions, requests, attachments, and store leases transactionally.
   - Red: empty PostgreSQL database lacks minimum lifecycle schema.
