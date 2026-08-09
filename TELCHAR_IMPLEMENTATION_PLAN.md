@@ -902,7 +902,7 @@ Evidence: paths and output facts to record
   - Verify: invalid-output test.
   - Evidence: asserted validation error.
 
-- [ ] T085A Acquire request output leases before success
+- [x] T085A Acquire request output leases before success
   - Depends on: T075, T083, T085
   - Outcome: after every expected output passes T085 validation, Telchar creates the complete output root set, commits the complete request output-lease set in one transaction, and only then makes success deliverable; derivation/input leases and roots are released without releasing the newly committed output leases.
   - Red: success can expose an unrooted output, a partial output root/lease set, or terminal request cleanup releases verified outputs before the caller can retrieve them.
