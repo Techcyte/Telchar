@@ -972,12 +972,12 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test operation_dispatch --locked -- --test-threads=1`; `nix develop -c cargo test -p telchar --test deployment_config --locked`; `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
   - Evidence: default detach-and-finish keeps a blocking helper alive after requester loss, suppresses later logs and terminal bytes, validates the completed output, preserves its exact active output lease/root, detaches the attachment, releases derivation/input resources, and reaps the completed helper. Detached execution and validation failures suppress dead-transport rejection. Explicit cancel-running kills and reaps the helper and releases request resources. Changesets `ee0d967d`, `e9cd47ba`, and parent acceptance repair.
 
-- [ ] T093 Retain verified request outputs for a bounded retrieval window
+- [x] T093 Retain verified request outputs for a bounded retrieval window
   - Depends on: T092, T075, T085A
   - Outcome: every verified request output, connected or detached, receives a deployment-owned one-hour default local guarantee so stock Nix can retrieve it after result delivery or requester loss; cache publication remains independent; expiry durably releases leases before exact root removal.
-  - Red: GC removes output before retention expiry, retention is unbounded or client-selected, cache publication is treated as correctness, or expiry removes roots before the release transaction commits.
-  - Verify: connected and detached completion, private-store GC-before-expiry, stock-Nix later copy without rebuild/cache publication, expiry/reconciliation, and GC-after-expiry tests.
-  - Evidence: `docs/adr/output-retention.md`; bounded configured retention, successful reuse, durable release ordering, failed-removal retry, and eventual GC eligibility.
+  - Red: output leases lacked durable expiry, released output rows were excluded from reconciliation, and the daemon had no expiry maintenance lifecycle.
+  - Verify: persistence, store-retention, IPC startup, operation-dispatch, and authoritative Gate 3 NixOS checks.
+  - Evidence: `docs/adr/output-retention.md`; bounded configured retention, complete-set immutable deadlines, startup-before-readiness reconciliation, one 60-second maintenance thread, durable release ordering, failed-removal retry, existing stock-Nix direct/OpenSSH retrieval lanes, and private-store root-removal/GC evidence.
 
 - [x] T093A Configure output retention duration
   - Depends on: T092
@@ -1000,12 +1000,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL deadline, cursor, page-bound, state, malformed-input, and existing transaction rollback tests in the 52-test persistence suite.
   - Evidence: due rows release in lease-ID order, cursor and 256-row maximum are enforced, released rows are not selected twice, invalid input fails before connection, commit precedes return, and telemetry remains identifier-free.
 
-- [ ] T093D Reconcile expired output roots and prove later retrieval
+- [x] T093D Reconcile expired output roots and prove later retrieval
   - Depends on: T093A, T093C, T092
   - Outcome: startup-before-readiness and one synchronous 60-second maintenance thread release expired output leases in bounded pages, then remove only exact roots authorized by released rows; failed root removal remains retryable; stock Nix retrieves connected and detached outputs before expiry without cache publication, and private-store GC can collect them after expiry/root removal.
-  - Red: non-expired root removal, pre-commit removal, failed-removal loss of authority, dead-client output loss, cache dependency, or post-expiry GC preservation.
-  - Verify: parent-owned operation-dispatch/store-retention hostile tests and authoritative Gate 3 NixOS private-store GC/reuse lane.
-  - Evidence: one-hour default, exact root/lease lifecycle, bounded reconciliation, later `QueryPathInfo`/`NarFromPath` retrieval, and eventual GC eligibility.
+  - Red: output expiry reconciliation API was absent; released output rows were excluded from retry pages; startup did not transition expired output leases; no maintenance thread existed.
+  - Verify: `persistence` 53/53, `store_retention` 11/11, `ipc_frontend` 20/20, `operation_dispatch` 36/36, Clippy, formatter, LSP, and `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
+  - Evidence: startup releases/removes expired output before socket readiness; startup fails closed on conflicting roots without leaking identifiers or paths; future roots remain active; committed release survives root-removal failure and retries from the durable released row; exact private-store roots preserve outputs before release and permit GC afterward; Gate 3 continues proving stock-Nix direct/OpenSSH retrieval without cache publication.
 
 - [ ] T094 Extend NixOS vertical integration fixture
   - Depends on: T021E, T088, T089
