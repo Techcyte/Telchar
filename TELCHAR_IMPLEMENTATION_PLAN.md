@@ -1046,8 +1046,15 @@ Evidence: paths and output facts to record
   - Verify: `gateway_daemon_connection_contract` 7/7; real trusted/untrusted private Nix-daemon profile test; full Telchar Clippy with warnings denied; formatter/diff checks; LSP/lens clean.
   - Evidence: only `unix:///absolute/path` is accepted; empty, relative, authority, query, fragment, NUL, non-Unicode, local, daemon, SSH, TCP, and unknown forms fail; missing socket has no fallback; timeout and malformed handshakes close the peer; successful drop produces EOF; public endpoint/debug/errors redact configured paths and peer bytes.
 
+- [x] T095B2 Add typed Rust daemon path queries
+  - Depends on: T095B1
+  - Outcome: reusable `WorkerClient` implements bounded typed `IsValidPath` and `QueryPathInfo` operations for protocol 1.35–1.38, returning normalized classic path metadata without Telchar dependencies; `GatewayStoreConnection` exposes only those typed methods over its owned stream.
+  - Red: the new exact-wire contract initially failed because the methods/type/capability did not exist; the first complete metadata test then exposed incorrect lowercase-hex validation, and attempted real private-fixture use exposed its intentionally non-`/nix/store` physical path namespace.
+  - Verify: exact/hostile contract 7/7, gateway connection contract 8/8 including typed delegation, complete protocol crate green, existing real trusted/untrusted private-daemon negotiation green, full protocol/Telchar Clippy with warnings denied, formatter and diff checks, and LSP/lens clean.
+  - Evidence: exact operation bytes, strict valid/invalid/present/ultimate booleans, bounded complete deriver/hash/reference/time/size/signature/content-address decode, pre-write exact logical-store path rejection, duplicate-set rejection, redacted daemon errors, and no query retry/fallback.
+
 - [ ] T095C Replace the native input-closure helper with Rust worker-protocol operations
-  - Depends on: T095B, T073
+  - Depends on: T095B2, T073
   - Outcome: complete input closure is computed through the Rust daemon client with exact `computeFSClosure(roots, false, false, false)` semantics and existing path/count/byte bounds.
   - Red: Rust closure results differ from the accepted native-helper and real-store fixtures.
   - Verify: differential private-store closure tests, hostile bounds, cancellation, and Gate 3 lease regressions.
