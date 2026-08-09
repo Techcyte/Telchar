@@ -8,9 +8,11 @@ use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
 use telchar::local_executor::{
-    LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor, OutputTrust,
+    BuildExecutor, GatewayStoreExecutor, LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor,
+    OutputTrust,
 };
 use telchar::nix_fixture::NixFixture;
+use telchar::store_daemon::GatewayStoreEndpoint;
 
 const DERIVATION_PATH: &[u8] =
     b"/nix/store/00000000000000000000000000000000-telchar-local-executor.drv";
@@ -415,6 +417,27 @@ fn executor_times_out_and_reaps_the_helper() {
 }
 
 #[test]
+fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
+    let fixture = NixFixture::create().expect("Nix fixture creates");
+    let mut store = fixture
+        .start_daemon(telchar::nix_fixture::TrustMode::Trusted)
+        .expect("Nix daemon starts");
+    let build = admitted_request_with_builder(b"exit 0");
+    let request = LocalExecutionRequest::new("missing-output", &build, Duration::from_secs(30))
+        .expect("execution request is valid");
+    let endpoint = GatewayStoreEndpoint::parse(&store.store_url()).expect("endpoint parses");
+    let mut executor = GatewayStoreExecutor::new(endpoint);
+
+    let error = executor
+        .execute(&request)
+        .expect_err("zero-exit builder without output must fail execution");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    store.stop().expect("daemon stops");
+    fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
 fn flake_built_helper_rejects_zero_exit_when_expected_output_is_missing() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let store_uri = format!("local?root={}", fixture.root().display());
@@ -449,20 +472,18 @@ fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
         LocalBuildStatus::Built | LocalBuildStatus::AlreadyValid
     ));
     assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT_PATH.to_vec())]);
-    assert!(
-        std::process::Command::new("nix")
-            .args([
-                "--extra-experimental-features",
-                "nix-command",
-                "--store",
-                &store_uri,
-                "path-info",
-                std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
-            ])
-            .status()
-            .expect("path validity query runs")
-            .success()
-    );
+    assert!(std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            &store_uri,
+            "path-info",
+            std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
+        ])
+        .status()
+        .expect("path validity query runs")
+        .success());
     let real_output = fixture
         .root()
         .join("nix/store")

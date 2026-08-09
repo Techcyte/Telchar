@@ -2273,6 +2273,45 @@ pub struct WorkerClientProfile {
     pub capabilities: WorkerClientCapabilities,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildDerivationOutputRequest<'a> {
+    pub name: &'a [u8],
+    pub path: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildDerivationClientRequest<'a> {
+    pub drv_path: &'a [u8],
+    pub outputs: &'a [BuildDerivationOutputRequest<'a>],
+    pub input_sources: &'a [Vec<u8>],
+    pub platform: &'a [u8],
+    pub builder: &'a [u8],
+    pub arguments: &'a [Vec<u8>],
+    pub environment: &'a [(Vec<u8>, Vec<u8>)],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerBuildStatus {
+    Built,
+    AlreadyValid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerBuildResult {
+    status: WorkerBuildStatus,
+    outputs: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+impl WorkerBuildResult {
+    pub fn status(&self) -> WorkerBuildStatus {
+        self.status
+    }
+
+    pub fn outputs(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.outputs
+    }
+}
+
 pub struct WorkerClient<S> {
     stream: S,
     profile: WorkerClientProfile,
@@ -2350,6 +2389,36 @@ impl<S: Read + Write> WorkerClient<S> {
         read_worker_path_info(&mut self.stream)
             .map(Some)
             .map_err(|_| protocol_client_error())
+    }
+
+    pub fn build_derivation(
+        &mut self,
+        request: &BuildDerivationClientRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<WorkerBuildResult> {
+        validate_build_derivation_request(request, self.profile.trust)?;
+        write_worker_integer_to(&mut self.stream, WorkerOperation::BuildDerivation.code())?;
+        write_worker_byte_string_to(&mut self.stream, request.drv_path)?;
+        write_worker_integer_to(&mut self.stream, request.outputs.len() as u64)?;
+        for output in request.outputs {
+            write_worker_byte_string_to(&mut self.stream, output.name)?;
+            write_worker_byte_string_to(&mut self.stream, output.path)?;
+            write_worker_byte_string_to(&mut self.stream, b"")?;
+            write_worker_byte_string_to(&mut self.stream, b"")?;
+        }
+        write_byte_string_collection(&mut self.stream, request.input_sources)?;
+        write_worker_byte_string_to(&mut self.stream, request.platform)?;
+        write_worker_byte_string_to(&mut self.stream, request.builder)?;
+        write_byte_string_collection(&mut self.stream, request.arguments)?;
+        write_worker_integer_to(&mut self.stream, request.environment.len() as u64)?;
+        for (key, value) in request.environment {
+            write_worker_byte_string_to(&mut self.stream, key)?;
+            write_worker_byte_string_to(&mut self.stream, value)?;
+        }
+        write_worker_integer_to(&mut self.stream, 0)?;
+        self.stream.flush()?;
+        read_build_operation_frames(&mut self.stream, self.profile.version, logs)?;
+        read_worker_build_result(&mut self.stream, self.profile.version)
     }
 
     pub fn nar_from_path(
@@ -2456,6 +2525,188 @@ impl<S: Read + Write> WorkerClient<S> {
         }
         Ok(())
     }
+}
+
+fn validate_build_derivation_request(
+    request: &BuildDerivationClientRequest<'_>,
+    trust: WorkerTrust,
+) -> io::Result<()> {
+    if trust != WorkerTrust::Trusted
+        || request.outputs.is_empty()
+        || request.outputs.len() > MAXIMUM_BUILD_DERIVATION_OUTPUTS
+        || request.input_sources.len() > MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
+        || request.arguments.len() > MAXIMUM_BUILD_DERIVATION_ARGUMENTS
+        || request.environment.len() > MAXIMUM_BUILD_DERIVATION_ENVIRONMENT
+    {
+        return Err(protocol_client_error());
+    }
+    validate_store_path(request.drv_path)?;
+    if !request.drv_path.ends_with(b".drv")
+        || request.platform.is_empty()
+        || request.platform.len() > MAXIMUM_BUILD_DERIVATION_PLATFORM_BYTES
+        || request.builder.is_empty()
+        || request.builder.len() > MAXIMUM_BUILD_DERIVATION_BUILDER_BYTES
+    {
+        return Err(protocol_client_error());
+    }
+    let mut output_names = Vec::with_capacity(request.outputs.len());
+    for output in request.outputs {
+        if output.name.is_empty()
+            || output.name.len() > MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES
+            || output_names.contains(&output.name)
+        {
+            return Err(protocol_client_error());
+        }
+        validate_store_path(output.path)?;
+        output_names.push(output.name);
+    }
+    for path in request.input_sources {
+        validate_store_path(path)?;
+    }
+    for argument in request.arguments {
+        if argument.len() > MAXIMUM_BUILD_DERIVATION_ARGUMENT_BYTES {
+            return Err(protocol_client_error());
+        }
+    }
+    let mut environment_keys = Vec::with_capacity(request.environment.len());
+    for (key, value) in request.environment {
+        if key.is_empty()
+            || key.len() > MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_KEY_BYTES
+            || value.len() > MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_VALUE_BYTES
+            || environment_keys.contains(&key.as_slice())
+        {
+            return Err(protocol_client_error());
+        }
+        environment_keys.push(key.as_slice());
+    }
+    Ok(())
+}
+
+fn write_byte_string_collection(output: &mut impl Write, values: &[Vec<u8>]) -> io::Result<()> {
+    write_worker_integer_to(output, values.len() as u64)?;
+    for value in values {
+        write_worker_byte_string_to(output, value)?;
+    }
+    Ok(())
+}
+
+fn read_build_operation_frames(
+    input: &mut impl Read,
+    version: WorkerVersion,
+    logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    loop {
+        match read_worker_integer_from(input)? {
+            STDERR_NEXT => {
+                let message =
+                    read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                logs(&message).map_err(|_| protocol_client_error())?;
+            }
+            STDERR_START_ACTIVITY => {
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                discard_activity_fields(input)?;
+                read_worker_integer_from(input)?;
+            }
+            STDERR_STOP_ACTIVITY => {
+                read_worker_integer_from(input)?;
+            }
+            STDERR_RESULT => {
+                read_worker_integer_from(input)?;
+                read_worker_integer_from(input)?;
+                discard_activity_fields(input)?;
+            }
+            STDERR_ERROR => {
+                if version >= WorkerVersion::new(1, 26) {
+                    discard_worker_error(input, version)?;
+                } else {
+                    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                    read_worker_integer_from(input)?;
+                }
+                return Err(protocol_client_error());
+            }
+            STDERR_LAST => return Ok(()),
+            _ => return Err(protocol_client_error()),
+        }
+    }
+}
+
+fn read_worker_build_result(
+    input: &mut impl Read,
+    version: WorkerVersion,
+) -> io::Result<WorkerBuildResult> {
+    let status = match read_worker_integer_from(input)? {
+        0 => WorkerBuildStatus::Built,
+        2 => WorkerBuildStatus::AlreadyValid,
+        1 | 3..=14 => return Err(protocol_client_error()),
+        _ => return Err(protocol_client_error()),
+    };
+    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    if version >= WorkerVersion::new(1, 29) {
+        read_worker_integer_from(input)?;
+        read_strict_client_boolean(input)?;
+        read_worker_integer_from(input)?;
+        read_worker_integer_from(input)?;
+    }
+    if version >= WorkerVersion::new(1, 37) {
+        read_optional_duration(input)?;
+        read_optional_duration(input)?;
+    }
+    let outputs = if version >= WorkerVersion::new(1, 28) {
+        read_built_outputs(input)?
+    } else {
+        Vec::new()
+    };
+    Ok(WorkerBuildResult { status, outputs })
+}
+
+fn read_optional_duration(input: &mut impl Read) -> io::Result<()> {
+    match read_worker_integer_from(input)? {
+        0 => Ok(()),
+        1 => {
+            read_worker_integer_from(input)?;
+            Ok(())
+        }
+        _ => Err(protocol_client_error()),
+    }
+}
+
+fn read_built_outputs(input: &mut impl Read) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let count =
+        usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
+    if count > MAXIMUM_BUILD_DERIVATION_OUTPUTS {
+        return Err(protocol_client_error());
+    }
+    let mut outputs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let output_id = read_worker_byte_string_from(input, 256)?;
+        let realisation =
+            read_worker_byte_string_from(input, MAXIMUM_BUILD_DERIVATION_ENVIRONMENT_VALUE_BYTES)?;
+        let output_name = output_id
+            .rsplit(|byte| *byte == b'!')
+            .next()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(protocol_client_error)?
+            .to_vec();
+        let value: serde_json::Value =
+            serde_json::from_slice(&realisation).map_err(|_| protocol_client_error())?;
+        let value = value.get("value").unwrap_or(&value);
+        let path: Vec<u8> = value
+            .get("outPath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(protocol_client_error)?
+            .bytes()
+            .collect();
+        validate_store_path(&path)?;
+        if outputs.iter().any(|(name, _)| name == &output_name) {
+            return Err(protocol_client_error());
+        }
+        outputs.push((output_name, path));
+    }
+    outputs.sort();
+    Ok(outputs)
 }
 
 fn validate_add_to_store_nar(

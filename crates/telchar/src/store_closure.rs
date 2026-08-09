@@ -11,10 +11,23 @@ pub trait StoreClosureBackend: Send {
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
-    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
-        .ok_or_else(query_error)
-        .and_then(|value| GatewayStoreEndpoint::parse_os(&value).map_err(|_| query_error()))?;
+    let Some(value) = std::env::var_os("TELCHAR_GATEWAY_STORE_URI") else {
+        return Ok(Box::new(UnavailableStoreClosureBackend));
+    };
+    let endpoint = GatewayStoreEndpoint::parse_os(&value).map_err(|_| query_error())?;
     Ok(Box::new(GatewayStoreClosureBackend::new(endpoint)))
+}
+
+struct UnavailableStoreClosureBackend;
+
+impl StoreClosureBackend for UnavailableStoreClosureBackend {
+    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
+        if roots.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(query_error())
+        }
+    }
 }
 
 pub struct GatewayStoreClosureBackend {

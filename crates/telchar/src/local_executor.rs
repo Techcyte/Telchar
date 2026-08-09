@@ -2,7 +2,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use nix_worker_protocol::{
+    BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus,
+};
+
 use crate::build_request::BuildRequest;
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 const MAXIMUM_REQUEST_ID_BYTES: usize = 4096;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
@@ -95,8 +100,8 @@ impl LocalBuildResult {
 }
 
 pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
-    match std::env::var_os("TELCHAR_NIX_STORE_BUILD") {
-        Some(helper) => Ok(Box::new(NixStoreExecutor::new(
+    if let Some(helper) = std::env::var_os("TELCHAR_TEST_BUILD_HELPER") {
+        return Ok(Box::new(NixStoreExecutor::new(
             PathBuf::from(helper),
             std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
                 io::Error::new(
@@ -104,9 +109,13 @@ pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
                     "gateway store endpoint is not configured",
                 )
             })?,
-        )?)),
-        None => Ok(Box::new(UnavailableBuildExecutor)),
+        )?));
     }
+    let Some(value) = std::env::var_os("TELCHAR_GATEWAY_STORE_URI") else {
+        return Ok(Box::new(UnavailableBuildExecutor));
+    };
+    let endpoint = GatewayStoreEndpoint::parse_os(&value)?;
+    Ok(Box::new(GatewayStoreExecutor::new(endpoint)))
 }
 
 pub trait BuildExecutor {
@@ -143,6 +152,139 @@ impl BuildExecutor for UnavailableBuildExecutor {
             io::ErrorKind::Unsupported,
             "BuildDerivation execution is unavailable",
         ))
+    }
+}
+
+pub struct GatewayStoreExecutor {
+    endpoint: GatewayStoreEndpoint,
+}
+
+impl GatewayStoreExecutor {
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self { endpoint }
+    }
+
+    fn execute_request(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<LocalBuildResult> {
+        let mut connection =
+            GatewayStoreConnection::connect_with_timeout(&self.endpoint, request.timeout())?;
+        let shutdown = connection.shutdown_handle()?;
+        let outputs = request
+            .build()
+            .expected_outputs()
+            .iter()
+            .map(|(name, path)| BuildDerivationOutputRequest {
+                name: name.as_slice(),
+                path: path.as_slice(),
+            })
+            .collect::<Vec<_>>();
+        let build = request.build();
+        let daemon_request = BuildDerivationClientRequest {
+            drv_path: build.derivation_path(),
+            outputs: &outputs,
+            input_sources: build.input_sources(),
+            platform: build.system().as_bytes(),
+            builder: build.builder(),
+            arguments: build.arguments(),
+            environment: build.environment(),
+        };
+        debug_assert_eq!(
+            MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+            MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
+        );
+        let (log_sender, log_receiver) =
+            std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+        let deadline = Instant::now() + request.timeout();
+        let result = std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                let result = connection.build_derivation(&daemon_request, &mut |message| {
+                    for chunk in message.chunks(MAXIMUM_BUILD_LOG_CHUNK_BYTES) {
+                        log_sender.send(chunk.to_vec()).map_err(|_| {
+                            io::Error::new(io::ErrorKind::BrokenPipe, "build log receiver closed")
+                        })?;
+                    }
+                    Ok(())
+                });
+                let _ = result_sender.send(result);
+            });
+            loop {
+                if let Err(error) = forward_logs(&log_receiver, logs) {
+                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
+                    worker
+                        .join()
+                        .map_err(|_| io::Error::other("build worker failed"))?;
+                    return Err(error);
+                }
+                if let Ok(result) = result_receiver.try_recv() {
+                    worker
+                        .join()
+                        .map_err(|_| io::Error::other("build worker failed"))?;
+                    forward_logs(&log_receiver, logs)?;
+                    break result;
+                }
+                if cancelled()? {
+                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
+                    worker
+                        .join()
+                        .map_err(|_| io::Error::other("build worker failed"))?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "build requester disconnected",
+                    ));
+                }
+                if Instant::now() >= deadline {
+                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
+                    worker
+                        .join()
+                        .map_err(|_| io::Error::other("build worker failed"))?;
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })?;
+        let mut actual_outputs = result.outputs().to_vec();
+        actual_outputs.sort();
+        let mut expected_outputs = build.expected_outputs().to_vec();
+        expected_outputs.sort();
+        if actual_outputs != expected_outputs {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "build output set mismatch",
+            ));
+        }
+        for (_, path) in &expected_outputs {
+            let mut verification = GatewayStoreConnection::connect(&self.endpoint)?;
+            if verification.query_path_info(path)?.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "build output verification failed",
+                ));
+            }
+        }
+        Ok(LocalBuildResult {
+            status: match result.status() {
+                WorkerBuildStatus::Built => LocalBuildStatus::Built,
+                WorkerBuildStatus::AlreadyValid => LocalBuildStatus::AlreadyValid,
+            },
+            outputs: build.expected_outputs().to_vec(),
+            output_trust: OutputTrust::TrustedExecutor,
+        })
+    }
+}
+
+impl BuildExecutor for GatewayStoreExecutor {
+    fn execute_with_logs(
+        &mut self,
+        request: &LocalExecutionRequest<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<LocalBuildResult> {
+        self.execute_request(request, logs, cancelled)
     }
 }
 
@@ -628,8 +770,8 @@ mod tests {
     use std::io;
 
     use super::{
-        MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
+        spawn_log_reader, MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
     };
 
     struct FailingLogReader;

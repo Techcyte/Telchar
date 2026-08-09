@@ -655,6 +655,7 @@ name = "nix-worker-protocol"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "serde_json",
  "tracing",
 ]
 

@@ -13,6 +13,9 @@ use crate::store_promotion::{
 static IMPORT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn importer_from_environment() -> io::Result<Box<dyn StoreImportBackend>> {
+    if std::env::var_os("TELCHAR_GATEWAY_STORE_URI").is_none() {
+        return Ok(Box::new(UnavailableStoreImport));
+    }
     Ok(Box::new(GatewayStoreImport::from_environment()?))
 }
 
@@ -24,6 +27,22 @@ pub trait StoreImportBackend {
         info: &AddMultipleToStorePathInfo,
         source: &mut dyn Read,
     ) -> io::Result<()>;
+}
+
+struct UnavailableStoreImport;
+
+impl StoreImportBackend for UnavailableStoreImport {
+    fn staging_directory(&self) -> Option<&Path> {
+        None
+    }
+
+    fn import(
+        &mut self,
+        _info: &AddMultipleToStorePathInfo,
+        _source: &mut dyn Read,
+    ) -> io::Result<()> {
+        Err(unavailable("gateway store endpoint is not configured"))
+    }
 }
 
 pub struct GatewayStoreImport {

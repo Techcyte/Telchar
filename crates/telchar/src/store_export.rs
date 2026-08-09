@@ -62,14 +62,26 @@ impl StoreExportBackend for UnavailableStoreExportBackend {
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreExportBackend>> {
-    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
-        .ok_or_else(|| {
+    if let Some(helper) = std::env::var_os("TELCHAR_TEST_EXPORT_HELPER") {
+        let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "gateway store endpoint is not configured",
             )
-        })
-        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))?;
+        })?;
+        let nix = std::env::var_os("TELCHAR_NIX").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "Nix executable is not configured")
+        })?;
+        return Ok(Box::new(NixStoreExportBackend::new(
+            helper,
+            store_uri,
+            [("TELCHAR_NIX".to_owned(), nix.to_string_lossy().into_owned())],
+        )));
+    }
+    let Some(value) = std::env::var_os("TELCHAR_GATEWAY_STORE_URI") else {
+        return Ok(Box::new(UnavailableStoreExportBackend));
+    };
+    let endpoint = GatewayStoreEndpoint::parse_os(&value)?;
     Ok(Box::new(GatewayStoreExportBackend::new(endpoint)))
 }
 
