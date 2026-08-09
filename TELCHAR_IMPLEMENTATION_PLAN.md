@@ -895,7 +895,7 @@ Evidence: paths and output facts to record
   - Verify: missing-output integration test.
   - Evidence: asserted output failure.
 
-- [ ] T085 Reject invalid imported output metadata
+- [x] T085 Reject invalid imported output metadata
   - Depends on: T067, T083
   - Outcome: mismatched NAR/path metadata produces output failure.
   - Red: invalid output accepted.
@@ -904,10 +904,10 @@ Evidence: paths and output facts to record
 
 - [ ] T085A Acquire request output leases before success
   - Depends on: T075, T083, T085
-  - Outcome: every verified output is rooted atomically before result becomes deliverable; rollback removes partial multi-output leases.
-  - Red: success transaction can expose unrooted output or partial lease set.
-  - Verify: real-store multi-output lease and rollback tests.
-  - Evidence: output roots and atomic failure case.
+  - Outcome: after every expected output passes T085 validation, Telchar creates the complete output root set, commits the complete request output-lease set in one transaction, and only then makes success deliverable; derivation/input leases and roots are released without releasing the newly committed output leases.
+  - Red: success can expose an unrooted output, a partial output root/lease set, or terminal request cleanup releases verified outputs before the caller can retrieve them.
+  - Verify: real-store multi-output root/lease ordering, second-output root failure rollback, output-lease transaction failure rollback, and successful request cleanup tests.
+  - Evidence: all output roots precede one committed output-lease set, failed batches leave zero output roots/leases, and successful cleanup leaves only active output leases.
 
 - [ ] T086 Preserve classic output trust statement in outcome
   - Depends on: T083
@@ -951,12 +951,12 @@ Evidence: paths and output facts to record
   - Verify: negative-local then positive-remote test.
   - Evidence: local failure and remote success.
 
-- [ ] T090 Define disconnect policy by lifecycle point
+- [ ] T090 Define deployment-owned disconnect policy by lifecycle point
   - Depends on: T088
-  - Outcome: ADR covers upload, queued, running, collecting, and result-delivery disconnects; first-release reattachment status explicit.
-  - Red: lifecycle table has unspecified cell.
-  - Verify: policy table validator.
-  - Evidence: all cells resolved.
+  - Outcome: ADR and validated service configuration cover upload, queued, running, collecting, and result-delivery disconnects. Running work defaults to detach-and-finish so verified outputs remain reusable; an operator may instead select cancel-running. Untrusted client bytes cannot choose the policy. First-release reattachment remains explicit.
+  - Red: lifecycle table has an unspecified cell, configuration accepts an unknown value, a client request can override policy, or the default cancels accepted running work.
+  - Verify: policy-table validator plus deployment/module configuration tests for default, explicit cancel-running, invalid value, and client non-override.
+  - Evidence: all lifecycle cells resolved and effective deployment policy recorded without request/session identifiers.
 
 - [ ] T091 Cancel incomplete upload on disconnect
   - Depends on: T090
@@ -965,19 +965,19 @@ Evidence: paths and output facts to record
   - Verify: upload disconnect test.
   - Evidence: cleanup assertions.
 
-- [ ] T092 Detach running request without cancelling execution
+- [ ] T092 Apply configured running-request disconnect policy
   - Depends on: T090
-  - Outcome: transport loss marks attachment detached while local execution continues.
-  - Red: running build is killed or request corrupted.
-  - Verify: running disconnect integration test.
-  - Evidence: detached state and eventual output.
+  - Outcome: under the default detach-and-finish policy, transport loss durably detaches the attachment while local execution, output validation, and output leasing continue without writing to the dead transport; under cancel-running, the helper is killed and request resources are released.
+  - Red: default policy kills accepted work, detached execution still writes through dead-client backpressure, explicit cancel-running continues execution, or either path corrupts durable state.
+  - Verify: paired running-disconnect integration tests with a blocking builder and durable attachment/lease assertions.
+  - Evidence: detached default reaches eventual verified output; explicit cancellation reaps execution and releases request resources.
 
 - [ ] T093 Retain output after detached completion
   - Depends on: T092, T075, T085A
-  - Outcome: output lease follows documented detached retention policy.
-  - Red: GC removes output too early or lease never releases.
-  - Verify: detached retention/cleanup test.
-  - Evidence: timed/state-based lease transitions.
+  - Outcome: detach-and-finish completion preserves verified output roots/leases for the configured bounded retention window so later stock-Nix requests and cache publication can reuse the result; expiry durably releases leases before exact root removal.
+  - Red: GC removes output before retention expiry, retention is unbounded, cache publication is treated as correctness, or expiry removes roots before the release transaction commits.
+  - Verify: detached completion, private-store GC-before-expiry, expiry/reconciliation, and later-request reuse tests.
+  - Evidence: bounded configured retention, successful reuse, durable release ordering, and eventual GC eligibility.
 
 - [ ] T094 Extend NixOS vertical integration fixture
   - Depends on: T021E, T088, T089
@@ -989,7 +989,7 @@ Evidence: paths and output facts to record
 ### Gate 3 acceptance
 
 - [ ] T095 Verify Gate 3 local correctness vertical slice
-  - Depends on: T069, T069A, T069B, T070, T070D, T074, T075A, T084, T085, T085A, T086A, T086B, T089, T091, T092, T093, T094
+  - Depends on: T069, T069A, T069B, T070, T070D, T074, T075A, T084, T085, T085A, T086, T086A, T086B, T089, T091, T092, T093, T094
   - Outcome: stock client that cannot build locally receives verified output through Telchar; bounds, GC, invalid output, and disconnect policies pass.
   - Red: gate script reports missing evidence.
   - Verify: full protocol/store/OpenSSH/local-backend VM suite.
