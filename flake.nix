@@ -180,7 +180,9 @@
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
                 gateway.succeed("mkdir -p /run/telchar-direct-bin /var/lib/telchar-direct-client")
-                gateway.succeed("printf '#!/bin/sh\\nset -eu\\ncase \" $* \" in *\" -O check \"*) exit 1 ;; esac\\nprintf '\"'\"'started\\n'\"'\"'\\nexec sudo -u telchar-ingress env TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY=SHA256:direct-stdio ${self.packages.${system}.telchar}/bin/telchar serve-stdio\\n' > /run/telchar-direct-bin/ssh && chmod 755 /run/telchar-direct-bin/ssh")
+                gateway.succeed("printf '#!/bin/sh\\nset -eu\\ncase \" $* \" in *\" -O check \"*) exit 1 ;; esac\\nprintf '\"'\"'started\\n'\"'\"'\\nexec sudo -u telchar-ingress env TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY=SHA256:direct-stdio ${
+                  self.packages.${system}.telchar
+                }/bin/telchar serve-stdio\\n' > /run/telchar-direct-bin/ssh && chmod 755 /run/telchar-direct-bin/ssh")
                 gateway.succeed("env PATH=/run/telchar-direct-bin:$PATH NIX_CONFIG='substituters =\nsandbox = false\nbuild-users-group =' timeout -s KILL 60 nix --extra-experimental-features nix-command --store 'local?root=/var/lib/telchar-direct-client' build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-direct x86_64-linux' --file ${remoteOnlyDerivation} > /tmp/direct-build.out 2>&1 || { cat /tmp/direct-build.out >&2; exit 1; }")
                 gateway.succeed("grep -q 'telchar-gate-3-build-log' /tmp/direct-build.out || { cat /tmp/direct-build.out >&2; exit 1; }")
                 direct_output_path = gateway.succeed("tail -n 1 /tmp/direct-build.out").strip()
