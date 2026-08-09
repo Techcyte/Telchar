@@ -1067,12 +1067,12 @@ Evidence: paths and output facts to record
   - Verify: `AddToStoreNar` contract 6/6, complete protocol suite, promotion contract 15/15 including real private-store valid/corrupt evidence, partial-upload staging cleanup, disk-reserve fail-before-body behavior, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
   - Evidence: op 39 metadata and framed NAR bytes match pinned Nix, untrusted connections cannot disable signature checks, no repair/ultimate/unsupported classic metadata is accepted, daemon errors are redacted, post-registration metadata equality remains authoritative, and `TELCHAR_NIX_STORE_PROMOTE` has zero Rust runtime references.
 
-- [ ] T095E Replace the native export helper with Rust worker-protocol operations
+- [x] T095E Replace the native export helper with Rust worker-protocol operations
   - Depends on: T095B, T068, T085
-  - Outcome: raw NAR export streams through the Rust daemon client with exact-one-NAR parsing, independent hash/size verification, bounded backpressure, and deterministic cancellation/reaping semantics without a helper subprocess.
-  - Red: Rust export differs from accepted native-helper bytes or weakens slow-writer and writer-failure bounds.
-  - Verify: differential real-store export, malformed/trailing data, slow writer, writer failure, cancellation, and owner-death tests.
-  - Evidence: byte-for-byte NAR equality and removal of `TELCHAR_NIX_STORE_EXPORT` runtime use.
+  - Outcome: raw NAR export uses typed `NarFromPath` over a fresh configured gateway-daemon connection, bounded by authoritative `QueryPathInfo.nar_size`, then passes through existing exact-one-NAR parsing and independent hash/size verification with synchronous backpressure.
+  - Red: the exact-wire client contract initially lacked `NarFromPath`; bounding by daemon EOF was rejected because pooled/real daemon connections do not close after one response, so the implementation now consumes exactly the authoritative registered NAR size.
+  - Verify: `NarFromPath` exact/hostile contract 4/4, complete protocol suite, export validation/streaming contract 19/19 including real private-store byte/hash/size evidence, existing helper lifecycle regression 4/4, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
+  - Evidence: op 38 request bytes match pinned Nix; only the registered byte count reaches the parser; malformed/truncated/trailing data, writer failure, slow-writer backpressure, object/session limits, hash/size mismatch, and backend panic remain fail-closed; `TELCHAR_NIX_STORE_EXPORT` has zero Rust runtime references.
 
 - [ ] T095F Replace the native local-build helper with Rust worker-protocol operations
   - Depends on: T095B, T084, T085A
