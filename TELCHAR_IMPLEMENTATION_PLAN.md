@@ -965,12 +965,12 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test operation_dispatch partial_add_multiple_to_store_failure_removes_staging_state --locked -- --exact --test-threads=1`; full `operation_dispatch` suite.
   - Evidence: requester termination during a declared 1024-byte NAR after only `partial-nar` bytes leaves the test-owned staging root empty, never invokes promotion, and records `invalid-add-multiple-to-store`; 33/33 dispatch tests pass. Changeset `d27d796d`.
 
-- [ ] T092 Apply configured running-request disconnect policy
+- [x] T092 Apply configured running-request disconnect policy
   - Depends on: T090
   - Outcome: under the default detach-and-finish policy, transport loss durably detaches the attachment while local execution, output validation, and output leasing continue without writing to the dead transport; under cancel-running, the helper is killed and request resources are released.
-  - Red: default policy kills accepted work, detached execution still writes through dead-client backpressure, explicit cancel-running continues execution, or either path corrupts durable state.
-  - Verify: paired running-disconnect integration tests with a blocking builder and durable attachment/lease assertions.
-  - Evidence: detached default reaches eventual verified output; explicit cancellation reaps execution and releases request resources.
+  - Red: Ralph proved a detached helper failure still attempted a rejection on the dead transport; parent proved detached output-validation failure did the same after durable cleanup.
+  - Verify: `nix develop -c cargo test -p telchar --test operation_dispatch --locked -- --test-threads=1`; `nix develop -c cargo test -p telchar --test deployment_config --locked`; `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
+  - Evidence: default detach-and-finish keeps a blocking helper alive after requester loss, suppresses later logs and terminal bytes, validates the completed output, preserves its exact active output lease/root, detaches the attachment, releases derivation/input resources, and reaps the completed helper. Detached execution and validation failures suppress dead-transport rejection. Explicit cancel-running kills and reaps the helper and releases request resources. Changesets `ee0d967d`, `e9cd47ba`, and parent acceptance repair.
 
 - [ ] T093 Retain output after detached completion
   - Depends on: T092, T075, T085A

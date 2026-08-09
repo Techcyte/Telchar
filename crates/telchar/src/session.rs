@@ -578,6 +578,9 @@ pub fn run_worker_session(
                                 release_error_message(&release_error),
                             );
                         }
+                        if requester_detached.get() {
+                            return Ok(());
+                        }
                         return reject(
                             &mut output,
                             "build-derivation-failed",
