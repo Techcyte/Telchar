@@ -888,7 +888,7 @@ Evidence: paths and output facts to record
   - Verify: success mapping test.
   - Evidence: mapped fields.
 
-- [ ] T084 Reject zero exit with missing expected output
+- [x] T084 Reject zero exit with missing expected output
   - Depends on: T083
   - Outcome: process success cannot produce Telchar success when expected output is absent.
   - Red: fault fixture reports success.
