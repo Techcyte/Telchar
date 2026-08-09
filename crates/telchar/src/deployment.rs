@@ -54,9 +54,7 @@ impl OutputRetention {
         match std::env::var("TELCHAR_OUTPUT_RETENTION_SECONDS") {
             Ok(value) => Self::parse(&value),
             Err(std::env::VarError::NotPresent) => Ok(Self::default()),
-            Err(std::env::VarError::NotUnicode(_)) => {
-                Err(invalid("output retention is invalid"))
-            }
+            Err(std::env::VarError::NotUnicode(_)) => Err(invalid("output retention is invalid")),
         }
     }
 
