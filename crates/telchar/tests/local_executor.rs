@@ -7,7 +7,9 @@ use std::time::Duration;
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
-use telchar::local_executor::{LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor};
+use telchar::local_executor::{
+    LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor, OutputTrust,
+};
 use telchar::nix_fixture::NixFixture;
 
 const DERIVATION_PATH: &[u8] =
@@ -78,6 +80,39 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
     assert_eq!(body["system"], "x86_64-linux");
     assert!(!root.join("should-not-exist").exists());
     fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn accepted_classic_results_are_classified_as_trusted_executor() {
+    for (status, expected_status) in [
+        ("built", LocalBuildStatus::Built),
+        ("already-valid", LocalBuildStatus::AlreadyValid),
+    ] {
+        let root = unique_root(status);
+        fs::create_dir_all(&root).expect("fixture root creates");
+        let helper = root.join("build-helper");
+        fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{{\"version\":1,\"success\":true,\"status\":\"{status}\",\"outputs\":[[\"out\",\"{}\"]]}}\\n'\n",
+                String::from_utf8_lossy(OUTPUT_PATH),
+            ),
+        )
+        .expect("helper writes");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+            .expect("helper is executable");
+        let build = admitted_request();
+        let request = LocalExecutionRequest::new(status, &build, Duration::from_secs(5))
+            .expect("execution request is valid");
+        let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+            .expect("executor config is valid");
+
+        let result = executor.execute(&request).expect("helper response parses");
+
+        assert_eq!(result.status(), expected_status);
+        assert_eq!(result.output_trust(), OutputTrust::TrustedExecutor);
+        fs::remove_dir_all(root).expect("fixture cleans");
+    }
 }
 
 #[test]
@@ -252,6 +287,10 @@ fn executor_rejects_malformed_success_output_sets() {
         (
             "unsupported-status",
             "{\"version\":1,\"success\":true,\"status\":\"substituted\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"]]}",
+        ),
+        (
+            "helper-cannot-select-output-trust",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"]],\"trust\":\"provenance-proof\"}",
         ),
     ] {
         let root = unique_root(label);
