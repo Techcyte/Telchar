@@ -1025,12 +1025,12 @@ Evidence: paths and output facts to record
 
 ### Pure-Rust gateway-store compatibility boundary
 
-- [ ] T095A Define the Rust Nix-daemon client boundary
+- [x] T095A Define the Rust Nix-daemon client boundary
   - Depends on: T095
   - Outcome: an ADR fixes a pure-Rust client over the configured Nix daemon worker protocol as the gateway-store compatibility boundary; Rust `libstore` bindings, C++ ABI/FFI, shell commands, PATH discovery, host-store fallback, and client-selected endpoints remain forbidden.
-  - Red: decision table leaves connection ownership, trust requirements, capability negotiation, operation coverage, cancellation, timeout, or error mapping unspecified.
-  - Verify: architecture-contract validator and primary-source operation inventory.
-  - Evidence: selected boundary, rejected alternatives, required operations, and fail-closed capability table.
+  - Red: existing root-registration client was capped at 1.25 and no accepted decision fixed the reusable/profile boundary, trust handling, operation migration, or Telchar connection ownership.
+  - Verify: complete review of pinned Nix 2.34.8 handshake, post-handshake, STDERR, path-info, NAR, import, build, and daemon dispatch sources plus the accepted compatibility inventory.
+  - Evidence: `docs/adr/nix-daemon-client-boundary.md` fixes protocol 1.18–1.38, typed trust/capabilities, generic-stream ownership, configured Unix endpoint, timeout/cancellation/error contracts, required operation map, resource bounds, and rejected alternatives.
 
 - [ ] T095B Implement reusable Rust Nix-daemon connection and capability negotiation
   - Depends on: T095A, T003, T019
