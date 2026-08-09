@@ -1007,12 +1007,12 @@ Evidence: paths and output facts to record
   - Verify: `persistence` 53/53, `store_retention` 11/11, `ipc_frontend` 20/20, `operation_dispatch` 36/36, Clippy, formatter, LSP, and `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
   - Evidence: startup releases/removes expired output before socket readiness; startup fails closed on conflicting roots without leaking identifiers or paths; future roots remain active; committed release survives root-removal failure and retries from the durable released row; exact private-store roots preserve outputs before release and permit GC afterward; Gate 3 continues proving stock-Nix direct/OpenSSH retrieval without cache publication.
 
-- [ ] T094 Extend NixOS vertical integration fixture
+- [x] T094 Extend NixOS vertical integration fixture
   - Depends on: T021E, T088, T089
   - Outcome: shared `nixosTest` harness provisions stock client, OpenSSH ingress, daemon, gateway store, and local executor as a reproducible end-to-end topology.
-  - Red: vertical NixOS test fails before the shared fixture extension is complete.
-  - Verify: flake NixOS vertical-test command.
-  - Evidence: reused harness modules, VM topology, and output proof.
+  - Red: Gate 3 initially referenced the absent narrow `mkGate3Test` fixture constructor.
+  - Verify: `nix flake check --no-build`; `nix build .#checks.x86_64-linux.nixos-gate-2 --no-link`; `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`; Clippy and diff checks.
+  - Evidence: `tests/nixos/lib.nix` now owns the Gate 3 restricted-ingress/collector invariant while the authoritative Gate 3 script and all accepted assertions remain unchanged.
 
 ### Gate 3 acceptance
 
