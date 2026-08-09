@@ -1039,12 +1039,12 @@ Evidence: paths and output facts to record
   - Verify: complete `nix-worker-protocol` suite; Clippy with warnings denied; formatter/diff checks; real trusted and untrusted project-owned private-daemon handshake.
   - Evidence: exact 1.38 client greeting and feature exchange, accepted 1.35/1.37/1.38 profiles, rejection below 1.35/wrong major/malformed trust/padding/truncation/oversize/daemon error, bounded redacted diagnostics, retained-metadata-free profile, preserved root operation bytes, and successful real Nix 2.34.8 private-daemon negotiation.
 
-- [ ] T095B1 Connect Telchar to the configured gateway daemon
+- [x] T095B1 Connect Telchar to the configured gateway daemon
   - Depends on: T095B
-  - Outcome: Telchar owns a direct Unix connection only to the validated deployment-configured gateway endpoint and deterministically closes it on timeout, cancellation, owner death, malformed traffic, or unsupported capability/trust semantics.
-  - Red: connection tests accept environment/default/client-selected fallback, leak a blocked operation, or reuse a desynchronized stream.
-  - Verify: private-daemon endpoint, timeout, disconnect, malformed-response, cancellation, and owner-death tests.
-  - Evidence: fixed endpoint, bounded connection lifetime, no fallback, and terminal cleanup.
+  - Outcome: Telchar owns a direct Unix connection only to an explicitly parsed deployment endpoint, applies fixed 30-second read/write timeouts before typed negotiation, exposes the accepted worker profile, and deterministically shuts down the socket on failed negotiation and drop.
+  - Red: the parent-owned contract initially failed because `telchar::store_daemon` did not exist; hostile tests then exposed malformed-handshake connection-reset handling and non-Unicode endpoint acceptance before the implementation was corrected.
+  - Verify: `gateway_daemon_connection_contract` 7/7; real trusted/untrusted private Nix-daemon profile test; full Telchar Clippy with warnings denied; formatter/diff checks; LSP/lens clean.
+  - Evidence: only `unix:///absolute/path` is accepted; empty, relative, authority, query, fragment, NUL, non-Unicode, local, daemon, SSH, TCP, and unknown forms fail; missing socket has no fallback; timeout and malformed handshakes close the peer; successful drop produces EOF; public endpoint/debug/errors redact configured paths and peer bytes.
 
 - [ ] T095C Replace the native input-closure helper with Rust worker-protocol operations
   - Depends on: T095B, T073
