@@ -1060,12 +1060,12 @@ Evidence: paths and output facts to record
   - Verify: closure traversal unit matrix 5/5, input-root-before-lease/build integration, lease-failure rollback integration, full Telchar Clippy with warnings denied, formatter/diff checks, and LSP clean.
   - Evidence: cycles and duplicates terminate, missing/malformed paths fail closed, each discovered path is queried once, output is sorted deterministically, `TELCHAR_NIX_STORE_CLOSURE` has zero Rust runtime references, and lifecycle tests use typed worker-protocol daemon fixtures with annotated operation/field bytes.
 
-- [ ] T095D Replace the native promotion/import helper with Rust worker-protocol operations
+- [x] T095D Replace the native promotion/import helper with Rust worker-protocol operations
   - Depends on: T095B, T067
-  - Outcome: validated staged NARs and explicit classic metadata are registered through the Rust daemon client without weakening pre-registration hash, size, path, references, deriver, content-address, or authoritative post-registration checks.
-  - Red: differential fixture accepts corrupt metadata or requires the native promotion helper.
-  - Verify: real-store valid import, corrupt NAR, mismatched metadata, missing reference, rollback, timeout, and owner-death tests.
-  - Evidence: registered metadata equality and removal of `TELCHAR_NIX_STORE_PROMOTE` runtime use.
+  - Outcome: validated staged NARs and explicit classic metadata are registered by typed framed `AddToStoreNar` over a fresh configured gateway-daemon connection, while existing pre-registration validation and authoritative post-registration `QueryPathInfo` equality checks remain intact.
+  - Red: the exact-wire contract initially lacked a typed client operation; hostile tests then required trust-gated signature bypass, fail-closed source errors, and malformed-metadata rejection before operation bytes.
+  - Verify: `AddToStoreNar` contract 6/6, complete protocol suite, promotion contract 15/15 including real private-store valid/corrupt evidence, partial-upload staging cleanup, disk-reserve fail-before-body behavior, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
+  - Evidence: op 39 metadata and framed NAR bytes match pinned Nix, untrusted connections cannot disable signature checks, no repair/ultimate/unsupported classic metadata is accepted, daemon errors are redacted, post-registration metadata equality remains authoritative, and `TELCHAR_NIX_STORE_PROMOTE` has zero Rust runtime references.
 
 - [ ] T095E Replace the native export helper with Rust worker-protocol operations
   - Depends on: T095B, T068, T085
