@@ -1081,12 +1081,12 @@ Evidence: paths and output facts to record
   - Verify: typed daemon build exact/hostile contract 3/3, complete protocol suite, local-executor contract 14/14 including private-daemon missing-output rejection, gateway connection 8/8, operation dispatch 34/34 with the two already-known private-namespace path tests explicitly ignored, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
   - Evidence: op 36 exact request and supported result bytes, trusted-connection gate before operation bytes, bounded/redacted malformed-result and log-writer failures, cancellation/timeout socket shutdown and worker join, output equality/existence verification, zero Rust runtime references to `TELCHAR_NIX_STORE_BUILD`, and test-only helper injection isolated behind `TELCHAR_TEST_BUILD_HELPER`.
 
-- [ ] T095G Remove native-helper packaging and configuration
+- [x] T095G Remove native-helper packaging and configuration
   - Depends on: T095C, T095D, T095E, T095F
-  - Outcome: production packages, NixOS module, service environment, flake outputs, and runtime validation contain no Telchar C++ helper binaries or `TELCHAR_NIX_STORE_{CLOSURE,PROMOTE,EXPORT,BUILD}` settings; pinned Nix source remains test/reference evidence only.
-  - Red: package/configuration inventory finds a native helper, C++ build input, obsolete environment variable, or fallback subprocess path.
-  - Verify: source/package/configuration inventory plus clean flake build.
-  - Evidence: deleted helper paths, removed settings, and closure without native Telchar executables.
+  - Outcome: production packages, the shared NixOS fixture, local Docker fixture, flake outputs, and development shell contain no Telchar C++ helper binaries or `TELCHAR_NIX_STORE_{CLOSURE,PROMOTE,EXPORT,BUILD}` settings; the four helper sources and package outputs are deleted, while pinned Nix remains protocol-reference and fixture tooling only.
+  - Red: the initial inventory found four C++ derivations, four package outputs, four installed `libexec` binaries, four dev-shell settings, four NixOS service settings, two Docker-fixture settings, and helper-dependent tests.
+  - Verify: focused closure/promotion/export/output-transfer/executor/configuration/lifecycle suites, Telchar Clippy with warnings denied, formatter/diff checks, zero-name source/package/configuration inventory, `nix flake show`, and `nix build .#telchar`.
+  - Evidence: package closure contains only `bin/telchar`; no `libexec/telchar` helpers exist; flake packages are `telchar`, `nix-worker-protocol`, `nix-reference`, and `default`; generated lifecycle helper scripts use explicit `TELCHAR_TEST_*` injection only; typed private-daemon tests retain the known non-`/nix/store` namespace limitations without weakening production path validation.
 
 - [ ] T095H Re-verify Gate 3 through the pure-Rust gateway-store path
   - Depends on: T095G
