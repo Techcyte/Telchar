@@ -166,6 +166,7 @@ fn run_daemon() -> io::Result<()> {
         system = deployment.system(),
         supported_feature_count = deployment.supported_features().len(),
         running_disconnect_policy = running_disconnect_policy.as_str(),
+        output_retention_seconds = deployment.output_retention().seconds(),
         "one-system deployment configured"
     );
     let socket = daemon_socket_argument()?;

@@ -979,12 +979,12 @@ Evidence: paths and output facts to record
   - Verify: connected and detached completion, private-store GC-before-expiry, stock-Nix later copy without rebuild/cache publication, expiry/reconciliation, and GC-after-expiry tests.
   - Evidence: `docs/adr/output-retention.md`; bounded configured retention, successful reuse, durable release ordering, failed-removal retry, and eventual GC eligibility.
 
-- [ ] T093A Configure output retention duration
+- [x] T093A Configure output retention duration
   - Depends on: T092
   - Outcome: `TELCHAR_OUTPUT_RETENTION_SECONDS` is typed, defaults to 3,600 seconds, accepts only inclusive range 60–86,400, fails startup otherwise, and cannot be selected by client bytes.
-  - Red: configuration tests accept malformed, zero, below-minimum, above-maximum, or non-Unicode values.
-  - Verify: focused `deployment_config` tests and Clippy.
-  - Evidence: typed duration accessor and bounded deployment telemetry.
+  - Red: focused tests initially failed to compile because `OutputRetention` and `DeploymentConfig::output_retention()` did not exist.
+  - Verify: `nix develop -c cargo test -p telchar --test deployment_config --locked`; full Telchar Clippy and formatter checks.
+  - Evidence: `OutputRetention` performs strict canonical decimal parsing, rejects malformed/out-of-range/non-Unicode values, exposes typed duration/seconds accessors, and adds bounded `output_retention_seconds` to `deployment.configured`. Changesets `7ca82c6d`, `bc224a26`, `e134892b`, plus parent telemetry integration.
 
 - [ ] T093B Persist immutable output retention deadlines
   - Depends on: T093A, T070A, T085A
