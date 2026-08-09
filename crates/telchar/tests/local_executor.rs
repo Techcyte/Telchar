@@ -227,6 +227,62 @@ fn cancellation_kills_and_reaps_a_silent_helper() {
 }
 
 #[test]
+fn executor_rejects_malformed_success_output_sets() {
+    for (label, response) in [
+        (
+            "missing",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[]}",
+        ),
+        (
+            "extra",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"],[\"extra\",\"/nix/store/22222222222222222222222222222222-extra\"]]}",
+        ),
+        (
+            "wrong-name",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"wrong\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"]]}",
+        ),
+        (
+            "wrong-path",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/22222222222222222222222222222222-wrong\"]]}",
+        ),
+        (
+            "duplicate",
+            "{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"],[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"]]}",
+        ),
+        (
+            "unsupported-status",
+            "{\"version\":1,\"success\":true,\"status\":\"substituted\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-local-executor\"]]}",
+        ),
+    ] {
+        let root = unique_root(label);
+        fs::create_dir_all(&root).expect("fixture root creates");
+        let helper = root.join("hostile-helper");
+        fs::write(
+            &helper,
+            format!("#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '%s\\n' '{response}'\n"),
+        )
+        .expect("helper writes");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+            .expect("helper is executable");
+        let build = admitted_request();
+        let request = LocalExecutionRequest::new("hostile", &build, Duration::from_secs(5))
+            .expect("execution request is valid");
+        let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
+            .expect("executor config is valid");
+
+        let error = executor
+            .execute(&request)
+            .expect_err("{label} helper response must fail closed");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidData,
+            "{label}: {error}"
+        );
+        fs::remove_dir_all(root).expect("fixture cleans");
+    }
+}
+
+#[test]
 fn executor_rejects_oversized_or_malformed_helper_output() {
     for label in ["oversized", "malformed"] {
         let root = unique_root(label);
@@ -302,6 +358,31 @@ fn executor_times_out_and_reaps_the_helper() {
 }
 
 #[test]
+fn flake_built_helper_rejects_zero_exit_when_expected_output_is_missing() {
+    let fixture = NixFixture::create().expect("Nix fixture creates");
+    let store_uri = format!("local?root={}", fixture.root().display());
+    let build = admitted_request_with_builder(b"exit 0");
+    let expected_output = std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8");
+    let request = LocalExecutionRequest::new("missing-output", &build, Duration::from_secs(30))
+        .expect("execution request is valid");
+    let mut executor =
+        NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
+
+    assert!(
+        !store_path_is_valid(&store_uri, expected_output),
+        "expected output is absent before execution"
+    );
+    let error = executor
+        .execute(&request)
+        .expect_err("zero-exit builder without output must fail execution");
+    assert_eq!(error.to_string(), "build helper failed");
+    assert!(
+        !store_path_is_valid(&store_uri, expected_output),
+        "expected output is absent after execution"
+    );
+}
+
+#[test]
 fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let store_uri = format!("local?root={}", fixture.root().display());
@@ -342,6 +423,10 @@ fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
 }
 
 fn admitted_request() -> BuildRequest {
+    admitted_request_with_builder(b"printf telchar-local-executor > $out")
+}
+
+fn admitted_request_with_builder(builder_command: &[u8]) -> BuildRequest {
     let mut wire = Vec::new();
     write_string(&mut wire, DERIVATION_PATH);
     write_integer(&mut wire, 1);
@@ -354,7 +439,7 @@ fn admitted_request() -> BuildRequest {
     write_string(&mut wire, b"/bin/sh");
     write_integer(&mut wire, 2);
     write_string(&mut wire, b"-c");
-    write_string(&mut wire, b"printf telchar-local-executor > $out");
+    write_string(&mut wire, builder_command);
     write_integer(&mut wire, 4);
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
@@ -385,6 +470,21 @@ fn write_string(output: &mut Vec<u8>, value: &[u8]) {
     write_integer(output, value.len() as u64);
     output.extend_from_slice(value);
     output.extend_from_slice(&[0; 7][..(8 - value.len() % 8) % 8]);
+}
+
+fn store_path_is_valid(store_uri: &str, path: &str) -> bool {
+    std::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "--store",
+            store_uri,
+            "path-info",
+            path,
+        ])
+        .status()
+        .expect("path validity query runs")
+        .success()
 }
 
 fn helper_path() -> PathBuf {
