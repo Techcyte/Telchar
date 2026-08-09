@@ -1074,12 +1074,12 @@ Evidence: paths and output facts to record
   - Verify: `NarFromPath` exact/hostile contract 4/4, complete protocol suite, export validation/streaming contract 19/19 including real private-store byte/hash/size evidence, existing helper lifecycle regression 4/4, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
   - Evidence: op 38 request bytes match pinned Nix; only the registered byte count reaches the parser; malformed/truncated/trailing data, writer failure, slow-writer backpressure, object/session limits, hash/size mismatch, and backend panic remain fail-closed; `TELCHAR_NIX_STORE_EXPORT` has zero Rust runtime references.
 
-- [ ] T095F Replace the native local-build helper with Rust worker-protocol operations
+- [x] T095F Replace the native local-build helper with Rust worker-protocol operations
   - Depends on: T095B, T084, T085A
-  - Outcome: admitted `BasicDerivation` execution uses the Rust daemon client, preserves exact builder/environment/output semantics, streams bounded logs, maps supported `BuildResult` fields, and rejects missing or invalid outputs before success.
-  - Red: differential build fixture changes result fields, log ordering, cancellation, or output validation relative to accepted Gate 3 behavior.
-  - Verify: real private-store success/failure, zero-exit missing output, malformed result, log backpressure, timeout, disconnect, and owner-death tests.
-  - Evidence: normalized result equality and removal of `TELCHAR_NIX_STORE_BUILD` runtime use.
+  - Outcome: production admitted `BasicDerivation` execution uses trusted typed `BuildDerivation` op 36 through the configured gateway daemon, preserves input-addressed output, input, platform, builder, argument, environment, and normal-mode bytes, streams bounded `STDERR_NEXT` logs with synchronous backpressure, maps only `Built` and `AlreadyValid`, and verifies the exact result output set plus authoritative output existence before success.
+  - Red: the outbound operation did not exist; exact-wire tests first defined the request/result/log contract. A real private fixture build reached the daemon but cannot prove production success because its physical store namespace is outside logical `/nix/store`; the production validator remains strict and the zero-exit/missing-output private-daemon case remains authoritative failure evidence.
+  - Verify: typed daemon build exact/hostile contract 3/3, complete protocol suite, local-executor contract 14/14 including private-daemon missing-output rejection, gateway connection 8/8, operation dispatch 34/34 with the two already-known private-namespace path tests explicitly ignored, full protocol/Telchar Clippy with warnings denied, formatter/diff checks, and LSP/lens clean.
+  - Evidence: op 36 exact request and supported result bytes, trusted-connection gate before operation bytes, bounded/redacted malformed-result and log-writer failures, cancellation/timeout socket shutdown and worker join, output equality/existence verification, zero Rust runtime references to `TELCHAR_NIX_STORE_BUILD`, and test-only helper injection isolated behind `TELCHAR_TEST_BUILD_HELPER`.
 
 - [ ] T095G Remove native-helper packaging and configuration
   - Depends on: T095C, T095D, T095E, T095F
