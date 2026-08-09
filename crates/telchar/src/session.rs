@@ -15,6 +15,7 @@ use crate::store_query::QueryValidPathsStore;
 
 static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static DERIVATION_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static OUTPUT_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct SessionInput {
     input: std::os::unix::net::UnixStream,
@@ -505,18 +506,127 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                let output_validation = result.outputs().iter().try_for_each(|(_, path)| {
-                    let path = std::str::from_utf8(path).map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "invalid output path")
-                    })?;
-                    crate::store_export::validate_store_output(Path::new(path), store_export)
-                        .map(|_| ())
-                });
-                if let Err(error) = output_validation {
-                    tracing::error!(
-                        event = "worker.build_derivation.output_validation_failed",
-                        reason = execution_error_reason(&error),
-                        "BuildDerivation output validation failed"
+                let output_paths = result
+                    .outputs()
+                    .iter()
+                    .map(|(_, path)| {
+                        std::str::from_utf8(path).map(str::to_owned).map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidData, "invalid output path")
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+                    .and_then(|paths| {
+                        paths.iter().try_for_each(|path| {
+                            crate::store_export::validate_store_output(
+                                Path::new(path),
+                                store_export,
+                            )
+                            .map(|_| ())
+                        })?;
+                        Ok(paths)
+                    });
+                let output_paths = match output_paths {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.build_derivation.output_validation_failed",
+                            reason = execution_error_reason(&error),
+                            "BuildDerivation output validation failed"
+                        );
+                        if let Err(release_error) = release_attached_request_leases(
+                            store_retention,
+                            database_url,
+                            session_id,
+                            &request_id,
+                        ) {
+                            return reject(
+                                &mut output,
+                                "request-lease-release",
+                                release_error_message(&release_error),
+                            );
+                        }
+                        return reject(
+                            &mut output,
+                            "build-derivation-failed",
+                            "BuildDerivation execution failed",
+                        );
+                    }
+                };
+                let output_leases = output_paths
+                    .iter()
+                    .map(|path| (output_lease_id(), path.clone()))
+                    .collect::<Vec<_>>();
+                let output_entries = output_leases
+                    .iter()
+                    .map(|(lease_id, store_path)| {
+                        crate::store_retention::RetentionEntry::new(lease_id, store_path)
+                    })
+                    .collect::<Vec<_>>();
+                let retained_outputs = match store_retention.retain(&output_entries) {
+                    Ok(retained) => {
+                        retention_batch_event(
+                            "retain",
+                            "output",
+                            output_entries.len(),
+                            "succeeded",
+                            None,
+                        );
+                        retained
+                    }
+                    Err(_) => {
+                        retention_batch_event(
+                            "retain",
+                            "output",
+                            output_entries.len(),
+                            "failed",
+                            Some("helper"),
+                        );
+                        if let Err(release_error) = release_attached_request_leases(
+                            store_retention,
+                            database_url,
+                            session_id,
+                            &request_id,
+                        ) {
+                            return reject(
+                                &mut output,
+                                "request-lease-release",
+                                release_error_message(&release_error),
+                            );
+                        }
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
+                };
+                if crate::persistence::create_request_output_leases(
+                    database_url,
+                    &request_id,
+                    &output_leases,
+                )
+                .is_err()
+                {
+                    if store_retention.rollback(&retained_outputs).is_err() {
+                        retention_batch_event(
+                            "rollback",
+                            "output",
+                            output_entries.len(),
+                            "failed",
+                            Some("rollback"),
+                        );
+                        return reject(
+                            &mut output,
+                            "gateway-store-retention",
+                            "gateway store retention failed",
+                        );
+                    }
+                    retention_batch_event(
+                        "rollback",
+                        "output",
+                        output_entries.len(),
+                        "succeeded",
+                        None,
                     );
                     if let Err(release_error) = release_attached_request_leases(
                         store_retention,
@@ -532,8 +642,8 @@ pub fn run_worker_session(
                     }
                     return reject(
                         &mut output,
-                        "build-derivation-failed",
-                        "BuildDerivation execution failed",
+                        "store-lease-state",
+                        "store lease state operation failed",
                     );
                 }
                 if let Err(error) = release_attached_request_leases(
@@ -870,6 +980,18 @@ fn derivation_lease_id() -> String {
             .unwrap_or_default()
             .as_nanos(),
         DERIVATION_LEASE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    )
+}
+
+fn output_lease_id() -> String {
+    format!(
+        "output-{:x}-{:x}-{:x}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        OUTPUT_LEASE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
     )
 }
 

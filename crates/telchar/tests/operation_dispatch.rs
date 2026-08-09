@@ -914,6 +914,41 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
         telchar::persistence::RequestAttachmentState::Detached
     );
     assert_released_derivation_lease(&fixture.database, request_id);
+    let mut database = fixture.database.connect();
+    let output_leases = database
+        .query(
+            "SELECT lease_id, store_path, purpose, state FROM store_leases WHERE owner_id = $1 AND purpose = 'output' ORDER BY lease_id",
+            &[&request_id],
+        )
+        .expect("output leases read");
+    assert_eq!(
+        output_leases.len(),
+        1,
+        "successful build has one output lease"
+    );
+    let output_lease_id = output_leases[0].get::<_, String>(0);
+    assert_eq!(
+        output_leases[0].get::<_, String>(1),
+        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"
+    );
+    assert_eq!(output_leases[0].get::<_, String>(2), "output");
+    assert_eq!(output_leases[0].get::<_, String>(3), "active");
+    assert_eq!(
+        fs::read_link(fixture.root.join("gc-roots").join(output_lease_id))
+            .expect("output root reads"),
+        PathBuf::from("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract")
+    );
+    assert_eq!(
+        database
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = $1 AND purpose IN ('derivation', 'input') AND state = 'active'",
+                &[&request_id],
+            )
+            .expect("active request lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "successful cleanup retained derivation or input leases"
+    );
     let stderr = fixture.finish();
     assert!(!stderr.contains(&session_id), "{stderr}");
     assert!(!stderr.contains(request_id), "{stderr}");
@@ -1126,6 +1161,84 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
         !stderr.contains("telchar-output-metadata-secret"),
         "{stderr}"
     );
+    assert!(
+        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-output-lease-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    fs::write(
+        &helper,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    fixture
+        .database
+        .connect()
+        .batch_execute(
+            "CREATE FUNCTION reject_output_lease() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.purpose = 'output' THEN RAISE EXCEPTION 'reject output lease'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_output_lease BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_output_lease();",
+        )
+        .expect("output lease failure trigger installs");
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "store lease state operation failed"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+
+    let mut database = fixture.database.connect();
+    let request_id = request_id(&mut database);
+    assert_eq!(
+        database
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = $1 AND state = 'active'",
+                &[&request_id],
+            )
+            .expect("active lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "output lease failure left active request leases"
+    );
+    assert_eq!(
+        fs::read_dir(fixture.root.join("gc-roots"))
+            .expect("GC root directory reads")
+            .count(),
+        0,
+        "output lease failure left a request root"
+    );
+    let stderr = fixture.finish();
+    assert!(stderr.contains("operation=\"create-output\""), "{stderr}");
+    assert!(!stderr.contains(&request_id), "{stderr}");
     assert!(
         !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
         "{stderr}"
@@ -1452,7 +1565,7 @@ fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
     let mut database = fixture.database.connect();
     let mut leases = database
         .query(
-            "SELECT lease_id, owner_id FROM store_leases ORDER BY owner_id",
+            "SELECT lease_id, owner_id FROM store_leases WHERE purpose = 'derivation' ORDER BY owner_id",
             &[],
         )
         .expect("leases read")

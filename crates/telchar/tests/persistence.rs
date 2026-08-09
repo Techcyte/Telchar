@@ -2153,6 +2153,92 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
 }
 
 #[test]
+fn request_lease_release_preserves_active_output_leases() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(fixture.url(), "release-output-session", requester)
+        .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "release-output-request",
+        "/nix/store/11111111111111111111111111111111-release-output.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::attach_request(
+        fixture.url(),
+        "release-output-session",
+        "release-output-request",
+    )
+    .expect("request attaches");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "release-output-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "release-output-request",
+        "/nix/store/11111111111111111111111111111111-release-output.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "release-output-request",
+        &[(
+            "release-output-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-release-output-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "release-output-request",
+        &[(
+            "release-output-result".to_owned(),
+            "/nix/store/33333333333333333333333333333333-release-output-result".to_owned(),
+        )],
+    )
+    .expect("output lease persists");
+
+    let released = telchar::persistence::detach_request_and_release_leases(
+        fixture.url(),
+        "release-output-session",
+        "release-output-request",
+    )
+    .expect("request detaches and releasable leases release");
+
+    assert_eq!(
+        released
+            .leases
+            .iter()
+            .map(|lease| lease.purpose)
+            .collect::<Vec<_>>(),
+        vec![
+            telchar::persistence::StoreLeasePurpose::Derivation,
+            telchar::persistence::StoreLeasePurpose::Input,
+        ]
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "release-output-result")
+            .expect("output lease reads")
+            .expect("output lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "release-output-session",
+            "release-output-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+}
+
+#[test]
 fn request_lease_release_commit_failure_keeps_attachment_and_leases_active() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

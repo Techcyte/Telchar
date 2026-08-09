@@ -1207,7 +1207,9 @@ fn lock_active_request_leases(
                 || lease.state != StoreLeaseState::Active
                 || !matches!(
                     lease.purpose,
-                    StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+                    StoreLeasePurpose::Derivation
+                        | StoreLeasePurpose::Input
+                        | StoreLeasePurpose::Output
                 )
         })
     {
@@ -1221,9 +1223,18 @@ fn release_locked_request_leases(
     request_id: &str,
     locked: &[StoreLeaseRecord],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let releasable = locked
+        .iter()
+        .filter(|lease| {
+            matches!(
+                lease.purpose,
+                StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+            )
+        })
+        .collect::<Vec<_>>();
     let rows = transaction
         .query(
-            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE owner_kind = 'request' AND owner_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE owner_kind = 'request' AND owner_id = $1 AND purpose IN ('derivation', 'input') AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
             &[&request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1232,8 +1243,8 @@ fn release_locked_request_leases(
         .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
         .collect::<Result<Vec<_>, _>>()?;
     released.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
-    if released.len() != locked.len()
-        || released.iter().zip(locked).any(|(released, locked)| {
+    if released.len() != releasable.len()
+        || released.iter().zip(releasable).any(|(released, locked)| {
             released.lease_id != locked.lease_id
                 || released.owner_kind != locked.owner_kind
                 || released.owner_id != locked.owner_id
