@@ -995,12 +995,70 @@ Evidence: paths and output facts to record
   - Verify: full protocol/store/OpenSSH/local-backend VM suite.
   - Evidence: exact command and pristine output.
 
+### Pure-Rust gateway-store compatibility boundary
+
+- [ ] T095A Define the Rust Nix-daemon client boundary
+  - Depends on: T095
+  - Outcome: an ADR fixes a pure-Rust client over the configured Nix daemon worker protocol as the gateway-store compatibility boundary; Rust `libstore` bindings, C++ ABI/FFI, shell commands, PATH discovery, host-store fallback, and client-selected endpoints remain forbidden.
+  - Red: decision table leaves connection ownership, trust requirements, capability negotiation, operation coverage, cancellation, timeout, or error mapping unspecified.
+  - Verify: architecture-contract validator and primary-source operation inventory.
+  - Evidence: selected boundary, rejected alternatives, required operations, and fail-closed capability table.
+
+- [ ] T095B Implement reusable Rust Nix-daemon connection and capability negotiation
+  - Depends on: T095A, T003A
+  - Outcome: a bounded reusable Rust client connects only to the configured gateway-store endpoint, performs typed worker-protocol negotiation, exposes capability/profile checks, and kills or closes work deterministically on timeout, cancellation, owner death, malformed traffic, or unsupported semantics.
+  - Red: connection tests require native helpers or accept malformed/unsupported daemon traffic.
+  - Verify: private-daemon handshake, capability, timeout, disconnect, malformed-response, and owner-death tests.
+  - Evidence: negotiated profile, fixed endpoint, bounded allocations, and terminal cleanup.
+
+- [ ] T095C Replace the native input-closure helper with Rust worker-protocol operations
+  - Depends on: T095B, T073
+  - Outcome: complete input closure is computed through the Rust daemon client with exact `computeFSClosure(roots, false, false, false)` semantics and existing path/count/byte bounds.
+  - Red: Rust closure results differ from the accepted native-helper and real-store fixtures.
+  - Verify: differential private-store closure tests, hostile bounds, cancellation, and Gate 3 lease regressions.
+  - Evidence: exact closure equality and removal of `TELCHAR_NIX_STORE_CLOSURE` runtime use.
+
+- [ ] T095D Replace the native promotion/import helper with Rust worker-protocol operations
+  - Depends on: T095B, T067
+  - Outcome: validated staged NARs and explicit classic metadata are registered through the Rust daemon client without weakening pre-registration hash, size, path, references, deriver, content-address, or authoritative post-registration checks.
+  - Red: differential fixture accepts corrupt metadata or requires the native promotion helper.
+  - Verify: real-store valid import, corrupt NAR, mismatched metadata, missing reference, rollback, timeout, and owner-death tests.
+  - Evidence: registered metadata equality and removal of `TELCHAR_NIX_STORE_PROMOTE` runtime use.
+
+- [ ] T095E Replace the native export helper with Rust worker-protocol operations
+  - Depends on: T095B, T068, T085
+  - Outcome: raw NAR export streams through the Rust daemon client with exact-one-NAR parsing, independent hash/size verification, bounded backpressure, and deterministic cancellation/reaping semantics without a helper subprocess.
+  - Red: Rust export differs from accepted native-helper bytes or weakens slow-writer and writer-failure bounds.
+  - Verify: differential real-store export, malformed/trailing data, slow writer, writer failure, cancellation, and owner-death tests.
+  - Evidence: byte-for-byte NAR equality and removal of `TELCHAR_NIX_STORE_EXPORT` runtime use.
+
+- [ ] T095F Replace the native local-build helper with Rust worker-protocol operations
+  - Depends on: T095B, T084, T085A
+  - Outcome: admitted `BasicDerivation` execution uses the Rust daemon client, preserves exact builder/environment/output semantics, streams bounded logs, maps supported `BuildResult` fields, and rejects missing or invalid outputs before success.
+  - Red: differential build fixture changes result fields, log ordering, cancellation, or output validation relative to accepted Gate 3 behavior.
+  - Verify: real private-store success/failure, zero-exit missing output, malformed result, log backpressure, timeout, disconnect, and owner-death tests.
+  - Evidence: normalized result equality and removal of `TELCHAR_NIX_STORE_BUILD` runtime use.
+
+- [ ] T095G Remove native-helper packaging and configuration
+  - Depends on: T095C, T095D, T095E, T095F
+  - Outcome: production packages, NixOS module, service environment, flake outputs, and runtime validation contain no Telchar C++ helper binaries or `TELCHAR_NIX_STORE_{CLOSURE,PROMOTE,EXPORT,BUILD}` settings; pinned Nix source remains test/reference evidence only.
+  - Red: package/configuration inventory finds a native helper, C++ build input, obsolete environment variable, or fallback subprocess path.
+  - Verify: source/package/configuration inventory plus clean flake build.
+  - Evidence: deleted helper paths, removed settings, and closure without native Telchar executables.
+
+- [ ] T095H Re-verify Gate 3 through the pure-Rust gateway-store path
+  - Depends on: T095G
+  - Outcome: every accepted Gate 3 protocol, store, GC, transfer, execution, output-validation, log, disconnect, and lifecycle test passes with native helpers unavailable.
+  - Red: authoritative suite fails or succeeds by discovering an obsolete helper.
+  - Verify: helper-absence negative test followed by full protocol/store/OpenSSH/local-backend NixOS suite.
+  - Evidence: exact terminal commands, pristine output, no native helper processes, and no native helper package/runtime references.
+
 ## Gate 4 — Durable state, admission, and deterministic scheduling
 
 ### Durable request model
 
 - [ ] T096 Extend PostgreSQL migrations for execution state
-  - Depends on: T095, T070A
+  - Depends on: T095H, T070A
   - Outcome: ordered PostgreSQL migrations add attempts, outcomes, queue state, capacity reservations, and audit fields transactionally.
   - Red: Gate 3 database cannot represent execution lifecycle.
   - Verify: real PostgreSQL upgrade migration test from Gate 3 schema.
