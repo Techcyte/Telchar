@@ -639,6 +639,7 @@ pub fn run_worker_session(
                 if crate::persistence::create_request_output_leases(
                     database_url,
                     &request_id,
+                    deployment.output_retention().duration(),
                     &output_leases,
                 )
                 .is_err()
