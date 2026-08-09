@@ -352,6 +352,133 @@ fn daemon_rejects_connections_beyond_bounded_session_capacity() {
 }
 
 #[test]
+fn daemon_reconciles_expired_output_before_readiness() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
+    let socket = root.join("daemon.sock");
+    let gc_roots = root.join("gc-roots");
+    fs::create_dir(&gc_roots).expect("GC root directory creates");
+    fs::set_permissions(&gc_roots, fs::Permissions::from_mode(0o700))
+        .expect("GC root directory permissions set");
+    let database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        database.url(),
+        "startup-expiry-request",
+        "/nix/store/11111111111111111111111111111111-startup-expiry.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let lease = telchar::persistence::create_request_output_leases(
+        database.url(),
+        "startup-expiry-request",
+        Duration::from_secs(60),
+        &[(
+            "startup-expiry-output".to_owned(),
+            "/nix/store/22222222222222222222222222222222-startup-expiry".to_owned(),
+        )],
+    )
+    .expect("output lease persists")
+    .remove(0);
+    database
+        .connect()
+        .execute(
+            "UPDATE store_leases SET created_at = transaction_timestamp() - interval '2 minutes', expires_at = transaction_timestamp() - interval '1 minute' WHERE lease_id = 'startup-expiry-output'",
+            &[],
+        )
+        .expect("output deadline expires");
+    std::os::unix::fs::symlink(
+        "/nix/store/22222222222222222222222222222222-startup-expiry",
+        gc_roots.join(&lease.lease_id),
+    )
+    .expect("output root creates");
+
+    let mut daemon = daemon_command(&socket, 1_000, true, database.url())
+        .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &gc_roots)
+        .env("TELCHAR_TEST_STORE_RETENTION", "1")
+        .spawn()
+        .expect("daemon starts");
+    wait_for_socket(&socket, &mut daemon);
+
+    assert!(fs::symlink_metadata(gc_roots.join(&lease.lease_id)).is_err());
+    assert_eq!(
+        telchar::persistence::read_store_lease(database.url(), &lease.lease_id)
+            .expect("lease reads")
+            .expect("lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Released
+    );
+    daemon.kill().expect("daemon stops");
+    let _ = daemon.wait();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_refuses_readiness_when_output_reconciliation_fails() {
+    let root = temporary_root();
+    fs::create_dir(&root).expect("fixture root creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .expect("fixture root permissions set");
+    let socket = root.join("daemon.sock");
+    let gc_roots = root.join("gc-roots");
+    fs::create_dir(&gc_roots).expect("GC root directory creates");
+    fs::set_permissions(&gc_roots, fs::Permissions::from_mode(0o700))
+        .expect("GC root directory permissions set");
+    let database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        database.url(),
+        "startup-conflict-request",
+        "/nix/store/11111111111111111111111111111111-startup-conflict.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::create_request_output_leases(
+        database.url(),
+        "startup-conflict-request",
+        Duration::from_secs(60),
+        &[(
+            "startup-conflict-output".to_owned(),
+            "/nix/store/22222222222222222222222222222222-startup-conflict".to_owned(),
+        )],
+    )
+    .expect("output lease persists");
+    database
+        .connect()
+        .execute(
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE lease_id = 'startup-conflict-output'",
+            &[],
+        )
+        .expect("output lease releases");
+    fs::write(gc_roots.join("startup-conflict-output"), b"conflict")
+        .expect("conflicting root creates");
+
+    let output = daemon_command(&socket, 1_000, true, database.url())
+        .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &gc_roots)
+        .env("TELCHAR_TEST_STORE_RETENTION", "1")
+        .output()
+        .expect("daemon command runs");
+
+    assert!(!output.status.success());
+    assert!(
+        !socket.exists(),
+        "daemon became ready after failed reconciliation"
+    );
+    assert!(fs::metadata(gc_roots.join("startup-conflict-output")).is_ok());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("gateway store retention failed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("startup-conflict-output"), "{stderr}");
+    assert!(!stderr.contains("startup-conflict-request"), "{stderr}");
+    assert!(!stderr.contains("/nix/store/"), "{stderr}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_secures_socket_path_and_cleans_up_after_once() {
     let fixture = Fixture::start();
     assert_eq!(

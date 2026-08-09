@@ -2576,7 +2576,7 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
 }
 
 #[test]
-fn request_lease_release_page_is_bounded_keyset_ordered_and_excludes_other_leases() {
+fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leases() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     telchar::persistence::create_build_request(
@@ -2640,11 +2640,6 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_excludes_other_lease
     );
     assert!(first.iter().all(|lease| {
         lease.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
-            && matches!(
-                lease.purpose,
-                telchar::persistence::StoreLeasePurpose::Derivation
-                    | telchar::persistence::StoreLeasePurpose::Input
-            )
             && lease.state == telchar::persistence::StoreLeaseState::Released
     }));
     let last = first.last().expect("first page has rows");
@@ -2654,8 +2649,53 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_excludes_other_lease
         256,
     )
     .expect("second page reads");
-    assert_eq!(second.len(), 1);
+    assert_eq!(second.len(), 2);
     assert!(second[0].lease_id > last.lease_id);
+    assert!(second[0].lease_id < second[1].lease_id);
+    assert!(second.iter().any(|lease| {
+        lease.lease_id == "released-page-output"
+            && lease.purpose == telchar::persistence::StoreLeasePurpose::Output
+    }));
+}
+
+#[test]
+fn released_request_lease_page_includes_output_reconciliation_authority() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "released-output-page-request",
+        "/nix/store/11111111111111111111111111111111-released-output-page.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "released-output-page-request",
+        Duration::from_secs(60),
+        &[(
+            "released-output-page".to_owned(),
+            "/nix/store/22222222222222222222222222222222-released-output-page".to_owned(),
+        )],
+    )
+    .expect("output lease persists");
+    telchar::persistence::release_store_lease(fixture.url(), "released-output-page")
+        .expect("output lease releases");
+
+    let released =
+        telchar::persistence::read_released_request_leases_page(fixture.url(), None, 256)
+            .expect("released page reads");
+
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].lease_id, "released-output-page");
+    assert_eq!(
+        released[0].purpose,
+        telchar::persistence::StoreLeasePurpose::Output
+    );
+    assert_eq!(
+        released[0].state,
+        telchar::persistence::StoreLeaseState::Released
+    );
 }
 
 #[test]

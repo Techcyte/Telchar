@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -74,6 +74,51 @@ pub fn reconcile_released_request_leases(
         }
         after_lease_id = leases.last().map(|lease| lease.lease_id.clone());
     }
+}
+
+pub fn reconcile_output_retention(
+    database_url: &str,
+    backend: &mut dyn StoreRetentionBackend,
+    now: SystemTime,
+) -> io::Result<()> {
+    let result = (|| {
+        reconcile_released_request_leases(database_url, backend)?;
+        let mut after_lease_id = None;
+        loop {
+            let released = crate::persistence::release_expired_request_output_leases(
+                database_url,
+                now,
+                after_lease_id.as_deref(),
+                256,
+            )
+            .map_err(|_| retention_error())?;
+            if released.is_empty() {
+                return Ok(());
+            }
+            let entries = released
+                .iter()
+                .map(|lease| ReleasedRetentionEntry::new(&lease.lease_id, &lease.store_path))
+                .collect::<Vec<_>>();
+            backend.release(&entries)?;
+            after_lease_id = released.last().map(|lease| lease.lease_id.clone());
+            if released.len() < 256 {
+                return Ok(());
+            }
+        }
+    })();
+    match &result {
+        Ok(()) => tracing::info!(
+            event = "gateway.output_retention.reconciled",
+            operation = "expire-output-retention",
+            result = "succeeded",
+        ),
+        Err(_) => tracing::warn!(
+            event = "gateway.output_retention.reconciled",
+            operation = "expire-output-retention",
+            result = "failed",
+        ),
+    }
+    result
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {

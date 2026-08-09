@@ -123,7 +123,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 1_i64,
+        latest_migration_version = 2_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -139,16 +139,17 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 1_i64,
+        latest_migration_version = 2_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
         "database migration completed"
     );
     let mut store_retention = telchar::store_retention::backend_from_environment()?;
-    telchar::store_retention::reconcile_released_request_leases(
+    telchar::store_retention::reconcile_output_retention(
         &database_url,
         store_retention.as_mut(),
+        SystemTime::now(),
     )?;
     tracing::info!(
         event = "gateway.request_lease_release.completed",
@@ -192,6 +193,27 @@ fn run_daemon() -> io::Result<()> {
             &disk_probe,
         );
     }
+    let maintenance_database_url = database_url.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let result =
+                telchar::store_retention::backend_from_environment().and_then(|mut backend| {
+                    telchar::store_retention::reconcile_output_retention(
+                        &maintenance_database_url,
+                        backend.as_mut(),
+                        SystemTime::now(),
+                    )
+                });
+            if result.is_err() {
+                tracing::warn!(
+                    event = "gateway.output_retention.maintenance_failed",
+                    operation = "expire-output-retention",
+                    result = "failed",
+                );
+            }
+        }
+    });
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
     loop {

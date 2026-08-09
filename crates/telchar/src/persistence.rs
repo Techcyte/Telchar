@@ -1479,7 +1479,7 @@ pub fn read_released_request_leases_page(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let rows = client
         .query(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND purpose IN ('derivation', 'input') AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
             &[&after_lease_id, &(maximum_rows as i64)],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1487,10 +1487,6 @@ pub fn read_released_request_leases_page(
         .map(|row| {
             let lease = decode_store_lease(row).map_err(StoreLeaseError)?;
             if lease.owner_kind != StoreLeaseOwnerKind::Request
-                || !matches!(
-                    lease.purpose,
-                    StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
-                )
                 || lease.state != StoreLeaseState::Released
             {
                 return Err(StoreLeaseError(StoreLeaseFailure::Query));
