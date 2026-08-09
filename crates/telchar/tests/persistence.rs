@@ -1780,6 +1780,289 @@ fn request_input_lease_batch_rolls_back_deferred_commit_failure() {
 }
 
 #[test]
+fn create_request_output_leases_commits_complete_ordered_set() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "output-batch-request",
+        "/nix/store/11111111111111111111111111111111-output-test.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+
+    let records = telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "output-batch-request",
+        &[
+            (
+                "output-batch-2".to_owned(),
+                "/nix/store/22222222222222222222222222222222-output-b".to_owned(),
+            ),
+            (
+                "output-batch-1".to_owned(),
+                "/nix/store/33333333333333333333333333333333-output-a".to_owned(),
+            ),
+        ],
+    )
+    .expect("output lease batch persists");
+
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.lease_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["output-batch-2", "output-batch-1"]
+    );
+    assert!(records.iter().all(|record| {
+        record.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
+            && record.owner_id == "output-batch-request"
+            && record.purpose == telchar::persistence::StoreLeasePurpose::Output
+            && record.state == telchar::persistence::StoreLeaseState::Active
+            && record.released_at.is_none()
+    }));
+}
+
+#[test]
+fn create_request_output_leases_rolls_back_second_row_conflict() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for request_id in ["output-conflict-request", "output-existing-request"] {
+        telchar::persistence::create_build_request(
+            fixture.url(),
+            request_id,
+            "/nix/store/11111111111111111111111111111111-output-test.drv",
+            "x86_64-linux",
+        )
+        .expect("request persists");
+    }
+    let existing = telchar::persistence::create_store_lease(
+        fixture.url(),
+        "output-conflict-2",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "output-existing-request",
+        "/nix/store/44444444444444444444444444444444-existing-output",
+        telchar::persistence::StoreLeasePurpose::Output,
+    )
+    .expect("existing lease persists");
+
+    let error = telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "output-conflict-request",
+        &[
+            (
+                "output-conflict-1".to_owned(),
+                "/nix/store/22222222222222222222222222222222-output-a".to_owned(),
+            ),
+            (
+                "output-conflict-2".to_owned(),
+                "/nix/store/33333333333333333333333333333333-output-b".to_owned(),
+            ),
+        ],
+    )
+    .expect_err("second output lease conflicts");
+
+    assert_eq!(
+        error.failure(),
+        telchar::persistence::StoreLeaseFailure::Conflict
+    );
+    assert!(
+        telchar::persistence::read_store_lease(fixture.url(), "output-conflict-1")
+            .expect("first output lease reads")
+            .is_none()
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "output-conflict-2")
+            .expect("existing output lease reads"),
+        Some(existing)
+    );
+}
+
+#[test]
+fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "output-validation-request",
+        "/nix/store/11111111111111111111111111111111-output-test.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let valid = (
+        "output-validation-1".to_owned(),
+        "/nix/store/22222222222222222222222222222222-output-a".to_owned(),
+    );
+    let too_many = (0..=nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS)
+        .map(|index| {
+            (
+                format!("output-limit-{index}"),
+                format!("/nix/store/{index:032x}-output-limit-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for leases in [
+        vec![valid.clone(), valid.clone()],
+        vec![
+            valid.clone(),
+            ("output-validation-2".to_owned(), valid.1.clone()),
+        ],
+        vec![(
+            "".to_owned(),
+            "/nix/store/33333333333333333333333333333333-output-b".to_owned(),
+        )],
+        vec![("output-invalid-path".to_owned(), "relative".to_owned())],
+        too_many,
+    ] {
+        assert_eq!(
+            telchar::persistence::create_request_output_leases(
+                fixture.url(),
+                "output-validation-request",
+                &leases,
+            )
+            .expect_err("invalid output lease batch rejects")
+            .failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    }
+    assert_eq!(
+        telchar::persistence::create_request_output_leases(
+            fixture.url(),
+            "missing-output-request",
+            &[valid],
+        )
+        .expect_err("missing request rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Missing
+    );
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = 'output-validation-request'",
+                &[],
+            )
+            .expect("lease count reads")
+            .get::<_, i64>(0),
+        0
+    );
+}
+
+#[test]
+fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
+    assert!(
+        telchar::persistence::create_request_output_leases(
+            "postgresql://127.0.0.1:1/no-connection",
+            "output-empty-request",
+            &[],
+        )
+        .expect("empty output lease batch succeeds")
+        .is_empty()
+    );
+
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "output-telemetry-request",
+        "/nix/store/11111111111111111111111111111111-output-test.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let captured = EventCapture::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+    tracing::dispatcher::with_default(&dispatch, || {
+        telchar::persistence::create_request_output_leases(
+            fixture.url(),
+            "output-telemetry-request",
+            &[(
+                "output-telemetry-lease".to_owned(),
+                "/nix/store/22222222222222222222222222222222-output-telemetry".to_owned(),
+            )],
+        )
+        .expect("output lease batch persists");
+        let error = telchar::persistence::create_request_output_leases(
+            "postgresql://output-telemetry-sensitive-url",
+            "output-telemetry-sensitive-request",
+            &[(
+                "output-telemetry-sensitive-lease".to_owned(),
+                "relative".to_owned(),
+            )],
+        )
+        .expect_err("invalid output lease batch rejects");
+        assert_eq!(
+            error.failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    });
+    let events = captured.events();
+    assert!(events.iter().any(|event| {
+        event.contains("database.store_lease.created")
+            && event.contains("operation=\"create-output\"")
+            && event.contains("purpose=\"output\"")
+    }));
+    for forbidden in [
+        fixture.url(),
+        "output-telemetry-request",
+        "output-telemetry-lease",
+        "/nix/store/22222222222222222222222222222222-output-telemetry",
+        "output-telemetry-sensitive-url",
+        "output-telemetry-sensitive-request",
+        "output-telemetry-sensitive-lease",
+    ] {
+        assert!(
+            !events.iter().any(|event| event.contains(forbidden)),
+            "{events:?}"
+        );
+    }
+}
+
+#[test]
+fn create_request_output_leases_rolls_back_deferred_commit_failure() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "output-commit-failure-request",
+        "/nix/store/11111111111111111111111111111111-output-test.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    let mut client = fixture.connect();
+    client
+        .batch_execute(
+            "CREATE FUNCTION reject_output_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.purpose = 'output' THEN RAISE EXCEPTION 'reject output commit'; END IF; RETURN NEW; END $$;
+             CREATE CONSTRAINT TRIGGER reject_output_commit AFTER INSERT ON store_leases DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_output_commit();",
+        )
+        .expect("commit failure trigger installs");
+
+    assert_eq!(
+        telchar::persistence::create_request_output_leases(
+            fixture.url(),
+            "output-commit-failure-request",
+            &[(
+                "output-commit-failure".to_owned(),
+                "/nix/store/22222222222222222222222222222222-output-a".to_owned(),
+            )],
+        )
+        .expect_err("commit failure rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Commit
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = 'output-commit-failure-request'",
+                &[],
+            )
+            .expect("lease count reads")
+            .get::<_, i64>(0),
+        0
+    );
+}
+
+#[test]
 fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_mutation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
