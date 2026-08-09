@@ -10,6 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nix_worker_protocol::{
     WorkerTrust, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
 };
+
+const STORE_PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
+const NAR_HASH: &[u8] = b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1";
 use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 struct SocketFixture {
@@ -79,6 +82,57 @@ fn complete_handshake(stream: &mut std::os::unix::net::UnixStream, trust: u64) {
     integer(stream, trust);
     integer(stream, STDERR_LAST);
     stream.flush().expect("post-handshake flushes");
+}
+
+#[test]
+fn gateway_connection_delegates_typed_path_queries() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+
+        assert_eq!(read_integer(&mut stream), 1);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        integer(&mut stream, STDERR_LAST);
+        integer(&mut stream, 1);
+        stream.flush().expect("validity response flushes");
+
+        assert_eq!(read_integer(&mut stream), 26);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        integer(&mut stream, STDERR_LAST);
+        integer(&mut stream, 1);
+        byte_string(&mut stream, b"");
+        byte_string(&mut stream, NAR_HASH);
+        integer(&mut stream, 0);
+        integer(&mut stream, 42);
+        integer(&mut stream, 136);
+        integer(&mut stream, 0);
+        integer(&mut stream, 0);
+        byte_string(&mut stream, b"");
+        stream.flush().expect("path info response flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+
+    assert!(connection.is_valid_path(STORE_PATH).unwrap());
+    let info = connection.query_path_info(STORE_PATH).unwrap().unwrap();
+    assert_eq!(info.nar_hash_hex().as_bytes(), NAR_HASH);
+    assert_eq!(info.registration_time(), 42);
+    assert_eq!(info.nar_size(), 136);
+
+    drop(connection);
+    server.join().expect("server exits");
+}
+
+fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
+    let length = read_integer(input) as usize;
+    let padding = (8 - length % 8) % 8;
+    let mut value = vec![0; length + padding];
+    input.read_exact(&mut value).expect("worker string reads");
+    assert!(value[length..].iter().all(|byte| *byte == 0));
+    value.truncate(length);
+    value
 }
 
 #[test]

@@ -2,8 +2,8 @@
 
 use std::io::{self, Read, Write};
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::time::Duration;
 
@@ -2182,6 +2182,76 @@ pub enum WorkerTrust {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerClientCapabilities {
     pub root_registration: bool,
+    pub path_queries: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerPathInfo {
+    deriver: Option<Vec<u8>>,
+    nar_hash_hex: String,
+    references: Vec<Vec<u8>>,
+    registration_time: u64,
+    nar_size: u64,
+    ultimate: bool,
+    signatures: Vec<Vec<u8>>,
+    content_address: Option<Vec<u8>>,
+}
+
+impl WorkerPathInfo {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        deriver: Option<Vec<u8>>,
+        nar_hash_hex: String,
+        references: Vec<Vec<u8>>,
+        registration_time: u64,
+        nar_size: u64,
+        ultimate: bool,
+        signatures: Vec<Vec<u8>>,
+        content_address: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            deriver,
+            nar_hash_hex,
+            references,
+            registration_time,
+            nar_size,
+            ultimate,
+            signatures,
+            content_address,
+        }
+    }
+
+    pub fn deriver(&self) -> Option<&[u8]> {
+        self.deriver.as_deref()
+    }
+
+    pub fn nar_hash_hex(&self) -> &str {
+        &self.nar_hash_hex
+    }
+
+    pub fn references(&self) -> &[Vec<u8>] {
+        &self.references
+    }
+
+    pub fn registration_time(&self) -> u64 {
+        self.registration_time
+    }
+
+    pub fn nar_size(&self) -> u64 {
+        self.nar_size
+    }
+
+    pub fn ultimate(&self) -> bool {
+        self.ultimate
+    }
+
+    pub fn signatures(&self) -> &[Vec<u8>] {
+        &self.signatures
+    }
+
+    pub fn content_address(&self) -> Option<&[u8]> {
+        self.content_address.as_deref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2245,6 +2315,7 @@ impl<S: Read + Write> WorkerClient<S> {
                 trust,
                 capabilities: WorkerClientCapabilities {
                     root_registration: true,
+                    path_queries: true,
                 },
             },
         })
@@ -2252,6 +2323,21 @@ impl<S: Read + Write> WorkerClient<S> {
 
     pub fn profile(&self) -> &WorkerClientProfile {
         &self.profile
+    }
+
+    pub fn is_valid_path(&mut self, path: &[u8]) -> io::Result<bool> {
+        self.write_store_path_operation(WorkerOperation::IsValidPath, path)?;
+        read_strict_client_boolean(&mut self.stream)
+    }
+
+    pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
+        self.write_store_path_operation(WorkerOperation::QueryPathInfo, path)?;
+        if !read_strict_client_boolean(&mut self.stream)? {
+            return Ok(None);
+        }
+        read_worker_path_info(&mut self.stream)
+            .map(Some)
+            .map_err(|_| protocol_client_error())
     }
 
     pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
@@ -2274,6 +2360,18 @@ impl<S: Read + Write> WorkerClient<S> {
         self.stream
     }
 
+    fn write_store_path_operation(
+        &mut self,
+        operation: WorkerOperation,
+        path: &[u8],
+    ) -> io::Result<()> {
+        validate_store_path(path).map_err(|_| protocol_client_error())?;
+        write_worker_integer_to(&mut self.stream, operation.code())?;
+        write_worker_byte_string_to(&mut self.stream, path)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)
+    }
+
     fn execute_path_operation(
         &mut self,
         operation: WorkerOperation,
@@ -2288,6 +2386,107 @@ impl<S: Read + Write> WorkerClient<S> {
         }
         Ok(())
     }
+}
+
+fn read_strict_client_boolean(input: &mut impl Read) -> io::Result<bool> {
+    match read_worker_integer_from(input)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(protocol_client_error()),
+    }
+}
+
+fn read_worker_path_info(input: &mut impl Read) -> io::Result<WorkerPathInfo> {
+    let budget = SessionAllocationBudget::new(ProtocolSessionLimits::DEFAULT);
+    let (deriver, _deriver_charge) =
+        read_worker_byte_string_with_charge_from(input, MAXIMUM_WORKER_STORE_PATH_BYTES, &budget)?;
+    let deriver = if deriver.is_empty() {
+        None
+    } else {
+        validate_store_path(&deriver)?;
+        Some(deriver)
+    };
+    let (nar_hash, _hash_charge) = read_worker_byte_string_with_charge_from(
+        input,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES,
+        &budget,
+    )?;
+    if nar_hash.len() != MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES
+        || !nar_hash.iter().all(u8::is_ascii_hexdigit)
+        || nar_hash.iter().any(u8::is_ascii_uppercase)
+    {
+        return Err(protocol_client_error());
+    }
+    let nar_hash_hex = String::from_utf8(nar_hash).map_err(|_| protocol_client_error())?;
+    let references = read_client_byte_string_set(
+        input,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES,
+        MAXIMUM_WORKER_STORE_PATH_BYTES,
+        &budget,
+        true,
+    )?;
+    let registration_time = read_worker_integer_from(input)?;
+    let nar_size = read_worker_integer_from(input)?;
+    let ultimate = read_strict_client_boolean(input)?;
+    let signatures = read_client_byte_string_set(
+        input,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURES,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURE_BYTES,
+        &budget,
+        false,
+    )?;
+    let (content_address, _content_address_charge) = read_worker_byte_string_with_charge_from(
+        input,
+        MAXIMUM_ADD_MULTIPLE_TO_STORE_CONTENT_ADDRESS_BYTES,
+        &budget,
+    )?;
+    Ok(WorkerPathInfo::new(
+        deriver,
+        nar_hash_hex,
+        references,
+        registration_time,
+        nar_size,
+        ultimate,
+        signatures,
+        (!content_address.is_empty()).then_some(content_address),
+    ))
+}
+
+fn read_client_byte_string_set(
+    input: &mut impl Read,
+    maximum_count: usize,
+    maximum_length: usize,
+    budget: &SessionAllocationBudget,
+    validate_paths: bool,
+) -> io::Result<Vec<Vec<u8>>> {
+    let count =
+        usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
+    if count > maximum_count {
+        return Err(protocol_client_error());
+    }
+    let _collection_charge = budget
+        .charge(
+            count
+                .checked_mul(std::mem::size_of::<Vec<u8>>())
+                .ok_or_else(protocol_client_error)?,
+        )
+        .map_err(|_| protocol_client_error())?;
+    let mut values = Vec::with_capacity(count);
+    let mut charges = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (value, charge) =
+            read_worker_byte_string_with_charge_from(input, maximum_length, budget)?;
+        if validate_paths {
+            validate_store_path(&value)?;
+        }
+        if values.contains(&value) {
+            return Err(protocol_client_error());
+        }
+        values.push(value);
+        charges.push(charge);
+    }
+    drop(charges);
+    Ok(values)
 }
 
 fn read_operation_frames(input: &mut impl Read, version: WorkerVersion) -> io::Result<()> {
@@ -2394,8 +2593,9 @@ fn protocol_client_error() -> io::Error {
 
 fn validate_store_path(path: &[u8]) -> io::Result<()> {
     if path.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
-        || !path.starts_with(b"/")
-        || path.len() <= NIX_STORE_HASH_LENGTH + 2
+        || !path.starts_with(NIX_STORE_DIRECTORY)
+        || path[NIX_STORE_DIRECTORY.len()..].contains(&b'/')
+        || path.len() <= NIX_STORE_DIRECTORY.len() + NIX_STORE_HASH_LENGTH + 1
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -2598,16 +2798,16 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        ActivityField, CLIENT_WORKER_MAGIC, FixtureStderrFrame, LATEST_WORKER_VERSION,
-        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, MINIMUM_WORKER_VERSION, ProtocolError,
-        ProtocolSessionLimits, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT, STDERR_RESULT,
-        STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY, SessionAllocationBudget, StderrFrame,
-        WorkerOperation, WorkerReader, WorkerVersion, protocol_name, read_client_worker_magic,
-        read_fixture_client_handshake, read_fixture_client_post_handshake,
-        read_fixture_server_handshake_info, read_fixture_set_options, read_fixture_stderr_frame,
-        read_fixture_terminal_frame, read_worker_byte_string, read_worker_integer,
-        read_worker_operation, write_server_worker_magic, write_stderr_frame,
-        write_worker_byte_string, write_worker_integer,
+        protocol_name, read_client_worker_magic, read_fixture_client_handshake,
+        read_fixture_client_post_handshake, read_fixture_server_handshake_info,
+        read_fixture_set_options, read_fixture_stderr_frame, read_fixture_terminal_frame,
+        read_worker_byte_string, read_worker_integer, read_worker_operation,
+        write_server_worker_magic, write_stderr_frame, write_worker_byte_string,
+        write_worker_integer, ActivityField, FixtureStderrFrame, ProtocolError,
+        ProtocolSessionLimits, SessionAllocationBudget, StderrFrame, WorkerOperation, WorkerReader,
+        WorkerVersion, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION,
+        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, MINIMUM_WORKER_VERSION, SERVER_WORKER_MAGIC,
+        STDERR_LAST, STDERR_NEXT, STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY,
     };
 
     #[test]

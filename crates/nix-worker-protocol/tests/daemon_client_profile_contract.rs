@@ -1,8 +1,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
-    WorkerClient, WorkerTrust, WorkerVersion,
+    WorkerClient, WorkerTrust, WorkerVersion, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION,
+    SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
 };
 
 struct ScriptedStream {
@@ -231,6 +231,8 @@ fn profile_does_not_retain_raw_daemon_metadata() {
 
     assert_eq!(
         std::mem::size_of_val(client.profile()),
-        std::mem::size_of::<WorkerVersion>() + 2
+        std::mem::size_of::<WorkerVersion>()
+            + std::mem::size_of::<WorkerTrust>()
+            + std::mem::size_of_val(&client.profile().capabilities)
     );
 }
