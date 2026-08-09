@@ -227,7 +227,7 @@ let
     };
   };
 in
-{
+rec {
   modules = {
     gateway = gatewayModule;
     stock-client = stockClientModule;
@@ -238,6 +238,17 @@ in
     waitForTelchar = machine: "${machine}.wait_for_unit(\"telchar.service\")";
     assertNetwork = source: destination: "${source}.succeed(\"ping -c 1 ${destination}\")";
   };
+
+  mkGate3Test =
+    {
+      name,
+      testScript ? "",
+    }:
+    mkTest {
+      inherit name testScript;
+      restrictedIngress = true;
+      includeCollector = true;
+    };
 
   mkTest =
     {

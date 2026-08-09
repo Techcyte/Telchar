@@ -162,10 +162,8 @@
                 }
               '';
             in
-            harness.mkTest {
+            harness.mkGate3Test {
               name = "telchar-nixos-gate-3-contract";
-              restrictedIngress = true;
-              includeCollector = true;
               testScript = ''
                 start_all()
                 otlp_collector.wait_for_open_port(4317)
