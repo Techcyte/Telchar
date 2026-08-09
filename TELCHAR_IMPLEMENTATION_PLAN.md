@@ -909,7 +909,7 @@ Evidence: paths and output facts to record
   - Verify: real-store multi-output root/lease ordering, second-output root failure rollback, output-lease transaction failure rollback, and successful request cleanup tests.
   - Evidence: all output roots precede one committed output-lease set, failed batches leave zero output roots/leases, and successful cleanup leaves only active output leases.
 
-- [ ] T086 Preserve classic output trust statement in outcome
+- [x] T086 Preserve classic output trust statement in outcome
   - Depends on: T083
   - Outcome: code and docs distinguish store validation from provenance proof for input-addressed outputs.
   - Red: result documentation test finds overclaim.
