@@ -68,10 +68,16 @@ pub enum LocalBuildStatus {
     AlreadyValid,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputTrust {
+    TrustedExecutor,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalBuildResult {
     status: LocalBuildStatus,
     outputs: Vec<(Vec<u8>, Vec<u8>)>,
+    output_trust: OutputTrust,
 }
 
 impl LocalBuildResult {
@@ -81,6 +87,10 @@ impl LocalBuildResult {
 
     pub fn outputs(&self) -> &[(Vec<u8>, Vec<u8>)] {
         &self.outputs
+    }
+
+    pub fn output_trust(&self) -> OutputTrust {
+        self.output_trust
     }
 }
 
@@ -449,7 +459,11 @@ fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildRe
             "build helper output set mismatch",
         ));
     }
-    Ok(LocalBuildResult { status, outputs })
+    Ok(LocalBuildResult {
+        status,
+        outputs,
+        output_trust: OutputTrust::TrustedExecutor,
+    })
 }
 
 struct ChildGuard {

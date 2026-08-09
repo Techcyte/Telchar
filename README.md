@@ -105,7 +105,7 @@ A submitted build follows this path:
 5. The request enters a fair queue. Backend capacity is distinct from client ingress credit.
 6. The daemon creates a durable execution attempt and backend idempotency key before submission.
 7. A compatible backend stages inputs, executes the derivation, and returns logs, status, metadata, and outputs.
-8. Telchar imports and verifies outputs in the gateway store before reporting success.
+8. Telchar imports and verifies outputs in the gateway store before reporting success. For classic input-addressed outputs, this establishes store consistency with a trusted executor, not provenance proof.
 9. Results and logs are relayed through the original worker-protocol session.
 10. Store leases retain required inputs and outputs until requests, attachments, and transfers no longer need them.
 

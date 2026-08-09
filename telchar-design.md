@@ -576,7 +576,7 @@ After execution:
 4. Telchar returns a successful build result to the client.
 5. Optional cache publication occurs according to policy.
 
-Telchar must not report success merely because a backend process exited successfully. Required outputs must be present and valid at the gateway boundary. For classic input-addressed derivations, this validates store consistency but does not cryptographically prove provenance; executor integrity remains trusted.
+Telchar must not report success merely because a backend process exited successfully. Required outputs must be present and valid at the gateway boundary. For classic input-addressed derivations, this establishes store consistency with a trusted executor, not provenance proof; executor integrity remains trusted.
 
 ## Optional binary-cache integration
 

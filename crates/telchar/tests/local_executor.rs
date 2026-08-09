@@ -83,7 +83,7 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
 }
 
 #[test]
-fn accepted_classic_results_are_classified_as_trusted_executor() {
+fn built_and_already_valid_results_have_output_trust() {
     for (status, expected_status) in [
         ("built", LocalBuildStatus::Built),
         ("already-valid", LocalBuildStatus::AlreadyValid),
@@ -112,6 +112,24 @@ fn accepted_classic_results_are_classified_as_trusted_executor() {
         assert_eq!(result.status(), expected_status);
         assert_eq!(result.output_trust(), OutputTrust::TrustedExecutor);
         fs::remove_dir_all(root).expect("fixture cleans");
+    }
+}
+
+#[test]
+fn classic_output_trust_documentation_states_store_consistency_not_provenance_proof() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root resolves")
+        .to_path_buf();
+    for document in ["README.md", "telchar-design.md"] {
+        let text = fs::read_to_string(repository.join(document)).expect("documentation reads");
+        assert!(text.contains("store consistency"), "{document}");
+        assert!(text.contains("trusted executor"), "{document}");
+        assert!(text.contains("not provenance proof"), "{document}");
+        assert!(!text.contains("cryptographically proven"), "{document}");
+        assert!(!text.contains("reproducibly verified"), "{document}");
+        assert!(!text.contains("builder-independent"), "{document}");
     }
 }
 
