@@ -2064,6 +2064,76 @@ fn unread_frontend_backpressures_build_logs_and_disconnect_cleans_request() {
 }
 
 #[test]
+fn detached_frontend_allows_failed_helper_to_finish_without_dead_transport_write() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-detached-failure-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let started = root.join("started");
+    let complete = root.join("complete");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexit 1\n",
+            started.display(),
+            complete.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store_default_disconnect_policy(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    child.kill().expect("frontend terminates");
+    child.wait().expect("frontend reaps");
+    drop(input);
+    drop(output);
+
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    let mut database = fixture.database.connect();
+    let request_id = request_id(&mut database);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let state = database
+            .query_one("SELECT state FROM request_attachments", &[])
+            .expect("attachment state reads")
+            .get::<_, String>(0);
+        if state == "detached" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "requester disconnect left attachment attached"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_released_derivation_lease(&fixture.database, &request_id);
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.failed"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-cancel-helper-{}-{}",
@@ -2290,6 +2360,7 @@ impl FrontendFixture {
             worker_timeout_ms,
             None,
             std::iter::empty::<(&str, String)>(),
+            Some("cancel-running"),
         )
     }
 
@@ -2297,6 +2368,28 @@ impl FrontendFixture {
         worker_timeout_ms: Option<u64>,
         store_uri: &str,
         environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
+        Self::spawn_with_store_policy(
+            worker_timeout_ms,
+            store_uri,
+            environment,
+            Some("cancel-running"),
+        )
+    }
+
+    fn spawn_with_store_default_disconnect_policy(
+        worker_timeout_ms: Option<u64>,
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
+        Self::spawn_with_store_policy(worker_timeout_ms, store_uri, environment, None)
+    }
+
+    fn spawn_with_store_policy(
+        worker_timeout_ms: Option<u64>,
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+        running_disconnect_policy: Option<&str>,
     ) -> Self {
         let environment = environment.into_iter().collect::<Vec<_>>();
         let has_export = environment
@@ -2306,7 +2399,12 @@ impl FrontendFixture {
             .iter()
             .any(|(name, _)| *name == "TELCHAR_NIX_STORE_BUILD");
         if has_export || !has_build {
-            Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+            Self::spawn_configured(
+                worker_timeout_ms,
+                Some(store_uri),
+                environment,
+                running_disconnect_policy,
+            )
         } else {
             let root = std::env::temp_dir().join(format!(
                 "telchar-operation-export-{}-{}",
@@ -2342,7 +2440,12 @@ impl FrontendFixture {
                 export_helper.display().to_string(),
             ));
             environment.push(("TELCHAR_NIX", nix.display().to_string()));
-            Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+            Self::spawn_configured(
+                worker_timeout_ms,
+                Some(store_uri),
+                environment,
+                running_disconnect_policy,
+            )
         }
     }
 
@@ -2361,13 +2464,19 @@ impl FrontendFixture {
             "TELCHAR_NIX",
             std::env::var("TELCHAR_NIX_BIN").expect("flake-pinned Nix is configured"),
         ));
-        Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+        Self::spawn_configured(
+            worker_timeout_ms,
+            Some(store_uri),
+            environment,
+            Some("cancel-running"),
+        )
     }
 
     fn spawn_configured(
         worker_timeout_ms: Option<u64>,
         store_uri: Option<&str>,
         environment: impl IntoIterator<Item = (&'static str, String)>,
+        running_disconnect_policy: Option<&str>,
     ) -> Self {
         let root = std::env::temp_dir().join(format!(
             "telchar-operation-{}-{}-{}",
@@ -2406,7 +2515,7 @@ impl FrontendFixture {
         daemon_command
             .env("TELCHAR_DATABASE_URL", database.url())
             .env("TELCHAR_SYSTEM", "x86_64-linux")
-            .env("TELCHAR_RUNNING_DISCONNECT_POLICY", "cancel-running")
+            .env_remove("TELCHAR_RUNNING_DISCONNECT_POLICY")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_NIX_STORE_BUILD")
             .env_remove("TELCHAR_NIX_STORE_EXPORT")
@@ -2415,6 +2524,12 @@ impl FrontendFixture {
             .env_remove("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
         if let Some(gc_roots) = gc_roots {
             daemon_command.env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", gc_roots);
+        }
+        if let Some(running_disconnect_policy) = running_disconnect_policy {
+            daemon_command.env(
+                "TELCHAR_RUNNING_DISCONNECT_POLICY",
+                running_disconnect_policy,
+            );
         }
         if let Some(timeout) = worker_timeout_ms {
             daemon_command.env("TELCHAR_WORKER_IDLE_TIMEOUT_MS", timeout.to_string());

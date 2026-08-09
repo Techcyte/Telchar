@@ -519,7 +519,9 @@ pub fn run_worker_session(
                                 release_error_message(&release_error),
                             );
                         }
-                        if error.kind() == io::ErrorKind::ConnectionAborted {
+                        if requester_detached.get()
+                            || error.kind() == io::ErrorKind::ConnectionAborted
+                        {
                             return Ok(());
                         }
                         return reject(
