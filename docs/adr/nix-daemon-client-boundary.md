@@ -20,16 +20,18 @@ The existing `WorkerClient<S>` root-registration subset in `crates/nix-worker-pr
 
 ## Fixed compatibility profile
 
-The initial profile targets the flake-pinned Nix 2.34.8 worker protocol:
+The initial client implementation targets the flake-pinned Nix 2.34.8 worker protocol while accepting a bounded recent daemon range:
 
 ```text
 client maximum: 1.38
-client minimum: 1.18
+client minimum: 1.35
 required major: 1
 logical store: /nix/store
 ```
 
-The client sends worker magic 1 and version 1.38. It requires worker magic 2, major version 1, and daemon version at least 1.18. The negotiated number is `min(daemon, 1.38)`. A daemon newer than 1.38 is accepted only through the 1.38 intersection. A different major or version below 1.18 fails closed.
+The client sends worker magic 1 and version 1.38. It requires worker magic 2, major version 1, and daemon version at least 1.35. The negotiated number is `min(daemon, 1.38)`. A daemon newer than 1.38 is accepted only through the 1.38 intersection. A different major or version below 1.35 fails closed.
+
+The minimum deliberately covers the recent protocol generations represented by Nix 2.18 (`1.35`), Nix 2.20 (`1.37`), and Nix 2.24 and later (`1.38`). Telchar does not promise compatibility with every intervening Nix release merely because its protocol number falls in this range; release lanes are added only with real-daemon evidence. Protocol 1.25 is excluded because it is a Nix 2.1-era profile and predates the trust result required by the privileged gateway boundary.
 
 For negotiated 1.38, both sides exchange bounded feature sets. Telchar advertises no optional features until a later accepted operation requires one. Any received feature set is bounded by count, element size, aggregate retained metadata, and zero-padding validation. Unknown optional features are ignored after bounded decode and are not retained. Required semantics are represented by typed capabilities, never by scattered raw version checks in Telchar.
 
@@ -73,13 +75,13 @@ Initial capability thresholds:
 
 | Capability | Minimum | Purpose |
 | --- | ---: | --- |
-| root registration | 1.18 | `AddTempRoot`, `AddIndirectRoot` with accepted exact-root lifecycle |
-| path validity | 1.18 | `IsValidPath` |
-| path information | 1.18 | `QueryPathInfo`; conditional-valid response semantics are supported at 1.18+ |
-| raw NAR export | 1.18 | `NarFromPath` streaming |
-| complete input closure | 1.18 | bounded recursive composition of `QueryPathInfo.references`; exact semantics remain `computeFSClosure(roots, false, false, false)` for the accepted no-flip/no-outputs/no-derivers case |
-| metadata-preserving NAR registration | 1.18 | `AddToStoreNar`, not content-addressed `AddToStore` |
-| basic derivation execution | 1.18 | `BuildDerivation` with classic input-addressed `BasicDerivation` and normalized `BuildResult` |
+| root registration | 1.35 | `AddTempRoot`, `AddIndirectRoot` with accepted exact-root lifecycle |
+| path validity | 1.35 | `IsValidPath` |
+| path information | 1.35 | `QueryPathInfo` with conditional-valid response semantics |
+| raw NAR export | 1.35 | `NarFromPath` streaming |
+| complete input closure | 1.35 | bounded recursive composition of `QueryPathInfo.references`; exact semantics remain `computeFSClosure(roots, false, false, false)` for the accepted no-flip/no-outputs/no-derivers case |
+| metadata-preserving NAR registration | 1.35 | `AddToStoreNar`, not content-addressed `AddToStore` |
+| basic derivation execution | 1.35 | `BuildDerivation` with classic input-addressed `BasicDerivation` and normalized `BuildResult` |
 
 Negotiation alone does not activate unfinished capabilities. `WorkerClientCapabilities` reports a capability only when both the version requirement and the compiled typed implementation are present. Telchar must not infer support from a raw operation number.
 
@@ -167,7 +169,7 @@ Remote diagnostics are consumed for framing correctness but redacted from public
 
 ## Trust and authorization
 
-The configured local gateway daemon is a deployment-owned privileged boundary. Telchar requires a profile compatible with each requested operation. For operations whose Nix daemon authorization depends on trust, an explicit `Untrusted` result fails before sending the operation. `Unknown` fails closed for classic input-addressed `BuildDerivation` and metadata registration with signature checking disabled. Read-only path queries/export and root registration may accept `Unknown` when their operation packet proves the pinned daemon permits the behavior. Because the pinned migration profile is 1.18–1.38, protocols below 1.35 cannot provide a positive trust assertion and therefore do not expose trust-required capabilities.
+The configured local gateway daemon is a deployment-owned privileged boundary. Telchar requires a profile compatible with each requested operation. For operations whose Nix daemon authorization depends on trust, an explicit `Untrusted` or `Unknown` result fails before sending the operation. The supported profile begins at 1.35 so every accepted daemon can report trust. Read-only path queries/export and root registration may operate on an explicitly untrusted connection when their operation packet proves the pinned daemon permits the behavior; classic input-addressed `BuildDerivation` and metadata registration with signature checking disabled require `Trusted`.
 
 Output trust remains `TrustedExecutor` in Telchar's normalized classic result because it describes the configured executor boundary. Worker trust does not elevate that to provenance proof.
 

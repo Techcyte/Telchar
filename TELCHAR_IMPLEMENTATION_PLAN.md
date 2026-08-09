@@ -1030,14 +1030,21 @@ Evidence: paths and output facts to record
   - Outcome: an ADR fixes a pure-Rust client over the configured Nix daemon worker protocol as the gateway-store compatibility boundary; Rust `libstore` bindings, C++ ABI/FFI, shell commands, PATH discovery, host-store fallback, and client-selected endpoints remain forbidden.
   - Red: existing root-registration client was capped at 1.25 and no accepted decision fixed the reusable/profile boundary, trust handling, operation migration, or Telchar connection ownership.
   - Verify: complete review of pinned Nix 2.34.8 handshake, post-handshake, STDERR, path-info, NAR, import, build, and daemon dispatch sources plus the accepted compatibility inventory.
-  - Evidence: `docs/adr/nix-daemon-client-boundary.md` fixes protocol 1.18–1.38, typed trust/capabilities, generic-stream ownership, configured Unix endpoint, timeout/cancellation/error contracts, required operation map, resource bounds, and rejected alternatives.
+  - Evidence: `docs/adr/nix-daemon-client-boundary.md` fixes protocol 1.35–1.38, typed trust/capabilities, generic-stream ownership, configured Unix endpoint, timeout/cancellation/error contracts, required operation map, resource bounds, and rejected alternatives.
 
-- [ ] T095B Implement reusable Rust Nix-daemon connection and capability negotiation
+- [x] T095B Implement reusable Rust Nix-daemon client negotiation and capability profile
   - Depends on: T095A, T003, T019
-  - Outcome: a bounded reusable Rust client connects only to the configured gateway-store endpoint, performs typed worker-protocol negotiation, exposes capability/profile checks, and kills or closes work deterministically on timeout, cancellation, owner death, malformed traffic, or unsupported semantics.
-  - Red: connection tests require native helpers or accept malformed/unsupported daemon traffic.
-  - Verify: private-daemon handshake, capability, timeout, disconnect, malformed-response, and owner-death tests.
-  - Evidence: negotiated profile, fixed endpoint, bounded allocations, and terminal cleanup.
+  - Outcome: `nix-worker-protocol` negotiates client maximum 1.38 across the supported recent daemon range 1.35–1.38, exchanges bounded feature sets when negotiated, parses bounded post-handshake daemon version/trust fields, consumes startup STDERR framing, and exposes typed negotiated version, trust, and implemented root-registration capability over a caller-owned stream. Telchar socket ownership, timeouts, cancellation, and owner death remain T095B1.
+  - Red: the first packet contradicted the accepted 1.38 profile with an unchanged 1.25 golden stream; after correction, the existing client still lacked a typed profile and hostile modern-handshake coverage.
+  - Verify: complete `nix-worker-protocol` suite; Clippy with warnings denied; formatter/diff checks; real trusted and untrusted project-owned private-daemon handshake.
+  - Evidence: exact 1.38 client greeting and feature exchange, accepted 1.35/1.37/1.38 profiles, rejection below 1.35/wrong major/malformed trust/padding/truncation/oversize/daemon error, bounded redacted diagnostics, retained-metadata-free profile, preserved root operation bytes, and successful real Nix 2.34.8 private-daemon negotiation.
+
+- [ ] T095B1 Connect Telchar to the configured gateway daemon
+  - Depends on: T095B
+  - Outcome: Telchar owns a direct Unix connection only to the validated deployment-configured gateway endpoint and deterministically closes it on timeout, cancellation, owner death, malformed traffic, or unsupported capability/trust semantics.
+  - Red: connection tests accept environment/default/client-selected fallback, leak a blocked operation, or reuse a desynchronized stream.
+  - Verify: private-daemon endpoint, timeout, disconnect, malformed-response, cancellation, and owner-death tests.
+  - Evidence: fixed endpoint, bounded connection lifetime, no fallback, and terminal cleanup.
 
 - [ ] T095C Replace the native input-closure helper with Rust worker-protocol operations
   - Depends on: T095B, T073
