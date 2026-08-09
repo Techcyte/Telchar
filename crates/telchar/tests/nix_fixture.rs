@@ -2,7 +2,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix_worker_protocol::{WorkerOperation, WorkerTrust, LATEST_WORKER_VERSION};
+use nix_worker_protocol::{LATEST_WORKER_VERSION, WorkerOperation, WorkerTrust};
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::worker_trace::TraceCapture;
 
@@ -267,9 +267,11 @@ fn real_store_import_registers_valid_nar_and_export_streams_it() {
     source_daemon
         .import_nar(body.as_slice())
         .expect("valid NAR imports");
-    assert!(source_daemon
-        .is_valid_path(&path)
-        .expect("imported path query"));
+    assert!(
+        source_daemon
+            .is_valid_path(&path)
+            .expect("imported path query")
+    );
     let imported = source_daemon
         .query_path_info(&path)
         .expect("imported metadata query");
@@ -302,9 +304,11 @@ fn legacy_import_rejects_structurally_corrupt_export() {
         .import_nar(exported.as_slice())
         .expect_err("structurally corrupt export must be rejected");
     assert!(error.to_string().contains("import"));
-    assert!(!source_daemon
-        .is_valid_path(&path)
-        .expect("corrupt path query"));
+    assert!(
+        !source_daemon
+            .is_valid_path(&path)
+            .expect("corrupt path query")
+    );
 
     source_daemon.stop().expect("source daemon stops");
     source_fixture.cleanup().expect("source fixture cleans");
