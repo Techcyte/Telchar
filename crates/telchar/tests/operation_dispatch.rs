@@ -1306,7 +1306,10 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
         "output lease failure left a request root"
     );
     let stderr = fixture.finish();
-    assert!(stderr.contains("operation=\"create-output\""), "{stderr}");
+    assert!(
+        stderr.contains("operation=\"create-output-retention\""),
+        "{stderr}"
+    );
     assert!(!stderr.contains(&request_id), "{stderr}");
     assert!(
         !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),

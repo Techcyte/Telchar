@@ -986,19 +986,19 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test deployment_config --locked`; full Telchar Clippy and formatter checks.
   - Evidence: `OutputRetention` performs strict canonical decimal parsing, rejects malformed/out-of-range/non-Unicode values, exposes typed duration/seconds accessors, and adds bounded `output_retention_seconds` to `deployment.configured`. Changesets `7ca82c6d`, `bc224a26`, `e134892b`, plus parent telemetry integration.
 
-- [ ] T093B Persist immutable output retention deadlines
+- [x] T093B Persist immutable output retention deadlines
   - Depends on: T093A, T070A, T085A
   - Outcome: migration 0002 adds `expires_at`, backfills existing active output leases with migration time plus one hour under the explicitly approved compatibility policy, preserves already-released outputs as immediately expired, and atomically creates each complete output lease set with one immutable PostgreSQL transaction deadline.
-  - Red: version-1 fixture rows lack valid deadlines, non-output leases accept deadlines, or one output batch receives inconsistent deadlines.
-  - Verify: real PostgreSQL migration and output-lease creation tests.
-  - Evidence: schema constraint/index, migration ledger version 2, exact backfill, and complete-set deadline atomicity.
+  - Red: migration and persistence tests initially assumed one schema version and output leases had no typed deadline.
+  - Verify: `nix develop -c cargo test -p telchar --test persistence --locked -- --test-threads=1`; operation-dispatch regression; Clippy and formatter checks.
+  - Evidence: migration ledger version 2, exact version-1 backfill, output/non-output deadline constraints, partial expiry index, strict whole-second 60–86,400 duration validation, and one common transaction deadline for complete output batches.
 
-- [ ] T093C Release expired output leases transactionally
+- [x] T093C Release expired output leases transactionally
   - Depends on: T093B, T075
   - Outcome: a bounded keyset operation selects request-owned active output leases due at an injected time with `FOR UPDATE SKIP LOCKED`, marks the complete selected set released atomically, commits, and returns deterministic released rows as exact root-removal authority.
-  - Red: future/non-output rows release, page exceeds 256, overlapping calls return the same lease, partial transition commits, or root work must occur before commit.
-  - Verify: real PostgreSQL boundary, cursor, concurrency, and rollback tests.
-  - Evidence: post-commit rows, no duplicate concurrent ownership, and failed transaction leaves active leases unchanged.
+  - Red: no expiry transition API or boundary/cursor tests existed.
+  - Verify: real PostgreSQL deadline, cursor, page-bound, state, malformed-input, and existing transaction rollback tests in the 52-test persistence suite.
+  - Evidence: due rows release in lease-ID order, cursor and 256-row maximum are enforced, released rows are not selected twice, invalid input fails before connection, commit precedes return, and telemetry remains identifier-free.
 
 - [ ] T093D Reconcile expired output roots and prove later retrieval
   - Depends on: T093A, T093C, T092
