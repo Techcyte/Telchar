@@ -628,8 +628,8 @@ mod tests {
     use std::io;
 
     use super::{
-        spawn_log_reader, MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+        MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
     };
 
     struct FailingLogReader;
