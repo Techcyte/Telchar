@@ -930,12 +930,12 @@ Evidence: paths and output facts to record
   - Verify: focused flake NixOS walking-skeleton command with expected failure assertion.
   - Evidence: failing operation, production process topology, and negative-local proof.
 
-- [ ] T087 Return successful build result over stdio
+- [x] T087 Return successful build result over stdio
   - Depends on: T083, T084, T085, T085A, T086A, T086B
   - Outcome: pinned Nix client receives successful result and can copy expected output.
-  - Red: real-client vertical test fails after build.
-  - Verify: direct-stdio end-to-end build.
-  - Evidence: client-visible output path/content.
+  - Red: the isolated Rust fixture timed out because its client and gateway stores used incompatible path identities; a first shared-store NixOS attempt then deadlocked on recursive ownership of the same output lock.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
+  - Evidence: the authoritative NixOS Gate 3 topology now runs a stock Nix client against a test-owned SSH executable that only launches `telchar serve-stdio`, with a separate rooted client store, disabled local jobs, production authenticated IPC and gateway-store execution, exact client-readable output bytes, detached attachment, released derivation/input leases, active output lease, and exact retained output root; changeset `ab286cdb`.
 
 - [ ] T088 Return successful build result over `ssh-ng://`
   - Depends on: T087, T061
