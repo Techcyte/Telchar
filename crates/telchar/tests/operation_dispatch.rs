@@ -1014,6 +1014,126 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
 }
 
 #[test]
+fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-invalid-output-metadata-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let build_helper = root.join("build-helper");
+    fs::write(
+        &build_helper,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+    )
+    .expect("build helper writes");
+    fs::set_permissions(&build_helper, fs::Permissions::from_mode(0o700))
+        .expect("build helper executable");
+    let nar_path = root.join("output.nar");
+    fs::write(&nar_path, regular_nar(b"telchar-output-metadata-secret"))
+        .expect("output NAR writes");
+    let export_helper = root.join("export-helper");
+    fs::write(
+        &export_helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\ncat '{}'\n",
+            nar_path.display()
+        ),
+    )
+    .expect("export helper writes");
+    fs::set_permissions(&export_helper, fs::Permissions::from_mode(0o700))
+        .expect("export helper executable");
+    let nix = root.join("nix");
+    fs::write(
+        &nix,
+        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+    )
+    .expect("Nix query helper writes");
+    fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).expect("Nix helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            (
+                "TELCHAR_NIX_STORE_BUILD",
+                build_helper.display().to_string(),
+            ),
+            (
+                "TELCHAR_NIX_STORE_EXPORT",
+                export_helper.display().to_string(),
+            ),
+            ("TELCHAR_NIX", nix.display().to_string()),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "BuildDerivation execution failed");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+
+    let mut database = fixture.database.connect();
+    let request_id = request_id(&mut database);
+    let session_id = database
+        .query_one(
+            "SELECT session_id FROM request_attachments WHERE request_id = $1",
+            &[&request_id],
+        )
+        .expect("attachment reads")
+        .get::<_, String>(0);
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.database.url(),
+            &session_id,
+            &request_id
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+    assert_released_derivation_lease(&fixture.database, &request_id);
+    assert_eq!(
+        database
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = $1 AND state = 'active'",
+                &[&request_id],
+            )
+            .expect("active lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "invalid output metadata left active request leases"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.output_validation_failed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&request_id), "{stderr}");
+    assert!(!stderr.contains(&session_id), "{stderr}");
+    assert!(
+        !stderr.contains("telchar-output-metadata-secret"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn detach_failure_does_not_send_successful_build_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-detach-failure-{}-{}",
@@ -1996,7 +2116,52 @@ impl FrontendFixture {
         store_uri: &str,
         environment: impl IntoIterator<Item = (&'static str, String)>,
     ) -> Self {
-        Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+        let environment = environment.into_iter().collect::<Vec<_>>();
+        let has_export = environment
+            .iter()
+            .any(|(name, _)| *name == "TELCHAR_NIX_STORE_EXPORT");
+        let has_build = environment
+            .iter()
+            .any(|(name, _)| *name == "TELCHAR_NIX_STORE_BUILD");
+        if has_export || !has_build {
+            Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+        } else {
+            let root = std::env::temp_dir().join(format!(
+                "telchar-operation-export-{}-{}",
+                std::process::id(),
+                FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).expect("export fixture root creates");
+            let nar_path = root.join("output.nar");
+            fs::write(&nar_path, regular_nar(b"telchar-classic-fixture"))
+                .expect("export fixture NAR writes");
+            let export_helper = root.join("export-helper");
+            fs::write(
+                &export_helper,
+                format!(
+                    "#!/bin/sh\nset -eu\ncat >/dev/null\ncat '{}'\n",
+                    nar_path.display()
+                ),
+            )
+            .expect("export helper writes");
+            fs::set_permissions(&export_helper, fs::Permissions::from_mode(0o700))
+                .expect("export helper executable");
+            let nix = root.join("nix");
+            fs::write(
+                &nix,
+                "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+            )
+            .expect("Nix query helper writes");
+            fs::set_permissions(&nix, fs::Permissions::from_mode(0o700))
+                .expect("Nix helper executable");
+            let mut environment = environment;
+            environment.push((
+                "TELCHAR_NIX_STORE_EXPORT",
+                export_helper.display().to_string(),
+            ));
+            environment.push(("TELCHAR_NIX", nix.display().to_string()));
+            Self::spawn_configured(worker_timeout_ms, Some(store_uri), environment)
+        }
     }
 
     fn spawn_with_store_export(
@@ -2323,6 +2488,22 @@ fn write_string(output: &mut impl Write, value: &[u8]) {
     output
         .write_all(&[0; 7][..(8 - value.len() % 8) % 8])
         .expect("worker string padding writes");
+}
+
+fn regular_nar(contents: &[u8]) -> Vec<u8> {
+    let mut nar = Vec::new();
+    for value in [
+        b"nix-archive-1".as_slice(),
+        b"(".as_slice(),
+        b"type".as_slice(),
+        b"regular".as_slice(),
+        b"contents".as_slice(),
+        contents,
+        b")".as_slice(),
+    ] {
+        write_string(&mut nar, value);
+    }
+    nar
 }
 
 fn read_integer(input: &mut impl Read) -> u64 {
