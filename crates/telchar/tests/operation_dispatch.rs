@@ -2406,6 +2406,7 @@ impl FrontendFixture {
         daemon_command
             .env("TELCHAR_DATABASE_URL", database.url())
             .env("TELCHAR_SYSTEM", "x86_64-linux")
+            .env("TELCHAR_RUNNING_DISCONNECT_POLICY", "cancel-running")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_NIX_STORE_BUILD")
             .env_remove("TELCHAR_NIX_STORE_EXPORT")

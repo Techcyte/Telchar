@@ -99,6 +99,7 @@ pub fn run_worker_session(
     mut output: std::os::unix::net::UnixStream,
     limits: ProtocolSessionLimits,
     deployment: &DeploymentConfig,
+    running_disconnect_policy: crate::deployment::RunningDisconnectPolicy,
     store_query: &mut dyn QueryValidPathsStore,
     build_executor: &mut dyn BuildExecutor,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
@@ -451,18 +452,48 @@ pub fn run_worker_session(
                         return Err(error);
                     }
                 };
+                let requester_detached = std::cell::Cell::new(false);
                 let result = match build_executor.execute_with_logs(
                     &execution,
                     &mut |chunk| {
-                        nix_worker_protocol::write_stderr_frame(
+                        if requester_detached.get() {
+                            return Ok(());
+                        }
+                        match nix_worker_protocol::write_stderr_frame(
                             &mut output,
                             nix_worker_protocol::StderrFrame::Next {
                                 message: chunk.to_vec(),
                             },
-                        )?;
-                        output.flush()
+                        )
+                        .and_then(|_| output.flush())
+                        {
+                            Ok(()) => Ok(()),
+                            Err(_error)
+                                if running_disconnect_policy
+                                    == crate::deployment::RunningDisconnectPolicy::DetachAndFinish =>
+                            {
+                                requester_detached.set(true);
+                                tracing::info!(
+                                    event = "worker.build_derivation.requester_detached",
+                                    running_disconnect_policy = running_disconnect_policy.as_str(),
+                                    "running build detached from requester"
+                                );
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
                     },
-                    &mut || requester_disconnected(&mut cancellation_input),
+                    &mut || {
+                        let disconnected = requester_disconnected(&mut cancellation_input)?;
+                        if disconnected
+                            && running_disconnect_policy
+                                == crate::deployment::RunningDisconnectPolicy::DetachAndFinish
+                        {
+                            requester_detached.set(true);
+                            return Ok(false);
+                        }
+                        Ok(disconnected)
+                    },
                 ) {
                     Ok(result) => result,
                     Err(error) => {
@@ -658,11 +689,13 @@ pub fn run_worker_session(
                         release_error_message(&error),
                     );
                 }
-                nix_worker_protocol::write_build_derivation_success_response(
-                    &mut output,
-                    negotiated.version,
-                    result.status() == LocalBuildStatus::AlreadyValid,
-                )?;
+                if !requester_detached.get() {
+                    nix_worker_protocol::write_build_derivation_success_response(
+                        &mut output,
+                        negotiated.version,
+                        result.status() == LocalBuildStatus::AlreadyValid,
+                    )?;
+                }
                 tracing::info!(
                     event = "worker.build_derivation.completed",
                     output_count = result.outputs().len(),
