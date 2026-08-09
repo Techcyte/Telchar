@@ -394,6 +394,75 @@ fn incomplete_nonempty_add_multiple_to_store_fails_before_first_item_body() {
 }
 
 #[test]
+fn partial_add_multiple_to_store_failure_removes_staging_state() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-upload-disconnect-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("promote-helper");
+    let marker = root.join("helper-started");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf invoked > {}\n",
+            marker.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let staging_root = root.join("staging");
+    fs::create_dir(&staging_root).expect("staging root creates");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_NIX_STORE_PROMOTE", helper.display().to_string()),
+            ("TMPDIR", staging_root.display().to_string()),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_add_multiple_to_store_metadata(&mut input, 1024);
+    input.write_all(b"partial-nar").expect("partial NAR writes");
+    input.flush().expect("partial upload flushes");
+    drop(input);
+    drop(output);
+
+    assert!(
+        !child.wait().expect("Telchar exits").success(),
+        "disconnected partial upload reported protocol success"
+    );
+    let mut frontend_stderr = String::new();
+    fixture
+        .frontend
+        .stderr
+        .take()
+        .expect("frontend stderr")
+        .read_to_string(&mut frontend_stderr)
+        .expect("frontend stderr reads");
+    let daemon_output = fixture.daemon.wait_with_output().expect("daemon exits");
+    let stderr = format!(
+        "{frontend_stderr}{}",
+        String::from_utf8_lossy(&daemon_output.stderr)
+    );
+    assert!(!marker.exists(), "partial upload started promotion helper");
+    assert_eq!(
+        fs::read_dir(&staging_root)
+            .expect("staging root reads")
+            .count(),
+        0,
+        "partial upload retained staging state"
+    );
+    assert!(stderr.contains("invalid-add-multiple-to-store"), "{stderr}");
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-disk-import-{}-{}",
