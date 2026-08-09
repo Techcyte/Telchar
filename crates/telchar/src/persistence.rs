@@ -1,6 +1,6 @@
 use std::fmt;
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use postgres::{Client, NoTls, Row};
 use sha2::{Digest, Sha256};
@@ -22,11 +22,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "minimum_lifecycle",
-    sql: include_str!("../migrations/0001_minimum_lifecycle.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "minimum_lifecycle",
+        sql: include_str!("../migrations/0001_minimum_lifecycle.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "output_retention",
+        sql: include_str!("../migrations/0002_output_retention.sql"),
+    },
+];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum MigrationFailure {
@@ -767,6 +774,7 @@ pub struct StoreLeaseRecord {
     pub state: StoreLeaseState,
     pub created_at: SystemTime,
     pub released_at: Option<SystemTime>,
+    pub expires_at: Option<SystemTime>,
 }
 
 pub fn create_store_lease(
@@ -835,7 +843,7 @@ fn create_store_lease_inner(
     }
     let row = transaction
         .query_one(
-            "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES ($1, $2, $3, $4, $5, 'active', transaction_timestamp(), NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES ($1, $2, $3, $4, $5, 'active', transaction_timestamp(), NULL, CASE WHEN $5 = 'output' THEN transaction_timestamp() + interval '1 hour' ELSE NULL END) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
             &[&lease_id, &owner_kind.as_str(), &owner_id, &store_path, &purpose.as_str()],
         )
         .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
@@ -913,7 +921,7 @@ fn create_request_input_leases_inner(
     for (lease_id, store_path) in leases {
         let row = transaction
             .query_one(
-                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES ($1, 'request', $2, $3, 'input', 'active', transaction_timestamp(), NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES ($1, 'request', $2, $3, 'input', 'active', transaction_timestamp(), NULL, NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
                 &[&lease_id, &request_id, &store_path],
             )
             .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
@@ -952,12 +960,18 @@ fn emit_store_lease_batch_failure(result: Result<(), &StoreLeaseError>, path_cou
 pub fn create_request_output_leases(
     database_url: &str,
     request_id: &str,
+    retention: Duration,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let retention_seconds = retention.as_secs();
+    if retention.subsec_nanos() != 0 || !(60..=86_400).contains(&retention_seconds) {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
     if leases.is_empty() {
         return Ok(Vec::new());
     }
-    let result = create_request_output_leases_inner(database_url, request_id, leases);
+    let result =
+        create_request_output_leases_inner(database_url, request_id, retention_seconds, leases);
     emit_request_output_lease_batch_result(result.as_ref().map(|records| records.len()), &result);
     result
 }
@@ -965,6 +979,7 @@ pub fn create_request_output_leases(
 fn create_request_output_leases_inner(
     database_url: &str,
     request_id: &str,
+    retention_seconds: u64,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     if database_url.trim().is_empty()
@@ -983,6 +998,7 @@ fn create_request_output_leases_inner(
             return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
         }
     }
+    let retention_seconds = retention_seconds as f64;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
@@ -1004,8 +1020,8 @@ fn create_request_output_leases_inner(
     for (lease_id, store_path) in leases {
         let row = transaction
             .query_one(
-                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES ($1, 'request', $2, $3, 'output', 'active', transaction_timestamp(), NULL) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
-                &[&lease_id, &request_id, &store_path],
+                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES ($1, 'request', $2, $3, 'output', 'active', transaction_timestamp(), NULL, transaction_timestamp() + make_interval(secs => $4)) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
+                &[&lease_id, &request_id, &store_path, &retention_seconds],
             )
             .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
         records.push(decode_store_lease(&row).map_err(StoreLeaseError)?);
@@ -1023,19 +1039,15 @@ fn emit_request_output_lease_batch_result(
     match result {
         Ok(_) => tracing::info!(
             event = "database.store_lease.created",
-            operation = "create-output",
-            owner_kind = "request",
-            purpose = "output",
-            state = "active",
+            operation = "create-output-retention",
+            result = "succeeded",
             path_count = path_count.unwrap_or(0),
             "store lease batch persisted"
         ),
         Err(error) => tracing::warn!(
             event = "database.store_lease.failed",
-            operation = "create-output",
-            owner_kind = "request",
-            purpose = "output",
-            state = "active",
+            operation = "create-output-retention",
+            result = "failed",
             path_count = 0_usize,
             failure_class = error.failure().as_str(),
             "store lease persistence failed"
@@ -1187,7 +1199,7 @@ fn lock_active_request_leases(
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     let rows = transaction
         .query(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 ORDER BY lease_id FOR UPDATE",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 ORDER BY lease_id FOR UPDATE",
             &[&request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1234,7 +1246,7 @@ fn release_locked_request_leases(
         .collect::<Vec<_>>();
     let rows = transaction
         .query(
-            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE owner_kind = 'request' AND owner_id = $1 AND purpose IN ('derivation', 'input') AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE owner_kind = 'request' AND owner_id = $1 AND purpose IN ('derivation', 'input') AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
             &[&request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1330,7 +1342,7 @@ fn release_store_lease_inner(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let existing = transaction
         .query_opt(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE lease_id = $1 FOR UPDATE",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE lease_id = $1 FOR UPDATE",
             &[&lease_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1345,7 +1357,7 @@ fn release_store_lease_inner(
     }
     let row = transaction
         .query_one(
-            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE lease_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at",
+            "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE lease_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
             &[&lease_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1364,6 +1376,89 @@ fn release_store_lease_inner(
 }
 
 const MAXIMUM_RELEASED_REQUEST_LEASES_PAGE_ROWS: usize = 256;
+
+pub fn release_expired_request_output_leases(
+    database_url: &str,
+    now: SystemTime,
+    after_lease_id: Option<&str>,
+    maximum_rows: usize,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let result = release_expired_request_output_leases_inner(
+        database_url,
+        now,
+        after_lease_id,
+        maximum_rows,
+    );
+    match &result {
+        Ok(released) => tracing::info!(
+            event = "database.store_lease.expired",
+            operation = "expire-output-retention",
+            result = "succeeded",
+            path_count = released.len(),
+        ),
+        Err(error) => tracing::warn!(
+            event = "database.store_lease.expired",
+            operation = "expire-output-retention",
+            result = "failed",
+            path_count = 0_usize,
+            failure_class = error.failure().as_str(),
+        ),
+    }
+    result
+}
+
+fn release_expired_request_output_leases_inner(
+    database_url: &str,
+    now: SystemTime,
+    after_lease_id: Option<&str>,
+    maximum_rows: usize,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    if database_url.trim().is_empty()
+        || !(1..=256).contains(&maximum_rows)
+        || now.duration_since(std::time::UNIX_EPOCH).is_err()
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    if let Some(after_lease_id) = after_lease_id {
+        validate_store_lease_id(after_lease_id)?;
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let rows = transaction
+        .query(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND purpose = 'output' AND state = 'active' AND expires_at <= $1 AND ($2::text IS NULL OR lease_id > $2) ORDER BY lease_id LIMIT $3 FOR UPDATE SKIP LOCKED",
+            &[&now, &after_lease_id, &(maximum_rows as i64)],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let selected = rows
+        .iter()
+        .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
+        .collect::<Result<Vec<_>, _>>()?;
+    if selected.iter().any(|lease| {
+        lease.owner_kind != StoreLeaseOwnerKind::Request
+            || lease.purpose != StoreLeasePurpose::Output
+            || lease.state != StoreLeaseState::Active
+    }) {
+        return Err(StoreLeaseError(StoreLeaseFailure::Query));
+    }
+    let mut released = Vec::with_capacity(selected.len());
+    for lease in &selected {
+        let row = transaction
+            .query_one(
+                "UPDATE store_leases SET state = 'released', released_at = transaction_timestamp() WHERE lease_id = $1 AND state = 'active' RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
+                &[&lease.lease_id],
+            )
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+        released.push(decode_store_lease(&row).map_err(StoreLeaseError)?);
+    }
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    Ok(released)
+}
 
 pub fn read_released_request_leases_page(
     database_url: &str,
@@ -1384,7 +1479,7 @@ pub fn read_released_request_leases_page(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let rows = client
         .query(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE owner_kind = 'request' AND purpose IN ('derivation', 'input') AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND purpose IN ('derivation', 'input') AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
             &[&after_lease_id, &(maximum_rows as i64)],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1426,7 +1521,7 @@ fn read_store_lease_inner(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let lease = client
         .query_opt(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at FROM store_leases WHERE lease_id = $1",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE lease_id = $1",
             &[&lease_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
@@ -1485,6 +1580,7 @@ fn decode_store_lease(row: &Row) -> Result<StoreLeaseRecord, StoreLeaseFailure> 
     let state: String = row.try_get(5).map_err(|_| StoreLeaseFailure::Query)?;
     let created_at: SystemTime = row.try_get(6).map_err(|_| StoreLeaseFailure::Query)?;
     let released_at: Option<SystemTime> = row.try_get(7).map_err(|_| StoreLeaseFailure::Query)?;
+    let expires_at: Option<SystemTime> = row.try_get(8).map_err(|_| StoreLeaseFailure::Query)?;
     validate_store_lease_inputs("validated", &lease_id, &owner_id, &store_path)
         .map_err(|_| StoreLeaseFailure::Query)?;
     let owner_kind = StoreLeaseOwnerKind::parse(&owner_kind).ok_or(StoreLeaseFailure::Query)?;
@@ -1498,6 +1594,18 @@ fn decode_store_lease(row: &Row) -> Result<StoreLeaseRecord, StoreLeaseFailure> 
         }
         _ => return Err(StoreLeaseFailure::Query),
     };
+    match (purpose, expires_at) {
+        (StoreLeasePurpose::Output, None) => return Err(StoreLeaseFailure::Query),
+        (StoreLeasePurpose::Output, Some(expires_at))
+            if state == StoreLeaseState::Active && expires_at < created_at =>
+        {
+            return Err(StoreLeaseFailure::Query);
+        }
+        (purpose, Some(_)) if purpose != StoreLeasePurpose::Output => {
+            return Err(StoreLeaseFailure::Query);
+        }
+        _ => {}
+    }
     Ok(StoreLeaseRecord {
         lease_id,
         owner_kind,
@@ -1507,6 +1615,7 @@ fn decode_store_lease(row: &Row) -> Result<StoreLeaseRecord, StoreLeaseFailure> 
         state,
         created_at,
         released_at,
+        expires_at,
     })
 }
 

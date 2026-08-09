@@ -3,8 +3,10 @@ mod support;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use postgres::types::Type;
+use sha2::{Digest, Sha256};
 use support::postgres::PostgresFixture;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
@@ -1417,14 +1419,18 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
 
     let mut client = fixture.connect();
     let ledger = client
-        .query_one(
-            "SELECT version, name, checksum FROM telchar_schema_migrations",
+        .query(
+            "SELECT version, name, checksum FROM telchar_schema_migrations ORDER BY version",
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.get::<_, i64>(0), 1);
-    assert_eq!(ledger.get::<_, String>(1), "minimum_lifecycle");
-    assert_eq!(ledger.get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger[0].get::<_, i64>(0), 1);
+    assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
+    assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[1].get::<_, i64>(0), 2);
+    assert_eq!(ledger[1].get::<_, String>(1), "output_retention");
+    assert_eq!(ledger[1].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -1451,6 +1457,73 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
 }
 
 #[test]
+fn output_retention_migration_backfills_version_one_rows() {
+    let fixture = PostgresFixture::start();
+    let version_one_sql = include_str!("../migrations/0001_minimum_lifecycle.sql");
+    let version_one_checksum = Sha256::digest(version_one_sql.as_bytes()).to_vec();
+    let mut client = fixture.connect();
+    client
+        .batch_execute(version_one_sql)
+        .expect("version one schema migrates");
+    client
+        .batch_execute(
+            "CREATE TABLE telchar_schema_migrations (
+                 version bigint PRIMARY KEY,
+                 name text NOT NULL UNIQUE,
+                 checksum bytea NOT NULL CHECK (octet_length(checksum) = 32),
+                 applied_at timestamptz NOT NULL DEFAULT now()
+             )",
+        )
+        .expect("migration ledger creates");
+    client
+        .execute(
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (1, 'minimum_lifecycle', $1)",
+            &[&version_one_checksum],
+        )
+        .expect("version one ledger persists");
+    client
+        .batch_execute(
+            "INSERT INTO build_requests (request_id, derivation_path, system) VALUES
+             ('migration-output-owner', '/nix/store/11111111111111111111111111111111-migration.drv', 'x86_64-linux');
+             INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at) VALUES
+             ('migration-active-output', 'request', 'migration-output-owner', '/nix/store/22222222222222222222222222222222-active-output', 'output', 'active', transaction_timestamp(), NULL),
+             ('migration-released-output', 'request', 'migration-output-owner', '/nix/store/33333333333333333333333333333333-released-output', 'output', 'released', transaction_timestamp(), transaction_timestamp()),
+             ('migration-active-input', 'request', 'migration-output-owner', '/nix/store/44444444444444444444444444444444-active-input', 'input', 'active', transaction_timestamp(), NULL);",
+        )
+        .expect("version one rows persist");
+    drop(client);
+
+    let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
+
+    assert_eq!(outcome.previously_applied, 1);
+    assert_eq!(outcome.applied_this_run, 1);
+    let mut client = fixture.connect();
+    let active_seconds = client
+        .query_one(
+            "SELECT extract(epoch FROM (expires_at - created_at))::bigint FROM store_leases WHERE lease_id = 'migration-active-output'",
+            &[],
+        )
+        .expect("active deadline reads")
+        .get::<_, i64>(0);
+    assert_eq!(active_seconds, 3_600);
+    let released = client
+        .query_one(
+            "SELECT expires_at IS NOT NULL, expires_at <= transaction_timestamp() FROM store_leases WHERE lease_id = 'migration-released-output'",
+            &[],
+        )
+        .expect("released deadline reads");
+    assert!(released.get::<_, bool>(0));
+    assert!(released.get::<_, bool>(1));
+    assert!(client
+        .query_one(
+            "SELECT expires_at IS NULL FROM store_leases WHERE lease_id = 'migration-active-input'",
+            &[],
+        )
+        .expect("input deadline reads")
+        .get::<_, bool>(0));
+}
+
+#[test]
 fn rerunning_an_exact_prefix_is_idempotent() {
     let fixture = PostgresFixture::start();
 
@@ -1458,8 +1531,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 1);
-    assert_eq!(second.previously_applied, 1);
+    assert_eq!(first.applied_this_run, 2);
+    assert_eq!(second.previously_applied, 2);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -1467,7 +1540,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        1
+        2
     );
 }
 
@@ -1499,7 +1572,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (2, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (3, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -1552,7 +1625,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 1);
+    assert_eq!(first.applied_this_run, 2);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -1560,7 +1633,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        1
+        2
     );
 }
 
@@ -1588,7 +1661,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        1
+        2
     );
     assert_eq!(
         fixture
@@ -1596,7 +1669,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        1
+        2
     );
 }
 
@@ -1794,6 +1867,7 @@ fn create_request_output_leases_commits_complete_ordered_set() {
     let records = telchar::persistence::create_request_output_leases(
         fixture.url(),
         "output-batch-request",
+        Duration::from_secs(3_600),
         &[
             (
                 "output-batch-2".to_owned(),
@@ -1820,7 +1894,42 @@ fn create_request_output_leases_commits_complete_ordered_set() {
             && record.purpose == telchar::persistence::StoreLeasePurpose::Output
             && record.state == telchar::persistence::StoreLeaseState::Active
             && record.released_at.is_none()
+            && record.expires_at.is_some()
     }));
+    assert_eq!(records[0].created_at, records[1].created_at);
+    assert_eq!(records[0].expires_at, records[1].expires_at);
+    assert_eq!(
+        records[0]
+            .expires_at
+            .expect("output deadline exists")
+            .duration_since(records[0].created_at)
+            .expect("deadline follows creation"),
+        Duration::from_secs(3_600)
+    );
+}
+
+#[test]
+fn create_request_output_leases_rejects_fractional_or_out_of_range_retention() {
+    for retention in [
+        Duration::from_secs(59),
+        Duration::new(60, 1),
+        Duration::from_secs(86_401),
+    ] {
+        assert_eq!(
+            telchar::persistence::create_request_output_leases(
+                "postgresql://127.0.0.1:1/no-connection",
+                "output-duration-request",
+                retention,
+                &[(
+                    "output-duration-lease".to_owned(),
+                    "/nix/store/22222222222222222222222222222222-output-duration".to_owned(),
+                )],
+            )
+            .expect_err("invalid retention rejects before connection")
+            .failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    }
 }
 
 #[test]
@@ -1849,6 +1958,7 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
     let error = telchar::persistence::create_request_output_leases(
         fixture.url(),
         "output-conflict-request",
+        Duration::from_secs(3_600),
         &[
             (
                 "output-conflict-1".to_owned(),
@@ -1919,6 +2029,7 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
             telchar::persistence::create_request_output_leases(
                 fixture.url(),
                 "output-validation-request",
+                Duration::from_secs(3_600),
                 &leases,
             )
             .expect_err("invalid output lease batch rejects")
@@ -1930,6 +2041,7 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
         telchar::persistence::create_request_output_leases(
             fixture.url(),
             "missing-output-request",
+            Duration::from_secs(3_600),
             &[valid],
         )
         .expect_err("missing request rejects")
@@ -1950,11 +2062,96 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
 }
 
 #[test]
+fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "expiry-request",
+        "/nix/store/11111111111111111111111111111111-expiry.drv",
+        "x86_64-linux",
+    )
+    .expect("request persists");
+    telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "expiry-request",
+        Duration::from_secs(60),
+        &[
+            (
+                "expiry-a".to_owned(),
+                "/nix/store/22222222222222222222222222222222-expiry-a".to_owned(),
+            ),
+            (
+                "expiry-b".to_owned(),
+                "/nix/store/33333333333333333333333333333333-expiry-b".to_owned(),
+            ),
+            (
+                "expiry-c".to_owned(),
+                "/nix/store/44444444444444444444444444444444-expiry-c".to_owned(),
+            ),
+        ],
+    )
+    .expect("output leases persist");
+    let now = std::time::SystemTime::now() + Duration::from_secs(61);
+
+    let first =
+        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 1)
+            .expect("first expiry page releases");
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].lease_id, "expiry-a");
+    assert_eq!(
+        first[0].state,
+        telchar::persistence::StoreLeaseState::Released
+    );
+    assert!(first[0].released_at.is_some());
+    assert!(first[0].expires_at.is_some());
+
+    let second = telchar::persistence::release_expired_request_output_leases(
+        fixture.url(),
+        now,
+        Some("expiry-a"),
+        256,
+    )
+    .expect("second expiry page releases");
+    assert_eq!(
+        second
+            .iter()
+            .map(|lease| lease.lease_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["expiry-b", "expiry-c"]
+    );
+    assert!(
+        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 256,)
+            .expect("released rows are not selected again")
+            .is_empty()
+    );
+}
+
+#[test]
+fn release_expired_output_leases_rejects_invalid_inputs_before_connection() {
+    let now = std::time::SystemTime::now();
+    for (cursor, maximum_rows) in [(None, 0), (None, 257), (Some(""), 1)] {
+        assert_eq!(
+            telchar::persistence::release_expired_request_output_leases(
+                "postgresql://127.0.0.1:1/no-connection",
+                now,
+                cursor,
+                maximum_rows,
+            )
+            .expect_err("invalid expiry input rejects")
+            .failure(),
+            telchar::persistence::StoreLeaseFailure::Configuration
+        );
+    }
+}
+
+#[test]
 fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
     assert!(
         telchar::persistence::create_request_output_leases(
             "postgresql://127.0.0.1:1/no-connection",
             "output-empty-request",
+            Duration::from_secs(3_600),
             &[],
         )
         .expect("empty output lease batch succeeds")
@@ -1976,6 +2173,7 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
         telchar::persistence::create_request_output_leases(
             fixture.url(),
             "output-telemetry-request",
+            Duration::from_secs(3_600),
             &[(
                 "output-telemetry-lease".to_owned(),
                 "/nix/store/22222222222222222222222222222222-output-telemetry".to_owned(),
@@ -1985,6 +2183,7 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
         let error = telchar::persistence::create_request_output_leases(
             "postgresql://output-telemetry-sensitive-url",
             "output-telemetry-sensitive-request",
+            Duration::from_secs(3_600),
             &[(
                 "output-telemetry-sensitive-lease".to_owned(),
                 "relative".to_owned(),
@@ -1999,8 +2198,8 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
     let events = captured.events();
     assert!(events.iter().any(|event| {
         event.contains("database.store_lease.created")
-            && event.contains("operation=\"create-output\"")
-            && event.contains("purpose=\"output\"")
+            && event.contains("operation=\"create-output-retention\"")
+            && event.contains("result=\"succeeded\"")
     }));
     for forbidden in [
         fixture.url(),
@@ -2041,6 +2240,7 @@ fn create_request_output_leases_rolls_back_deferred_commit_failure() {
         telchar::persistence::create_request_output_leases(
             fixture.url(),
             "output-commit-failure-request",
+            Duration::from_secs(3_600),
             &[(
                 "output-commit-failure".to_owned(),
                 "/nix/store/22222222222222222222222222222222-output-a".to_owned(),
@@ -2193,6 +2393,7 @@ fn request_lease_release_preserves_active_output_leases() {
     telchar::persistence::create_request_output_leases(
         fixture.url(),
         "release-output-request",
+        Duration::from_secs(3_600),
         &[(
             "release-output-result".to_owned(),
             "/nix/store/33333333333333333333333333333333-release-output-result".to_owned(),
