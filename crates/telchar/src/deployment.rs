@@ -5,6 +5,40 @@ const MAXIMUM_SUPPORTED_FEATURES: usize = 64;
 const MAXIMUM_SYSTEM_BYTES: usize = 64;
 const MAXIMUM_FEATURE_BYTES: usize = 256;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RunningDisconnectPolicy {
+    #[default]
+    DetachAndFinish,
+    CancelRunning,
+}
+
+impl RunningDisconnectPolicy {
+    pub fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "detach-and-finish" => Ok(Self::DetachAndFinish),
+            "cancel-running" => Ok(Self::CancelRunning),
+            _ => Err(invalid("running disconnect policy is invalid")),
+        }
+    }
+
+    pub fn from_environment() -> io::Result<Self> {
+        match std::env::var("TELCHAR_RUNNING_DISCONNECT_POLICY") {
+            Ok(value) => Self::parse(&value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::default()),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(invalid("running disconnect policy is invalid"))
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DetachAndFinish => "detach-and-finish",
+            Self::CancelRunning => "cancel-running",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentConfig {
     system: String,

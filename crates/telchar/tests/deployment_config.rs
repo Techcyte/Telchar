@@ -1,6 +1,6 @@
 use std::io;
 
-use telchar::deployment::DeploymentConfig;
+use telchar::deployment::{DeploymentConfig, RunningDisconnectPolicy};
 
 #[test]
 fn parses_one_system_and_bounded_unique_features() {
@@ -44,6 +44,25 @@ fn rejects_duplicate_or_excess_features() {
             .kind(),
         io::ErrorKind::InvalidInput
     );
+}
+
+#[test]
+fn parses_running_disconnect_policy() {
+    assert_eq!(
+        RunningDisconnectPolicy::parse("detach-and-finish").expect("default policy parses"),
+        RunningDisconnectPolicy::DetachAndFinish
+    );
+    assert_eq!(
+        RunningDisconnectPolicy::parse("cancel-running").expect("cancel policy parses"),
+        RunningDisconnectPolicy::CancelRunning
+    );
+}
+
+#[test]
+fn rejects_unknown_running_disconnect_policy() {
+    let error = RunningDisconnectPolicy::parse("requester-choice")
+        .expect_err("unknown policy must fail closed");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 }
 
 #[test]

@@ -116,6 +116,8 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 fn run_daemon() -> io::Result<()> {
     let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
+    let running_disconnect_policy =
+        telchar::deployment::RunningDisconnectPolicy::from_environment()?;
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
     let database_url = required_database_url()?;
@@ -163,6 +165,7 @@ fn run_daemon() -> io::Result<()> {
         event = "deployment.configured",
         system = deployment.system(),
         supported_feature_count = deployment.supported_features().len(),
+        running_disconnect_policy = running_disconnect_policy.as_str(),
         "one-system deployment configured"
     );
     let socket = daemon_socket_argument()?;
