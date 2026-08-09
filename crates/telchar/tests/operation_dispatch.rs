@@ -921,6 +921,99 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
 }
 
 #[test]
+fn missing_expected_output_fails_before_result_and_releases_request_state() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-missing-output-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let request_path = root.join("request.json");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[]}}\\n'\n",
+            request_path.display()
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    input.flush().expect("BuildDerivation request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "BuildDerivation execution failed");
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+
+    let helper_request: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&request_path).expect("helper request reads"))
+            .expect("helper request is JSON");
+    let request_id = helper_request["request_id"]
+        .as_str()
+        .expect("helper request ID is a string");
+    let mut database = fixture.database.connect();
+    let session_id = database
+        .query_one(
+            "SELECT session_id FROM request_attachments WHERE request_id = $1",
+            &[&request_id],
+        )
+        .expect("attachment reads")
+        .get::<_, String>(0);
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.database.url(),
+            &session_id,
+            request_id
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+    assert_released_derivation_lease(&fixture.database, request_id);
+    assert_eq!(
+        database
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = $1 AND state = 'active'",
+                &[&request_id],
+            )
+            .expect("active lease count reads")
+            .get::<_, i64>(0),
+        0,
+        "missing output left active request leases"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.failed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(request_id), "{stderr}");
+    assert!(!stderr.contains(&session_id), "{stderr}");
+    assert!(
+        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn detach_failure_does_not_send_successful_build_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-detach-failure-{}-{}",
