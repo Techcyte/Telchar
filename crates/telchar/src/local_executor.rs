@@ -210,6 +210,7 @@ impl NixStoreExecutor {
         drop(stdin);
         if let Err(error) = write_result {
             child.kill_and_reap();
+            drop(log_receiver);
             join_reader(stdout_reader, "stdout")?;
             join_log_reader(stderr_reader)?;
             return Err(error);
@@ -219,18 +220,21 @@ impl NixStoreExecutor {
         let status = loop {
             if let Ok(error) = reader_error_receiver.try_recv() {
                 child.kill_and_reap();
+                drop(log_receiver);
                 let _ = join_reader(stdout_reader, "stdout");
                 let _ = join_log_reader(stderr_reader);
                 return Err(error);
             }
             if let Err(error) = forward_logs(&log_receiver, logs) {
                 child.kill_and_reap();
+                drop(log_receiver);
                 let _ = join_reader(stdout_reader, "stdout");
                 let _ = join_log_reader(stderr_reader);
                 return Err(error);
             }
             if cancelled()? {
                 child.kill_and_reap();
+                drop(log_receiver);
                 let _ = join_reader(stdout_reader, "stdout");
                 let _ = join_log_reader(stderr_reader);
                 return Err(io::Error::new(
@@ -242,12 +246,14 @@ impl NixStoreExecutor {
                 Ok(Some(status)) => break status,
                 Err(error) => {
                     child.kill_and_reap();
+                    drop(log_receiver);
                     let _ = join_reader(stdout_reader, "stdout");
                     let _ = join_log_reader(stderr_reader);
                     return Err(error);
                 }
                 Ok(None) if Instant::now() >= deadline => {
                     child.kill_and_reap();
+                    drop(log_receiver);
                     join_reader(stdout_reader, "stdout")?;
                     join_log_reader(stderr_reader)?;
                     return Err(io::Error::new(
@@ -608,8 +614,8 @@ mod tests {
     use std::io;
 
     use super::{
-        spawn_log_reader, MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+        MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
     };
 
     struct FailingLogReader;
