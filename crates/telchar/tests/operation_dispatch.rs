@@ -421,7 +421,7 @@ fn partial_add_multiple_to_store_failure_removes_staging_state() {
         None,
         "unix:///fixed-gateway.sock",
         [
-            ("TELCHAR_NIX_STORE_PROMOTE", helper.display().to_string()),
+            ("TELCHAR_TEST_PROMOTE_HELPER", helper.display().to_string()),
             ("TMPDIR", staging_root.display().to_string()),
         ],
     );
@@ -488,7 +488,7 @@ fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
         None,
         "unix:///fixed-gateway.sock",
         [
-            ("TELCHAR_NIX_STORE_PROMOTE", helper.display().to_string()),
+            ("TELCHAR_TEST_PROMOTE_HELPER", helper.display().to_string()),
             ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
         ],
     );
@@ -548,7 +548,7 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
         None,
         "unix:///fixed-gateway.sock",
         [
-            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
             ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
         ],
     );
@@ -616,7 +616,7 @@ fn derivation_lease_precedes_helper_execution() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -706,7 +706,7 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         &format!("unix://{}", socket.display()),
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -778,7 +778,7 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         &format!("unix://{}", socket.display()),
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -893,7 +893,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -1027,7 +1027,7 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -1140,11 +1140,11 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
         "unix:///fixed-gateway.sock",
         [
             (
-                "TELCHAR_NIX_STORE_BUILD",
+                "TELCHAR_TEST_BUILD_HELPER",
                 build_helper.display().to_string(),
             ),
             (
-                "TELCHAR_NIX_STORE_EXPORT",
+                "TELCHAR_TEST_EXPORT_HELPER",
                 export_helper.display().to_string(),
             ),
             ("TELCHAR_NIX", nix.display().to_string()),
@@ -1236,7 +1236,7 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -1317,7 +1317,7 @@ fn detach_failure_does_not_send_successful_build_result() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -1399,7 +1399,7 @@ fn root_release_failure_reports_retention_error_after_durable_release() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -1490,7 +1490,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -1566,7 +1566,7 @@ fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -1663,7 +1663,7 @@ fn derivation_lease_persistence_failure_retains_request_before_attachment_or_hel
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -1786,7 +1786,7 @@ fn build_request_persistence_failure_rejects_before_helper_or_log_frame() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -1862,7 +1862,7 @@ fn request_attachment_failure_releases_roots_before_helper() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     fixture
         .database
@@ -1949,7 +1949,7 @@ fn unread_frontend_backpressures_build_logs_and_disconnect_cleans_request() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -2071,7 +2071,7 @@ fn detached_frontend_allows_failed_helper_to_finish_without_dead_transport_write
     let mut fixture = FrontendFixture::spawn_with_store_default_disconnect_policy(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -2165,11 +2165,11 @@ fn detached_frontend_suppresses_output_validation_failure() {
         "unix:///fixed-gateway.sock",
         [
             (
-                "TELCHAR_NIX_STORE_BUILD",
+                "TELCHAR_TEST_BUILD_HELPER",
                 build_helper.display().to_string(),
             ),
             (
-                "TELCHAR_NIX_STORE_EXPORT",
+                "TELCHAR_TEST_EXPORT_HELPER",
                 export_helper.display().to_string(),
             ),
             ("TELCHAR_NIX", nix.display().to_string()),
@@ -2265,7 +2265,7 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     let mut fixture = FrontendFixture::spawn_with_store_default_disconnect_policy(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -2394,7 +2394,7 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -2630,10 +2630,10 @@ impl FrontendFixture {
         let environment = environment.into_iter().collect::<Vec<_>>();
         let has_export = environment
             .iter()
-            .any(|(name, _)| *name == "TELCHAR_NIX_STORE_EXPORT");
+            .any(|(name, _)| *name == "TELCHAR_TEST_EXPORT_HELPER");
         let has_build = environment
             .iter()
-            .any(|(name, _)| *name == "TELCHAR_NIX_STORE_BUILD");
+            .any(|(name, _)| *name == "TELCHAR_TEST_BUILD_HELPER");
         if has_export || !has_build {
             Self::spawn_configured(
                 worker_timeout_ms,
@@ -2672,7 +2672,7 @@ impl FrontendFixture {
                 .expect("Nix helper executable");
             let mut environment = environment;
             environment.push((
-                "TELCHAR_NIX_STORE_EXPORT",
+                "TELCHAR_TEST_EXPORT_HELPER",
                 export_helper.display().to_string(),
             ));
             environment.push(("TELCHAR_NIX", nix.display().to_string()));
@@ -2730,11 +2730,9 @@ impl FrontendFixture {
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env_remove("TELCHAR_RUNNING_DISCONNECT_POLICY")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
-            .env_remove("TELCHAR_NIX_STORE_BUILD")
             .env_remove("TELCHAR_TEST_BUILD_HELPER")
-            .env_remove("TELCHAR_NIX_STORE_EXPORT")
             .env_remove("TELCHAR_TEST_EXPORT_HELPER")
-            .env_remove("TELCHAR_NIX_STORE_PROMOTE")
+            .env_remove("TELCHAR_TEST_PROMOTE_HELPER")
             .env_remove("TELCHAR_GATEWAY_STORE_URI")
             .env_remove("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
         if let Some(gc_roots) = gc_roots {
@@ -2752,14 +2750,7 @@ impl FrontendFixture {
         if let Some(store_uri) = configured_store_uri {
             daemon_command.env("TELCHAR_GATEWAY_STORE_URI", store_uri);
         }
-        let environment = environment
-            .into_iter()
-            .map(|(name, value)| match name {
-                "TELCHAR_NIX_STORE_BUILD" => ("TELCHAR_TEST_BUILD_HELPER", value),
-                "TELCHAR_NIX_STORE_EXPORT" => ("TELCHAR_TEST_EXPORT_HELPER", value),
-                _ => (name, value),
-            })
-            .collect::<Vec<_>>();
+        let environment = environment.into_iter().collect::<Vec<_>>();
         if store_uri == Some("unix:///fixed-gateway.sock") {
             daemon_command.env("TELCHAR_TEST_STORE_RETENTION", "filesystem-only");
         }

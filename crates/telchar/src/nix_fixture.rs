@@ -310,30 +310,20 @@ impl NixDaemon {
         &self.temp_dir
     }
 
-    pub fn export_backend(
-        &self,
-        helper: impl Into<PathBuf>,
-    ) -> crate::store_export::NixStoreExportBackend {
-        crate::store_export::NixStoreExportBackend::new(
-            helper,
-            self.store_url(),
-            self.environment
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), value.clone())),
-        )
+    pub fn export_backend(&self) -> io::Result<crate::store_export::GatewayStoreExportBackend> {
+        let endpoint = crate::store_daemon::GatewayStoreEndpoint::parse(&self.store_url())?;
+        Ok(crate::store_export::GatewayStoreExportBackend::new(
+            endpoint,
+        ))
     }
 
     pub fn promotion_backend(
         &self,
-        helper: impl Into<PathBuf>,
-    ) -> crate::store_promotion::NixStorePromotionBackend {
-        crate::store_promotion::NixStorePromotionBackend::new(
-            helper,
-            self.store_url(),
-            self.environment
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), value.clone())),
-        )
+    ) -> io::Result<crate::store_promotion::GatewayStorePromotionBackend> {
+        let endpoint = crate::store_daemon::GatewayStoreEndpoint::parse(&self.store_url())?;
+        Ok(crate::store_promotion::GatewayStorePromotionBackend::new(
+            endpoint,
+        ))
     }
 
     pub fn is_valid_path(&self, path: &Path) -> io::Result<bool> {

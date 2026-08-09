@@ -129,10 +129,6 @@ let
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TMPDIR = "/var/lib/telchar-import";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
-          TELCHAR_NIX_STORE_BUILD = "${telchar}/libexec/telchar/nix-store-build";
-          TELCHAR_NIX_STORE_EXPORT = "${telchar}/libexec/telchar/nix-store-export";
-          TELCHAR_NIX_STORE_PROMOTE = "${telchar}/libexec/telchar/nix-store-promote";
-          TELCHAR_NIX_STORE_CLOSURE = "${telchar}/libexec/telchar/nix-store-closure";
           TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-gc-roots";
           TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
           TELCHAR_SUPPORTED_FEATURES = "";

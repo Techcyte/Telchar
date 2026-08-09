@@ -1,16 +1,16 @@
 use std::ffi::OsString;
-use std::path::Path;
 use std::sync::Mutex;
+
+use telchar::local_executor::BuildExecutor;
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
 #[test]
-fn deployment_environment_selects_the_pinned_local_executor() {
+fn deployment_environment_selects_the_gateway_executor() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_helper = std::env::var_os("TELCHAR_NIX_STORE_BUILD");
     let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
     unsafe {
-        std::env::set_var("TELCHAR_NIX_STORE_BUILD", "/absolute/nix-store-build");
+        std::env::remove_var("TELCHAR_TEST_BUILD_HELPER");
         std::env::set_var(
             "TELCHAR_GATEWAY_STORE_URI",
             "unix:///nix/var/nix/daemon-socket/socket",
@@ -20,27 +20,18 @@ fn deployment_environment_selects_the_pinned_local_executor() {
     let executor =
         telchar::local_executor::executor_from_environment().expect("configured executor creates");
 
-    assert_eq!(
-        executor.helper(),
-        Some(Path::new("/absolute/nix-store-build"))
-    );
-    assert_eq!(
-        executor.store_uri(),
-        Some("unix:///nix/var/nix/daemon-socket/socket")
-    );
-    restore("TELCHAR_NIX_STORE_BUILD", saved_helper);
+    assert_eq!(executor.helper(), None);
+    assert_eq!(executor.store_uri(), None);
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
 #[test]
 fn configured_executor_rejects_an_inaccessible_gateway_store() {
-    let helper =
-        std::env::var_os("TELCHAR_NIX_STORE_BUILD").expect("dev shell supplies flake-built helper");
-    let mut executor = telchar::local_executor::NixStoreExecutor::new(
-        helper,
+    let endpoint = telchar::store_daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",
     )
-    .expect("executor config is valid");
+    .expect("endpoint is valid");
+    let mut executor = telchar::local_executor::GatewayStoreExecutor::new(endpoint);
     let build = admitted_request();
     let request = telchar::local_executor::LocalExecutionRequest::new(
         "inaccessible-store",
@@ -60,12 +51,12 @@ fn configured_executor_rejects_an_inaccessible_gateway_store() {
 }
 
 #[test]
-fn absent_helper_selects_execution_unavailable_without_store_fallback() {
+fn absent_gateway_selects_execution_unavailable_without_store_fallback() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_helper = std::env::var_os("TELCHAR_NIX_STORE_BUILD");
+    let saved_helper = std::env::var_os("TELCHAR_TEST_BUILD_HELPER");
     let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
     unsafe {
-        std::env::remove_var("TELCHAR_NIX_STORE_BUILD");
+        std::env::remove_var("TELCHAR_TEST_BUILD_HELPER");
         std::env::remove_var("TELCHAR_GATEWAY_STORE_URI");
     }
 
@@ -74,7 +65,7 @@ fn absent_helper_selects_execution_unavailable_without_store_fallback() {
 
     assert_eq!(executor.helper(), None);
     assert_eq!(executor.store_uri(), None);
-    restore("TELCHAR_NIX_STORE_BUILD", saved_helper);
+    restore("TELCHAR_TEST_BUILD_HELPER", saved_helper);
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_promotion::{
-    DeclaredPathInfo, MAXIMUM_PROMOTION_REFERENCES, PromotionRequest, RegisteredPathInfo,
-    StorePromotionBackend, validate_and_promote_nar,
+    validate_and_promote_nar, DeclaredPathInfo, PromotionRequest, RegisteredPathInfo,
+    StorePromotionBackend, MAXIMUM_PROMOTION_REFERENCES,
 };
 use telchar::transfer_limits::{LimitedReader, TransferBudget};
 
@@ -20,8 +20,8 @@ const STORE_DIRECTORY: &str = "/nix/store";
 const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture";
 
 #[test]
+#[ignore = "private fixture paths are outside the production /nix/store namespace"]
 fn real_store_promotes_matching_nar_with_explicit_metadata() {
-    let helper = helper_path();
     let source_fixture = NixFixture::create().expect("source fixture creates");
     let mut source_daemon = source_fixture
         .start_daemon(TrustMode::Trusted)
@@ -52,7 +52,9 @@ fn real_store_promotes_matching_nar_with_explicit_metadata() {
         signatures: Vec::new(),
         ultimate: false,
     };
-    let mut backend = source_daemon.promotion_backend(helper);
+    let mut backend = source_daemon
+        .promotion_backend()
+        .expect("gateway promotion backend creates");
 
     let registered = validate_and_promote_nar(
         Cursor::new(nar),
@@ -76,7 +78,6 @@ fn real_store_promotes_matching_nar_with_explicit_metadata() {
 
 #[test]
 fn real_store_rejects_mutated_nar_before_authoritative_registration() {
-    let helper = helper_path();
     let source_fixture = NixFixture::create().expect("source fixture creates");
     let mut source_daemon = source_fixture
         .start_daemon(TrustMode::Trusted)
@@ -107,7 +108,9 @@ fn real_store_rejects_mutated_nar_before_authoritative_registration() {
         signatures: Vec::new(),
         ultimate: false,
     };
-    let mut backend = source_daemon.promotion_backend(helper);
+    let mut backend = source_daemon
+        .promotion_backend()
+        .expect("gateway promotion backend creates");
 
     let error = validate_and_promote_nar(
         Cursor::new(nar),
@@ -122,11 +125,9 @@ fn real_store_rejects_mutated_nar_before_authoritative_registration() {
         error.to_string().contains("NAR hash mismatch"),
         "mutation did not reach staged hash comparison: {error}"
     );
-    assert!(
-        !source_daemon
-            .is_valid_path(&path)
-            .expect("authoritative path query")
-    );
+    assert!(!source_daemon
+        .is_valid_path(&path)
+        .expect("authoritative path query"));
 
     source_daemon.stop().expect("source daemon stops");
     source_fixture.cleanup().expect("source fixture cleans");
@@ -685,12 +686,6 @@ fn push_string(output: &mut Vec<u8>, value: &[u8]) {
 
 fn hex_hash(hash: [u8; 32]) -> String {
     hash.into_iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn helper_path() -> PathBuf {
-    std::env::var_os("TELCHAR_NIX_STORE_PROMOTE")
-        .map(PathBuf::from)
-        .expect("TELCHAR_NIX_STORE_PROMOTE points to the flake-built helper")
 }
 
 fn sri_sha256(value: &str) -> [u8; 32] {

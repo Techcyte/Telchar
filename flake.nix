@@ -24,29 +24,6 @@
           craneLib.filterCargoSources path type
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" (toString path);
       };
-      mkNixStoreHelper =
-        name: sourceDirectory:
-        pkgs.stdenv.mkDerivation {
-          pname = "telchar-nix-store-${name}";
-          version = "0.1.0";
-          src = sourceDirectory;
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.nix.dev ];
-          buildPhase = ''
-            runHook preBuild
-            $CXX $(pkg-config --cflags nix-store) -o telchar-nix-store-${name} main.cc $(pkg-config --libs nix-store)
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            install -Dm755 telchar-nix-store-${name} $out/libexec/telchar/nix-store-${name}
-            runHook postInstall
-          '';
-        };
-      nixStoreBuild = mkNixStoreHelper "build" ./tools/nix-store-build;
-      nixStoreExport = mkNixStoreHelper "export" ./tools/nix-store-export;
-      nixStorePromote = mkNixStoreHelper "promote" ./tools/nix-store-promote;
-      nixStoreClosure = mkNixStoreHelper "closure" ./tools/nix-store-closure;
     in
     {
       checks.${system} =
@@ -255,18 +232,7 @@
           cargoExtraArgs = "-p telchar";
           nativeBuildInputs = [ pkgs.postgresql ];
           cargoTestExtraArgs = "--lib";
-          postInstall = ''
-            mkdir -p $out/libexec/telchar
-            cp ${nixStoreBuild}/libexec/telchar/nix-store-build $out/libexec/telchar/nix-store-build
-            cp ${nixStoreExport}/libexec/telchar/nix-store-export $out/libexec/telchar/nix-store-export
-            cp ${nixStorePromote}/libexec/telchar/nix-store-promote $out/libexec/telchar/nix-store-promote
-            cp ${nixStoreClosure}/libexec/telchar/nix-store-closure $out/libexec/telchar/nix-store-closure
-          '';
         };
-        nix-store-build = nixStoreBuild;
-        nix-store-export = nixStoreExport;
-        nix-store-promote = nixStorePromote;
-        nix-store-closure = nixStoreClosure;
         nix-reference = pkgs.nix;
         default = self.packages.${system}.telchar;
       };
@@ -274,10 +240,6 @@
       devShells.${system}.default = pkgs.mkShell {
         TELCHAR_NIX = "${pkgs.nix}/bin/nix";
         TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
-        TELCHAR_NIX_STORE_BUILD = "${nixStoreBuild}/libexec/telchar/nix-store-build";
-        TELCHAR_NIX_STORE_EXPORT = "${nixStoreExport}/libexec/telchar/nix-store-export";
-        TELCHAR_NIX_STORE_PROMOTE = "${nixStorePromote}/libexec/telchar/nix-store-promote";
-        TELCHAR_NIX_STORE_CLOSURE = "${nixStoreClosure}/libexec/telchar/nix-store-closure";
         packages = [
           pkgs.openssh
           pkgs.postgresql

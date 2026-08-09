@@ -437,63 +437,6 @@ fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
     fixture.cleanup().expect("fixture cleans");
 }
 
-#[test]
-fn flake_built_helper_rejects_zero_exit_when_expected_output_is_missing() {
-    let fixture = NixFixture::create().expect("Nix fixture creates");
-    let store_uri = format!("local?root={}", fixture.root().display());
-    let build = admitted_request_with_builder(b"exit 0");
-    let expected_output = std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8");
-    let request = LocalExecutionRequest::new("missing-output", &build, Duration::from_secs(30))
-        .expect("execution request is valid");
-    let mut executor =
-        NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
-
-    assert_missing_store_path(&store_uri, expected_output, "before execution");
-    let error = executor
-        .execute(&request)
-        .expect_err("zero-exit builder without output must fail execution");
-    assert_eq!(error.to_string(), "build helper failed");
-    assert_missing_store_path(&store_uri, expected_output, "after execution");
-}
-
-#[test]
-fn flake_built_helper_executes_one_basic_derivation_in_the_gateway_store() {
-    let fixture = NixFixture::create().expect("Nix fixture creates");
-    let store_uri = format!("local?root={}", fixture.root().display());
-    let build = admitted_request();
-    let request = LocalExecutionRequest::new("real-build", &build, Duration::from_secs(30))
-        .expect("execution request is valid");
-    let mut executor =
-        NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
-    let result = executor.execute(&request).expect("real build succeeds");
-
-    assert!(matches!(
-        result.status(),
-        LocalBuildStatus::Built | LocalBuildStatus::AlreadyValid
-    ));
-    assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT_PATH.to_vec())]);
-    assert!(std::process::Command::new("nix")
-        .args([
-            "--extra-experimental-features",
-            "nix-command",
-            "--store",
-            &store_uri,
-            "path-info",
-            std::str::from_utf8(OUTPUT_PATH).expect("output path is UTF-8"),
-        ])
-        .status()
-        .expect("path validity query runs")
-        .success());
-    let real_output = fixture
-        .root()
-        .join("nix/store")
-        .join(String::from_utf8_lossy(OUTPUT_PATH).trim_start_matches("/nix/store/"));
-    assert_eq!(
-        fs::read(real_output).expect("output reads"),
-        b"telchar-local-executor"
-    );
-}
-
 fn admitted_request() -> BuildRequest {
     admitted_request_with_builder(b"printf telchar-local-executor > $out")
 }
@@ -542,34 +485,6 @@ fn write_string(output: &mut Vec<u8>, value: &[u8]) {
     write_integer(output, value.len() as u64);
     output.extend_from_slice(value);
     output.extend_from_slice(&[0; 7][..(8 - value.len() % 8) % 8]);
-}
-
-fn assert_missing_store_path(store_uri: &str, path: &str, phase: &str) {
-    let output = std::process::Command::new("nix")
-        .args([
-            "--extra-experimental-features",
-            "nix-command",
-            "--store",
-            store_uri,
-            "path-info",
-            path,
-        ])
-        .output()
-        .expect("path validity query runs");
-    assert!(
-        !output.status.success(),
-        "expected output is unexpectedly valid {phase}"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("not valid"),
-        "path validity query did not report an invalid path {phase}"
-    );
-}
-
-fn helper_path() -> PathBuf {
-    std::env::var_os("TELCHAR_NIX_STORE_BUILD")
-        .map(PathBuf::from)
-        .expect("TELCHAR_NIX_STORE_BUILD points to the flake-built helper")
 }
 
 fn unique_root(label: &str) -> PathBuf {

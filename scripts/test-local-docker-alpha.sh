@@ -49,10 +49,10 @@ done
 
 telchar="$(nix build --no-link --print-out-paths .#telchar | tail -n 1)"
 export TELCHAR_GATEWAY_STORE_URI="unix://$socket_dir/socket?root=/"
-export TELCHAR_NIX="$(command -v nix)"
-export TELCHAR_NIX_STORE_BUILD="$telchar/libexec/telchar/nix-store-build"
-export TELCHAR_NIX_STORE_EXPORT="$telchar/libexec/telchar/nix-store-export"
-export TELCHAR_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)"
+TELCHAR_NIX="$(command -v nix)"
+export TELCHAR_NIX
+TELCHAR_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)"
+export TELCHAR_SYSTEM
 export TELCHAR_SUPPORTED_FEATURES=""
 export NIX_CONFIG=$'post-build-hook =\nsubstituters ='
 export TELCHAR_IPC_SOCKET="$ipc_socket"
