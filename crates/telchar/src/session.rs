@@ -505,60 +505,36 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                for (_, path) in result.outputs() {
-                    let path = match std::str::from_utf8(path) {
-                        Ok(path) => Path::new(path),
-                        Err(_) => {
-                            tracing::error!(
-                                event = "worker.build_derivation.output_validation_failed",
-                                reason = "invalid-data",
-                                "BuildDerivation output validation failed"
-                            );
-                            if let Err(release_error) = release_attached_request_leases(
-                                store_retention,
-                                database_url,
-                                session_id,
-                                &request_id,
-                            ) {
-                                return reject(
-                                    &mut output,
-                                    "request-lease-release",
-                                    release_error_message(&release_error),
-                                );
-                            }
-                            return reject(
-                                &mut output,
-                                "build-derivation-failed",
-                                "BuildDerivation execution failed",
-                            );
-                        }
-                    };
-                    if let Err(error) =
-                        crate::store_export::validate_store_output(path, store_export)
-                    {
-                        tracing::error!(
-                            event = "worker.build_derivation.output_validation_failed",
-                            reason = execution_error_reason(&error),
-                            "BuildDerivation output validation failed"
-                        );
-                        if let Err(release_error) = release_attached_request_leases(
-                            store_retention,
-                            database_url,
-                            session_id,
-                            &request_id,
-                        ) {
-                            return reject(
-                                &mut output,
-                                "request-lease-release",
-                                release_error_message(&release_error),
-                            );
-                        }
+                let output_validation = result.outputs().iter().try_for_each(|(_, path)| {
+                    let path = std::str::from_utf8(path).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid output path")
+                    })?;
+                    crate::store_export::validate_store_output(Path::new(path), store_export)
+                        .map(|_| ())
+                });
+                if let Err(error) = output_validation {
+                    tracing::error!(
+                        event = "worker.build_derivation.output_validation_failed",
+                        reason = execution_error_reason(&error),
+                        "BuildDerivation output validation failed"
+                    );
+                    if let Err(release_error) = release_attached_request_leases(
+                        store_retention,
+                        database_url,
+                        session_id,
+                        &request_id,
+                    ) {
                         return reject(
                             &mut output,
-                            "build-derivation-failed",
-                            "BuildDerivation execution failed",
+                            "request-lease-release",
+                            release_error_message(&release_error),
                         );
                     }
+                    return reject(
+                        &mut output,
+                        "build-derivation-failed",
+                        "BuildDerivation execution failed",
+                    );
                 }
                 if let Err(error) = release_attached_request_leases(
                     store_retention,
