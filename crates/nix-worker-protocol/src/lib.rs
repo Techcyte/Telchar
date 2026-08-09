@@ -9,7 +9,7 @@ use std::time::Duration;
 
 pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
 pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;
-pub const MINIMUM_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 18);
+pub const MINIMUM_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 35);
 pub const LATEST_WORKER_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 pub const FEATURE_NEGOTIATION_VERSION: WorkerVersion = WorkerVersion::new(1, 38);
 pub const STDERR_NEXT: u64 = 0x6f6c_6d67;
@@ -2051,6 +2051,15 @@ struct DecodedWorkerStrings {
     _value_charges: Vec<SessionAllocationCharge>,
 }
 
+fn discard_worker_strings(
+    input: &mut impl Read,
+    budget: &SessionAllocationBudget,
+) -> io::Result<()> {
+    let strings = read_worker_strings_from(input, budget)?;
+    drop(strings);
+    Ok(())
+}
+
 fn read_worker_strings_from(
     input: &mut impl Read,
     budget: &SessionAllocationBudget,
@@ -2163,27 +2172,51 @@ impl QueryValidPathsRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerTrust {
+    Trusted,
+    Untrusted,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkerClientCapabilities {
+    pub root_registration: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkerClientProfile {
+    pub version: WorkerVersion,
+    pub trust: WorkerTrust,
+    pub capabilities: WorkerClientCapabilities,
+}
+
 pub struct WorkerClient<S> {
     stream: S,
-    version: WorkerVersion,
+    profile: WorkerClientProfile,
 }
 
 impl<S: Read + Write> WorkerClient<S> {
     pub fn connect(mut stream: S) -> io::Result<Self> {
-        const ROOT_REGISTRATION_VERSION: WorkerVersion = WorkerVersion::new(1, 25);
         write_worker_integer_to(&mut stream, CLIENT_WORKER_MAGIC)?;
-        write_worker_integer_to(&mut stream, ROOT_REGISTRATION_VERSION.to_wire())?;
+        write_worker_integer_to(&mut stream, LATEST_WORKER_VERSION.to_wire())?;
         stream.flush()?;
         if read_worker_integer_from(&mut stream)? != SERVER_WORKER_MAGIC {
             return Err(protocol_client_error());
         }
         let daemon_version = WorkerVersion::from_wire(read_worker_integer_from(&mut stream)?);
-        if daemon_version.major != ROOT_REGISTRATION_VERSION.major
+        if daemon_version.major != LATEST_WORKER_VERSION.major
             || daemon_version < MINIMUM_WORKER_VERSION
         {
             return Err(protocol_client_error());
         }
-        let version = daemon_version.min(ROOT_REGISTRATION_VERSION);
+        let version = daemon_version.min(LATEST_WORKER_VERSION);
+        if version >= FEATURE_NEGOTIATION_VERSION {
+            write_worker_integer_to(&mut stream, 0)?;
+            stream.flush()?;
+            let budget = SessionAllocationBudget::new(ProtocolSessionLimits::DEFAULT);
+            discard_worker_strings(&mut stream, &budget).map_err(|_| protocol_client_error())?;
+        }
         if version >= WorkerVersion::new(1, 14) {
             write_worker_integer_to(&mut stream, 0)?;
         }
@@ -2194,11 +2227,31 @@ impl<S: Read + Write> WorkerClient<S> {
         if version >= WorkerVersion::new(1, 33) {
             discard_worker_byte_string(&mut stream, 1024)?;
         }
-        if version >= WorkerVersion::new(1, 35) && read_worker_integer_from(&mut stream)? > 2 {
-            return Err(protocol_client_error());
-        }
+        let trust = if version >= WorkerVersion::new(1, 35) {
+            match read_worker_integer_from(&mut stream)? {
+                0 => WorkerTrust::Unknown,
+                1 => WorkerTrust::Trusted,
+                2 => WorkerTrust::Untrusted,
+                _ => return Err(protocol_client_error()),
+            }
+        } else {
+            WorkerTrust::Unknown
+        };
         read_operation_frames(&mut stream, version)?;
-        Ok(Self { stream, version })
+        Ok(Self {
+            stream,
+            profile: WorkerClientProfile {
+                version,
+                trust,
+                capabilities: WorkerClientCapabilities {
+                    root_registration: true,
+                },
+            },
+        })
+    }
+
+    pub fn profile(&self) -> &WorkerClientProfile {
+        &self.profile
     }
 
     pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
@@ -2229,7 +2282,7 @@ impl<S: Read + Write> WorkerClient<S> {
         write_worker_integer_to(&mut self.stream, operation.code())?;
         write_worker_byte_string_to(&mut self.stream, path)?;
         self.stream.flush()?;
-        read_operation_frames(&mut self.stream, self.version)?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
         if read_worker_integer_from(&mut self.stream)? != 1 {
             return Err(protocol_client_error());
         }
@@ -3277,10 +3330,10 @@ mod tests {
         let client_features = vec!["one".to_owned(), "two".to_owned()];
         let server_features = vec!["two".to_owned(), "three".to_owned()];
 
-        let below_minimum = super::negotiate_worker_version(WorkerVersion::new(1, 17), &[], &[]);
+        let below_minimum = super::negotiate_worker_version(WorkerVersion::new(1, 34), &[], &[]);
         let minimum = super::negotiate_worker_version(MINIMUM_WORKER_VERSION, &[], &[]).unwrap();
         let supported =
-            super::negotiate_worker_version(WorkerVersion::new(1, 30), &[], &[]).unwrap();
+            super::negotiate_worker_version(WorkerVersion::new(1, 37), &[], &[]).unwrap();
         let maximum = super::negotiate_worker_version(
             LATEST_WORKER_VERSION,
             &client_features,
@@ -3302,7 +3355,7 @@ mod tests {
 
         assert_eq!(below_minimum, Err(ProtocolError::VersionMismatch));
         assert_eq!(minimum.version, MINIMUM_WORKER_VERSION);
-        assert_eq!(supported.version, WorkerVersion::new(1, 30));
+        assert_eq!(supported.version, WorkerVersion::new(1, 37));
         assert_eq!(maximum.version, LATEST_WORKER_VERSION);
         assert_eq!(maximum.features, vec!["two"]);
         assert_eq!(newer_same_major.version, LATEST_WORKER_VERSION);

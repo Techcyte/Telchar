@@ -50,6 +50,9 @@ fn successful_daemon_response(operation_count: usize) -> Vec<u8> {
     let mut response = Vec::new();
     integer(&mut response, SERVER_WORKER_MAGIC);
     integer(&mut response, WorkerVersion::new(1, 38).to_wire());
+    integer(&mut response, 0);
+    byte_string(&mut response, b"2.34.8");
+    integer(&mut response, 1);
     integer(&mut response, STDERR_LAST);
     for _ in 0..operation_count {
         integer(&mut response, STDERR_LAST);
@@ -59,7 +62,7 @@ fn successful_daemon_response(operation_count: usize) -> Vec<u8> {
 }
 
 #[test]
-fn root_registration_uses_classic_negotiated_requests_on_one_connection() {
+fn root_registration_uses_modern_profile_and_preserves_operation_bytes() {
     let stream = ScriptedStream::new(successful_daemon_response(2));
     let mut client = WorkerClient::connect(stream).expect("client handshake succeeds");
 
@@ -73,7 +76,8 @@ fn root_registration_uses_classic_negotiated_requests_on_one_connection() {
     let stream = client.into_inner();
     let mut expected = Vec::new();
     integer(&mut expected, CLIENT_WORKER_MAGIC);
-    integer(&mut expected, WorkerVersion::new(1, 25).to_wire());
+    integer(&mut expected, WorkerVersion::new(1, 38).to_wire());
+    integer(&mut expected, 0);
     integer(&mut expected, 0);
     integer(&mut expected, 0);
     integer(&mut expected, 11);
@@ -91,10 +95,17 @@ fn daemon_error_is_bounded_and_redacted() {
     let mut response = Vec::new();
     integer(&mut response, SERVER_WORKER_MAGIC);
     integer(&mut response, WorkerVersion::new(1, 38).to_wire());
+    integer(&mut response, 0);
+    byte_string(&mut response, b"2.34.8");
+    integer(&mut response, 1);
     integer(&mut response, STDERR_LAST);
     integer(&mut response, STDERR_ERROR);
-    byte_string(&mut response, b"sensitive daemon diagnostic");
+    byte_string(&mut response, b"Error");
     integer(&mut response, 1);
+    byte_string(&mut response, b"daemon");
+    byte_string(&mut response, b"sensitive daemon diagnostic");
+    integer(&mut response, 0);
+    integer(&mut response, 0);
     let stream = ScriptedStream::new(response);
     let mut client = WorkerClient::connect(stream).expect("client handshake succeeds");
 
