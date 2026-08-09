@@ -107,7 +107,7 @@
                 gateway.succeed("systemctl restart telchar.service")
                 gateway.wait_for_unit("telchar.service")
                 stock_client.succeed("ping -c 1 gateway")
-                otlp_collector.succeed("test -s /var/lib/telchar-otlp/records.json")
+                otlp_collector.wait_until_succeeds("test -s /var/lib/telchar-otlp/records.json")
               '';
             };
           nixos-gate-2 =
@@ -234,6 +234,7 @@
                 gateway.succeed("grep -q '^ActiveState=failed$' /var/lib/telchar-artifacts/machine-state.json")
                 gateway.succeed("grep -q '^Result=exit-code$' /var/lib/telchar-artifacts/machine-state.json")
                 gateway.succeed("! grep -q not-for-artifacts /var/lib/telchar-artifacts/journal.log /var/lib/telchar-artifacts/machine-state.json")
+                otlp_collector.wait_until_succeeds("test -s /var/lib/telchar-otlp/records.json")
                 otlp_collector.succeed("mkdir -p /var/lib/telchar-artifacts && cp /var/lib/telchar-otlp/records.json /var/lib/telchar-artifacts/otlp-records.json")
                 otlp_collector.succeed("test -s /var/lib/telchar-artifacts/otlp-records.json")
               '';
