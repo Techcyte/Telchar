@@ -1016,12 +1016,12 @@ Evidence: paths and output facts to record
 
 ### Gate 3 acceptance
 
-- [ ] T095 Verify Gate 3 local correctness vertical slice
+- [x] T095 Verify Gate 3 local correctness vertical slice
   - Depends on: T069, T069A, T069B, T070, T070D, T074, T075A, T084, T085, T085A, T086, T086A, T086B, T089, T091, T092, T093, T094
   - Outcome: stock client that cannot build locally receives verified output through Telchar; bounds, GC, invalid output, and disconnect policies pass.
-  - Red: gate script reports missing evidence.
-  - Verify: full protocol/store/OpenSSH/local-backend VM suite.
-  - Evidence: exact command and pristine output.
+  - Red: full `nix flake check` exposed two OTLP fixture races where smoke/artifact checks read the collector file before asynchronous export completed.
+  - Verify: `nix flake check` builds and runs the full Rust, package, NixOS library, smoke, Gate 2, Gate 3, and artifact suite.
+  - Evidence: collector assertions now wait for a non-empty bounded export file before reading/copying it; final `nix flake check` reports `all checks passed!`, including `nixos-gate-3-contract`.
 
 ### Pure-Rust gateway-store compatibility boundary
 
