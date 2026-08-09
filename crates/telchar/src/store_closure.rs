@@ -1,219 +1,128 @@
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::collections::{BTreeSet, VecDeque};
+use std::io;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1024 * 1024;
-const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
-#[derive(Debug, serde::Serialize)]
-struct ClosureRequest<'a> {
-    version: u32,
-    store_uri: &'a str,
-    roots: Vec<&'a str>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ClosureResponse {
-    version: u32,
-    paths: Vec<String>,
-}
+const MAXIMUM_CLOSURE_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
+const MAXIMUM_CLOSURE_BYTES: usize = 1024 * 1024;
 
 pub trait StoreClosureBackend: Send {
     fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>>;
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
-    let Some(helper) = std::env::var_os("TELCHAR_NIX_STORE_CLOSURE") else {
-        return Ok(Box::new(UnavailableStoreClosureBackend));
-    };
-    let Some(store_uri) = std::env::var_os("TELCHAR_GATEWAY_STORE_URI") else {
-        return Ok(Box::new(UnavailableStoreClosureBackend));
-    };
-    Ok(Box::new(NixStoreClosureBackend::new(
-        helper,
-        store_uri.to_string_lossy(),
-    )?))
+    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+        .ok_or_else(query_error)
+        .and_then(|value| GatewayStoreEndpoint::parse_os(&value).map_err(|_| query_error()))?;
+    Ok(Box::new(GatewayStoreClosureBackend::new(endpoint)))
 }
 
-struct UnavailableStoreClosureBackend;
+pub struct GatewayStoreClosureBackend {
+    endpoint: GatewayStoreEndpoint,
+}
 
-impl StoreClosureBackend for UnavailableStoreClosureBackend {
-    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
-        if roots.is_empty() {
-            Ok(Vec::new())
-        } else {
-            Err(query_error())
-        }
+impl GatewayStoreClosureBackend {
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self { endpoint }
     }
 }
 
-pub struct NixStoreClosureBackend {
-    helper: PathBuf,
-    store_uri: String,
-}
-
-impl NixStoreClosureBackend {
-    pub fn new(helper: impl Into<PathBuf>, store_uri: impl Into<String>) -> io::Result<Self> {
-        let helper = helper.into();
-        if !helper.is_absolute() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "store closure helper path is not absolute",
-            ));
-        }
-        let store_uri = store_uri.into();
-        if store_uri.is_empty() || store_uri.contains('\0') {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "gateway store endpoint is not configured",
-            ));
-        }
-        Ok(Self { helper, store_uri })
-    }
-
-    fn query(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
-        let root_strings = roots
-            .iter()
-            .map(|root| {
-                let root = std::str::from_utf8(root).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "input closure query failed")
-                })?;
-                if root.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
-                    || !root.starts_with("/nix/store/")
-                    || root
-                        .bytes()
-                        .any(|byte| matches!(byte, b'\0' | b'\n' | b'\r'))
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "input closure query failed",
-                    ));
-                }
-                Ok(root)
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        let payload = serde_json::to_vec(&ClosureRequest {
-            version: 1,
-            store_uri: &self.store_uri,
-            roots: root_strings.clone(),
-        })
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input closure query failed"))?;
-        if payload.len() > MAXIMUM_RESPONSE_BYTES {
-            return Err(query_error());
-        }
-
-        let mut command = Command::new(&self.helper);
-        configure_child_lifecycle(&mut command);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let child = command.spawn().map_err(|_| query_error())?;
-        let mut child = ChildGuard::new(child);
-        let mut stdin = child.child.stdin.take().ok_or_else(query_error)?;
-        let stdout = child.child.stdout.take().ok_or_else(query_error)?;
-        let stderr = child.child.stderr.take().ok_or_else(query_error)?;
-        let stdout_reader = thread::spawn(|| drain_bounded(stdout, MAXIMUM_RESPONSE_BYTES));
-        let stderr_reader = thread::spawn(|| drain_bounded(stderr, MAXIMUM_DIAGNOSTIC_BYTES));
-        let write_result = stdin.write_all(&payload).and_then(|_| stdin.flush());
-        drop(stdin);
-        if write_result.is_err() {
-            child.kill_and_reap();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(query_error());
-        }
-        let deadline = Instant::now() + OPERATION_TIMEOUT;
-        let status = loop {
-            match child.child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() >= deadline => {
-                    child.kill_and_reap();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(query_error());
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(5)),
-                Err(_) => {
-                    child.kill_and_reap();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(query_error());
-                }
-            }
-        };
-        let (stdout, stdout_overflow) = stdout_reader.join().map_err(|_| query_error())??;
-        let (_stderr, stderr_overflow) = stderr_reader.join().map_err(|_| query_error())??;
-        if !status.success()
-            || stdout_overflow
-            || stderr_overflow
-            || stdout.len() > MAXIMUM_RESPONSE_BYTES
-        {
-            return Err(query_error());
-        }
-        let response: ClosureResponse =
-            serde_json::from_slice(&stdout).map_err(|_| query_error())?;
-        if response.version != 1
-            || response.paths.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
-        {
-            return Err(query_error());
-        }
-        let paths = normalize_paths(response.paths)?;
-        if root_strings
-            .iter()
-            .any(|root| !paths.iter().any(|path| path == root))
-        {
-            return Err(query_error());
-        }
-        Ok(paths)
-    }
-}
-
-impl StoreClosureBackend for NixStoreClosureBackend {
+impl StoreClosureBackend for GatewayStoreClosureBackend {
     fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
         if roots.is_empty() {
             return Ok(Vec::new());
         }
-        if roots.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES {
-            return Err(query_error());
-        }
-        self.query(roots)
+        let mut connection =
+            GatewayStoreConnection::connect(&self.endpoint).map_err(|_| query_error())?;
+        compute_input_closure(&mut connection, roots)
     }
 }
 
-fn normalize_paths(paths: Vec<String>) -> io::Result<Vec<String>> {
-    let mut paths = paths;
-    for path in &paths {
-        validate_store_path(path)?;
+trait PathInfoQuery {
+    fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
+}
+
+impl PathInfoQuery for GatewayStoreConnection {
+    fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        self.query_path_info(path)
+            .map(|info| info.map(|info| info.references().to_vec()))
     }
-    paths.sort_unstable();
-    paths.dedup();
-    if paths.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES {
+}
+
+fn compute_input_closure(
+    store: &mut impl PathInfoQuery,
+    roots: &[Vec<u8>],
+) -> io::Result<Vec<String>> {
+    if roots.len() > MAXIMUM_CLOSURE_PATHS {
         return Err(query_error());
     }
-    Ok(paths)
+    let mut pending = VecDeque::new();
+    let mut discovered = BTreeSet::new();
+    let mut retained_bytes = 0_usize;
+    for root in roots {
+        add_path(root, &mut pending, &mut discovered, &mut retained_bytes)?;
+    }
+
+    while let Some(path) = pending.pop_front() {
+        let references = store
+            .query_references(&path)
+            .map_err(|_| query_error())?
+            .ok_or_else(query_error)?;
+        for reference in references {
+            add_path(
+                &reference,
+                &mut pending,
+                &mut discovered,
+                &mut retained_bytes,
+            )?;
+        }
+    }
+
+    discovered
+        .into_iter()
+        .map(|path| String::from_utf8(path).map_err(|_| query_error()))
+        .collect()
 }
 
-fn validate_store_path(path: &str) -> io::Result<()> {
-    const STORE_DIRECTORY: &str = "/nix/store/";
+fn add_path(
+    path: &[u8],
+    pending: &mut VecDeque<Vec<u8>>,
+    discovered: &mut BTreeSet<Vec<u8>>,
+    retained_bytes: &mut usize,
+) -> io::Result<()> {
+    validate_store_path(path)?;
+    if discovered.contains(path) {
+        return Ok(());
+    }
+    if discovered.len() >= MAXIMUM_CLOSURE_PATHS {
+        return Err(query_error());
+    }
+    *retained_bytes = retained_bytes
+        .checked_add(path.len())
+        .filter(|bytes| *bytes <= MAXIMUM_CLOSURE_BYTES)
+        .ok_or_else(query_error)?;
+    let path = path.to_vec();
+    discovered.insert(path.clone());
+    pending.push_back(path);
+    Ok(())
+}
+
+fn validate_store_path(path: &[u8]) -> io::Result<()> {
+    const STORE_DIRECTORY: &[u8] = b"/nix/store/";
     const HASH_LENGTH: usize = 32;
     const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
     let Some(base) = path.strip_prefix(STORE_DIRECTORY) else {
         return Err(query_error());
     };
-    let bytes = base.as_bytes();
     if path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
-        || bytes.len() <= HASH_LENGTH + 1
-        || bytes[HASH_LENGTH] != b'-'
-        || !bytes[..HASH_LENGTH]
+        || base.len() <= HASH_LENGTH + 1
+        || base.contains(&b'/')
+        || base[HASH_LENGTH] != b'-'
+        || !base[..HASH_LENGTH]
             .iter()
             .all(|byte| HASH_ALPHABET.contains(byte))
-        || !bytes[HASH_LENGTH + 1..].iter().all(|byte| {
+        || !base[HASH_LENGTH + 1..].iter().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
         })
     {
@@ -226,199 +135,112 @@ fn query_error() -> io::Error {
     io::Error::other("input closure query failed")
 }
 
-struct ChildGuard {
-    child: Child,
-}
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self { child }
-    }
-
-    fn kill_and_reap(&mut self) {
-        let pid = rustix::process::Pid::from_raw(self.child.id() as rustix::process::RawPid);
-        if let Some(pid) = pid {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        self.kill_and_reap();
-    }
-}
-
-fn drain_bounded(mut source: impl Read, maximum: usize) -> io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 4096];
-    let mut overflow = false;
-    loop {
-        let count = source.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        if output.len().saturating_add(count) > maximum {
-            overflow = true;
-        } else {
-            output.extend_from_slice(&buffer[..count]);
-        }
-    }
-    Ok((output, overflow))
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn configure_child_lifecycle(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(io::Error::from)?;
-            rustix::process::setpgid(None, None).map_err(io::Error::from)?;
-            if rustix::process::getppid() == Some(rustix::process::Pid::INIT) {
-                return Err(io::Error::other("closure owner exited before helper start"));
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-fn configure_child_lifecycle(_command: &mut Command) {}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temporary_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "telchar-store-closure-{name}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock follows epoch")
-                .as_nanos()
-        ))
+    const ROOT: &[u8] = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root";
+    const LEFT: &[u8] = b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-left";
+    const RIGHT: &[u8] = b"/nix/store/cccccccccccccccccccccccccccccccc-right";
+    const LEAF: &[u8] = b"/nix/store/dddddddddddddddddddddddddddddddd-leaf";
+
+    struct Store {
+        paths: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+        queries: Vec<Vec<u8>>,
     }
 
-    #[test]
-    fn empty_roots_do_not_spawn_helper() {
-        let helper = temporary_path("empty-helper");
-        let marker = temporary_path("empty-marker");
-        fs::write(
-            &helper,
-            format!("#!/bin/sh\nprintf x > '{}'\n", marker.display()),
-        )
-        .expect("helper writes");
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
-            .expect("helper permissions set");
-        let mut backend =
-            NixStoreClosureBackend::new(&helper, "unix:///fixed").expect("backend configures");
-
-        assert_eq!(
-            backend.input_closure(&[]).expect("empty closure succeeds"),
-            Vec::<String>::new()
-        );
-        assert!(!marker.exists(), "empty closure spawned helper");
-        let _ = fs::remove_file(helper);
-        let _ = fs::remove_file(marker);
-    }
-
-    #[test]
-    fn malformed_response_store_paths_are_rejected() {
-        for path in [
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a/nested",
-            "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-a",
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a!",
-        ] {
-            assert!(
-                normalize_paths(vec![path.to_owned()]).is_err(),
-                "accepted malformed store path: {path}"
-            );
+    impl PathInfoQuery for Store {
+        fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+            self.queries.push(path.to_vec());
+            Ok(self.paths.get(path).cloned())
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    #[test]
-    fn child_guard_kills_helper_process_group_and_reaps_helper() {
-        let pid_path = temporary_path("grandchild-pid");
-        let script = format!("sleep 30 & printf '%s' $! > '{}'; wait", pid_path.display());
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(script);
-        configure_child_lifecycle(&mut command);
-        let child = command.spawn().expect("helper starts");
-        let mut guard = ChildGuard::new(child);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let grandchild_pid = loop {
-            assert!(Instant::now() < deadline, "grandchild PID was not recorded");
-            if let Ok(contents) = fs::read_to_string(&pid_path)
-                && let Ok(pid) = contents.parse::<i32>()
-            {
-                break pid;
-            }
-            thread::yield_now();
-        };
-
-        guard.kill_and_reap();
-
-        let process = std::path::PathBuf::from(format!("/proc/{grandchild_pid}"));
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if !process.exists() {
-                break;
-            }
-            let status = match fs::read_to_string(process.join("status")) {
-                Ok(status) => status,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-                Err(error) => panic!("process state reads: {error}"),
-            };
-            if status
-                .lines()
-                .any(|line| line.starts_with("State:") && line.contains("Z (zombie)"))
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "helper grandchild survived owner cleanup: {status}"
-            );
-            thread::yield_now();
+    fn store() -> Store {
+        Store {
+            paths: BTreeMap::from([
+                (ROOT.to_vec(), vec![RIGHT.to_vec(), LEFT.to_vec()]),
+                (LEFT.to_vec(), vec![LEAF.to_vec()]),
+                (RIGHT.to_vec(), vec![LEAF.to_vec()]),
+                (LEAF.to_vec(), Vec::new()),
+            ]),
+            queries: Vec::new(),
         }
-        let _ = fs::remove_file(pid_path);
     }
 
     #[test]
-    fn duplicate_response_paths_are_sorted_and_deduplicated() {
-        let helper = temporary_path("normalization-helper");
-        fs::write(
-            &helper,
-            r#"#!/bin/sh
-cat >/dev/null
-printf '%s\n' '{"version":1,"paths":["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a"]}'
-"#,
-        )
-        .expect("helper writes");
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
-            .expect("helper permissions set");
-        let mut backend =
-            NixStoreClosureBackend::new(&helper, "unix:///fixed").expect("backend configures");
+    fn computes_complete_reference_closure_once_in_deterministic_order() {
+        let mut store = store();
 
-        let closure = backend
-            .input_closure(&[b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_vec()])
-            .expect("closure response normalizes");
+        let closure = compute_input_closure(&mut store, &[ROOT.to_vec(), LEFT.to_vec()]).unwrap();
+
         assert_eq!(
             closure,
-            vec![
-                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_owned(),
-                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b".to_owned(),
-            ]
+            [ROOT, LEFT, RIGHT, LEAF]
+                .into_iter()
+                .map(|path| String::from_utf8(path.to_vec()).unwrap())
+                .collect::<Vec<_>>()
         );
-        let _ = fs::remove_file(helper);
+        store.queries.sort();
+        store.queries.dedup();
+        assert_eq!(store.queries.len(), 4);
+    }
+
+    #[test]
+    fn empty_roots_do_not_query_or_connect() {
+        let mut store = store();
+        assert_eq!(
+            compute_input_closure(&mut store, &[]).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(store.queries.is_empty());
+    }
+
+    #[test]
+    fn missing_root_or_reference_fails_closed() {
+        let mut missing_root = store();
+        assert!(compute_input_closure(
+            &mut missing_root,
+            &[b"/nix/store/00000000000000000000000000000000-missing".to_vec()]
+        )
+        .is_err());
+
+        let mut missing_reference = store();
+        missing_reference.paths.remove(LEAF);
+        assert!(compute_input_closure(&mut missing_reference, &[ROOT.to_vec()]).is_err());
+    }
+
+    #[test]
+    fn cycles_and_duplicate_references_terminate_without_duplicate_results() {
+        let mut store = store();
+        store
+            .paths
+            .insert(LEAF.to_vec(), vec![ROOT.to_vec(), ROOT.to_vec()]);
+
+        let closure = compute_input_closure(&mut store, &[ROOT.to_vec()]).unwrap();
+
+        assert_eq!(closure.len(), 4);
+        assert_eq!(store.queries.len(), 4);
+    }
+
+    #[test]
+    fn malformed_paths_and_path_count_overflow_fail_before_queries() {
+        for path in [
+            b"relative".as_slice(),
+            b"/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-invalid".as_slice(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a/nested".as_slice(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a!".as_slice(),
+        ] {
+            let mut store = store();
+            assert!(compute_input_closure(&mut store, &[path.to_vec()]).is_err());
+            assert!(store.queries.is_empty());
+        }
+
+        let mut store = store();
+        let roots = vec![ROOT.to_vec(); MAXIMUM_CLOSURE_PATHS + 1];
+        assert!(compute_input_closure(&mut store, &roots).is_err());
+        assert!(store.queries.is_empty());
     }
 }

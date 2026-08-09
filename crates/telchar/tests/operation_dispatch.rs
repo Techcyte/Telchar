@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -686,14 +687,8 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     ));
     fs::create_dir(&root).expect("fixture root creates");
     let helper = root.join("build-helper");
-    let closure_helper = root.join("closure-helper");
-    fs::write(
-        &closure_helper,
-        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"paths\":[\"/nix/store/22222222222222222222222222222222-telchar-input\"]}'\n",
-    )
-    .expect("closure helper writes");
-    fs::set_permissions(&closure_helper, fs::Permissions::from_mode(0o700))
-        .expect("closure helper executable");
+    let socket = root.join("gateway.sock");
+    let closure_daemon = spawn_closure_daemon(&socket, true);
     let started = root.join("helper-started");
     let complete = root.join("complete-helper");
     fs::write(
@@ -708,14 +703,8 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
-        "unix:///fixed-gateway.sock",
-        [
-            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
-            (
-                "TELCHAR_NIX_STORE_CLOSURE",
-                closure_helper.display().to_string(),
-            ),
-        ],
+        &format!("unix://{}", socket.display()),
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -762,6 +751,7 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     drop(output);
     assert!(child.wait().expect("Telchar exits").success());
     fixture.finish();
+    closure_daemon.join().expect("closure daemon exits");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -774,14 +764,8 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     ));
     fs::create_dir(&root).expect("fixture root creates");
     let helper = root.join("build-helper");
-    let closure_helper = root.join("closure-helper");
-    fs::write(
-        &closure_helper,
-        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"version\":1,\"paths\":[\"/nix/store/22222222222222222222222222222222-telchar-input\"]}'\n",
-    )
-    .expect("closure helper writes");
-    fs::set_permissions(&closure_helper, fs::Permissions::from_mode(0o700))
-        .expect("closure helper executable");
+    let socket = root.join("gateway.sock");
+    let closure_daemon = spawn_closure_daemon(&socket, false);
     let marker = root.join("helper-started");
     fs::write(
         &helper,
@@ -791,14 +775,8 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
-        "unix:///fixed-gateway.sock",
-        [
-            ("TELCHAR_NIX_STORE_BUILD", helper.display().to_string()),
-            (
-                "TELCHAR_NIX_STORE_CLOSURE",
-                closure_helper.display().to_string(),
-            ),
-        ],
+        &format!("unix://{}", socket.display()),
+        [("TELCHAR_NIX_STORE_BUILD", helper.display().to_string())],
     );
     fixture
         .database
@@ -883,6 +861,7 @@ fn input_lease_persistence_failure_rolls_back_input_roots() {
         assert!(!event.contains("/nix/store/"), "{event}");
         assert!(!event.contains("gc-roots"), "{event}");
     }
+    closure_daemon.join().expect("closure daemon exits");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -2920,6 +2899,123 @@ fn send_operation(operation: u64) -> OperationResponse {
         "unknown-operation"
     };
     OperationResponse { message, rejection }
+}
+
+fn spawn_closure_daemon(
+    socket: &std::path::Path,
+    expect_output_registration: bool,
+) -> thread::JoinHandle<()> {
+    let listener = UnixListener::bind(socket).expect("closure daemon socket binds");
+    thread::spawn(move || {
+        // First connection protects the derivation before closure discovery.
+        // Worker op 11 is AddTempRoot; op 12 registers Telchar's indirect GC root.
+        let (mut stream, _) = listener.accept().expect("closure daemon accepts");
+        assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+        assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+        write_integer(&mut stream, SERVER_WORKER_MAGIC);
+        write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+        stream.flush().expect("closure greeting flushes");
+        assert_eq!(read_integer(&mut stream), 0);
+        write_integer(&mut stream, 0);
+        stream.flush().expect("closure features flush");
+        assert_eq!(read_integer(&mut stream), 0);
+        assert_eq!(read_integer(&mut stream), 0);
+        write_string(&mut stream, b"2.34.8");
+        write_integer(&mut stream, 1);
+        write_integer(&mut stream, STDERR_LAST);
+        stream.flush().expect("closure handshake flushes");
+
+        assert_eq!(read_integer(&mut stream), 11);
+        assert_eq!(
+            read_string(&mut stream),
+            "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+        );
+        write_integer(&mut stream, STDERR_LAST);
+        write_integer(&mut stream, 1);
+        stream.flush().expect("temporary root response flushes");
+        assert_eq!(read_integer(&mut stream), 12);
+        let indirect_root = read_string(&mut stream);
+        assert!(indirect_root.contains("gc-roots"));
+        write_integer(&mut stream, STDERR_LAST);
+        write_integer(&mut stream, 1);
+        stream.flush().expect("indirect root response flushes");
+        // Closure traversal owns a separate daemon connection. Worker op 26 is
+        // QueryPathInfo. The response is: present, deriver, NAR hash, references,
+        // registration time, NAR size, ultimate, signatures, content address.
+        let (mut stream, _) = listener.accept().expect("closure query connection accepts");
+        assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+        assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+        write_integer(&mut stream, SERVER_WORKER_MAGIC);
+        write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+        stream.flush().expect("closure query greeting flushes");
+        assert_eq!(read_integer(&mut stream), 0);
+        write_integer(&mut stream, 0);
+        stream.flush().expect("closure query features flush");
+        assert_eq!(read_integer(&mut stream), 0);
+        assert_eq!(read_integer(&mut stream), 0);
+        write_string(&mut stream, b"2.34.8");
+        write_integer(&mut stream, 1);
+        write_integer(&mut stream, STDERR_LAST);
+        stream.flush().expect("closure query handshake flushes");
+        assert_eq!(read_integer(&mut stream), 26);
+        assert_eq!(
+            read_string(&mut stream),
+            "/nix/store/22222222222222222222222222222222-telchar-input"
+        );
+        write_integer(&mut stream, STDERR_LAST); // no daemon diagnostics
+        write_integer(&mut stream, 1); // path metadata is present
+        write_string(&mut stream, b""); // no deriver
+        write_string(
+            &mut stream,
+            b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1",
+        );
+        write_integer(&mut stream, 0); // no references: closure leaf
+        write_integer(&mut stream, 0); // registration time
+        write_integer(&mut stream, 0); // NAR size is irrelevant to traversal
+        write_integer(&mut stream, 0); // not ultimate
+        write_integer(&mut stream, 0); // no signatures
+        write_string(&mut stream, b""); // no content address
+        stream.flush().expect("closure response flushes");
+
+        handle_root_registration(&listener); // input root
+        if expect_output_registration {
+            handle_root_registration(&listener); // verified output root
+        }
+    })
+}
+
+fn handle_root_registration(listener: &UnixListener) {
+    // Input retention opens one connection per retained path. It sends AddTempRoot
+    // (op 11), creates the symlink locally, then sends AddIndirectRoot (op 12).
+    let (mut stream, _) = listener.accept().expect("root registration accepts");
+    assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut stream, SERVER_WORKER_MAGIC);
+    write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+    stream.flush().expect("root registration greeting flushes");
+    assert_eq!(read_integer(&mut stream), 0);
+    write_integer(&mut stream, 0);
+    stream.flush().expect("root registration features flush");
+    assert_eq!(read_integer(&mut stream), 0);
+    assert_eq!(read_integer(&mut stream), 0);
+    write_string(&mut stream, b"2.34.8");
+    write_integer(&mut stream, 1);
+    write_integer(&mut stream, STDERR_LAST);
+    stream.flush().expect("root registration handshake flushes");
+    assert_eq!(read_integer(&mut stream), 11);
+    assert!(read_string(&mut stream).starts_with("/nix/store/"));
+    write_integer(&mut stream, STDERR_LAST);
+    write_integer(&mut stream, 1);
+    stream
+        .flush()
+        .expect("root registration temporary response flushes");
+    assert_eq!(read_integer(&mut stream), 12);
+    assert!(read_string(&mut stream).contains("gc-roots"));
+    write_integer(&mut stream, STDERR_LAST);
+    write_integer(&mut stream, 1);
+    stream
+        .flush()
+        .expect("root registration indirect response flushes");
 }
 
 fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
