@@ -1,8 +1,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST, WorkerClient,
-    WorkerVersion,
+    WorkerClient, WorkerVersion, CLIENT_WORKER_MAGIC, SERVER_WORKER_MAGIC, STDERR_ERROR,
+    STDERR_LAST,
 };
 
 struct ScriptedStream {
