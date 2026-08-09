@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::io;
+use std::time::Duration;
 
 const MAXIMUM_SUPPORTED_FEATURES: usize = 64;
 const MAXIMUM_SYSTEM_BYTES: usize = 64;
@@ -39,10 +40,66 @@ impl RunningDisconnectPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputRetention {
+    duration: Duration,
+}
+
+impl OutputRetention {
+    pub const MINIMUM_SECONDS: u64 = 60;
+    pub const DEFAULT_SECONDS: u64 = 3_600;
+    pub const MAXIMUM_SECONDS: u64 = 86_400;
+
+    pub fn from_environment() -> io::Result<Self> {
+        match std::env::var("TELCHAR_OUTPUT_RETENTION_SECONDS") {
+            Ok(value) => Self::parse(&value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::default()),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(invalid("output retention is invalid"))
+            }
+        }
+    }
+
+    pub fn duration(self) -> Duration {
+        self.duration
+    }
+
+    pub fn seconds(self) -> u64 {
+        self.duration.as_secs()
+    }
+
+    fn parse(value: &str) -> io::Result<Self> {
+        if value.is_empty()
+            || value.starts_with('0')
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid("output retention is invalid"));
+        }
+        let seconds = value
+            .parse::<u64>()
+            .map_err(|_| invalid("output retention is invalid"))?;
+        if !(Self::MINIMUM_SECONDS..=Self::MAXIMUM_SECONDS).contains(&seconds) {
+            return Err(invalid("output retention is invalid"));
+        }
+        Ok(Self {
+            duration: Duration::from_secs(seconds),
+        })
+    }
+}
+
+impl Default for OutputRetention {
+    fn default() -> Self {
+        Self {
+            duration: Duration::from_secs(Self::DEFAULT_SECONDS),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentConfig {
     system: String,
     supported_features: Vec<String>,
+    output_retention: OutputRetention,
 }
 
 impl DeploymentConfig {
@@ -68,6 +125,7 @@ impl DeploymentConfig {
         Ok(Self {
             system: system.to_owned(),
             supported_features: features.into_iter().collect(),
+            output_retention: OutputRetention::default(),
         })
     }
 
@@ -75,7 +133,10 @@ impl DeploymentConfig {
         let system = std::env::var("TELCHAR_SYSTEM")
             .map_err(|_| invalid("TELCHAR_SYSTEM is not configured"))?;
         let features = std::env::var("TELCHAR_SUPPORTED_FEATURES").unwrap_or_default();
-        Self::parse(&system, &features)
+        let output_retention = OutputRetention::from_environment()?;
+        let mut config = Self::parse(&system, &features)?;
+        config.output_retention = output_retention;
+        Ok(config)
     }
 
     pub fn system(&self) -> &str {
@@ -84,6 +145,10 @@ impl DeploymentConfig {
 
     pub fn supported_features(&self) -> &[String] {
         &self.supported_features
+    }
+
+    pub fn output_retention(&self) -> OutputRetention {
+        self.output_retention
     }
 }
 
