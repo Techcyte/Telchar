@@ -111,6 +111,7 @@ let
         "root"
         "telchar-ingress"
       ];
+      systemd.services.nix-daemon.environment.PATH = pkgs.lib.mkForce "/run/telchar-direct-bin:/run/current-system/sw/bin";
       systemd.services.telchar-daemon = {
         description = "Telchar integration daemon";
         wantedBy = [ "multi-user.target" ];
