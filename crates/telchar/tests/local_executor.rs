@@ -368,18 +368,12 @@ fn flake_built_helper_rejects_zero_exit_when_expected_output_is_missing() {
     let mut executor =
         NixStoreExecutor::new(helper_path(), &store_uri).expect("executor config is valid");
 
-    assert!(
-        !store_path_is_valid(&store_uri, expected_output),
-        "expected output is absent before execution"
-    );
+    assert_missing_store_path(&store_uri, expected_output, "before execution");
     let error = executor
         .execute(&request)
         .expect_err("zero-exit builder without output must fail execution");
     assert_eq!(error.to_string(), "build helper failed");
-    assert!(
-        !store_path_is_valid(&store_uri, expected_output),
-        "expected output is absent after execution"
-    );
+    assert_missing_store_path(&store_uri, expected_output, "after execution");
 }
 
 #[test]
@@ -472,8 +466,8 @@ fn write_string(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(&[0; 7][..(8 - value.len() % 8) % 8]);
 }
 
-fn store_path_is_valid(store_uri: &str, path: &str) -> bool {
-    std::process::Command::new("nix")
+fn assert_missing_store_path(store_uri: &str, path: &str, phase: &str) {
+    let output = std::process::Command::new("nix")
         .args([
             "--extra-experimental-features",
             "nix-command",
@@ -482,9 +476,16 @@ fn store_path_is_valid(store_uri: &str, path: &str) -> bool {
             "path-info",
             path,
         ])
-        .status()
-        .expect("path validity query runs")
-        .success()
+        .output()
+        .expect("path validity query runs");
+    assert!(
+        !output.status.success(),
+        "expected output is unexpectedly valid {phase}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not valid"),
+        "path validity query did not report an invalid path {phase}"
+    );
 }
 
 fn helper_path() -> PathBuf {
