@@ -2,7 +2,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix_worker_protocol::WorkerOperation;
+use nix_worker_protocol::{LATEST_WORKER_VERSION, WorkerOperation, WorkerTrust};
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::worker_trace::TraceCapture;
 
@@ -116,6 +116,25 @@ fn creates_isolated_real_nix_client_state_and_removes_it() {
 
     fixture.cleanup().expect("fixture cleans up");
     assert!(!root.exists(), "fixture root leaked: {root:?}");
+}
+
+#[test]
+fn reusable_client_negotiates_with_real_private_daemon() {
+    for (mode, expected_trust) in [
+        (TrustMode::Trusted, WorkerTrust::Trusted),
+        (TrustMode::Untrusted, WorkerTrust::Untrusted),
+    ] {
+        let fixture = NixFixture::create().expect("fixture creates");
+        let daemon = fixture.start_daemon(mode).expect("fixture daemon starts");
+
+        let profile = daemon
+            .worker_client_profile()
+            .expect("worker client negotiates with private daemon");
+
+        assert_eq!(profile.version, LATEST_WORKER_VERSION);
+        assert_eq!(profile.trust, expected_trust);
+        assert!(profile.capabilities.root_registration);
+    }
 }
 
 #[test]

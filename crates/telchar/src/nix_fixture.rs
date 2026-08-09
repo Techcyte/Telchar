@@ -524,6 +524,12 @@ impl NixDaemon {
         })
     }
 
+    pub fn worker_client_profile(&self) -> io::Result<nix_worker_protocol::WorkerClientProfile> {
+        let stream = std::os::unix::net::UnixStream::connect(&self.socket_path)?;
+        let client = nix_worker_protocol::WorkerClient::connect(stream)?;
+        Ok(*client.profile())
+    }
+
     pub fn trusted(&mut self) -> io::Result<bool> {
         let output = Command::new("nix")
             .envs(&self.environment)
