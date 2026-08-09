@@ -1,6 +1,10 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use nix_worker_protocol::AddToStoreNarInfo;
+
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
+
 use crate::nar::stage_nar;
 
 pub const MAXIMUM_PROMOTION_REFERENCES: usize = 256;
@@ -50,6 +54,75 @@ struct StorePathJson {
     references: Vec<PathBuf>,
     deriver: Option<PathBuf>,
     ca: Option<String>,
+}
+
+pub struct GatewayStorePromotionBackend {
+    endpoint: GatewayStoreEndpoint,
+}
+
+impl GatewayStorePromotionBackend {
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self { endpoint }
+    }
+}
+
+impl StorePromotionBackend for GatewayStorePromotionBackend {
+    fn store_uri(&self) -> &str {
+        "configured-gateway-daemon"
+    }
+
+    fn is_valid_path(&mut self, path: &Path) -> io::Result<bool> {
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        connection.is_valid_path(path.as_os_str().as_encoded_bytes())
+    }
+
+    fn promote(&mut self, request: &PromotionRequest) -> io::Result<()> {
+        let mut nar = std::fs::File::open(&request.nar_path)?;
+        let references = request
+            .references
+            .iter()
+            .map(|path| path.as_os_str().as_encoded_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let info = AddToStoreNarInfo {
+            path: request.path.as_os_str().as_encoded_bytes(),
+            deriver: request
+                .deriver
+                .as_ref()
+                .map(|path| path.as_os_str().as_encoded_bytes()),
+            nar_hash_hex: &request.nar_hash_hex,
+            references: &references,
+            registration_time: 0,
+            nar_size: request.nar_size,
+            ultimate: false,
+            signatures: &[],
+            content_address: None,
+        };
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        connection.add_to_store_nar(&info, &mut nar, false, true)
+    }
+
+    fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        let info = connection
+            .query_path_info(path.as_os_str().as_encoded_bytes())?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "registered path omitted"))?;
+        Ok(RegisteredPathInfo {
+            path: path.to_path_buf(),
+            nar_hash: parse_sha256_hex(info.nar_hash_hex())?,
+            nar_size: info.nar_size(),
+            references: info
+                .references()
+                .iter()
+                .map(|reference| PathBuf::from(String::from_utf8_lossy(reference).into_owned()))
+                .collect(),
+            deriver: info
+                .deriver()
+                .map(|deriver| PathBuf::from(String::from_utf8_lossy(deriver).into_owned())),
+            content_address: info
+                .content_address()
+                .map(|address| String::from_utf8_lossy(address).into_owned()),
+        })
+    }
 }
 
 pub struct NixStorePromotionBackend {
@@ -262,6 +335,31 @@ fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
         let available = MAXIMUM_SUBPROCESS_OUTPUT_BYTES.saturating_sub(retained.len());
         retained.extend_from_slice(&buffer[..read.min(available)]);
         exceeded |= read > available;
+    }
+}
+
+fn parse_sha256_hex(value: &str) -> io::Result<[u8; 32]> {
+    if value.len() != 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid NAR hash",
+        ));
+    }
+    let mut hash = [0_u8; 32];
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        *output = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
+    }
+    Ok(hash)
+}
+
+fn hex_value(value: u8) -> io::Result<u8> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid NAR hash",
+        )),
     }
 }
 

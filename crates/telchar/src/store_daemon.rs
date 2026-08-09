@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nix_worker_protocol::{WorkerClient, WorkerClientProfile, WorkerPathInfo};
+use nix_worker_protocol::{AddToStoreNarInfo, WorkerClient, WorkerClientProfile, WorkerPathInfo};
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTION_ERROR: &str = "gateway Nix daemon connection failed";
@@ -100,6 +100,18 @@ impl GatewayStoreConnection {
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.client
             .query_path_info(path)
+            .map_err(|_| connection_error())
+    }
+
+    pub fn add_to_store_nar(
+        &mut self,
+        info: &AddToStoreNarInfo<'_>,
+        source: &mut dyn io::Read,
+        repair: bool,
+        dont_check_signatures: bool,
+    ) -> io::Result<()> {
+        self.client
+            .add_to_store_nar(info, source, repair, dont_check_signatures)
             .map_err(|_| connection_error())
     }
 }

@@ -5,16 +5,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nix_worker_protocol::AddMultipleToStorePathInfo;
 
+use crate::store_daemon::GatewayStoreEndpoint;
 use crate::store_promotion::{
-    DeclaredPathInfo, NixStorePromotionBackend, validate_and_promote_nar,
+    validate_and_promote_nar, DeclaredPathInfo, GatewayStorePromotionBackend,
 };
 
 static IMPORT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn importer_from_environment() -> io::Result<Box<dyn StoreImportBackend>> {
-    if std::env::var_os("TELCHAR_NIX_STORE_PROMOTE").is_none() {
-        return Ok(Box::new(UnavailableStoreImport));
-    }
     Ok(Box::new(GatewayStoreImport::from_environment()?))
 }
 
@@ -28,40 +26,19 @@ pub trait StoreImportBackend {
     ) -> io::Result<()>;
 }
 
-struct UnavailableStoreImport;
-
-impl StoreImportBackend for UnavailableStoreImport {
-    fn staging_directory(&self) -> Option<&Path> {
-        None
-    }
-
-    fn import(
-        &mut self,
-        _info: &AddMultipleToStorePathInfo,
-        _source: &mut dyn Read,
-    ) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "nonempty AddMultipleToStore is unsupported",
-        ))
-    }
-}
-
 pub struct GatewayStoreImport {
-    backend: NixStorePromotionBackend,
+    backend: GatewayStorePromotionBackend,
     staging_directory: PathBuf,
 }
 
 impl GatewayStoreImport {
     pub fn from_environment() -> io::Result<Self> {
-        let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI")
-            .map_err(|_| unavailable("gateway store endpoint is not configured"))?;
-        let helper = std::env::var_os("TELCHAR_NIX_STORE_PROMOTE")
-            .map(PathBuf::from)
-            .ok_or_else(|| unavailable("store promotion is unavailable"))?;
-        if !helper.is_absolute() {
-            return Err(unavailable("store promotion helper must be absolute"));
-        }
+        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+            .ok_or_else(|| unavailable("gateway store endpoint is not configured"))
+            .and_then(|value| {
+                GatewayStoreEndpoint::parse_os(&value)
+                    .map_err(|_| unavailable("gateway store endpoint is invalid"))
+            })?;
         let staging_root = std::env::temp_dir();
         std::fs::create_dir_all(&staging_root).map_err(|error| {
             io::Error::new(
@@ -88,7 +65,7 @@ impl GatewayStoreImport {
         })?;
         std::fs::set_permissions(&staging_directory, std::fs::Permissions::from_mode(0o700))?;
         Ok(Self {
-            backend: NixStorePromotionBackend::new(helper, store_uri, std::env::vars()),
+            backend: GatewayStorePromotionBackend::new(endpoint),
             staging_directory,
         })
     }

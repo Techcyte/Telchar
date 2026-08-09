@@ -2254,6 +2254,18 @@ impl WorkerPathInfo {
     }
 }
 
+pub struct AddToStoreNarInfo<'a> {
+    pub path: &'a [u8],
+    pub deriver: Option<&'a [u8]>,
+    pub nar_hash_hex: &'a str,
+    pub references: &'a [Vec<u8>],
+    pub registration_time: u64,
+    pub nar_size: u64,
+    pub ultimate: bool,
+    pub signatures: &'a [Vec<u8>],
+    pub content_address: Option<&'a [u8]>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerClientProfile {
     pub version: WorkerVersion,
@@ -2340,6 +2352,49 @@ impl<S: Read + Write> WorkerClient<S> {
             .map_err(|_| protocol_client_error())
     }
 
+    pub fn add_to_store_nar(
+        &mut self,
+        info: &AddToStoreNarInfo<'_>,
+        source: &mut dyn Read,
+        repair: bool,
+        dont_check_signatures: bool,
+    ) -> io::Result<()> {
+        validate_add_to_store_nar(info, repair, dont_check_signatures, self.profile.trust)?;
+        write_worker_integer_to(&mut self.stream, WorkerOperation::AddToStoreNar.code())?;
+        write_worker_byte_string_to(&mut self.stream, info.path)?;
+        write_worker_byte_string_to(&mut self.stream, info.deriver.unwrap_or_default())?;
+        write_worker_byte_string_to(&mut self.stream, info.nar_hash_hex.as_bytes())?;
+        write_worker_integer_to(&mut self.stream, info.references.len() as u64)?;
+        for reference in info.references {
+            write_worker_byte_string_to(&mut self.stream, reference)?;
+        }
+        write_worker_integer_to(&mut self.stream, info.registration_time)?;
+        write_worker_integer_to(&mut self.stream, info.nar_size)?;
+        write_worker_integer_to(&mut self.stream, u64::from(info.ultimate))?;
+        write_worker_integer_to(&mut self.stream, info.signatures.len() as u64)?;
+        for signature in info.signatures {
+            write_worker_byte_string_to(&mut self.stream, signature)?;
+        }
+        write_worker_byte_string_to(&mut self.stream, info.content_address.unwrap_or_default())?;
+        write_worker_integer_to(&mut self.stream, u64::from(repair))?;
+        write_worker_integer_to(&mut self.stream, u64::from(dont_check_signatures))?;
+        self.stream.flush()?;
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = source
+                .read(&mut buffer)
+                .map_err(|_| protocol_client_error())?;
+            if read == 0 {
+                break;
+            }
+            write_worker_integer_to(&mut self.stream, read as u64)?;
+            self.stream.write_all(&buffer[..read])?;
+        }
+        write_worker_integer_to(&mut self.stream, 0)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)
+    }
+
     pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
         validate_store_path(store_path).map_err(|_| protocol_client_error())?;
         self.execute_path_operation(WorkerOperation::AddTempRoot, store_path)
@@ -2386,6 +2441,57 @@ impl<S: Read + Write> WorkerClient<S> {
         }
         Ok(())
     }
+}
+
+fn validate_add_to_store_nar(
+    info: &AddToStoreNarInfo<'_>,
+    repair: bool,
+    dont_check_signatures: bool,
+    trust: WorkerTrust,
+) -> io::Result<()> {
+    validate_store_path(info.path).map_err(|_| protocol_client_error())?;
+    if let Some(deriver) = info.deriver {
+        validate_store_path(deriver).map_err(|_| protocol_client_error())?;
+    }
+    if info.nar_hash_hex.len() != MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES
+        || !info
+            .nar_hash_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || info
+            .nar_hash_hex
+            .bytes()
+            .any(|byte| byte.is_ascii_uppercase())
+        || info.references.len() > MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES
+        || info.signatures.len() > MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURES
+        || info.ultimate
+        || repair
+        || (dont_check_signatures && trust != WorkerTrust::Trusted)
+    {
+        return Err(protocol_client_error());
+    }
+    let mut references = std::collections::BTreeSet::new();
+    for reference in info.references {
+        validate_store_path(reference).map_err(|_| protocol_client_error())?;
+        if !references.insert(reference) {
+            return Err(protocol_client_error());
+        }
+    }
+    let mut signatures = std::collections::BTreeSet::new();
+    for signature in info.signatures {
+        if signature.len() > MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURE_BYTES
+            || !signatures.insert(signature)
+        {
+            return Err(protocol_client_error());
+        }
+    }
+    if info
+        .content_address
+        .is_some_and(|value| value.len() > MAXIMUM_ADD_MULTIPLE_TO_STORE_CONTENT_ADDRESS_BYTES)
+    {
+        return Err(protocol_client_error());
+    }
+    Ok(())
 }
 
 fn read_strict_client_boolean(input: &mut impl Read) -> io::Result<bool> {
