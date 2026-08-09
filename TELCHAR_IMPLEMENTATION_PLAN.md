@@ -1053,12 +1053,12 @@ Evidence: paths and output facts to record
   - Verify: exact/hostile contract 7/7, gateway connection contract 8/8 including typed delegation, complete protocol crate green, existing real trusted/untrusted private-daemon negotiation green, full protocol/Telchar Clippy with warnings denied, formatter and diff checks, and LSP/lens clean.
   - Evidence: exact operation bytes, strict valid/invalid/present/ultimate booleans, bounded complete deriver/hash/reference/time/size/signature/content-address decode, pre-write exact logical-store path rejection, duplicate-set rejection, redacted daemon errors, and no query retry/fallback.
 
-- [ ] T095C Replace the native input-closure helper with Rust worker-protocol operations
+- [x] T095C Replace the native input-closure helper with Rust worker-protocol operations
   - Depends on: T095B2, T073
-  - Outcome: complete input closure is computed through the Rust daemon client with exact `computeFSClosure(roots, false, false, false)` semantics and existing path/count/byte bounds.
-  - Red: Rust closure results differ from the accepted native-helper and real-store fixtures.
-  - Verify: differential private-store closure tests, hostile bounds, cancellation, and Gate 3 lease regressions.
-  - Evidence: exact closure equality and removal of `TELCHAR_NIX_STORE_CLOSURE` runtime use.
+  - Outcome: production input closure is computed by deterministic reference traversal through `GatewayStoreConnection::query_path_info`, matching `computeFSClosure(roots, false, false, false)` for exact roots plus transitive references under the existing 4096-path and 1 MiB retained-path bounds.
+  - Red: lifecycle tests configured only a JSON closure subprocess and failed once runtime helper use was removed; the first daemon fixture also exposed that retention and closure use distinct daemon connections and that successful lifecycle tests require derivation, input, and output root-registration traffic.
+  - Verify: closure traversal unit matrix 5/5, input-root-before-lease/build integration, lease-failure rollback integration, full Telchar Clippy with warnings denied, formatter/diff checks, and LSP clean.
+  - Evidence: cycles and duplicates terminate, missing/malformed paths fail closed, each discovered path is queried once, output is sorted deterministically, `TELCHAR_NIX_STORE_CLOSURE` has zero Rust runtime references, and lifecycle tests use typed worker-protocol daemon fixtures with annotated operation/field bytes.
 
 - [ ] T095D Replace the native promotion/import helper with Rust worker-protocol operations
   - Depends on: T095B, T067
