@@ -937,19 +937,19 @@ Evidence: paths and output facts to record
   - Verify: `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
   - Evidence: the authoritative NixOS Gate 3 topology now runs a stock Nix client against a test-owned SSH executable that only launches `telchar serve-stdio`, with a separate rooted client store, disabled local jobs, production authenticated IPC and gateway-store execution, exact client-readable output bytes, detached attachment, released derivation/input leases, active output lease, and exact retained output root; changeset `ab286cdb`.
 
-- [ ] T088 Return successful build result over `ssh-ng://`
+- [x] T088 Return successful build result over `ssh-ng://`
   - Depends on: T087, T061
   - Outcome: stock Nix client completes same build through restricted OpenSSH.
-  - Red: SSH vertical test fails.
-  - Verify: `ssh-ng://` end-to-end build.
-  - Evidence: request ID and client-visible output.
+  - Red: the Gate 3 walking skeleton originally stopped at unsupported production operations before the store/executor lifecycle was implemented.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
+  - Evidence: flake-pinned stock Nix completes through real OpenSSH public-key authentication, restricted forced command, `serve-stdio`, authenticated IPC, and production daemon/store paths; the client copies and reads exact output bytes, and `/run/telchar/forced-command-evidence` records a server-derived `SHA256:` key fingerprint; changesets through `ab286cdb`.
 
-- [ ] T089 Prove client cannot build acceptance derivation locally
+- [x] T089 Prove client cannot build acceptance derivation locally
   - Depends on: T088
   - Outcome: primary fixture ensures success came from Telchar backend, not local fallback.
-  - Red: fixture unexpectedly builds with remote disabled.
-  - Verify: negative-local then positive-remote test.
-  - Evidence: local failure and remote success.
+  - Red: the acceptance derivation fails with remote builders absent and local jobs disabled.
+  - Verify: the same Gate 3 NixOS test runs negative-local before direct-stdio and OpenSSH positive lanes.
+  - Evidence: `--max-jobs 0` without builders exits nonzero with a no-machine/local-build-disabled diagnostic, followed by successful direct-stdio and restricted-OpenSSH builds with exact output content; changeset `ab286cdb`.
 
 - [ ] T090 Define deployment-owned disconnect policy by lifecycle point
   - Depends on: T088
