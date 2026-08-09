@@ -874,7 +874,7 @@ Evidence: paths and output facts to record
   - Verify: real-build log test.
   - Evidence: asserted line and buffer bound.
 
-- [ ] T082 Apply log backpressure
+- [x] T082 Apply log backpressure
   - Depends on: T081
   - Outcome: slow protocol attachment cannot grow memory beyond configured buffer.
   - Red: slow-reader test exceeds bound.
