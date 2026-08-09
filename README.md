@@ -127,6 +127,20 @@ The Nix worker protocol is binary, stateful, versioned, and operation-specific. 
 
 Protocol support is evidence-based. Successful version negotiation alone is not a compatibility claim. Each supported client, trust mode, and derivation class requires typed coverage and a real-client fixture proving the complete operation, response, callback, upload, and result flow.
 
+### Gateway Nix-daemon compatibility
+
+Telchar's pure-Rust gateway-store client advertises worker protocol 1.38 and accepts the bounded recent range 1.35–1.38:
+
+| Worker protocol | Representative Nix release | Release date |
+| --- | --- | --- |
+| 1.35 | Nix 2.18 | September 20, 2023 |
+| 1.37 | Nix 2.20 | 2024 |
+| 1.38 | Nix 2.24 through the pinned Nix 2.34.8 implementation | 2024 onward |
+
+The 1.35 floor provides roughly two and a half years of daemon compatibility as of March 2026 while retaining the explicit daemon trust result required by Telchar's privileged gateway boundary. Protocol 1.25 is intentionally unsupported: it is a Nix 2.1-era profile from 2018.
+
+This table describes the deployment-controlled gateway Nix daemon, not the broader stock-Nix client compatibility promise at Telchar's SSH ingress. A protocol number inside the range is necessary but not sufficient: release lanes become supported only after typed operation coverage and real-daemon evidence. Daemons below 1.35, a different protocol major, malformed profiles, and unsupported operation semantics fail closed.
+
 The implementation is derived independently from primary Nix source, fixed fixtures, typed captures, and compatibility tests. Other projects may inform architecture and test categories, but their protocol implementations are not copied or mechanically adapted.
 
 ## Gateway store and data movement
