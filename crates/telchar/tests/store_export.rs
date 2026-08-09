@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_export::{
     NixStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
-    export_verified_nar, export_verified_nar_with_limits,
+    export_verified_nar, export_verified_nar_with_limits, validate_store_output,
 };
 use telchar::store_promotion::RegisteredPathInfo;
 use telchar::transfer_limits::{TransferBudget, TransferLimits};
@@ -44,6 +44,125 @@ fn real_store_streams_raw_nar_with_registered_hash_and_size() {
 
     daemon.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
+fn real_store_validates_registered_output_metadata() {
+    let helper = helper_path();
+    let fixture = NixFixture::create().expect("fixture creates");
+    let mut daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("daemon starts");
+    let path = daemon
+        .build_classic_derivation()
+        .expect("fixture path builds");
+    let expected = daemon
+        .query_path_info(&path)
+        .expect("registered metadata queries");
+    let mut backend: NixStoreExportBackend = daemon.export_backend(helper);
+
+    let registered = validate_store_output(&path, &mut backend)
+        .expect("real raw NAR validates against registered metadata");
+
+    assert_eq!(registered.path, path);
+    assert_eq!(registered.nar_hash, sri_sha256(&expected.nar_hash));
+    assert_eq!(registered.nar_size, expected.nar_size);
+
+    daemon.stop().expect("daemon stops");
+    fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
+fn validates_exact_output_path_against_registered_metadata() {
+    let nar = regular_nar(CONTENT);
+    let metadata = registered_path_info();
+    let mut backend = RecordingExportBackend::successful(metadata.clone(), nar);
+
+    let registered = validate_store_output(Path::new(PATH), &mut backend)
+        .expect("matching registered output validates");
+
+    assert_eq!(registered, metadata);
+    assert_eq!(backend.queries, vec![PathBuf::from(PATH)]);
+    assert_eq!(
+        backend.requests,
+        vec![StoreExportRequest {
+            version: 1,
+            store_uri: "unix:///run/nix-daemon.sock".into(),
+            path: PATH.into(),
+        }]
+    );
+}
+
+#[test]
+fn rejects_output_with_registered_hash_mismatch() {
+    let mut metadata = registered_path_info();
+    metadata.nar_hash[0] ^= 0xff;
+    let mut backend = RecordingExportBackend::successful(metadata, regular_nar(CONTENT));
+
+    let error = validate_store_output(Path::new(PATH), &mut backend)
+        .expect_err("mismatched registered hash must fail");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "exported NAR hash mismatch");
+}
+
+#[test]
+fn rejects_output_with_registered_size_mismatch() {
+    let mut metadata = registered_path_info();
+    metadata.nar_size += 1;
+    let mut backend = RecordingExportBackend::successful(metadata, regular_nar(CONTENT));
+
+    let error = validate_store_output(Path::new(PATH), &mut backend)
+        .expect_err("mismatched registered size must fail");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "exported NAR size mismatch");
+}
+
+#[test]
+fn rejects_invalid_serializations_while_validating_output() {
+    let mut truncated = regular_nar(CONTENT);
+    truncated.pop();
+    let mut trailing = regular_nar(CONTENT);
+    trailing.push(0xff);
+    let cases = [
+        ("malformed", b"not a NAR".to_vec()),
+        ("truncated", truncated),
+        ("trailing", trailing),
+    ];
+
+    for (label, nar) in cases {
+        let mut backend = RecordingExportBackend::successful(registered_path_info(), nar);
+        let error = validate_store_output(Path::new(PATH), &mut backend)
+            .expect_err("invalid exported NAR must fail validation");
+
+        match label {
+            "malformed" => assert!(error.to_string().contains("NAR"), "{error}"),
+            "truncated" => assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof),
+            "trailing" => assert_eq!(error.to_string(), "trailing bytes after NAR"),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn rejects_backend_export_failure_while_validating_output() {
+    let mut backend = FailingExportBackend;
+
+    let error = validate_store_output(Path::new(PATH), &mut backend)
+        .expect_err("backend export failure must fail validation");
+
+    assert_eq!(error.to_string(), "backend export failed");
+}
+
+#[test]
+fn rejects_backend_panic_while_validating_output() {
+    let mut backend = PanickingExportBackend;
+
+    let error = validate_store_output(Path::new(PATH), &mut backend)
+        .expect_err("backend panic must fail validation");
+
+    assert_eq!(error.to_string(), "export backend thread panicked");
 }
 
 #[test]
@@ -334,6 +453,49 @@ impl RecordingExportBackend {
             requests: Vec::new(),
             writer_failed: false,
         }
+    }
+}
+
+struct FailingExportBackend;
+
+impl StoreExportBackend for FailingExportBackend {
+    fn store_uri(&self) -> &str {
+        "unix:///run/nix-daemon.sock"
+    }
+
+    fn query_path_info(&mut self, _path: &Path) -> io::Result<RegisteredPathInfo> {
+        Ok(registered_path_info())
+    }
+
+    fn export_nar(
+        &mut self,
+        _request: &StoreExportRequest,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
+        sink.write_all(&regular_nar(CONTENT))?;
+        Err(io::Error::other("backend export failed"))
+    }
+}
+
+struct PanickingExportBackend;
+
+impl StoreExportBackend for PanickingExportBackend {
+    fn store_uri(&self) -> &str {
+        "unix:///run/nix-daemon.sock"
+    }
+
+    fn query_path_info(&mut self, _path: &Path) -> io::Result<RegisteredPathInfo> {
+        Ok(registered_path_info())
+    }
+
+    fn export_nar(
+        &mut self,
+        _request: &StoreExportRequest,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
+        sink.write_all(&regular_nar(CONTENT))
+            .expect("test NAR writes before panic");
+        panic!("backend export panicked")
     }
 }
 
