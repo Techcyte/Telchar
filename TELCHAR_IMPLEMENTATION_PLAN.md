@@ -1005,7 +1005,7 @@ Evidence: paths and output facts to record
   - Evidence: selected boundary, rejected alternatives, required operations, and fail-closed capability table.
 
 - [ ] T095B Implement reusable Rust Nix-daemon connection and capability negotiation
-  - Depends on: T095A, T003A
+  - Depends on: T095A, T003, T019
   - Outcome: a bounded reusable Rust client connects only to the configured gateway-store endpoint, performs typed worker-protocol negotiation, exposes capability/profile checks, and kills or closes work deterministically on timeout, cancellation, owner death, malformed traffic, or unsupported semantics.
   - Red: connection tests require native helpers or accept malformed/unsupported daemon traffic.
   - Verify: private-daemon handshake, capability, timeout, disconnect, malformed-response, and owner-death tests.
