@@ -2352,6 +2352,21 @@ impl<S: Read + Write> WorkerClient<S> {
             .map_err(|_| protocol_client_error())
     }
 
+    pub fn nar_from_path(
+        &mut self,
+        path: &[u8],
+        nar_size: u64,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
+        self.write_store_path_operation(WorkerOperation::NarFromPath, path)?;
+        let copied = io::copy(&mut Read::by_ref(&mut self.stream).take(nar_size), sink)
+            .map_err(|_| protocol_client_error())?;
+        if copied != nar_size {
+            return Err(protocol_client_error());
+        }
+        Ok(())
+    }
+
     pub fn add_to_store_nar(
         &mut self,
         info: &AddToStoreNarInfo<'_>,

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 
 use crate::nar::stage_nar;
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use crate::store_promotion::RegisteredPathInfo;
 
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
@@ -25,7 +26,12 @@ pub struct VerifiedStoreExport {
 pub trait StoreExportBackend: Send {
     fn store_uri(&self) -> &str;
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo>;
-    fn export_nar(&mut self, request: &StoreExportRequest, sink: &mut dyn Write) -> io::Result<()>;
+    fn export_nar(
+        &mut self,
+        request: &StoreExportRequest,
+        nar_size: u64,
+        sink: &mut dyn Write,
+    ) -> io::Result<()>;
 }
 
 pub struct UnavailableStoreExportBackend;
@@ -45,6 +51,7 @@ impl StoreExportBackend for UnavailableStoreExportBackend {
     fn export_nar(
         &mut self,
         _request: &StoreExportRequest,
+        _nar_size: u64,
         _sink: &mut dyn Write,
     ) -> io::Result<()> {
         Err(io::Error::new(
@@ -55,29 +62,64 @@ impl StoreExportBackend for UnavailableStoreExportBackend {
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreExportBackend>> {
-    let Some(helper) = std::env::var_os("TELCHAR_NIX_STORE_EXPORT") else {
-        return Ok(Box::new(UnavailableStoreExportBackend));
-    };
-    if !Path::new(&helper).is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "store export helper must be absolute",
-        ));
+    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })
+        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))?;
+    Ok(Box::new(GatewayStoreExportBackend::new(endpoint)))
+}
+
+pub struct GatewayStoreExportBackend {
+    endpoint: GatewayStoreEndpoint,
+}
+
+impl GatewayStoreExportBackend {
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self { endpoint }
     }
-    let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "gateway store endpoint is not configured",
-        )
-    })?;
-    let nix = std::env::var_os("TELCHAR_NIX").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "Nix executable is not configured")
-    })?;
-    Ok(Box::new(NixStoreExportBackend::new(
-        helper,
-        store_uri,
-        [("TELCHAR_NIX".to_owned(), nix.to_string_lossy().into_owned())],
-    )))
+}
+
+impl StoreExportBackend for GatewayStoreExportBackend {
+    fn store_uri(&self) -> &str {
+        "configured-gateway-daemon"
+    }
+
+    fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        let info = connection
+            .query_path_info(path.as_os_str().as_encoded_bytes())?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "registered path omitted"))?;
+        Ok(RegisteredPathInfo {
+            path: path.to_path_buf(),
+            nar_hash: parse_sha256_hex(info.nar_hash_hex())?,
+            nar_size: info.nar_size(),
+            references: info
+                .references()
+                .iter()
+                .map(|reference| PathBuf::from(String::from_utf8_lossy(reference).into_owned()))
+                .collect(),
+            deriver: info
+                .deriver()
+                .map(|deriver| PathBuf::from(String::from_utf8_lossy(deriver).into_owned())),
+            content_address: info
+                .content_address()
+                .map(|address| String::from_utf8_lossy(address).into_owned()),
+        })
+    }
+
+    fn export_nar(
+        &mut self,
+        request: &StoreExportRequest,
+        nar_size: u64,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        connection.nar_from_path(request.path.as_os_str().as_encoded_bytes(), nar_size, sink)
+    }
 }
 
 pub struct NixStoreExportBackend {
@@ -165,7 +207,12 @@ impl StoreExportBackend for NixStoreExportBackend {
         })
     }
 
-    fn export_nar(&mut self, request: &StoreExportRequest, sink: &mut dyn Write) -> io::Result<()> {
+    fn export_nar(
+        &mut self,
+        request: &StoreExportRequest,
+        _nar_size: u64,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
         let mut command = std::process::Command::new(&self.helper);
         configure_child_lifecycle(&mut command);
         command
@@ -345,7 +392,8 @@ fn verify_exported_nar(
     };
     let mut writer = ExportWriter { sender };
     let fingerprint = std::thread::scope(|scope| {
-        let export = scope.spawn(move || backend.export_nar(&request, &mut writer));
+        let export =
+            scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
         let parsed = stage_nar(reader, sink);
         let exported = export
             .join()
@@ -490,6 +538,31 @@ fn configure_child_lifecycle(command: &mut std::process::Command) {
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_command: &mut std::process::Command) {}
+
+fn parse_sha256_hex(value: &str) -> io::Result<[u8; 32]> {
+    if value.len() != 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid NAR hash",
+        ));
+    }
+    let mut hash = [0_u8; 32];
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        *output = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
+    }
+    Ok(hash)
+}
+
+fn hex_value(value: u8) -> io::Result<u8> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid NAR hash",
+        )),
+    }
+}
 
 fn parse_sha256_sri(value: &str) -> io::Result<[u8; 32]> {
     let encoded = value

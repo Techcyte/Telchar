@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_export::{
-    NixStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
     export_verified_nar, export_verified_nar_with_limits, validate_store_output,
+    NixStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
 };
 use telchar::store_promotion::RegisteredPathInfo;
 use telchar::transfer_limits::{TransferBudget, TransferLimits};
@@ -470,6 +470,7 @@ impl StoreExportBackend for FailingExportBackend {
     fn export_nar(
         &mut self,
         _request: &StoreExportRequest,
+        _nar_size: u64,
         sink: &mut dyn Write,
     ) -> io::Result<()> {
         sink.write_all(&regular_nar(CONTENT))?;
@@ -491,6 +492,7 @@ impl StoreExportBackend for PanickingExportBackend {
     fn export_nar(
         &mut self,
         _request: &StoreExportRequest,
+        _nar_size: u64,
         sink: &mut dyn Write,
     ) -> io::Result<()> {
         sink.write_all(&regular_nar(CONTENT))
@@ -511,7 +513,12 @@ impl StoreExportBackend for RecordingExportBackend {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "path info missing"))
     }
 
-    fn export_nar(&mut self, request: &StoreExportRequest, sink: &mut dyn Write) -> io::Result<()> {
+    fn export_nar(
+        &mut self,
+        request: &StoreExportRequest,
+        _nar_size: u64,
+        sink: &mut dyn Write,
+    ) -> io::Result<()> {
         self.requests.push(request.clone());
         for chunk in self.nar.chunks(self.chunk_size) {
             if let Err(error) = sink.write_all(chunk) {

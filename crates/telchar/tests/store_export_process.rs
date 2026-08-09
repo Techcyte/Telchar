@@ -25,7 +25,7 @@ exit 1
     let mut output = Vec::new();
 
     let error = backend
-        .export_nar(&request, &mut output)
+        .export_nar(&request, 0, &mut output)
         .expect_err("oversized stderr must fail");
 
     assert!(error.to_string().contains("output exceeds limit"));
@@ -51,7 +51,7 @@ done
     let mut writer = FailingWriter;
 
     let error = backend
-        .export_nar(&request, &mut writer)
+        .export_nar(&request, 0, &mut writer)
         .expect_err("writer failure must stop helper");
 
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error}");
@@ -77,7 +77,7 @@ done
     let mut writer = PanickingWriter;
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = backend.export_nar(&request, &mut writer);
+        let _ = backend.export_nar(&request, 0, &mut writer);
     }));
 
     assert!(result.is_err(), "writer did not panic");
@@ -102,7 +102,7 @@ fn killed_owner_terminates_export_helper() {
             )],
         );
         let mut output = io::sink();
-        let _ = backend.export_nar(&export_request(), &mut output);
+        let _ = backend.export_nar(&export_request(), 0, &mut output);
         return;
     }
 

@@ -103,6 +103,17 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())
     }
 
+    pub fn nar_from_path(
+        &mut self,
+        path: &[u8],
+        nar_size: u64,
+        sink: &mut dyn io::Write,
+    ) -> io::Result<()> {
+        self.client
+            .nar_from_path(path, nar_size, sink)
+            .map_err(|_| connection_error())
+    }
+
     pub fn add_to_store_nar(
         &mut self,
         info: &AddToStoreNarInfo<'_>,
