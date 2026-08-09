@@ -951,12 +951,12 @@ Evidence: paths and output facts to record
   - Verify: the same Gate 3 NixOS test runs negative-local before direct-stdio and OpenSSH positive lanes.
   - Evidence: `--max-jobs 0` without builders exits nonzero with a no-machine/local-build-disabled diagnostic, followed by successful direct-stdio and restricted-OpenSSH builds with exact output content; changeset `ab286cdb`.
 
-- [ ] T090 Define deployment-owned disconnect policy by lifecycle point
+- [x] T090 Define deployment-owned disconnect policy by lifecycle point
   - Depends on: T088
   - Outcome: ADR and validated service configuration cover upload, queued, running, collecting, and result-delivery disconnects. Running work defaults to detach-and-finish so verified outputs remain reusable; an operator may instead select cancel-running. Untrusted client bytes cannot choose the policy. First-release reattachment remains explicit.
-  - Red: lifecycle table has an unspecified cell, configuration accepts an unknown value, a client request can override policy, or the default cancels accepted running work.
-  - Verify: policy-table validator plus deployment/module configuration tests for default, explicit cancel-running, invalid value, and client non-override.
-  - Evidence: all lifecycle cells resolved and effective deployment policy recorded without request/session identifiers.
+  - Red: `deployment_config` initially failed to compile because no typed running-disconnect policy existed.
+  - Verify: `nix develop -c cargo test -p telchar --test deployment_config --locked`; `nix develop -c cargo clippy -p telchar --all-targets --all-features --locked -- -D warnings`.
+  - Evidence: `docs/adr/requester-disconnect-policy.md` resolves every lifecycle point; `TELCHAR_RUNNING_DISCONNECT_POLICY` defaults to `detach-and-finish`, accepts only `detach-and-finish` or `cancel-running`, fails startup on unknown/non-Unicode values, and is emitted as a bounded deployment telemetry field. No protocol/request field can select it. Changesets `753c2dba` and `df23f783`.
 
 - [ ] T091 Cancel incomplete upload on disconnect
   - Depends on: T090
