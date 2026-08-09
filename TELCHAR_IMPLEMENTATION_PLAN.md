@@ -972,12 +972,40 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test operation_dispatch --locked -- --test-threads=1`; `nix develop -c cargo test -p telchar --test deployment_config --locked`; `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`.
   - Evidence: default detach-and-finish keeps a blocking helper alive after requester loss, suppresses later logs and terminal bytes, validates the completed output, preserves its exact active output lease/root, detaches the attachment, releases derivation/input resources, and reaps the completed helper. Detached execution and validation failures suppress dead-transport rejection. Explicit cancel-running kills and reaps the helper and releases request resources. Changesets `ee0d967d`, `e9cd47ba`, and parent acceptance repair.
 
-- [ ] T093 Retain output after detached completion
+- [ ] T093 Retain verified request outputs for a bounded retrieval window
   - Depends on: T092, T075, T085A
-  - Outcome: detach-and-finish completion preserves verified output roots/leases for the configured bounded retention window so later stock-Nix requests and cache publication can reuse the result; expiry durably releases leases before exact root removal.
-  - Red: GC removes output before retention expiry, retention is unbounded, cache publication is treated as correctness, or expiry removes roots before the release transaction commits.
-  - Verify: detached completion, private-store GC-before-expiry, expiry/reconciliation, and later-request reuse tests.
-  - Evidence: bounded configured retention, successful reuse, durable release ordering, and eventual GC eligibility.
+  - Outcome: every verified request output, connected or detached, receives a deployment-owned one-hour default local guarantee so stock Nix can retrieve it after result delivery or requester loss; cache publication remains independent; expiry durably releases leases before exact root removal.
+  - Red: GC removes output before retention expiry, retention is unbounded or client-selected, cache publication is treated as correctness, or expiry removes roots before the release transaction commits.
+  - Verify: connected and detached completion, private-store GC-before-expiry, stock-Nix later copy without rebuild/cache publication, expiry/reconciliation, and GC-after-expiry tests.
+  - Evidence: `docs/adr/output-retention.md`; bounded configured retention, successful reuse, durable release ordering, failed-removal retry, and eventual GC eligibility.
+
+- [ ] T093A Configure output retention duration
+  - Depends on: T092
+  - Outcome: `TELCHAR_OUTPUT_RETENTION_SECONDS` is typed, defaults to 3,600 seconds, accepts only inclusive range 60–86,400, fails startup otherwise, and cannot be selected by client bytes.
+  - Red: configuration tests accept malformed, zero, below-minimum, above-maximum, or non-Unicode values.
+  - Verify: focused `deployment_config` tests and Clippy.
+  - Evidence: typed duration accessor and bounded deployment telemetry.
+
+- [ ] T093B Persist immutable output retention deadlines
+  - Depends on: T093A, T070A, T085A
+  - Outcome: migration 0002 adds `expires_at`, backfills existing active output leases with migration time plus one hour under the explicitly approved compatibility policy, preserves already-released outputs as immediately expired, and atomically creates each complete output lease set with one immutable PostgreSQL transaction deadline.
+  - Red: version-1 fixture rows lack valid deadlines, non-output leases accept deadlines, or one output batch receives inconsistent deadlines.
+  - Verify: real PostgreSQL migration and output-lease creation tests.
+  - Evidence: schema constraint/index, migration ledger version 2, exact backfill, and complete-set deadline atomicity.
+
+- [ ] T093C Release expired output leases transactionally
+  - Depends on: T093B, T075
+  - Outcome: a bounded keyset operation selects request-owned active output leases due at an injected time with `FOR UPDATE SKIP LOCKED`, marks the complete selected set released atomically, commits, and returns deterministic released rows as exact root-removal authority.
+  - Red: future/non-output rows release, page exceeds 256, overlapping calls return the same lease, partial transition commits, or root work must occur before commit.
+  - Verify: real PostgreSQL boundary, cursor, concurrency, and rollback tests.
+  - Evidence: post-commit rows, no duplicate concurrent ownership, and failed transaction leaves active leases unchanged.
+
+- [ ] T093D Reconcile expired output roots and prove later retrieval
+  - Depends on: T093A, T093C, T092
+  - Outcome: startup-before-readiness and one synchronous 60-second maintenance thread release expired output leases in bounded pages, then remove only exact roots authorized by released rows; failed root removal remains retryable; stock Nix retrieves connected and detached outputs before expiry without cache publication, and private-store GC can collect them after expiry/root removal.
+  - Red: non-expired root removal, pre-commit removal, failed-removal loss of authority, dead-client output loss, cache dependency, or post-expiry GC preservation.
+  - Verify: parent-owned operation-dispatch/store-retention hostile tests and authoritative Gate 3 NixOS private-store GC/reuse lane.
+  - Evidence: one-hour default, exact root/lease lifecycle, bounded reconciliation, later `QueryPathInfo`/`NarFromPath` retrieval, and eventual GC eligibility.
 
 - [ ] T094 Extend NixOS vertical integration fixture
   - Depends on: T021E, T088, T089
