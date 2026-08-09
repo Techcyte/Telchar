@@ -608,8 +608,8 @@ mod tests {
     use std::io;
 
     use super::{
-        spawn_log_reader, MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
+        MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
     };
 
     struct FailingLogReader;
@@ -628,6 +628,26 @@ mod tests {
         }
     }
 
+    struct ChunkSource {
+        remaining_chunks: u8,
+        started: std::sync::mpsc::Sender<u8>,
+    }
+
+    impl io::Read for ChunkSource {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.remaining_chunks == 0 {
+                return Ok(0);
+            }
+            let chunk = self.remaining_chunks;
+            self.remaining_chunks -= 1;
+            buffer.fill(chunk);
+            self.started
+                .send(chunk)
+                .expect("test receives source progress");
+            Ok(buffer.len())
+        }
+    }
+
     #[test]
     fn build_log_channel_has_fixed_payload_bound() {
         assert_eq!(MAXIMUM_BUILD_LOG_CHUNK_BYTES, 8192);
@@ -636,6 +656,49 @@ mod tests {
             MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES,
             MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS
         );
+    }
+
+    #[test]
+    fn build_log_reader_stalls_when_the_fixed_queue_is_full_and_resumes_after_drain() {
+        let (log_sender, log_receiver) = std::sync::mpsc::sync_channel(8);
+        let (error_sender, _error_receiver) = std::sync::mpsc::channel();
+        let (progress_sender, progress_receiver) = std::sync::mpsc::channel();
+        let reader = spawn_log_reader(
+            ChunkSource {
+                remaining_chunks: 9,
+                started: progress_sender,
+            },
+            log_sender,
+            error_sender,
+        );
+
+        for expected in (1..=9).rev() {
+            assert_eq!(
+                progress_receiver.recv().expect("source reaches next chunk"),
+                expected
+            );
+        }
+        assert!(
+            !reader.is_finished(),
+            "reader must block while the ninth chunk waits for queue capacity"
+        );
+
+        for expected in (2..=9).rev() {
+            assert_eq!(
+                log_receiver.recv().expect("queued chunk is received"),
+                vec![expected; MAXIMUM_BUILD_LOG_CHUNK_BYTES]
+            );
+        }
+        assert_eq!(
+            log_receiver
+                .recv()
+                .expect("blocked chunk resumes after drain"),
+            vec![1; MAXIMUM_BUILD_LOG_CHUNK_BYTES]
+        );
+        reader
+            .join()
+            .expect("reader thread does not panic")
+            .expect("reader completes after queue drain");
     }
 
     #[test]
