@@ -958,12 +958,12 @@ Evidence: paths and output facts to record
   - Verify: `nix develop -c cargo test -p telchar --test deployment_config --locked`; `nix develop -c cargo clippy -p telchar --all-targets --all-features --locked -- -D warnings`.
   - Evidence: `docs/adr/requester-disconnect-policy.md` resolves every lifecycle point; `TELCHAR_RUNNING_DISCONNECT_POLICY` defaults to `detach-and-finish`, accepts only `detach-and-finish` or `cancel-running`, fails startup on unknown/non-Unicode values, and is emitted as a bounded deployment telemetry field. No protocol/request field can select it. Changesets `753c2dba` and `df23f783`.
 
-- [ ] T091 Cancel incomplete upload on disconnect
+- [x] T091 Cancel incomplete upload on disconnect
   - Depends on: T090
   - Outcome: partial upload is discarded and resources released.
-  - Red: disconnect fixture leaves valid path or retained bytes.
-  - Verify: upload disconnect test.
-  - Evidence: cleanup assertions.
+  - Red: the first focused test expected a successful frontend/daemon exit after the requester closed mid-object; actual fail-closed transport correctly exits nonzero after an attempted framed error meets the closed pipe.
+  - Verify: `nix develop -c cargo test -p telchar --test operation_dispatch partial_add_multiple_to_store_failure_removes_staging_state --locked -- --exact --test-threads=1`; full `operation_dispatch` suite.
+  - Evidence: requester termination during a declared 1024-byte NAR after only `partial-nar` bytes leaves the test-owned staging root empty, never invokes promotion, and records `invalid-add-multiple-to-store`; 33/33 dispatch tests pass. Changeset `d27d796d`.
 
 - [ ] T092 Apply configured running-request disconnect policy
   - Depends on: T090
