@@ -117,10 +117,12 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
             .as_ref()
             .map(|value| &value.idempotency_key)
     );
-    assert_eq!(
+    assert!(matches!(
         status.execution.as_ref().expect("execution returns").state,
         ExecutorExecutionState::Running
-    );
+            | ExecutorExecutionState::Succeeded
+            | ExecutorExecutionState::Failed
+    ));
     assert_eq!(
         database
             .connect()

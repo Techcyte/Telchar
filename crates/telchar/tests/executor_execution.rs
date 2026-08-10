@@ -79,6 +79,43 @@ fn executor_owns_running_work_after_submitter_disconnects() {
         .is_none());
 
     fs::write(&release, b"release").expect("execution releases");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = request(
+            &socket,
+            &ExecutorRequest::Status {
+                version: EXECUTOR_PROTOCOL_VERSION,
+                backend_execution_id: "local-owned-running".into(),
+            },
+        );
+        if status.execution.as_ref().map(|execution| execution.state)
+            == Some(ExecutorExecutionState::Succeeded)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "execution did not persist terminal result"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = telchar::persistence::read_local_backend_execution_result(
+        database.url(),
+        "local-owned-running",
+    )
+    .expect("terminal result reads")
+    .expect("terminal result exists");
+    assert_eq!(result.classification, "succeeded");
+    assert_eq!(
+        result.result_metadata,
+        serde_json::json!({
+            "status": "built",
+            "outputs": [{
+                "name": "out",
+                "path": "/nix/store/11111111111111111111111111111111-executor-service"
+            }]
+        })
+    );
     executor.kill().expect("executor stops");
     let _ = executor.wait();
     let _ = fs::remove_dir_all(root);
