@@ -1295,8 +1295,15 @@ Evidence: paths and output facts to record
   - Verify: serial real-PostgreSQL persistence suite, migration-prefix/restart/concurrency tests, public-key and certificate round trips, malformed-pair fail-closed tests, compile, clippy, formatting, and diagnostics.
   - Evidence: new sessions persist `ssh-pubkey:...` with `openssh-public-key` or `ssh-cert:...` with `openssh-certificate`; historical sessions retain a paired null identity; empty, oversized, unsupported, mismatched, and partial identities reject.
 
-- [ ] T115 Map credential to audit subject
+- [x] T114A Implement core TOML service configuration
   - Depends on: T114
+  - Outcome: strict typed core configuration loads optional `/etc/telchar/telchar.toml`, requires an explicitly selected `TELCHAR_CONFIG`, applies existing scalar environment overrides after TOML, reads the database URL through `database.url_file`, and supports bounded credential mappings with whole-map replacement through `TELCHAR_IDENTITY_MAPPINGS_FILE`.
+  - Red: the focused service-configuration test failed because no `config` module or TOML loader existed.
+  - Verify: service-config, deployment-config, identity, IPC frontend, executor service, and executor execution suites; all-target compilation, clippy, formatting, and diagnostics.
+  - Evidence: unknown fields, unreadable explicit files, non-Unicode overrides, unsafe paths, invalid bounds, malformed mappings, and empty mapping entries fail closed; daemon, executor, and frontend consume one merged configuration; a real frontend/daemon process persists mapped audit and quota subjects.
+
+- [ ] T115 Map credential to audit subject
+  - Depends on: T114A
   - Outcome: configured mapping selects stable audit subject with explicit fallback.
   - Red: table-driven mapping test fails.
   - Verify: mapping tests.
