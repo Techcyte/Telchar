@@ -118,7 +118,7 @@ pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
     Ok(Box::new(GatewayStoreExecutor::new(endpoint)))
 }
 
-pub trait BuildExecutor {
+pub trait BuildExecutor: Send {
     fn execute_with_logs(
         &mut self,
         request: &LocalExecutionRequest<'_>,

@@ -2,10 +2,11 @@ use std::fmt;
 use std::io;
 
 use nix_worker_protocol::BuildDerivationRequest;
+use serde::{Deserialize, Serialize};
 
 use crate::deployment::DeploymentConfig;
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BuildRequest {
     derivation_path: Vec<u8>,
     expected_outputs: Vec<(Vec<u8>, Vec<u8>)>,
@@ -62,6 +63,30 @@ impl BuildRequest {
             arguments: request.arguments().to_vec(),
             environment: environment.to_vec(),
         })
+    }
+
+    pub fn validate_for_execution(&self, deployment: &DeploymentConfig) -> io::Result<()> {
+        if self.system != deployment.system()
+            || self.derivation_path.is_empty()
+            || self.builder.is_empty()
+            || derivation_name(&self.derivation_path).is_none()
+            || environment_value(&self.environment, b"system") != Some(self.system.as_bytes())
+            || environment_value(&self.environment, b"builder") != Some(self.builder.as_slice())
+            || environment_value(&self.environment, b"name")
+                != derivation_name(&self.derivation_path)
+            || self.expected_outputs.is_empty()
+            || self.expected_outputs.iter().any(|(name, path)| {
+                name.is_empty()
+                    || path.is_empty()
+                    || environment_value(&self.environment, name) != Some(path.as_slice())
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid local execution specification",
+            ));
+        }
+        Ok(())
     }
 
     pub fn derivation_path(&self) -> &[u8] {

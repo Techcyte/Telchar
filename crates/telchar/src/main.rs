@@ -47,12 +47,56 @@ fn run_executor() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
+    let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
+    let executor = Arc::new(Mutex::new(
+        telchar::local_executor::executor_from_environment()?,
+    ));
     for connection in listener.incoming() {
-        let stream = connection?;
+        let mut stream = connection?;
         if telchar::ipc::authorize_peer(&stream, expected_uid).is_err() {
             continue;
         }
-        if let Err(error) = telchar::executor_service::handle_connection(&database_url, stream) {
+        let mut submit =
+            |backend_execution_id: &str,
+             specification: &telchar::executor_service::ExecutorSpecification,
+             execution: &telchar::persistence::LocalBackendExecution| {
+                specification.build.validate_for_execution(&deployment)?;
+                if execution.state != telchar::persistence::LocalBackendExecutionState::Accepted {
+                    return Ok(());
+                }
+                let backend_execution_id = backend_execution_id.to_owned();
+                let database_url = database_url.clone();
+                let specification = specification.clone();
+                let executor = Arc::clone(&executor);
+                std::thread::spawn(move || {
+                    if telchar::persistence::record_local_backend_running(
+                        &database_url,
+                        &backend_execution_id,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                    let Ok(request) = telchar::local_executor::LocalExecutionRequest::new(
+                        &specification.request_id,
+                        &specification.build,
+                        Duration::from_secs(specification.timeout_seconds),
+                    ) else {
+                        return;
+                    };
+                    let Ok(mut executor) = executor.lock() else {
+                        return;
+                    };
+                    let _ =
+                        executor.execute_with_logs(&request, &mut |_| Ok(()), &mut || Ok(false));
+                });
+                Ok(())
+            };
+        if let Err(error) = telchar::executor_service::handle_connection_with_submit(
+            &database_url,
+            &mut stream,
+            &mut submit,
+        ) {
             tracing::warn!(
                 event = "executor.connection.failed",
                 reason = error_reason(&error),

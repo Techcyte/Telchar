@@ -7,9 +7,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod support;
 
+use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use support::postgres::PostgresFixture;
+use telchar::build_request::BuildRequest;
+use telchar::deployment::DeploymentConfig;
 use telchar::executor_service::{
-    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult,
+    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
     EXECUTOR_PROTOCOL_VERSION,
 };
 
@@ -35,12 +38,32 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
         version: EXECUTOR_PROTOCOL_VERSION,
         backend_execution_id: "local-execution-1".into(),
         idempotency_key: "request-1:1".into(),
-        specification: b"bounded-execution-specification".to_vec(),
+        specification: Box::new(execution_specification(b"exit 0")),
     };
     let created = request(&socket, &submit);
     let repeated = request(&socket, &submit);
-    assert_eq!(created, repeated);
     assert_eq!(created.result, ExecutorResult::Accepted);
+    assert_eq!(repeated.result, ExecutorResult::Accepted);
+    assert_eq!(
+        created
+            .execution
+            .as_ref()
+            .map(|value| &value.backend_execution_id),
+        repeated
+            .execution
+            .as_ref()
+            .map(|value| &value.backend_execution_id)
+    );
+    assert_eq!(
+        created
+            .execution
+            .as_ref()
+            .map(|value| &value.idempotency_key),
+        repeated
+            .execution
+            .as_ref()
+            .map(|value| &value.idempotency_key)
+    );
     assert_eq!(
         created.execution.as_ref().expect("execution returns").state,
         ExecutorExecutionState::Accepted
@@ -52,7 +75,7 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
             version: EXECUTOR_PROTOCOL_VERSION,
             backend_execution_id: "local-execution-1".into(),
             idempotency_key: "request-1:1".into(),
-            specification: b"different-specification".to_vec(),
+            specification: Box::new(execution_specification(b"exit 1")),
         },
     );
     assert_eq!(conflicting.result, ExecutorResult::Conflict);
@@ -74,7 +97,30 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
         },
     );
     assert_eq!(status.result, ExecutorResult::Found);
-    assert_eq!(status.execution, created.execution);
+    assert_eq!(
+        status
+            .execution
+            .as_ref()
+            .map(|value| &value.backend_execution_id),
+        created
+            .execution
+            .as_ref()
+            .map(|value| &value.backend_execution_id)
+    );
+    assert_eq!(
+        status
+            .execution
+            .as_ref()
+            .map(|value| &value.idempotency_key),
+        created
+            .execution
+            .as_ref()
+            .map(|value| &value.idempotency_key)
+    );
+    assert_eq!(
+        status.execution.as_ref().expect("execution returns").state,
+        ExecutorExecutionState::Running
+    );
     assert_eq!(
         database
             .connect()
@@ -87,6 +133,59 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
     second.kill().expect("replacement executor stops");
     let _ = second.wait();
     let _ = fs::remove_dir_all(root);
+}
+
+fn execution_specification(builder_command: &[u8]) -> ExecutorSpecification {
+    let derivation_path = b"/nix/store/00000000000000000000000000000000-executor-service.drv";
+    let output_path = b"/nix/store/11111111111111111111111111111111-executor-service";
+    let mut wire = Vec::new();
+    write_string(&mut wire, derivation_path);
+    write_integer(&mut wire, 1);
+    write_string(&mut wire, b"out");
+    write_string(&mut wire, output_path);
+    write_string(&mut wire, b"");
+    write_string(&mut wire, b"");
+    write_integer(&mut wire, 0);
+    write_string(&mut wire, b"x86_64-linux");
+    write_string(&mut wire, b"/bin/sh");
+    write_integer(&mut wire, 2);
+    write_string(&mut wire, b"-c");
+    write_string(&mut wire, builder_command);
+    write_integer(&mut wire, 4);
+    for (key, value) in [
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"executor-service".as_slice()),
+        (b"out".as_slice(), output_path),
+        (b"system".as_slice(), b"x86_64-linux".as_slice()),
+    ] {
+        write_string(&mut wire, key);
+        write_string(&mut wire, value);
+    }
+    write_integer(&mut wire, 0);
+    let mut reader = WorkerReader::new(wire.as_slice(), ProtocolSessionLimits::DEFAULT);
+    let worker = reader
+        .complete_build_derivation()
+        .expect("worker request parses");
+    ExecutorSpecification {
+        request_id: "request-1".into(),
+        timeout_seconds: 30,
+        build: BuildRequest::from_worker_request(
+            &worker,
+            &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+        )
+        .expect("request admits"),
+    }
+}
+
+fn write_integer(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_string(bytes: &mut Vec<u8>, value: &[u8]) {
+    write_integer(bytes, value.len() as u64);
+    bytes.extend_from_slice(value);
+    let padding = (8 - value.len() % 8) % 8;
+    bytes.resize(bytes.len() + padding, 0);
 }
 
 fn request(
@@ -107,6 +206,8 @@ fn executor_command(socket: &Path, database_url: &str) -> Command {
             "TELCHAR_EXECUTOR_UID",
             rustix::process::getuid().as_raw().to_string(),
         )
+        .env("TELCHAR_SYSTEM", "x86_64-linux")
+        .env("TELCHAR_SUPPORTED_FEATURES", "")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

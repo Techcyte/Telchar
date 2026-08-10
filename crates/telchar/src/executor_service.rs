@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::build_request::BuildRequest;
 use crate::persistence::{
     self, LocalBackendExecution, LocalBackendExecutionFailure, LocalBackendExecutionState,
 };
@@ -20,12 +21,20 @@ pub enum ExecutorRequest {
         version: u32,
         backend_execution_id: String,
         idempotency_key: String,
-        specification: Vec<u8>,
+        specification: Box<ExecutorSpecification>,
     },
     Status {
         version: u32,
         backend_execution_id: String,
     },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ExecutorSpecification {
+    pub request_id: String,
+    pub timeout_seconds: u64,
+    pub build: BuildRequest,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -66,9 +75,17 @@ pub enum ExecutorExecutionState {
 }
 
 pub fn handle_connection(database_url: &str, mut stream: UnixStream) -> io::Result<()> {
+    handle_connection_with_submit(database_url, &mut stream, &mut |_, _, _| Ok(()))
+}
+
+pub fn handle_connection_with_submit(
+    database_url: &str,
+    stream: &mut UnixStream,
+    submit: &mut dyn FnMut(&str, &ExecutorSpecification, &LocalBackendExecution) -> io::Result<()>,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(EXECUTOR_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(EXECUTOR_IO_TIMEOUT))?;
-    let request: ExecutorRequest = read_frame(&mut stream)?;
+    let request: ExecutorRequest = read_frame(stream)?;
     let response = match request {
         ExecutorRequest::Submit {
             version,
@@ -76,20 +93,28 @@ pub fn handle_connection(database_url: &str, mut stream: UnixStream) -> io::Resu
             idempotency_key,
             specification,
         } => {
+            let specification_bytes = serde_json::to_vec(&specification).unwrap_or_default();
             if version != EXECUTOR_PROTOCOL_VERSION
-                || specification.is_empty()
-                || specification.len() > MAXIMUM_EXECUTOR_FRAME_BYTES
+                || specification.request_id.is_empty()
+                || specification.timeout_seconds == 0
+                || specification_bytes.is_empty()
+                || specification_bytes.len() > MAXIMUM_EXECUTOR_FRAME_BYTES
             {
                 invalid_response()
             } else {
-                let digest: [u8; 32] = Sha256::digest(&specification).into();
+                let digest: [u8; 32] = Sha256::digest(&specification_bytes).into();
                 match persistence::register_local_backend_execution(
                     database_url,
                     &backend_execution_id,
                     &idempotency_key,
                     &digest,
                 ) {
-                    Ok(execution) => execution_response(ExecutorResult::Accepted, execution),
+                    Ok(execution) => {
+                        match submit(&backend_execution_id, &specification, &execution) {
+                            Ok(()) => execution_response(ExecutorResult::Accepted, execution),
+                            Err(_) => result_response(ExecutorResult::Failed),
+                        }
+                    }
                     Err(error) if error.failure() == LocalBackendExecutionFailure::Conflict => {
                         result_response(ExecutorResult::Conflict)
                     }
@@ -113,7 +138,7 @@ pub fn handle_connection(database_url: &str, mut stream: UnixStream) -> io::Resu
             }
         }
     };
-    write_frame(&mut stream, &response)
+    write_frame(stream, &response)
 }
 
 pub fn send_request(
