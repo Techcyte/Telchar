@@ -4,7 +4,7 @@ use std::fs::Permissions;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -150,6 +150,70 @@ fn run_executor() -> io::Result<()> {
                 "local executor connection failed"
             );
         }
+    }
+    Ok(())
+}
+
+fn recover_collecting_build_requests(
+    database_url: &str,
+    deployment: &telchar::deployment::DeploymentConfig,
+    recovered: Vec<telchar::persistence::RecoveredCollectingBuildRequest>,
+) -> io::Result<()> {
+    let mut store_export = telchar::store_export::backend_from_environment()?;
+    let mut store_retention = telchar::store_retention::backend_from_environment()?;
+    for recovered in recovered {
+        if recovered.backend_result.classification != "succeeded" {
+            continue;
+        }
+        let outputs = recovered
+            .backend_result
+            .result_metadata
+            .get("outputs")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
+        if outputs.is_empty()
+            || outputs.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
+        {
+            return Err(invalid("collecting result metadata is invalid"));
+        }
+        let mut leases = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let name = output
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
+            let path = output
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
+            telchar::store_export::validate_store_output(Path::new(path), store_export.as_mut())?;
+            leases.push((
+                format!("output-{}-{name}", recovered.execution.attempt.attempt_id),
+                path.to_owned(),
+            ));
+        }
+        let entries = leases
+            .iter()
+            .map(|(lease_id, path)| telchar::store_retention::RetentionEntry::new(lease_id, path))
+            .collect::<Vec<_>>();
+        let retained = store_retention.retain(&entries)?;
+        if telchar::persistence::ensure_request_output_leases(
+            database_url,
+            &recovered.execution.request.request_id,
+            deployment.output_retention().duration(),
+            &leases,
+        )
+        .is_err()
+        {
+            store_retention.rollback(&retained)?;
+            return Err(invalid("collecting output lease recovery failed"));
+        }
+        telchar::persistence::complete_execution_success(
+            database_url,
+            &recovered.execution.attempt.attempt_id,
+            &recovered.backend_result.result_metadata,
+        )
+        .map_err(|_| invalid("collecting terminal transition failed"))?;
     }
     Ok(())
 }
@@ -325,6 +389,9 @@ fn run_daemon() -> io::Result<()> {
         .map_err(|_| invalid("backend-pending attempt recovery failed"))?;
     telchar::persistence::recover_running_attempts(&database_url, 256)
         .map_err(|_| invalid("running attempt recovery failed"))?;
+    let collecting = telchar::persistence::recover_collecting_attempts(&database_url, 256)
+        .map_err(|_| invalid("collecting attempt recovery failed"))?;
+    recover_collecting_build_requests(&database_url, &deployment, collecting)?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);

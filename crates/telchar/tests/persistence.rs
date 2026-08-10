@@ -857,6 +857,170 @@ fn running_attempt_is_recovered_without_new_attempt_or_backend_execution() {
 }
 
 #[test]
+fn collecting_attempt_recovers_terminal_backend_result_without_duplication() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "collecting-recovery-request",
+        "/nix/store/11111111111111111111111111111111-collecting-recovery.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "collecting-recovery-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "collecting-recovery-request",
+        "/nix/store/11111111111111111111111111111111-collecting-recovery.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "collecting-recovery-request",
+        &[(
+            "collecting-recovery-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "collecting-recovery-request")
+        .expect("request queues");
+    telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "collecting-recovery-request",
+        "collecting-recovery-attempt",
+        1,
+        "collecting-recovery-request:1",
+        "local",
+        "collecting-recovery-reservation",
+        2,
+    )
+    .expect("request dispatches");
+    telchar::persistence::register_local_backend_execution(
+        fixture.url(),
+        "local-collecting-recovery",
+        "collecting-recovery-request:1",
+        &[9_u8; 32],
+    )
+    .expect("backend execution persists");
+    telchar::persistence::record_backend_submission(
+        fixture.url(),
+        "collecting-recovery-attempt",
+        "local-collecting-recovery",
+    )
+    .expect("backend submission persists");
+    telchar::persistence::record_local_backend_running(fixture.url(), "local-collecting-recovery")
+        .expect("backend execution starts");
+    telchar::persistence::record_backend_running(fixture.url(), "collecting-recovery-attempt")
+        .expect("attempt starts");
+    let metadata = serde_json::json!({
+        "status": "built",
+        "outputs": [{
+            "name": "out",
+            "path": "/nix/store/33333333333333333333333333333333-output"
+        }]
+    });
+    let backend = telchar::persistence::complete_local_backend_execution(
+        fixture.url(),
+        "local-collecting-recovery",
+        telchar::persistence::LocalBackendExecutionState::Succeeded,
+        "succeeded",
+        &metadata,
+    )
+    .expect("backend result persists");
+    let collecting = telchar::persistence::record_backend_completed(
+        fixture.url(),
+        "collecting-recovery-attempt",
+    )
+    .expect("attempt collects");
+
+    fixture.restart();
+    let recovered = telchar::persistence::recover_collecting_attempts(fixture.url(), 256)
+        .expect("collecting recovery succeeds");
+
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].execution, collecting);
+    assert_eq!(recovered[0].backend_result, backend.result);
+    assert_eq!(
+        telchar::persistence::recover_collecting_attempts(fixture.url(), 256)
+            .expect("repeated recovery succeeds"),
+        recovered
+    );
+    let output_leases = [(
+        "collecting-recovery-output".to_owned(),
+        "/nix/store/33333333333333333333333333333333-output".to_owned(),
+    )];
+    let created = telchar::persistence::ensure_request_output_leases(
+        fixture.url(),
+        "collecting-recovery-request",
+        std::time::Duration::from_secs(3_600),
+        &output_leases,
+    )
+    .expect("output lease persists");
+    assert_eq!(
+        telchar::persistence::ensure_request_output_leases(
+            fixture.url(),
+            "collecting-recovery-request",
+            std::time::Duration::from_secs(3_600),
+            &output_leases,
+        )
+        .expect("output lease recovery is idempotent"),
+        created
+    );
+    let completed = telchar::persistence::complete_execution_success(
+        fixture.url(),
+        "collecting-recovery-attempt",
+        &metadata,
+    )
+    .expect("recovered collection completes");
+    assert_eq!(
+        completed.request.queue_state,
+        telchar::persistence::BuildQueueState::Completed
+    );
+    assert!(
+        telchar::persistence::recover_collecting_attempts(fixture.url(), 256)
+            .expect("terminal work is not recovered")
+            .is_empty()
+    );
+    let mut client = fixture.connect();
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM execution_attempts", &[])
+            .expect("attempt count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM local_backend_execution_results", &[])
+            .expect("result count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = 'collecting-recovery-request' AND purpose = 'output' AND state = 'active'",
+                &[],
+            )
+            .expect("output lease count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM execution_outcomes", &[])
+            .expect("outcome count reads")
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
 fn dispatching_attempt_records_backend_submission_atomically() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

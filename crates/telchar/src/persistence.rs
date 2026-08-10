@@ -690,17 +690,24 @@ pub fn read_local_backend_execution(
 fn decode_local_backend_execution_result(
     row: &Row,
 ) -> Result<LocalBackendExecutionResult, LocalBackendExecutionError> {
+    decode_local_backend_execution_result_columns(row, 0)
+}
+
+fn decode_local_backend_execution_result_columns(
+    row: &Row,
+    offset: usize,
+) -> Result<LocalBackendExecutionResult, LocalBackendExecutionError> {
     let backend_execution_id: String = row
-        .try_get(0)
+        .try_get(offset)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
     let classification: String = row
-        .try_get(1)
+        .try_get(offset + 1)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
     let result_metadata_text: String = row
-        .try_get(2)
+        .try_get(offset + 2)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
     let created_at: SystemTime = row
-        .try_get(3)
+        .try_get(offset + 3)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
     validate_local_backend_execution_identity("validated", &backend_execution_id, "validated")?;
     let result_metadata: serde_json::Value = serde_json::from_str(&result_metadata_text)
@@ -1089,6 +1096,78 @@ pub fn recover_running_attempts(
         backend_state = "running",
         recovered_count = recovered.len(),
         "running attempts recovered"
+    );
+    Ok(recovered)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RecoveredCollectingBuildRequest {
+    pub execution: DispatchedBuildRequest,
+    pub backend_result: LocalBackendExecutionResult,
+}
+
+pub fn recover_collecting_attempts(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<RecoveredCollectingBuildRequest>, ExecutionAttemptError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let limit = limit as i64;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let rows = transaction
+        .query(
+            "SELECT attempt.attempt_id, attempt.request_id, attempt.ordinal, attempt.idempotency_key, attempt.backend, attempt.backend_execution_id, attempt.state, attempt.created_at, attempt.submitted_at, attempt.started_at, attempt.collecting_at, attempt.completed_at, attempt.fenced_at, result.backend_execution_id, result.classification, result.result_metadata::text, result.created_at FROM execution_attempts AS attempt JOIN local_backend_executions AS backend ON backend.backend_execution_id = attempt.backend_execution_id AND backend.idempotency_key = attempt.idempotency_key JOIN local_backend_execution_results AS result ON result.backend_execution_id = backend.backend_execution_id WHERE attempt.state = 'collecting' AND attempt.backend = 'local' AND attempt.backend_execution_id IS NOT NULL AND attempt.submitted_at IS NOT NULL AND attempt.started_at IS NOT NULL AND attempt.collecting_at IS NOT NULL AND attempt.completed_at IS NULL AND attempt.fenced_at IS NULL AND backend.state IN ('succeeded', 'failed', 'cancelled') AND backend.started_at IS NOT NULL AND backend.completed_at IS NOT NULL ORDER BY attempt.collecting_at, attempt.attempt_id LIMIT $1 FOR UPDATE OF attempt",
+            &[&limit],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let mut recovered = Vec::with_capacity(rows.len());
+    for row in rows {
+        let attempt = decode_execution_attempt(&row).map_err(ExecutionAttemptError)?;
+        let request_row = transaction
+            .query_opt(
+                "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 AND queue_state = 'collecting' FOR UPDATE",
+                &[&attempt.request_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let request = decode_build_request(&request_row)
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        let reservation_row = transaction
+            .query_opt(
+                "SELECT reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at FROM capacity_reservations WHERE attempt_id = $1 AND phase = 'collecting' AND released_at IS NULL FOR UPDATE",
+                &[&attempt.attempt_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let reservation = decode_capacity_reservation(&reservation_row)?;
+        let backend_result = decode_local_backend_execution_result_columns(&row, 13)
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        recovered.push(RecoveredCollectingBuildRequest {
+            execution: DispatchedBuildRequest {
+                request,
+                attempt,
+                reservation,
+            },
+            backend_result,
+        });
+    }
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.recovered",
+        operation = "recover_collecting",
+        request_state = "collecting",
+        attempt_state = "collecting",
+        recovered_count = recovered.len(),
+        "collecting attempts recovered"
     );
     Ok(recovered)
 }
@@ -2867,12 +2946,80 @@ pub fn create_request_output_leases(
     result
 }
 
-fn create_request_output_leases_inner(
+pub fn ensure_request_output_leases(
     database_url: &str,
     request_id: &str,
-    retention_seconds: u64,
+    retention: Duration,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let retention_seconds = retention.as_secs();
+    if retention.subsec_nanos() != 0 || !(60..=86_400).contains(&retention_seconds) {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    if leases.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_request_output_lease_inputs(database_url, request_id, leases)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    transaction
+        .query_opt(
+            "SELECT request_id FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        .ok_or(StoreLeaseError(StoreLeaseFailure::Missing))?;
+    let existing_rows = transaction
+        .query(
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 AND purpose = 'output' ORDER BY lease_id FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    if !existing_rows.is_empty() {
+        let records = existing_rows
+            .iter()
+            .map(decode_store_lease)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreLeaseError)?;
+        if records.len() != leases.len()
+            || records.iter().zip(leases).any(|(record, expected)| {
+                record.lease_id != expected.0
+                    || record.store_path != expected.1
+                    || record.state != StoreLeaseState::Active
+            })
+        {
+            return Err(StoreLeaseError(StoreLeaseFailure::Conflict));
+        }
+        transaction
+            .commit()
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+        return Ok(records);
+    }
+    let retention_seconds = retention_seconds as f64;
+    let mut records = Vec::with_capacity(leases.len());
+    for (lease_id, store_path) in leases {
+        let row = transaction
+            .query_one(
+                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES ($1, 'request', $2, $3, 'output', 'active', transaction_timestamp(), NULL, transaction_timestamp() + make_interval(secs => $4)) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at",
+                &[&lease_id, &request_id, &store_path, &retention_seconds],
+            )
+            .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
+        records.push(decode_store_lease(&row).map_err(StoreLeaseError)?);
+    }
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    Ok(records)
+}
+
+fn validate_request_output_lease_inputs(
+    database_url: &str,
+    request_id: &str,
+    leases: &[(String, String)],
+) -> Result<(), StoreLeaseError> {
     if database_url.trim().is_empty()
         || request_id.is_empty()
         || request_id.len() > MAX_IPC_COMPONENT_BYTES
@@ -2889,6 +3036,16 @@ fn create_request_output_leases_inner(
             return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
         }
     }
+    Ok(())
+}
+
+fn create_request_output_leases_inner(
+    database_url: &str,
+    request_id: &str,
+    retention_seconds: u64,
+    leases: &[(String, String)],
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    validate_request_output_lease_inputs(database_url, request_id, leases)?;
     let retention_seconds = retention_seconds as f64;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
