@@ -1316,12 +1316,12 @@ Evidence: paths and output facts to record
   - Verify: strict service-config mapping test, identity fallback table, and real persistent frontend/daemon process tests.
   - Evidence: two distinct authenticated public keys persist one shared quota subject, while an unmapped public key persists its `ssh-pubkey:...` credential ID as quota subject.
 
-- [ ] T117 Enforce global concurrent session limit
-  - Depends on: T097
-  - Outcome: excess SSH protocol sessions receive clean admission error.
-  - Red: concurrent fixture exceeds limit.
-  - Verify: real concurrent SSH session test.
-  - Evidence: accepted/rejected counts.
+- [x] T117 Enforce global concurrent session limit
+  - Depends on: T097, T114A
+  - Outcome: the configured global IPC session limit atomically admits at most the bounded number of authenticated OpenSSH protocol sessions, refuses excess sessions before durable protocol-session creation, releases capacity when a session ends, and permits later reuse.
+  - Red: no real OpenSSH fixture previously held one authenticated session open while attempting another.
+  - Verify: real concurrent OpenSSH process test with PostgreSQL session-state evidence, full OpenSSH ingress suite, compile, clippy, formatting, and diagnostics.
+  - Evidence: with `ipc.maximum_sessions = 1`, the first SSH session is open, the second exits unsuccessfully without creating another open protocol session, closing the first reduces the open count to zero, and a third SSH session succeeds.
 
 - [ ] T118 Enforce global retained-byte limit
   - Depends on: T069, T073
