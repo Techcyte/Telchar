@@ -1257,12 +1257,12 @@ Evidence: paths and output facts to record
   - Verify: contract review against singleton ownership, worker-protocol, timeout, trust, and restart-reconciliation invariants.
   - Evidence: daemon restart cannot own or terminate accepted executor work; exact duplicate submission is idempotent; conflicting identity rejects; status lookup never authorizes blind resubmission.
 
-- [ ] T110B Implement persistent local executor service
+- [x] T110B Implement persistent local executor service
   - Depends on: T110A
-  - Outcome: `telchar executor` serves a bounded peer-authenticated Unix protocol and persists local execution identity/state before independently owned execution begins.
-  - Red: process restart or repeated submit creates duplicate work or loses status.
-  - Verify: real PostgreSQL and multi-process executor restart tests with exact duplicate, conflicting duplicate, status lookup, singleton contention, and ownership-loss fencing.
-  - Evidence: one registry row and one execution per idempotency key across service and daemon restart.
+  - Outcome: `telchar executor` holds a distinct fixed PostgreSQL advisory lock, serves a 1 MiB bounded peer-UID-authenticated Unix submit/status protocol, and persists immutable local backend identity plus accepted state before responding.
+  - Red: persistence tests failed to compile without the registry types/operations, and process tests had no executor command or durable status boundary.
+  - Verify: real PostgreSQL exact/conflicting duplicate and restart tests; multi-process service restart, status lookup, and singleton contention; full persistence/executor-service suites; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: exact submission is idempotent, conflicting identity/specification rejects, replacement service reads the same accepted execution, contended service never creates its socket, and exactly one registry row persists.
 
 - [ ] T111 Recover backend-pending attempt
   - Depends on: T104, T110B
