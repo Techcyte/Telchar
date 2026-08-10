@@ -564,6 +564,43 @@ fn dispatching_attempt_recovery_fences_ambiguous_submission_atomically() {
 }
 
 #[test]
+fn local_backend_execution_transitions_to_running_once() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let accepted = telchar::persistence::register_local_backend_execution(
+        fixture.url(),
+        "local-running-transition",
+        "running-transition:1",
+        &[5_u8; 32],
+    )
+    .expect("backend execution persists");
+
+    let running = telchar::persistence::record_local_backend_running(
+        fixture.url(),
+        "local-running-transition",
+    )
+    .expect("backend execution starts");
+
+    assert_eq!(
+        running.state,
+        telchar::persistence::LocalBackendExecutionState::Running
+    );
+    assert!(running
+        .started_at
+        .is_some_and(|started_at| started_at >= accepted.created_at));
+    assert!(running.completed_at.is_none());
+    assert_eq!(
+        telchar::persistence::record_local_backend_running(
+            fixture.url(),
+            "local-running-transition"
+        )
+        .expect_err("running transition is immutable")
+        .failure(),
+        telchar::persistence::LocalBackendExecutionFailure::InvalidState
+    );
+}
+
+#[test]
 fn backend_pending_attempt_is_recovered_without_new_attempt_or_submission() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

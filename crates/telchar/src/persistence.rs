@@ -399,6 +399,7 @@ pub enum LocalBackendExecutionFailure {
     Configuration,
     Connection,
     Conflict,
+    InvalidState,
     Query,
     Commit,
 }
@@ -492,6 +493,25 @@ pub fn register_local_backend_execution(
         .commit()
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Commit))?;
     Ok(execution)
+}
+
+pub fn record_local_backend_running(
+    database_url: &str,
+    backend_execution_id: &str,
+) -> Result<LocalBackendExecution, LocalBackendExecutionError> {
+    validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
+    let row = client
+        .query_opt(
+            "UPDATE local_backend_executions SET state = 'running', started_at = transaction_timestamp() WHERE backend_execution_id = $1 AND state = 'accepted' AND started_at IS NULL AND completed_at IS NULL RETURNING backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at",
+            &[&backend_execution_id],
+        )
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?
+        .ok_or(LocalBackendExecutionError(
+            LocalBackendExecutionFailure::InvalidState,
+        ))?;
+    decode_local_backend_execution(&row)
 }
 
 pub fn read_local_backend_execution(
