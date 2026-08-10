@@ -133,6 +133,41 @@ fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
 }
 
 #[test]
+fn accepts_store_relative_realisation_output_paths() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 0); // Built
+    string(&mut input, b""); // no error
+    integer(&mut input, 1); // times built
+    integer(&mut input, 0); // deterministic
+    integer(&mut input, 10); // start
+    integer(&mut input, 20); // stop
+    integer(&mut input, 0); // no user CPU duration
+    integer(&mut input, 0); // no system CPU duration
+    integer(&mut input, 1); // one built output
+    string(
+        &mut input,
+        b"sha256:0000000000000000000000000000000000000000000000000000000000000000!out",
+    );
+    string(
+        &mut input,
+        br#"{"outPath":"11111111111111111111111111111111-example"}"#,
+    );
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let result = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT.to_vec())]);
+}
+
+#[test]
 fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
     let mut input = Vec::new();
     handshake(&mut input, 2);

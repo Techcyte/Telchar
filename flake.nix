@@ -129,12 +129,13 @@
               remoteOnlyDerivation = pkgs.writeText "telchar-remote-only-derivation.nix" ''
                 let
                   source = builtins.toFile "telchar-gate-3-input" "telchar-source-input";
+                  builder = builtins.storePath "${pkgs.runtimeShell}";
                 in
                 derivation {
                   name = "telchar-gate-3-contract";
                   system = builtins.currentSystem;
-                  builder = "/bin/sh";
-                  args = [ "-c" "printf telchar-gate-3-build-log >&2; test -e $source; printf telchar-source-input > $out" ];
+                  inherit builder;
+                  args = [ "-c" "printf 'telchar-gate-3-build-log\\n' >&2; printf telchar-source-input > $out" ];
                   inherit source;
                 }
               '';
@@ -155,11 +156,11 @@
                 stock_client.succeed("test $(timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --file /tmp/remote-only.nix > /tmp/local-build.out 2>&1; echo $?) -ne 0")
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
                 gateway.succeed("mkdir -p /run/telchar-direct-bin /var/lib/telchar-direct-client")
+                gateway.succeed("nix --extra-experimental-features nix-command copy --no-check-sigs --to 'local?root=/var/lib/telchar-direct-client' ${pkgs.runtimeShell}")
                 gateway.succeed("printf '#!/bin/sh\\nset -eu\\ncase \" $* \" in *\" -O check \"*) exit 1 ;; esac\\nprintf '\"'\"'started\\n'\"'\"'\\nexec sudo -u telchar-ingress env TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY=SHA256:direct-stdio ${
                   self.packages.${system}.telchar
                 }/bin/telchar serve-stdio\\n' > /run/telchar-direct-bin/ssh && chmod 755 /run/telchar-direct-bin/ssh")
-                gateway.succeed("env PATH=/run/telchar-direct-bin:$PATH NIX_CONFIG='substituters =\nsandbox = false\nbuild-users-group =' timeout -s KILL 60 nix --extra-experimental-features nix-command --store 'local?root=/var/lib/telchar-direct-client' build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-direct x86_64-linux' --file ${remoteOnlyDerivation} > /tmp/direct-build.out 2>&1 || { cat /tmp/direct-build.out >&2; exit 1; }")
-                gateway.succeed("grep -q 'telchar-gate-3-build-log' /tmp/direct-build.out || { cat /tmp/direct-build.out >&2; exit 1; }")
+                gateway.succeed("env PATH=/run/telchar-direct-bin:$PATH NIX_CONFIG='substituters =\nsandbox = false\nbuild-users-group =' timeout -s KILL 60 nix --extra-experimental-features nix-command --store 'local?root=/var/lib/telchar-direct-client' build --no-link --print-build-logs --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-direct x86_64-linux' --file ${remoteOnlyDerivation} > /tmp/direct-build.out 2>&1 || { cat /tmp/direct-build.out >&2; exit 1; }")
                 direct_output_path = gateway.succeed("tail -n 1 /tmp/direct-build.out").strip()
                 gateway.succeed("test \"$(cat /var/lib/telchar-direct-client" + direct_output_path + ")\" = telchar-source-input")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose = 'output' AND state = 'active' AND released_at IS NULL AND store_path = '" + direct_output_path + "'\" | grep -qx 1")
@@ -173,14 +174,15 @@
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.add_multiple_to_store.completed'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.admitted'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.build_derivation.completed'")
-                gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose = 'input' AND state = 'released' AND released_at IS NOT NULL\" | grep -qx 2")
+                gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose = 'input' AND state = 'released' AND released_at IS NOT NULL\" | grep -qx 12")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose = 'derivation' AND state = 'released' AND released_at IS NOT NULL\" | grep -qx 2")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose = 'output' AND state = 'active' AND released_at IS NULL\" | grep -qx 2")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND purpose IN ('derivation', 'input') AND state = 'active'\" | grep -qx 0")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT count(*) FROM request_attachments WHERE state = 'detached' AND detached_at IS NOT NULL\" | grep -qx 2")
                 gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT store_path FROM store_leases WHERE owner_kind = 'request' AND purpose = 'input' AND state = 'released'\" > /tmp/telchar-input-leases")
-                gateway.succeed("test \"$(wc -l < /tmp/telchar-input-leases)\" -eq 2")
-                gateway.succeed("while IFS= read -r released_input; do test -e \"$released_input\"; grep -q telchar-source-input \"$released_input\"; done < /tmp/telchar-input-leases")
+                gateway.succeed("test \"$(wc -l < /tmp/telchar-input-leases)\" -eq 12")
+                gateway.succeed("while IFS= read -r released_input; do test -e \"$released_input\"; done < /tmp/telchar-input-leases")
+                gateway.succeed("grep -Eq '/nix/store/[0-9a-df-np-sv-z]{32}-telchar-gate-3-input$' /tmp/telchar-input-leases")
                 gateway.succeed("output_roots=$(find /var/lib/telchar-gc-roots -mindepth 1 -maxdepth 1 -type l -lname '" + output_path + "' -print); test \"$(printf '%s\\n' \"$output_roots\" | sed '/^$/d' | wc -l)\" -eq 2")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_path_info.completed.*valid=true'")
                 gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.nar_from_path.completed'")

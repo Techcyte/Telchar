@@ -2419,6 +2419,7 @@ impl<S: Read + Write> WorkerClient<S> {
         self.stream.flush()?;
         read_build_operation_frames(&mut self.stream, self.profile.version, logs)?;
         read_worker_build_result(&mut self.stream, self.profile.version)
+            .map_err(|_| protocol_client_error())
     }
 
     pub fn nar_from_path(
@@ -2637,25 +2638,41 @@ fn read_worker_build_result(
     input: &mut impl Read,
     version: WorkerVersion,
 ) -> io::Result<WorkerBuildResult> {
-    let status = match read_worker_integer_from(input)? {
+    let raw_status = read_worker_integer_from(input)?;
+    let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    let status = match raw_status {
         0 => WorkerBuildStatus::Built,
         2 => WorkerBuildStatus::AlreadyValid,
-        1 | 3..=14 => return Err(protocol_client_error()),
+        1 | 3..=14 => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported build result status {raw_status}: {}",
+                    String::from_utf8_lossy(&message)
+                ),
+            ));
+        }
         _ => return Err(protocol_client_error()),
     };
-    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     if version >= WorkerVersion::new(1, 29) {
-        read_worker_integer_from(input)?;
-        read_strict_client_boolean(input)?;
-        read_worker_integer_from(input)?;
-        read_worker_integer_from(input)?;
+        read_worker_integer_from(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("times built: {error}")))?;
+        read_strict_client_boolean(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("determinism: {error}")))?;
+        read_worker_integer_from(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("start time: {error}")))?;
+        read_worker_integer_from(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("stop time: {error}")))?;
     }
     if version >= WorkerVersion::new(1, 37) {
-        read_optional_duration(input)?;
-        read_optional_duration(input)?;
+        read_optional_duration(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("user duration: {error}")))?;
+        read_optional_duration(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("system duration: {error}")))?;
     }
     let outputs = if version >= WorkerVersion::new(1, 28) {
-        read_built_outputs(input)?
+        read_built_outputs(input)
+            .map_err(|error| io::Error::new(error.kind(), format!("built outputs: {error}")))?
     } else {
         Vec::new()
     };
@@ -2699,6 +2716,13 @@ fn read_built_outputs(input: &mut impl Read) -> io::Result<Vec<(Vec<u8>, Vec<u8>
             .ok_or_else(protocol_client_error)?
             .bytes()
             .collect();
+        let path = if path.starts_with(b"/nix/store/") {
+            path
+        } else {
+            let mut absolute = b"/nix/store/".to_vec();
+            absolute.extend_from_slice(&path);
+            absolute
+        };
         validate_store_path(&path)?;
         if outputs.iter().any(|(name, _)| name == &output_name) {
             return Err(protocol_client_error());
