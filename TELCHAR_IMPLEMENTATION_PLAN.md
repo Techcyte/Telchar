@@ -1171,12 +1171,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test ipc_frontend replacement_daemon_ --locked -- --test-threads=1 --nocapture`; authoritative multi-machine ownership proof remains in T113A after restart reconciliation exists.
   - Evidence: deterministic contention refusal before socket readiness, active owner remains live during contention, forced connection-loss fencing, replacement readiness only after authoritative release, and sanitized ownership events.
 
-- [ ] T113A Prove singleton restart reconciliation without duplicate execution
+- [x] T113A Prove singleton restart reconciliation without duplicate execution
   - Depends on: T109, T110, T111, T112, T113
-  - Outcome: a multi-daemon `nixosTest` combines contention, forced ownership loss, takeover, and ordinary queued/attempt reconciliation without duplicate backend execution or split brain.
-  - Red: replacement overlaps the owner, resubmits an existing attempt, or fails to recover the terminal state.
-  - Verify: multi-machine ownership and restart-reconciliation test with real PostgreSQL and the local execution registry.
-  - Evidence: ownership timeline, one active owner, one backend execution per attempt, stable idempotency key, and recovered terminal state.
+  - Outcome: a three-machine `nixosTest` combines active-owner contention, PostgreSQL-forced ownership loss, authoritative lock release, replacement takeover, and queued/running/collecting reconciliation without duplicate backend execution or split brain.
+  - Red: the first VM fixture incorrectly treated asynchronous systemd startup as synchronous contention failure; after correcting that assertion, replacement recovery failed closed because the seeded output path was absent from its gateway store.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-restart-reconciliation --no-link` with separate PostgreSQL, owner, and replacement VMs.
+  - Evidence: contended replacement exits without a socket while owner remains active; PostgreSQL restart fences owner and removes its socket; replacement becomes ready only afterward; one queued request remains queued, one running attempt retains stable attempt/backend/idempotency identity, one collecting attempt reaches terminal success, exactly two attempts and backend rows exist, and exactly one backend result, output root, output lease, and execution outcome exist.
 
 ### State transitions and recovery
 
