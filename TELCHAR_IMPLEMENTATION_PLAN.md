@@ -1143,12 +1143,12 @@ Evidence: paths and output facts to record
 
 ### Single-active ownership enforcement
 
-- [ ] T101A Define PostgreSQL singleton ownership contract
+- [x] T101A Define PostgreSQL singleton ownership contract
   - Depends on: T096
-  - Outcome: ADR/config contract fixes one stable advisory-lock key, dedicated lifetime connection ownership, startup refusal, lock-loss fencing, shutdown ordering, and operator-visible failure semantics; it explicitly does not claim high availability.
-  - Red: failure table leaves startup contention, database disconnect, reconnect, graceful shutdown, or process crash unspecified.
-  - Verify: singleton ownership contract validator.
-  - Evidence: complete transition table and selected lock-key derivation.
+  - Outcome: the accepted ADR fixes advisory-lock key `0x5445_4c43_4841_5202`, a dedicated lifetime PostgreSQL connection, pre-readiness startup refusal, permanent lock-loss fencing, shutdown ordering, and bounded operator-visible telemetry without claiming high availability.
+  - Red: `sh scripts/check-singleton-ownership-contract.sh` failed because the singleton ownership ADR did not exist.
+  - Verify: `sh scripts/check-singleton-ownership-contract.sh`.
+  - Evidence: `docs/adr/singleton-ownership.md` covers contention, database disconnect, forbidden reconnect continuity, graceful shutdown, process crash, selected fixed key derivation, side-effect fencing, takeover boundary, and sanitized telemetry.
 
 - [ ] T101B Acquire singleton ownership before service activation
   - Depends on: T101A
