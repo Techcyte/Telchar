@@ -1,6 +1,7 @@
 pub mod build_request;
 pub mod deployment;
 pub mod disk_reserve;
+pub mod executor_service;
 pub mod identity;
 pub mod ipc;
 pub mod local_executor;

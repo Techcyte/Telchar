@@ -43,6 +43,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "reconciliation_state",
         sql: include_str!("../migrations/0004_reconciliation_state.sql"),
     },
+    Migration {
+        version: 5,
+        name: "local_backend_registry",
+        sql: include_str!("../migrations/0005_local_backend_registry.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -386,6 +391,196 @@ fn decode_build_request(row: &Row) -> Result<BuildRequestState, BuildRequestFail
         audit_subject,
         quota_subject,
         created_at,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LocalBackendExecutionFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Query,
+    Commit,
+}
+
+#[derive(Debug)]
+pub struct LocalBackendExecutionError(LocalBackendExecutionFailure);
+
+impl LocalBackendExecutionError {
+    pub fn failure(&self) -> LocalBackendExecutionFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for LocalBackendExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("local backend execution registry operation failed")
+    }
+}
+
+impl std::error::Error for LocalBackendExecutionError {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LocalBackendExecutionState {
+    Accepted,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct LocalBackendExecution {
+    pub backend_execution_id: String,
+    pub idempotency_key: String,
+    pub specification_digest: [u8; 32],
+    pub state: LocalBackendExecutionState,
+    pub created_at: SystemTime,
+    pub started_at: Option<SystemTime>,
+    pub completed_at: Option<SystemTime>,
+}
+
+pub fn register_local_backend_execution(
+    database_url: &str,
+    backend_execution_id: &str,
+    idempotency_key: &str,
+    specification_digest: &[u8; 32],
+) -> Result<LocalBackendExecution, LocalBackendExecutionError> {
+    validate_local_backend_execution_identity(database_url, backend_execution_id, idempotency_key)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
+    let existing = transaction
+        .query_opt(
+            "SELECT backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at FROM local_backend_executions WHERE backend_execution_id = $1 OR idempotency_key = $2 FOR UPDATE",
+            &[&backend_execution_id, &idempotency_key],
+        )
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    if let Some(row) = existing {
+        let execution = decode_local_backend_execution(&row)?;
+        if execution.backend_execution_id != backend_execution_id
+            || execution.idempotency_key != idempotency_key
+            || execution.specification_digest != *specification_digest
+        {
+            return Err(LocalBackendExecutionError(
+                LocalBackendExecutionFailure::Conflict,
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Commit))?;
+        return Ok(execution);
+    }
+    let row = transaction
+        .query_one(
+            "INSERT INTO local_backend_executions (backend_execution_id, idempotency_key, specification_digest, state, created_at) VALUES ($1, $2, $3, 'accepted', transaction_timestamp()) RETURNING backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at",
+            &[&backend_execution_id, &idempotency_key, &&specification_digest[..]],
+        )
+        .map_err(|error| {
+            LocalBackendExecutionError(if error.as_db_error().is_some_and(|database| {
+                database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION
+            }) {
+                LocalBackendExecutionFailure::Conflict
+            } else {
+                LocalBackendExecutionFailure::Query
+            })
+        })?;
+    let execution = decode_local_backend_execution(&row)?;
+    transaction
+        .commit()
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Commit))?;
+    Ok(execution)
+}
+
+pub fn read_local_backend_execution(
+    database_url: &str,
+    backend_execution_id: &str,
+) -> Result<Option<LocalBackendExecution>, LocalBackendExecutionError> {
+    validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at FROM local_backend_executions WHERE backend_execution_id = $1",
+            &[&backend_execution_id],
+        )
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?
+        .map(|row| decode_local_backend_execution(&row))
+        .transpose()
+}
+
+fn validate_local_backend_execution_identity(
+    database_url: &str,
+    backend_execution_id: &str,
+    idempotency_key: &str,
+) -> Result<(), LocalBackendExecutionError> {
+    if database_url.trim().is_empty()
+        || backend_execution_id.is_empty()
+        || backend_execution_id.len() > MAX_IPC_COMPONENT_BYTES
+        || idempotency_key.is_empty()
+        || idempotency_key.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(LocalBackendExecutionError(
+            LocalBackendExecutionFailure::Configuration,
+        ));
+    }
+    Ok(())
+}
+
+fn decode_local_backend_execution(
+    row: &Row,
+) -> Result<LocalBackendExecution, LocalBackendExecutionError> {
+    let backend_execution_id: String = row
+        .try_get(0)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let idempotency_key: String = row
+        .try_get(1)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let digest: Vec<u8> = row
+        .try_get(2)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let state: String = row
+        .try_get(3)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let created_at: SystemTime = row
+        .try_get(4)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let started_at: Option<SystemTime> = row
+        .try_get(5)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let completed_at: Option<SystemTime> = row
+        .try_get(6)
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    validate_local_backend_execution_identity(
+        "validated",
+        &backend_execution_id,
+        &idempotency_key,
+    )?;
+    let specification_digest: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Query))?;
+    let state = match (state.as_str(), started_at, completed_at) {
+        ("accepted", None, None) => LocalBackendExecutionState::Accepted,
+        ("running", Some(_), None) => LocalBackendExecutionState::Running,
+        ("succeeded", _, Some(_)) => LocalBackendExecutionState::Succeeded,
+        ("failed", _, Some(_)) => LocalBackendExecutionState::Failed,
+        ("cancelled", _, Some(_)) => LocalBackendExecutionState::Cancelled,
+        _ => {
+            return Err(LocalBackendExecutionError(
+                LocalBackendExecutionFailure::Query,
+            ));
+        }
+    };
+    Ok(LocalBackendExecution {
+        backend_execution_id,
+        idempotency_key,
+        specification_digest,
+        state,
+        created_at,
+        started_at,
+        completed_at,
     })
 }
 

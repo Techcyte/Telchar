@@ -295,6 +295,72 @@ fn accepted_request_queues_only_after_required_leases_are_durable() {
 }
 
 #[test]
+fn local_backend_execution_registry_is_idempotent_and_survives_restart() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let specification_digest = [7_u8; 32];
+
+    let created = telchar::persistence::register_local_backend_execution(
+        fixture.url(),
+        "local-execution-1",
+        "request-1:1",
+        &specification_digest,
+    )
+    .expect("execution registers");
+    let repeated = telchar::persistence::register_local_backend_execution(
+        fixture.url(),
+        "local-execution-1",
+        "request-1:1",
+        &specification_digest,
+    )
+    .expect("exact duplicate is idempotent");
+
+    assert_eq!(created, repeated);
+    assert_eq!(created.backend_execution_id, "local-execution-1");
+    assert_eq!(created.idempotency_key, "request-1:1");
+    assert_eq!(created.specification_digest, specification_digest);
+    assert_eq!(
+        created.state,
+        telchar::persistence::LocalBackendExecutionState::Accepted
+    );
+    assert!(created.started_at.is_none());
+    assert!(created.completed_at.is_none());
+
+    for (backend_execution_id, idempotency_key, digest) in [
+        ("local-execution-1", "request-1:1", [8_u8; 32]),
+        ("local-execution-1", "other-request:1", specification_digest),
+        ("other-execution", "request-1:1", specification_digest),
+    ] {
+        assert_eq!(
+            telchar::persistence::register_local_backend_execution(
+                fixture.url(),
+                backend_execution_id,
+                idempotency_key,
+                &digest,
+            )
+            .expect_err("conflicting identity rejects")
+            .failure(),
+            telchar::persistence::LocalBackendExecutionFailure::Conflict
+        );
+    }
+
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_local_backend_execution(fixture.url(), "local-execution-1",)
+            .expect("execution reads after restart"),
+        Some(created)
+    );
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one("SELECT count(*) FROM local_backend_executions", &[])
+            .expect("registry count reads")
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
 fn queued_request_dispatches_once_with_attempt_and_capacity_reservation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -2881,7 +2947,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 4);
+    assert_eq!(ledger.len(), 5);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -2894,6 +2960,9 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[3].get::<_, i64>(0), 4);
     assert_eq!(ledger[3].get::<_, String>(1), "reconciliation_state");
     assert_eq!(ledger[3].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[4].get::<_, i64>(0), 5);
+    assert_eq!(ledger[4].get::<_, String>(1), "local_backend_registry");
+    assert_eq!(ledger[4].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -2903,6 +2972,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
         "execution_attempts",
         "execution_outcomes",
         "capacity_reservations",
+        "local_backend_executions",
     ] {
         let row = client
             .query_one("SELECT to_regclass($1)::text", &[&table])
@@ -2978,8 +3048,8 @@ fn reconciliation_state_migration_preserves_existing_execution_rows() {
         telchar::persistence::migrate(fixture.url()).expect("reconciliation migration applies");
 
     assert_eq!(outcome.previously_applied, 3);
-    assert_eq!(outcome.applied_this_run, 1);
-    assert_eq!(outcome.resulting_version, 4);
+    assert_eq!(outcome.applied_this_run, 2);
+    assert_eq!(outcome.resulting_version, 5);
     let mut client = fixture.connect();
     assert_eq!(
         client
@@ -3051,7 +3121,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 3);
+    assert_eq!(outcome.applied_this_run, 4);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -3132,8 +3202,8 @@ fn execution_state_migration_upgrades_gate_three_rows() {
 
     assert!(postgres_version.parse::<u32>().expect("numeric version") >= 14_00_00);
     assert_eq!(outcome.previously_applied, 2);
-    assert_eq!(outcome.applied_this_run, 2);
-    assert_eq!(outcome.resulting_version, 4);
+    assert_eq!(outcome.applied_this_run, 3);
+    assert_eq!(outcome.resulting_version, 5);
     let mut client = fixture.connect();
     let ledger = client
         .query_one(
@@ -3228,8 +3298,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 4);
-    assert_eq!(second.previously_applied, 4);
+    assert_eq!(first.applied_this_run, 5);
+    assert_eq!(second.previously_applied, 5);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3237,7 +3307,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        4
+        5
     );
 }
 
@@ -3269,7 +3339,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (5, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (6, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -3322,7 +3392,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 4);
+    assert_eq!(first.applied_this_run, 5);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3330,7 +3400,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        4
+        5
     );
 }
 
@@ -3358,7 +3428,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        4
+        5
     );
     assert_eq!(
         fixture
@@ -3366,7 +3436,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        4
+        5
     );
 }
 

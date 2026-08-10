@@ -3,6 +3,7 @@ use std::fmt;
 use postgres::{Client, NoTls};
 
 pub const SINGLETON_OWNERSHIP_LOCK_KEY: i64 = 0x5445_4c43_4841_5202;
+pub const LOCAL_EXECUTOR_OWNERSHIP_LOCK_KEY: i64 = 0x5445_4c43_4841_5203;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SingletonOwnershipFailure {
@@ -52,6 +53,17 @@ impl fmt::Debug for SingletonOwnership {
 
 impl SingletonOwnership {
     pub fn acquire(database_url: &str) -> Result<Self, SingletonOwnershipError> {
+        Self::acquire_with_key(database_url, SINGLETON_OWNERSHIP_LOCK_KEY)
+    }
+
+    pub fn acquire_local_executor(database_url: &str) -> Result<Self, SingletonOwnershipError> {
+        Self::acquire_with_key(database_url, LOCAL_EXECUTOR_OWNERSHIP_LOCK_KEY)
+    }
+
+    fn acquire_with_key(
+        database_url: &str,
+        lock_key: i64,
+    ) -> Result<Self, SingletonOwnershipError> {
         if database_url.trim().is_empty() {
             return Err(SingletonOwnershipError(
                 SingletonOwnershipFailure::Configuration,
@@ -60,10 +72,7 @@ impl SingletonOwnership {
         let mut connection = Client::connect(database_url, NoTls)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let acquired: bool = connection
-            .query_one(
-                "SELECT pg_try_advisory_lock($1)",
-                &[&SINGLETON_OWNERSHIP_LOCK_KEY],
-            )
+            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?
             .try_get(0)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;

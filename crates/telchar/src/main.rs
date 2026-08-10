@@ -15,6 +15,7 @@ fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("serve-stdio") => serve_stdio(),
         Some("daemon") => daemon(),
+        Some("executor") => executor(),
         _ => smoke(),
     };
     match result {
@@ -24,6 +25,42 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let telemetry = telemetry::Telemetry::initialize()?;
+    let result = run_executor();
+    telemetry.shutdown();
+    result.map_err(Into::into)
+}
+
+fn run_executor() -> io::Result<()> {
+    let database_url = required_database_url()?;
+    telchar::persistence::migrate(&database_url)
+        .map_err(|_| invalid("database migration failed"))?;
+    let _ownership =
+        telchar::singleton_ownership::SingletonOwnership::acquire_local_executor(&database_url)
+            .map_err(|_| invalid("local executor ownership refused"))?;
+    let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
+    let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw());
+    prepare_socket_path(&socket)?;
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
+    let _socket_guard = SocketGuard(socket);
+    for connection in listener.incoming() {
+        let stream = connection?;
+        if telchar::ipc::authorize_peer(&stream, expected_uid).is_err() {
+            continue;
+        }
+        if let Err(error) = telchar::executor_service::handle_connection(&database_url, stream) {
+            tracing::warn!(
+                event = "executor.connection.failed",
+                reason = error_reason(&error),
+                "local executor connection failed"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -123,7 +160,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 4_i64,
+        latest_migration_version = 5_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -139,7 +176,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 4_i64,
+        latest_migration_version = 5_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
@@ -603,6 +640,13 @@ fn usize_from_env(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn u32_from_env(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
         .unwrap_or(default)
 }
 
