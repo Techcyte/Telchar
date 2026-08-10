@@ -315,7 +315,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 6_i64,
+        latest_migration_version = 7_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -331,7 +331,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 6_i64,
+        latest_migration_version = 7_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
@@ -576,6 +576,7 @@ fn serve_accepted_connection(
         database_url,
         &session_id,
         &requester_reference,
+        &connection.envelope().requester.credential_id,
         &connection.envelope().requester.audit_subject,
         &connection.envelope().requester.quota_subject,
     ) {

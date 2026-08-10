@@ -53,6 +53,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "local_backend_results",
         sql: include_str!("../migrations/0006_local_backend_results.sql"),
     },
+    Migration {
+        version: 7,
+        name: "protocol_session_credentials",
+        sql: include_str!("../migrations/0007_protocol_session_credentials.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -2193,7 +2198,7 @@ pub fn attach_request(
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let session = transaction
         .query_opt(
-            "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
+            "SELECT session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
             &[&session_id],
         )
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?;
@@ -2452,10 +2457,43 @@ pub enum ProtocolSessionState {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AuthenticationAuthority {
+    OpenSshPublicKey,
+    OpenSshCertificate,
+}
+
+impl AuthenticationAuthority {
+    fn for_credential_id(credential_id: &str) -> Option<Self> {
+        if credential_id
+            .strip_prefix("ssh-pubkey:")
+            .is_some_and(|value| !value.is_empty())
+        {
+            Some(Self::OpenSshPublicKey)
+        } else if credential_id
+            .strip_prefix("ssh-cert:")
+            .is_some_and(|value| !value.is_empty())
+        {
+            Some(Self::OpenSshCertificate)
+        } else {
+            None
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenSshPublicKey => "openssh-public-key",
+            Self::OpenSshCertificate => "openssh-certificate",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ProtocolSession {
     pub session_id: String,
     pub requester_reference: String,
+    pub credential_id: Option<String>,
+    pub authentication_authority: Option<AuthenticationAuthority>,
     pub audit_subject: String,
     pub quota_subject: String,
     pub state: ProtocolSessionState,
@@ -2467,13 +2505,15 @@ pub fn open_protocol_session(
     database_url: &str,
     session_id: &str,
     requester_reference: &str,
+    credential_id: &str,
     audit_subject: &str,
     quota_subject: &str,
 ) -> Result<ProtocolSession, ProtocolSessionError> {
-    validate_protocol_session_inputs(
+    let authentication_authority = validate_protocol_session_inputs(
         database_url,
         session_id,
         requester_reference,
+        credential_id,
         audit_subject,
         quota_subject,
     )?;
@@ -2484,8 +2524,8 @@ pub fn open_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let row = transaction
         .query_one(
-            "INSERT INTO protocol_sessions (session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at) VALUES ($1, $2, $3, $4, 'open', transaction_timestamp(), NULL) RETURNING session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at",
-            &[&session_id, &requester_reference, &audit_subject, &quota_subject],
+            "INSERT INTO protocol_sessions (session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at) VALUES ($1, $2, $3, $4, $5, $6, 'open', transaction_timestamp(), NULL) RETURNING session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at",
+            &[&session_id, &requester_reference, &credential_id, &authentication_authority.as_str(), &audit_subject, &quota_subject],
         )
         .map_err(|error| ProtocolSessionError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { ProtocolSessionFailure::Conflict } else { ProtocolSessionFailure::Query }))?;
     let session = decode_protocol_session(&row).map_err(ProtocolSessionError)?;
@@ -2510,7 +2550,7 @@ pub fn close_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let row = transaction
         .query_opt(
-            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE session_id = $1 AND state = 'open' RETURNING session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at",
+            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE session_id = $1 AND state = 'open' RETURNING session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at",
             &[&session_id],
         )
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?;
@@ -2547,7 +2587,7 @@ pub fn read_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     client
         .query_opt(
-            "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
+            "SELECT session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
             &[&session_id],
         )
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?
@@ -2559,12 +2599,16 @@ fn validate_protocol_session_inputs(
     database_url: &str,
     session_id: &str,
     requester_reference: &str,
+    credential_id: &str,
     audit_subject: &str,
     quota_subject: &str,
-) -> Result<(), ProtocolSessionError> {
+) -> Result<AuthenticationAuthority, ProtocolSessionError> {
     validate_session_id(session_id)?;
+    let authentication_authority = AuthenticationAuthority::for_credential_id(credential_id)
+        .ok_or(ProtocolSessionError(ProtocolSessionFailure::Configuration))?;
     if database_url.trim().is_empty()
         || !is_requester_reference(requester_reference)
+        || credential_id.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || audit_subject.is_empty()
         || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
         || quota_subject.is_empty()
@@ -2572,7 +2616,7 @@ fn validate_protocol_session_inputs(
     {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
-    Ok(())
+    Ok(authentication_authority)
 }
 
 fn validate_session_id(session_id: &str) -> Result<(), ProtocolSessionError> {
@@ -2592,12 +2636,31 @@ fn is_requester_reference(value: &str) -> bool {
 fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSessionFailure> {
     let session_id: String = row.try_get(0).map_err(|_| ProtocolSessionFailure::Query)?;
     let requester_reference: String = row.try_get(1).map_err(|_| ProtocolSessionFailure::Query)?;
-    let audit_subject: String = row.try_get(2).map_err(|_| ProtocolSessionFailure::Query)?;
-    let quota_subject: String = row.try_get(3).map_err(|_| ProtocolSessionFailure::Query)?;
-    let state: String = row.try_get(4).map_err(|_| ProtocolSessionFailure::Query)?;
-    let created_at: SystemTime = row.try_get(5).map_err(|_| ProtocolSessionFailure::Query)?;
+    let credential_id: Option<String> =
+        row.try_get(2).map_err(|_| ProtocolSessionFailure::Query)?;
+    let authentication_authority: Option<String> =
+        row.try_get(3).map_err(|_| ProtocolSessionFailure::Query)?;
+    let audit_subject: String = row.try_get(4).map_err(|_| ProtocolSessionFailure::Query)?;
+    let quota_subject: String = row.try_get(5).map_err(|_| ProtocolSessionFailure::Query)?;
+    let state: String = row.try_get(6).map_err(|_| ProtocolSessionFailure::Query)?;
+    let created_at: SystemTime = row.try_get(7).map_err(|_| ProtocolSessionFailure::Query)?;
     let closed_at: Option<SystemTime> =
-        row.try_get(6).map_err(|_| ProtocolSessionFailure::Query)?;
+        row.try_get(8).map_err(|_| ProtocolSessionFailure::Query)?;
+    let authentication_authority = match (
+        credential_id.as_deref(),
+        authentication_authority.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(credential_id), Some(authority)) => {
+            let decoded = AuthenticationAuthority::for_credential_id(credential_id)
+                .ok_or(ProtocolSessionFailure::Query)?;
+            if decoded.as_str() != authority {
+                return Err(ProtocolSessionFailure::Query);
+            }
+            Some(decoded)
+        }
+        _ => return Err(ProtocolSessionFailure::Query),
+    };
     let state = match state.as_str() {
         "open"
             if closed_at.is_none()
@@ -2624,6 +2687,8 @@ fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSession
     Ok(ProtocolSession {
         session_id,
         requester_reference,
+        credential_id,
+        authentication_authority,
         audit_subject,
         quota_subject,
         state,
@@ -2799,7 +2864,7 @@ fn create_store_lease_inner(
         },
         StoreLeaseOwnerKind::Session => match transaction
             .query_opt(
-                "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
+                "SELECT session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
                 &[&owner_id],
             )
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?

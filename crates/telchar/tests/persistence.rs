@@ -73,6 +73,7 @@ fn open_and_read_protocol_session_persist_requested_state() {
         fixture.url(),
         "session-1",
         requester_reference,
+        "ssh-pubkey:SHA256:release-builder",
         "release-engineering",
         "build-farm",
     )
@@ -84,6 +85,14 @@ fn open_and_read_protocol_session_persist_requested_state() {
     assert_eq!(opened, read);
     assert_eq!(read.session_id, "session-1");
     assert_eq!(read.requester_reference, requester_reference);
+    assert_eq!(
+        read.credential_id.as_deref(),
+        Some("ssh-pubkey:SHA256:release-builder")
+    );
+    assert_eq!(
+        read.authentication_authority,
+        Some(telchar::persistence::AuthenticationAuthority::OpenSshPublicKey)
+    );
     assert_eq!(read.audit_subject, "release-engineering");
     assert_eq!(read.quota_subject, "build-farm");
     assert_eq!(read.state, telchar::persistence::ProtocolSessionState::Open);
@@ -91,6 +100,14 @@ fn open_and_read_protocol_session_persist_requested_state() {
 
     let closed = telchar::persistence::close_protocol_session(fixture.url(), "session-1")
         .expect("session closes");
+    assert_eq!(
+        closed.credential_id.as_deref(),
+        Some("ssh-pubkey:SHA256:release-builder")
+    );
+    assert_eq!(
+        closed.authentication_authority,
+        Some(telchar::persistence::AuthenticationAuthority::OpenSshPublicKey)
+    );
     assert_eq!(closed.audit_subject, "release-engineering");
     assert_eq!(closed.quota_subject, "build-farm");
     assert_eq!(
@@ -103,19 +120,34 @@ fn open_and_read_protocol_session_persist_requested_state() {
 #[test]
 fn protocol_session_operation_rejects_unbounded_audit_metadata_before_connection() {
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    let long_credential_id =
+        "ssh-pubkey:".to_owned() + &"c".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES);
     let long_audit_subject = "a".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1);
     let long_quota_subject = "q".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
-    for (audit_subject, quota_subject) in [
-        ("", "quota"),
-        ("audit", ""),
-        (long_audit_subject.as_str(), "quota"),
-        ("audit", long_quota_subject.as_str()),
+    for (credential_id, audit_subject, quota_subject) in [
+        ("credential", "audit", "quota"),
+        ("ssh-pubkey:", "audit", "quota"),
+        ("ssh-cert:", "audit", "quota"),
+        (long_credential_id.as_str(), "audit", "quota"),
+        ("ssh-pubkey:SHA256:test", "", "quota"),
+        ("ssh-pubkey:SHA256:test", "audit", ""),
+        (
+            "ssh-pubkey:SHA256:test",
+            long_audit_subject.as_str(),
+            "quota",
+        ),
+        (
+            "ssh-pubkey:SHA256:test",
+            "audit",
+            long_quota_subject.as_str(),
+        ),
     ] {
         assert_eq!(
             telchar::persistence::open_protocol_session(
                 "postgresql://127.0.0.1:1/no-connection",
                 "bounded-session",
                 requester_reference,
+                credential_id,
                 audit_subject,
                 quota_subject,
             )
@@ -127,6 +159,32 @@ fn protocol_session_operation_rejects_unbounded_audit_metadata_before_connection
 }
 
 #[test]
+fn protocol_session_persists_certificate_authentication_authority() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+
+    let session = telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "certificate-session",
+        requester_reference,
+        "ssh-cert:9:SHA256:ca:8:build-42",
+        "builder",
+        "build-farm",
+    )
+    .expect("certificate session opens");
+
+    assert_eq!(
+        session.credential_id.as_deref(),
+        Some("ssh-cert:9:SHA256:ca:8:build-42")
+    );
+    assert_eq!(
+        session.authentication_authority,
+        Some(telchar::persistence::AuthenticationAuthority::OpenSshCertificate)
+    );
+}
+
+#[test]
 fn create_and_read_build_request_persist_immutable_state() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -134,6 +192,7 @@ fn create_and_read_build_request_persist_immutable_state() {
         fixture.url(),
         "request-session",
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "ssh-pubkey:SHA256:test",
         "release-engineering",
         "build-farm",
     )
@@ -1951,6 +2010,7 @@ fn request_attachment_persists_exact_pair_across_restart() {
         fixture.url(),
         "attachment-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2027,6 +2087,7 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
         fixture.url(),
         "open-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2035,6 +2096,7 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
         fixture.url(),
         "closed-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2120,6 +2182,7 @@ fn request_attachment_completed_delivery_survives_restart() {
         fixture.url(),
         "delivery-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2196,6 +2259,7 @@ fn request_attachment_detaches_once_without_mutating_references() {
         fixture.url(),
         "detach-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2277,6 +2341,7 @@ fn malformed_request_attachment_rows_fail_closed() {
         fixture.url(),
         "malformed-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2330,6 +2395,7 @@ fn attach_rejects_malformed_referenced_session() {
         fixture.url(),
         "invalid-reference-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2379,6 +2445,7 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
         fixture.url(),
         "failure-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2655,6 +2722,7 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
         fixture.url(),
         "session-1",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2668,6 +2736,7 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
             fixture.url(),
             "session-1",
             reference,
+            "ssh-pubkey:SHA256:test",
             "test-audit",
             "test-quota",
         )
@@ -2694,6 +2763,7 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
             fixture.url(),
             session_id,
             reference,
+            "ssh-pubkey:SHA256:test",
             "test-audit",
             "test-quota",
         )
@@ -2724,6 +2794,7 @@ fn close_protocol_session_persists_exactly_once() {
         fixture.url(),
         "session-1",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2768,6 +2839,7 @@ fn concurrent_protocol_session_closers_have_one_winner() {
         fixture.url(),
         "session-1",
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2806,6 +2878,7 @@ fn protocol_session_state_survives_database_restart() {
         fixture.url(),
         "open-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2814,6 +2887,7 @@ fn protocol_session_state_survives_database_restart() {
         fixture.url(),
         "closed-session",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2871,6 +2945,7 @@ fn failed_protocol_session_statements_do_not_claim_or_persist_transitions() {
         fixture.url(),
         "failed-open",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -2892,6 +2967,7 @@ fn failed_protocol_session_statements_do_not_claim_or_persist_transitions() {
         fixture.url(),
         "failed-close",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -3233,6 +3309,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
         fixture.url(),
         "open-owner",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -3241,6 +3318,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
         fixture.url(),
         "closed-owner",
         requester_reference,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -3404,7 +3482,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 6);
+    assert_eq!(ledger.len(), 7);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -3423,6 +3501,12 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[5].get::<_, i64>(0), 6);
     assert_eq!(ledger[5].get::<_, String>(1), "local_backend_results");
     assert_eq!(ledger[5].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[6].get::<_, i64>(0), 7);
+    assert_eq!(
+        ledger[6].get::<_, String>(1),
+        "protocol_session_credentials"
+    );
+    assert_eq!(ledger[6].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -3509,8 +3593,8 @@ fn reconciliation_state_migration_preserves_existing_execution_rows() {
         telchar::persistence::migrate(fixture.url()).expect("reconciliation migration applies");
 
     assert_eq!(outcome.previously_applied, 3);
-    assert_eq!(outcome.applied_this_run, 3);
-    assert_eq!(outcome.resulting_version, 6);
+    assert_eq!(outcome.applied_this_run, 4);
+    assert_eq!(outcome.resulting_version, 7);
     let mut client = fixture.connect();
     assert_eq!(
         client
@@ -3582,7 +3666,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 5);
+    assert_eq!(outcome.applied_this_run, 6);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -3663,8 +3747,8 @@ fn execution_state_migration_upgrades_gate_three_rows() {
 
     assert!(postgres_version.parse::<u32>().expect("numeric version") >= 14_00_00);
     assert_eq!(outcome.previously_applied, 2);
-    assert_eq!(outcome.applied_this_run, 4);
-    assert_eq!(outcome.resulting_version, 6);
+    assert_eq!(outcome.applied_this_run, 5);
+    assert_eq!(outcome.resulting_version, 7);
     let mut client = fixture.connect();
     let ledger = client
         .query_one(
@@ -3706,16 +3790,14 @@ fn execution_state_migration_upgrades_gate_three_rows() {
     assert!(request.get::<_, Option<SystemTime>>(3).is_none());
     assert_eq!(request.get::<_, String>(4), "gate-three");
     assert_eq!(request.get::<_, String>(5), "gate-three");
-    assert_eq!(
-        client
-            .query_one(
-                "SELECT count(*) FROM protocol_sessions WHERE session_id = 'gate-three-session'",
-                &[],
-            )
-            .expect("session count reads")
-            .get::<_, i64>(0),
-        1
-    );
+    let session = client
+        .query_one(
+            "SELECT credential_id, authentication_authority FROM protocol_sessions WHERE session_id = 'gate-three-session'",
+            &[],
+        )
+        .expect("historical session reads");
+    assert!(session.get::<_, Option<String>>(0).is_none());
+    assert!(session.get::<_, Option<String>>(1).is_none());
     assert_eq!(
         client
             .query_one(
@@ -3759,8 +3841,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 6);
-    assert_eq!(second.previously_applied, 6);
+    assert_eq!(first.applied_this_run, 7);
+    assert_eq!(second.previously_applied, 7);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3768,7 +3850,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        6
+        7
     );
 }
 
@@ -3800,7 +3882,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (7, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (8, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -3853,7 +3935,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 6);
+    assert_eq!(first.applied_this_run, 7);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3861,7 +3943,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        6
+        7
     );
 }
 
@@ -3889,7 +3971,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        6
+        7
     );
     assert_eq!(
         fixture
@@ -3897,7 +3979,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        6
+        7
     );
 }
 
@@ -4518,6 +4600,7 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
         fixture.url(),
         "release-invalid-session",
         requester,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -4612,6 +4695,7 @@ fn request_lease_release_preserves_active_output_leases() {
         fixture.url(),
         "release-output-session",
         requester,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -4707,6 +4791,7 @@ fn request_lease_release_commit_failure_keeps_attachment_and_leases_active() {
         fixture.url(),
         "release-commit-session",
         requester,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -4781,6 +4866,7 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
         fixture.url(),
         "release-failure-session",
         requester,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -5020,6 +5106,7 @@ fn request_lease_release_unattached_releases_only_without_attachment() {
         fixture.url(),
         "attached-release-session",
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
@@ -5067,6 +5154,7 @@ fn request_lease_release_detaches_and_releases_complete_active_set_atomically() 
         fixture.url(),
         "release-session",
         requester,
+        "ssh-pubkey:SHA256:test",
         "test-audit",
         "test-quota",
     )
