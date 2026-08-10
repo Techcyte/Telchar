@@ -189,6 +189,80 @@
                 gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
               '';
             };
+          nixos-restart-reconciliation =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+              recoveryOutput = self.packages.${system}.telchar;
+              seedSql = pkgs.writeText "telchar-restart-reconciliation.sql" ''
+                INSERT INTO build_requests (request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject) VALUES
+                  ('queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', '${system}', 'queued', transaction_timestamp(), 'test-audit', 'test-quota'),
+                  ('running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', '${system}', 'running', transaction_timestamp(), 'test-audit', 'test-quota'),
+                  ('collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', '${system}', 'collecting', transaction_timestamp(), 'test-audit', 'test-quota');
+
+                INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES
+                  ('queued-derivation', 'request', 'queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL),
+                  ('queued-input', 'request', 'queued-recovery', '/nix/store/44444444444444444444444444444444-input', 'input', 'active', transaction_timestamp(), NULL, NULL),
+                  ('running-derivation', 'request', 'running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL),
+                  ('collecting-derivation', 'request', 'collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL);
+
+                INSERT INTO execution_attempts (attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at) VALUES
+                  ('running-attempt', 'running-recovery', 1, 'running-recovery:1', 'local', 'running-backend', 'running', transaction_timestamp(), transaction_timestamp(), transaction_timestamp(), NULL),
+                  ('collecting-attempt', 'collecting-recovery', 1, 'collecting-recovery:1', 'local', 'collecting-backend', 'collecting', transaction_timestamp(), transaction_timestamp(), transaction_timestamp(), transaction_timestamp());
+
+                INSERT INTO capacity_reservations (reservation_id, attempt_id, phase, quota_subject, units, created_at) VALUES
+                  ('running-reservation', 'running-attempt', 'running', 'test-quota', 1, transaction_timestamp()),
+                  ('collecting-reservation', 'collecting-attempt', 'collecting', 'test-quota', 1, transaction_timestamp());
+
+                INSERT INTO local_backend_executions (backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at) VALUES
+                  ('running-backend', 'running-recovery:1', decode(repeat('08', 32), 'hex'), 'running', transaction_timestamp(), transaction_timestamp(), NULL),
+                  ('collecting-backend', 'collecting-recovery:1', decode(repeat('09', 32), 'hex'), 'succeeded', transaction_timestamp(), transaction_timestamp(), transaction_timestamp());
+
+                INSERT INTO local_backend_execution_results (backend_execution_id, classification, result_metadata, created_at) VALUES
+                  ('collecting-backend', 'succeeded', jsonb_build_object('status', 'built', 'outputs', jsonb_build_array(jsonb_build_object('name', 'out', 'path', '${recoveryOutput}'))), transaction_timestamp());
+              '';
+            in
+            harness.mkRestartRecoveryTest {
+              name = "telchar-nixos-restart-reconciliation";
+              testScript = ''
+                start_all()
+                postgres.wait_for_unit("postgresql.service")
+                owner.succeed("systemctl start telchar-recovery-daemon.service")
+                owner.wait_for_file("/run/telchar-recovery/daemon.sock")
+
+                replacement.succeed("systemctl start telchar-recovery-daemon.service")
+                replacement.wait_until_fails("systemctl is-active --quiet telchar-recovery-daemon.service")
+                replacement.succeed("systemctl show telchar-recovery-daemon.service -p Result --value | grep -qx exit-code")
+                replacement.succeed("test ! -S /run/telchar-recovery/daemon.sock")
+                owner.succeed("test -S /run/telchar-recovery/daemon.sock")
+                replacement.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.refused")
+
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -v ON_ERROR_STOP=1 -f ${seedSql}")
+                postgres.succeed("systemctl restart postgresql.service")
+                postgres.wait_for_unit("postgresql.service")
+                owner.wait_until_fails("systemctl is-active --quiet telchar-recovery-daemon.service")
+                owner.succeed("test ! -S /run/telchar-recovery/daemon.sock")
+                owner.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.lost")
+
+                replacement.succeed("systemctl reset-failed telchar-recovery-daemon.service")
+                replacement.succeed("systemctl start telchar-recovery-daemon.service")
+                replacement.wait_for_file("/run/telchar-recovery/daemon.sock")
+
+                postgres.wait_until_succeeds("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT queue_state FROM build_requests WHERE request_id = 'collecting-recovery'\" | grep -qx completed")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM build_requests WHERE request_id = 'queued-recovery' AND queue_state = 'queued'\" | grep -qx 1")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_attempts WHERE attempt_id = 'running-attempt' AND idempotency_key = 'running-recovery:1' AND backend_execution_id = 'running-backend' AND state = 'running'\" | grep -qx 1")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_executions WHERE backend_execution_id = 'running-backend' AND idempotency_key = 'running-recovery:1' AND state = 'running'\" | grep -qx 1")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_executions\" | grep -qx 2")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_attempts\" | grep -qx 2")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_execution_results\" | grep -qx 1")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_outcomes WHERE attempt_id = 'collecting-attempt' AND classification = 'succeeded'\" | grep -qx 1")
+                postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM store_leases WHERE owner_id = 'collecting-recovery' AND purpose = 'output' AND state = 'active' AND store_path = '${recoveryOutput}'\" | grep -qx 1")
+                replacement.succeed("test \"$(find /var/lib/telchar-recovery-roots -mindepth 1 -maxdepth 1 -type l -lname '${recoveryOutput}' | wc -l)\" -eq 1")
+                replacement.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.acquired")
+              '';
+            };
           nixos-artifacts =
             let
               harness = import ./tests/nixos/lib.nix {
