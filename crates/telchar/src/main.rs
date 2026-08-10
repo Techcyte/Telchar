@@ -276,6 +276,8 @@ fn run_daemon() -> io::Result<()> {
         .map_err(|_| invalid("dispatching attempt recovery failed"))?;
     telchar::persistence::recover_backend_pending_attempts(&database_url, 256)
         .map_err(|_| invalid("backend-pending attempt recovery failed"))?;
+    telchar::persistence::recover_running_attempts(&database_url, 256)
+        .map_err(|_| invalid("running attempt recovery failed"))?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
