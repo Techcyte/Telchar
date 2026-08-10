@@ -684,6 +684,80 @@ fn second_daemon_cannot_replace_live_socket() {
 }
 
 #[test]
+fn daemon_restart_recovers_queued_requests_before_readiness_without_duplication() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        database.url(),
+        "process-queued-request",
+        "/nix/store/11111111111111111111111111111111-process-queued.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        database.url(),
+        "process-queued-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "process-queued-request",
+        "/nix/store/11111111111111111111111111111111-process-queued.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        database.url(),
+        "process-queued-request",
+        &[(
+            "process-queued-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(database.url(), "process-queued-request")
+        .expect("request queues");
+
+    for _ in 0..2 {
+        let mut daemon = daemon_command(&socket, 1_000, false, database.url())
+            .spawn()
+            .expect("daemon starts");
+        wait_for_socket(&socket, &mut daemon);
+        assert_eq!(
+            telchar::persistence::recover_queued_build_requests(database.url(), 256)
+                .expect("queue reads")
+                .iter()
+                .map(|request| request.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["process-queued-request"]
+        );
+        daemon.kill().expect("daemon stops");
+        let _ = daemon.wait();
+        let _ = fs::remove_file(&socket);
+    }
+    let mut client = database.connect();
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM build_requests WHERE queue_state = 'queued'",
+                &[]
+            )
+            .expect("queue count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM execution_attempts", &[])
+            .expect("attempt count reads")
+            .get::<_, i64>(0),
+        0
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_refuses_to_replace_non_socket_path() {
     let root = temporary_root();
     fs::create_dir(&root).expect("fixture root creates");

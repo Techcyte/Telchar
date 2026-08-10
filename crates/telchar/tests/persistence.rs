@@ -929,6 +929,81 @@ fn collecting_attempt_completes_only_with_output_leases_and_result_metadata() {
 }
 
 #[test]
+fn queued_request_recovery_is_deterministic_across_restart() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for (request_id, hash) in [
+        ("queued-recovery-b", "22222222222222222222222222222222"),
+        ("queued-recovery-a", "11111111111111111111111111111111"),
+    ] {
+        telchar::persistence::create_build_request(
+            fixture.url(),
+            request_id,
+            &format!("/nix/store/{hash}-{request_id}.drv"),
+            "x86_64-linux",
+            "test-audit",
+            "test-quota",
+        )
+        .expect("request persists");
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            &format!("{request_id}-derivation"),
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            request_id,
+            &format!("/nix/store/{hash}-{request_id}.drv"),
+            telchar::persistence::StoreLeasePurpose::Derivation,
+        )
+        .expect("derivation lease persists");
+        telchar::persistence::create_request_input_leases(
+            fixture.url(),
+            request_id,
+            &[(
+                format!("{request_id}-input"),
+                format!("/nix/store/{hash}-{request_id}-input"),
+            )],
+        )
+        .expect("input lease persists");
+        telchar::persistence::queue_build_request(fixture.url(), request_id)
+            .expect("request queues");
+    }
+
+    let before = telchar::persistence::recover_queued_build_requests(fixture.url(), 256)
+        .expect("queued requests recover");
+    fixture.restart();
+    let after = telchar::persistence::recover_queued_build_requests(fixture.url(), 256)
+        .expect("queued requests recover after restart");
+    assert_eq!(after, before);
+    assert_eq!(
+        after
+            .iter()
+            .map(|request| request.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["queued-recovery-b", "queued-recovery-a"]
+    );
+    assert!(after
+        .iter()
+        .all(|request| request.queue_state == telchar::persistence::BuildQueueState::Queued));
+    let mut client = fixture.connect();
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM build_requests WHERE queue_state = 'queued'",
+                &[]
+            )
+            .expect("queue count reads")
+            .get::<_, i64>(0),
+        2
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM execution_attempts", &[])
+            .expect("attempt count reads")
+            .get::<_, i64>(0),
+        0
+    );
+}
+
+#[test]
 fn active_attempt_fails_with_supported_immutable_classification() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

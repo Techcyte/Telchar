@@ -181,6 +181,16 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
+    let recovered_queued_requests =
+        telchar::persistence::recover_queued_build_requests(&database_url, 256)
+            .map_err(|_| invalid("queued request recovery failed"))?;
+    tracing::info!(
+        event = "database.build_request.recovered",
+        operation = "recover-queued",
+        request_state = "queued",
+        recovered_count = recovered_queued_requests.len(),
+        "queued requests recovered"
+    );
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);

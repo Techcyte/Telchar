@@ -261,6 +261,27 @@ pub fn queue_build_request(
     Ok(request)
 }
 
+pub fn recover_queued_build_requests(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<BuildRequestState>, BuildRequestError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(BuildRequestError(BuildRequestFailure::Configuration));
+    }
+    let limit = limit as i64;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    client
+        .query(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE queue_state = 'queued' ORDER BY queued_at, request_id LIMIT $1",
+            &[&limit],
+        )
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?
+        .into_iter()
+        .map(|row| decode_build_request(&row).map_err(BuildRequestError))
+        .collect()
+}
+
 pub fn read_build_request(
     database_url: &str,
     request_id: &str,
