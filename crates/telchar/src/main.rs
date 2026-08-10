@@ -87,8 +87,55 @@ fn run_executor() -> io::Result<()> {
                     let Ok(mut executor) = executor.lock() else {
                         return;
                     };
-                    let _ =
-                        executor.execute_with_logs(&request, &mut |_| Ok(()), &mut || Ok(false));
+                    let terminal = match executor.execute_with_logs(
+                        &request,
+                        &mut |_| Ok(()),
+                        &mut || Ok(false),
+                    ) {
+                        Ok(result) => {
+                            let outputs = result
+                                .outputs()
+                                .iter()
+                                .map(|(name, path)| {
+                                    let name = String::from_utf8(name.clone()).map_err(|_| ())?;
+                                    let path = String::from_utf8(path.clone()).map_err(|_| ())?;
+                                    Ok(serde_json::json!({"name": name, "path": path}))
+                                })
+                                .collect::<Result<Vec<_>, ()>>();
+                            match outputs {
+                                Ok(outputs) => Some((
+                                    telchar::persistence::LocalBackendExecutionState::Succeeded,
+                                    "succeeded",
+                                    serde_json::json!({
+                                        "status": match result.status() {
+                                            telchar::local_executor::LocalBuildStatus::Built => "built",
+                                            telchar::local_executor::LocalBuildStatus::AlreadyValid => "already-valid",
+                                        },
+                                        "outputs": outputs,
+                                    }),
+                                )),
+                                Err(()) => Some((
+                                    telchar::persistence::LocalBackendExecutionState::Failed,
+                                    "output-failure",
+                                    serde_json::json!({}),
+                                )),
+                            }
+                        }
+                        Err(_) => Some((
+                            telchar::persistence::LocalBackendExecutionState::Failed,
+                            "infrastructure-failure",
+                            serde_json::json!({}),
+                        )),
+                    };
+                    if let Some((state, classification, metadata)) = terminal {
+                        let _ = telchar::persistence::complete_local_backend_execution(
+                            &database_url,
+                            &backend_execution_id,
+                            state,
+                            classification,
+                            &metadata,
+                        );
+                    }
                 });
                 Ok(())
             };
@@ -204,7 +251,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 5_i64,
+        latest_migration_version = 6_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -220,7 +267,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 5_i64,
+        latest_migration_version = 6_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
