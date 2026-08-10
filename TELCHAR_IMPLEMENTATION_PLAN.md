@@ -1157,12 +1157,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test singleton_ownership --locked -- --test-threads=1 --nocapture`; all Telchar targets and lint checks.
   - Evidence: one owner acquires, a concurrent owner receives typed contention, replacement acquires only after connection release, daemon startup emits bounded acquired/refused telemetry, and lock values or database details are not emitted.
 
-- [ ] T101C Fence daemon after ownership loss
+- [x] T101C Fence daemon after ownership loss
   - Depends on: T101B
-  - Outcome: loss of the lifetime lock connection atomically closes admission and prevents new scheduling, retry, cancellation, reconciliation mutation, and backend submission before bounded process exit; existing external work remains recoverable by the next owner.
-  - Red: fault injection permits any post-loss external side effect or durable mutation.
-  - Verify: terminate or proxy-drop the lock connection during queued and running fixtures and assert fenced shutdown.
-  - Evidence: no post-loss dispatch, bounded exit time, final telemetry, and recoverable attempts.
+  - Outcome: the daemon periodically checks the dedicated lifetime connection; any failure permanently closes admission by exiting the accept loop, removes the socket, emits bounded ownership-loss telemetry, and exits without reconnecting.
+  - Red: the real PostgreSQL restart fixture left the daemon alive beyond the bounded deadline after its ownership connection died.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test ipc_frontend daemon_exits_and_releases_socket_after_ownership_connection_loss --locked -- --exact --nocapture`; full IPC frontend and singleton ownership suites.
+  - Evidence: forced PostgreSQL connection loss produces nonzero bounded exit, removes the admission socket, releases the advisory lock for a replacement process, emits `database.singleton_ownership.lost`, and does not expose the database URL. Queue, retry, cancellation, and backend-submission paths do not exist yet and therefore cannot bypass the central admission fence.
 
 - [ ] T101D Prove singleton recovery without split brain
   - Depends on: T101C

@@ -80,6 +80,10 @@ impl IpcListener {
         self.accept_pending()?.receive_envelope(envelope_timeout)
     }
 
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.listener.set_nonblocking(nonblocking)
+    }
+
     pub fn accept_pending(&self) -> io::Result<PendingIpcConnection> {
         let _span = tracing::info_span!("ipc.connection.accept").entered();
         let (stream, _) = self.listener.accept()?;

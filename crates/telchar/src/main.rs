@@ -145,7 +145,7 @@ fn run_daemon() -> io::Result<()> {
         resulting_schema_version = migration.resulting_version,
         "database migration completed"
     );
-    let _singleton_ownership =
+    let mut singleton_ownership =
         match telchar::singleton_ownership::SingletonOwnership::acquire(&database_url) {
             Ok(ownership) => {
                 tracing::info!(
@@ -234,11 +234,31 @@ fn run_daemon() -> io::Result<()> {
             );
         }
     });
+    let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
+    listener.set_nonblocking(true)?;
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
+    let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
+        if std::time::Instant::now() >= next_ownership_check {
+            if let Err(error) = singleton_ownership.check() {
+                tracing::error!(
+                    event = "database.singleton_ownership.lost",
+                    operation = "check",
+                    result = "failed",
+                    failure_class = error.failure().as_str(),
+                    "singleton daemon ownership lost"
+                );
+                return Err(invalid("singleton daemon ownership lost"));
+            }
+            next_ownership_check = std::time::Instant::now() + ownership_check_interval;
+        }
         let connection = match listener.accept_pending() {
             Ok(connection) => connection,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10).min(ownership_check_interval));
+                continue;
+            }
             Err(error) => {
                 tracing::warn!(
                     event = "ipc.daemon.connection_rejected",

@@ -539,6 +539,74 @@ fn second_daemon_is_refused_by_database_ownership_before_socket_binding() {
 }
 
 #[test]
+fn daemon_exits_and_releases_socket_after_ownership_connection_loss() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut database = PostgresFixture::start();
+    let mut daemon = daemon_command(&socket, 1_000, false, database.url())
+        .env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", "10")
+        .spawn()
+        .expect("daemon starts");
+    wait_for_socket(&socket, &mut daemon);
+
+    database.restart();
+
+    let output = wait_with_deadline(&mut daemon, Duration::from_secs(2));
+    assert!(
+        !output.status.success(),
+        "fenced daemon exited successfully"
+    );
+    assert!(!socket.exists(), "fenced daemon left admission socket open");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("database.singleton_ownership.lost"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(database.url()), "{stderr}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn replacement_daemon_starts_only_after_fenced_owner_exits() {
+    let first_root = temporary_root();
+    let replacement_root = temporary_root();
+    let first_socket = first_root.join("daemon.sock");
+    let replacement_socket = replacement_root.join("daemon.sock");
+    let mut database = PostgresFixture::start();
+    let database_url = database.url().to_owned();
+    let mut first = daemon_command(&first_socket, 1_000, false, &database_url)
+        .env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", "10")
+        .spawn()
+        .expect("first daemon starts");
+    wait_for_socket(&first_socket, &mut first);
+
+    database.restart();
+    let first_output = wait_with_deadline(&mut first, Duration::from_secs(2));
+    assert!(
+        !first_output.status.success(),
+        "fenced owner exited successfully"
+    );
+    assert!(!first_socket.exists(), "fenced owner kept admission open");
+
+    let mut replacement = daemon_command(&replacement_socket, 1_000, false, &database_url)
+        .spawn()
+        .expect("replacement daemon starts");
+    wait_for_socket(&replacement_socket, &mut replacement);
+    assert!(
+        replacement
+            .try_wait()
+            .expect("replacement daemon status")
+            .is_none(),
+        "replacement daemon did not remain active"
+    );
+
+    replacement.kill().expect("replacement daemon stops");
+    let _ = replacement.wait();
+    let _ = fs::remove_dir_all(first_root);
+    let _ = fs::remove_dir_all(replacement_root);
+}
+
+#[test]
 fn second_daemon_cannot_replace_live_socket() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");
