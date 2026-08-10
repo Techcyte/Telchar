@@ -407,6 +407,142 @@ fn queued_request_dispatches_once_with_attempt_and_capacity_reservation() {
 }
 
 #[test]
+fn dispatching_attempt_records_backend_submission_atomically() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "submission-request",
+        "/nix/store/11111111111111111111111111111111-submission.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "submission-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "submission-request",
+        "/nix/store/11111111111111111111111111111111-submission.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "submission-request",
+        &[(
+            "submission-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "submission-request")
+        .expect("request queues");
+    let dispatched = telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "submission-request",
+        "submission-attempt",
+        1,
+        "submission-request:1",
+        "local",
+        "submission-reservation",
+        1,
+    )
+    .expect("request dispatches");
+
+    let submitted = telchar::persistence::record_backend_submission(
+        fixture.url(),
+        "submission-attempt",
+        "backend-execution-1",
+    )
+    .expect("backend submission persists");
+    assert_eq!(
+        submitted.request.queue_state,
+        telchar::persistence::BuildQueueState::BackendPending
+    );
+    assert_eq!(
+        submitted.attempt.state,
+        telchar::persistence::ExecutionAttemptState::BackendPending
+    );
+    assert_eq!(
+        submitted.attempt.backend_execution_id.as_deref(),
+        Some("backend-execution-1")
+    );
+    assert!(submitted
+        .attempt
+        .submitted_at
+        .is_some_and(|submitted_at| submitted_at >= dispatched.attempt.created_at));
+    assert_eq!(
+        submitted.reservation.phase,
+        telchar::persistence::CapacityReservationPhase::BackendPending
+    );
+    assert_eq!(submitted.reservation.attempt_id, "submission-attempt");
+    assert!(submitted.reservation.released_at.is_none());
+
+    assert_eq!(
+        telchar::persistence::record_backend_submission(
+            fixture.url(),
+            "submission-attempt",
+            "backend-execution-2",
+        )
+        .expect_err("submission cannot be replaced")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::read_execution_attempt(fixture.url(), "submission-attempt")
+            .expect("attempt reads")
+            .expect("attempt exists"),
+        submitted.attempt
+    );
+
+    let mut client = fixture.connect();
+    client
+        .execute(
+            "UPDATE capacity_reservations SET released_at = transaction_timestamp() WHERE reservation_id = 'submission-reservation'",
+            &[],
+        )
+        .expect("reservation releases for fault fixture");
+    client
+        .execute(
+            "UPDATE build_requests SET queue_state = 'dispatching' WHERE request_id = 'submission-request'",
+            &[],
+        )
+        .expect("request resets for fault fixture");
+    client
+        .execute(
+            "UPDATE execution_attempts SET state = 'dispatching', backend_execution_id = NULL, submitted_at = NULL WHERE attempt_id = 'submission-attempt'",
+            &[],
+        )
+        .expect("attempt resets for fault fixture");
+    assert_eq!(
+        telchar::persistence::record_backend_submission(
+            fixture.url(),
+            "submission-attempt",
+            "backend-execution-3",
+        )
+        .expect_err("missing active reservation rejects transition")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::read_execution_attempt(fixture.url(), "submission-attempt")
+            .expect("attempt reads")
+            .expect("attempt exists")
+            .state,
+        telchar::persistence::ExecutionAttemptState::Dispatching
+    );
+    assert_eq!(
+        telchar::persistence::read_build_request(fixture.url(), "submission-request")
+            .expect("request reads")
+            .expect("request exists")
+            .queue_state,
+        telchar::persistence::BuildQueueState::Dispatching
+    );
+}
+
+#[test]
 fn dispatch_transaction_rolls_back_when_capacity_reservation_conflicts() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
