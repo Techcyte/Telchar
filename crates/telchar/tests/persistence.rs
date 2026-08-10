@@ -929,6 +929,123 @@ fn collecting_attempt_completes_only_with_output_leases_and_result_metadata() {
 }
 
 #[test]
+fn active_attempt_fails_with_supported_immutable_classification() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "failure-request",
+        "/nix/store/11111111111111111111111111111111-failure.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "failure-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "failure-request",
+        "/nix/store/11111111111111111111111111111111-failure.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "failure-request",
+        &[(
+            "failure-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "failure-request")
+        .expect("request queues");
+    telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "failure-request",
+        "failure-attempt",
+        1,
+        "failure-request:1",
+        "local",
+        "failure-reservation",
+        1,
+    )
+    .expect("request dispatches");
+
+    for classification in ["", "typo-failure"] {
+        assert_eq!(
+            telchar::persistence::complete_execution_failure(
+                fixture.url(),
+                "failure-attempt",
+                classification,
+                &serde_json::json!({"stage": "dispatch"})
+            )
+            .expect_err("unsupported classification rejects")
+            .failure(),
+            telchar::persistence::ExecutionAttemptFailure::Configuration
+        );
+    }
+    let failed = telchar::persistence::complete_execution_failure(
+        fixture.url(),
+        "failure-attempt",
+        "infrastructure-failure",
+        &serde_json::json!({"stage": "dispatch"}),
+    )
+    .expect("failure persists");
+    assert_eq!(
+        failed.request.queue_state,
+        telchar::persistence::BuildQueueState::Failed
+    );
+    assert_eq!(
+        failed.attempt.state,
+        telchar::persistence::ExecutionAttemptState::Failed
+    );
+    assert!(failed
+        .attempt
+        .completed_at
+        .is_some_and(|completed_at| completed_at >= failed.attempt.created_at));
+    assert_eq!(failed.outcome.classification, "infrastructure-failure");
+    assert_eq!(
+        failed.outcome.result_metadata,
+        serde_json::json!({"stage": "dispatch"})
+    );
+    assert!(failed.reservation.released_at.is_some());
+    assert_eq!(
+        telchar::persistence::complete_execution_failure(
+            fixture.url(),
+            "failure-attempt",
+            "build-failure",
+            &serde_json::json!({"stage": "build"})
+        )
+        .expect_err("terminal outcome is immutable")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+
+    for classification in [
+        "build-failure",
+        "admission-failure",
+        "input-failure",
+        "output-failure",
+        "cancelled",
+        "internal-failure",
+    ] {
+        assert_eq!(
+            telchar::persistence::complete_execution_failure(
+                "",
+                "attempt",
+                classification,
+                &serde_json::json!({}),
+            )
+            .expect_err("supported classification reaches ordinary input validation")
+            .failure(),
+            telchar::persistence::ExecutionAttemptFailure::Configuration
+        );
+    }
+}
+
+#[test]
 fn dispatch_transaction_rolls_back_when_capacity_reservation_conflicts() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

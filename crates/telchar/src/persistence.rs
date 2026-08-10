@@ -1070,6 +1070,130 @@ pub struct CompletedBuildRequest {
     pub reservation: CapacityReservation,
 }
 
+pub fn complete_execution_failure(
+    database_url: &str,
+    attempt_id: &str,
+    classification: &str,
+    result_metadata: &serde_json::Value,
+) -> Result<CompletedBuildRequest, ExecutionAttemptError> {
+    validate_execution_attempt_component(database_url, attempt_id)?;
+    if !matches!(
+        classification,
+        "build-failure"
+            | "infrastructure-failure"
+            | "admission-failure"
+            | "input-failure"
+            | "output-failure"
+            | "cancelled"
+            | "internal-failure"
+    ) {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let result_metadata_text = serde_json::to_string(result_metadata)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Configuration))?;
+    if !result_metadata.is_object() || result_metadata_text.len() > MAX_IPC_COMPONENT_BYTES {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let attempt_row = transaction
+        .query_opt(
+            "SELECT attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at FROM execution_attempts WHERE attempt_id = $1 FOR UPDATE",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let active_attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    let active_phase = match active_attempt.state {
+        ExecutionAttemptState::Dispatching => "dispatching",
+        ExecutionAttemptState::BackendPending => "backend-pending",
+        ExecutionAttemptState::Running => "running",
+        ExecutionAttemptState::Collecting => "collecting",
+        _ => return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState)),
+    };
+    let request_row = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&active_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let matching_request_state = matches!(
+        (active_attempt.state, request.queue_state),
+        (
+            ExecutionAttemptState::Dispatching,
+            BuildQueueState::Dispatching
+        ) | (
+            ExecutionAttemptState::BackendPending,
+            BuildQueueState::BackendPending
+        ) | (ExecutionAttemptState::Running, BuildQueueState::Running)
+            | (
+                ExecutionAttemptState::Collecting,
+                BuildQueueState::Collecting
+            )
+    );
+    if !matching_request_state {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let reservation_row = transaction
+        .query_opt(
+            "UPDATE capacity_reservations SET released_at = transaction_timestamp() WHERE attempt_id = $1 AND phase = $2 AND released_at IS NULL RETURNING reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at",
+            &[&attempt_id, &active_phase],
+        )
+        .map_err(map_execution_attempt_database_error)?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let reservation = decode_capacity_reservation(&reservation_row)?;
+    let attempt_row = transaction
+        .query_one(
+            "UPDATE execution_attempts SET state = 'failed', completed_at = transaction_timestamp() WHERE attempt_id = $1 AND state = $2 AND completed_at IS NULL RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+            &[&attempt_id, &active_phase],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    let outcome_row = transaction
+        .query_one(
+            "INSERT INTO execution_outcomes (attempt_id, classification, result_metadata, created_at) VALUES ($1, $2, $3::text::jsonb, transaction_timestamp()) RETURNING attempt_id, classification, result_metadata::text, created_at",
+            &[&attempt_id, &classification, &result_metadata_text],
+        )
+        .map_err(map_execution_attempt_database_error)?;
+    let outcome = decode_execution_outcome(&outcome_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request_row = transaction
+        .query_one(
+            "UPDATE build_requests SET queue_state = 'failed' WHERE request_id = $1 AND queue_state = $2 RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&active_attempt.request_id, &active_phase],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.failed",
+        operation = "complete_execution_failure",
+        request_state = "failed",
+        attempt_state = "failed",
+        reservation_state = "released",
+        failure_classification = classification
+    );
+    Ok(CompletedBuildRequest {
+        request,
+        attempt,
+        outcome,
+        reservation,
+    })
+}
+
 pub fn complete_execution_success(
     database_url: &str,
     attempt_id: &str,
