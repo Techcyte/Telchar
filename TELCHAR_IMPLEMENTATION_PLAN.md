@@ -1088,12 +1088,12 @@ Evidence: paths and output facts to record
   - Verify: focused closure/promotion/export/output-transfer/executor/configuration/lifecycle suites, Telchar Clippy with warnings denied, formatter/diff checks, zero-name source/package/configuration inventory, `nix flake show`, and `nix build .#telchar`.
   - Evidence: package closure contains only `bin/telchar`; no `libexec/telchar` helpers exist; flake packages are `telchar`, `nix-worker-protocol`, `nix-reference`, and `default`; generated lifecycle helper scripts use explicit `TELCHAR_TEST_*` injection only; typed private-daemon tests retain the known non-`/nix/store` namespace limitations without weakening production path validation.
 
-- [ ] T095H Re-verify Gate 3 through the pure-Rust gateway-store path
+- [x] T095H Re-verify Gate 3 through the pure-Rust gateway-store path
   - Depends on: T095G
   - Outcome: every accepted Gate 3 protocol, store, GC, transfer, execution, output-validation, log, disconnect, and lifecycle test passes with native helpers unavailable.
-  - Red: authoritative suite fails or succeeds by discovering an obsolete helper.
-  - Verify: helper-absence negative test followed by full protocol/store/OpenSSH/local-backend NixOS suite.
-  - Evidence: exact terminal commands, pristine output, no native helper processes, and no native helper package/runtime references.
+  - Red: the authoritative Gate 3 fixture reached the trusted daemon build, but decoded Nix's store-relative realisation `outPath` as an absolute path and rejected the successful result; the fixture also assumed `/bin/sh`, a two-path input closure, and client-visible build-log presentation.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-gate-2 --no-link`, `nix build .#checks.x86_64-linux.nixos-gate-3-contract --no-link`, focused protocol/executor/connection/dispatch suites, both crate Clippy checks with warnings denied, formatter/diff checks, and `nix flake check`.
+  - Evidence: `WorkerClient` reconstructs logical `/nix/store/...` paths from Nix realisation JSON and retains redacted public errors; the Gate 3 fixture seeds the runtime-shell closure into its isolated client store and verifies all twelve released input-closure leases, two derivation leases, two output leases, two detached attachments, output roots, output transfer, and OpenSSH identity evidence; native helper binaries, settings, package outputs, and processes remain absent.
 
 ## Gate 4 — Durable state, admission, and deterministic scheduling
 
