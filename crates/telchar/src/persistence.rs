@@ -38,6 +38,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "execution_state",
         sql: include_str!("../migrations/0003_execution_state.sql"),
     },
+    Migration {
+        version: 4,
+        name: "reconciliation_state",
+        sql: include_str!("../migrations/0004_reconciliation_state.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -151,6 +156,7 @@ pub enum BuildQueueState {
     Accepted,
     Queued,
     Dispatching,
+    Reconciling,
     BackendPending,
     Running,
     Collecting,
@@ -362,6 +368,7 @@ fn decode_build_request(row: &Row) -> Result<BuildRequestState, BuildRequestFail
         ("accepted", None) => BuildQueueState::Accepted,
         ("queued", Some(_)) => BuildQueueState::Queued,
         ("dispatching", Some(_)) => BuildQueueState::Dispatching,
+        ("reconciling", Some(_)) => BuildQueueState::Reconciling,
         ("backend-pending", Some(_)) => BuildQueueState::BackendPending,
         ("running", Some(_)) => BuildQueueState::Running,
         ("collecting", Some(_)) => BuildQueueState::Collecting,
@@ -425,6 +432,7 @@ impl std::error::Error for ExecutionAttemptError {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExecutionAttemptState {
     Dispatching,
+    Reconciling,
     BackendPending,
     Running,
     Collecting,
@@ -474,6 +482,86 @@ pub struct DispatchedBuildRequest {
     pub request: BuildRequestState,
     pub attempt: ExecutionAttempt,
     pub reservation: CapacityReservation,
+}
+
+pub fn recover_dispatching_attempts(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<DispatchedBuildRequest>, ExecutionAttemptError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let limit = limit as i64;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let attempt_rows = transaction
+        .query(
+            "SELECT attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at FROM execution_attempts WHERE state = 'dispatching' AND backend_execution_id IS NULL AND submitted_at IS NULL AND fenced_at IS NULL ORDER BY created_at, attempt_id LIMIT $1 FOR UPDATE",
+            &[&limit],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let mut recovered = Vec::with_capacity(attempt_rows.len());
+    for attempt_row in attempt_rows {
+        let dispatching_attempt =
+            decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+        let request_row = transaction
+            .query_opt(
+                "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+                &[&dispatching_attempt.request_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let request = decode_build_request(&request_row)
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        if request.queue_state != BuildQueueState::Dispatching {
+            return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+        }
+        let reservation_row = transaction
+            .query_opt(
+                "UPDATE capacity_reservations SET released_at = transaction_timestamp() WHERE attempt_id = $1 AND phase = 'dispatching' AND released_at IS NULL RETURNING reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at",
+                &[&dispatching_attempt.attempt_id],
+            )
+            .map_err(map_execution_attempt_database_error)?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let reservation = decode_capacity_reservation(&reservation_row)?;
+        let attempt_row = transaction
+            .query_one(
+                "UPDATE execution_attempts SET state = 'reconciling', fenced_at = transaction_timestamp() WHERE attempt_id = $1 AND state = 'dispatching' AND backend_execution_id IS NULL AND submitted_at IS NULL AND fenced_at IS NULL RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+                &[&dispatching_attempt.attempt_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+        let request_row = transaction
+            .query_one(
+                "UPDATE build_requests SET queue_state = 'reconciling' WHERE request_id = $1 AND queue_state = 'dispatching' RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+                &[&dispatching_attempt.request_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        let request = decode_build_request(&request_row)
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        recovered.push(DispatchedBuildRequest {
+            request,
+            attempt,
+            reservation,
+        });
+    }
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.reconciling",
+        operation = "recover_dispatching",
+        request_state = "reconciling",
+        attempt_state = "reconciling",
+        recovered_count = recovered.len(),
+        "ambiguous dispatching attempts fenced for reconciliation"
+    );
+    Ok(recovered)
 }
 
 pub fn record_backend_completed(
@@ -990,6 +1078,15 @@ fn decode_execution_attempt(row: &Row) -> Result<ExecutionAttempt, ExecutionAtte
                 && completed_at.is_none() =>
         {
             ExecutionAttemptState::Dispatching
+        }
+        "reconciling"
+            if submitted_at.is_none()
+                && started_at.is_none()
+                && collecting_at.is_none()
+                && completed_at.is_none()
+                && fenced_at.is_some() =>
+        {
+            ExecutionAttemptState::Reconciling
         }
         "backend-pending"
             if submitted_at.is_some()

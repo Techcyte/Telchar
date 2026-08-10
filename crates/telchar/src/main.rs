@@ -123,7 +123,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 3_i64,
+        latest_migration_version = 4_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -139,7 +139,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 3_i64,
+        latest_migration_version = 4_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
@@ -191,6 +191,8 @@ fn run_daemon() -> io::Result<()> {
         recovered_count = recovered_queued_requests.len(),
         "queued requests recovered"
     );
+    telchar::persistence::recover_dispatching_attempts(&database_url, 256)
+        .map_err(|_| invalid("dispatching attempt recovery failed"))?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
