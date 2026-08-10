@@ -1222,8 +1222,15 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL missing-output-lease, missing-metadata, success, immutable-replacement, active-output-retention, and terminal-record tests; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: request `completed`, attempt `succeeded` with monotonic `completed_at`, immutable `succeeded` outcome plus exact bounded JSON metadata, released capacity reservation, and still-active output lease commit together.
 
-- [ ] T108 Transition attempt to terminal failure
+- [x] T107A Define terminal failure classifications
   - Depends on: T103
+  - Outcome: `docs/adr/terminal-failure-classification.md` defines a closed observed-domain vocabulary without granting retry authority: build, infrastructure, admission, input, output, cancellation, and internal gateway failure.
+  - Red: T108 required supported classifications, but the only transition matrix was scheduled after T108 and recovery, leaving persisted vocabulary undefined.
+  - Verify: ADR review against `telchar-design.md` failure domains and later retry/reconciliation tasks.
+  - Evidence: classification describes immutable terminal history; backend observations remain distinct; no class itself authorizes retry, resubmission, or reconciliation.
+
+- [ ] T108 Transition attempt to terminal failure
+  - Depends on: T107A
   - Outcome: failure classification and timing persist immutably.
   - Red: missing classification accepted.
   - Verify: failure transition tests.
