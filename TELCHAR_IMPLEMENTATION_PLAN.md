@@ -1250,8 +1250,22 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL restart test, migration upgrade test, repeated-recovery idempotency, late-submission rejection, full persistence and IPC frontend suites, all Telchar targets, clippy, formatting, and diagnostics.
   - Evidence: dispatching request/attempt/reservation become reconciling/reconciling/released in one transaction, `fenced_at` is durable, backend execution ID remains absent, idempotency key is unchanged, and a second recovery returns no work.
 
+- [x] T110A Define persistent local executor service contract
+  - Depends on: T110
+  - Outcome: `docs/adr/local-executor-service.md` defines a separately running single-active local executor, PostgreSQL-backed execution registry, immutable backend/idempotency identity, bounded authenticated Unix submit/status protocol, restart ownership, and telemetry exclusions.
+  - Red: T111 required a real local execution registry, but the existing synchronous in-process executor had no durable backend identity, status lookup, or work lifetime independent of the daemon.
+  - Verify: contract review against singleton ownership, worker-protocol, timeout, trust, and restart-reconciliation invariants.
+  - Evidence: daemon restart cannot own or terminate accepted executor work; exact duplicate submission is idempotent; conflicting identity rejects; status lookup never authorizes blind resubmission.
+
+- [ ] T110B Implement persistent local executor service
+  - Depends on: T110A
+  - Outcome: `telchar executor` serves a bounded peer-authenticated Unix protocol and persists local execution identity/state before independently owned execution begins.
+  - Red: process restart or repeated submit creates duplicate work or loses status.
+  - Verify: real PostgreSQL and multi-process executor restart tests with exact duplicate, conflicting duplicate, status lookup, singleton contention, and ownership-loss fencing.
+  - Evidence: one registry row and one execution per idempotency key across service and daemon restart.
+
 - [ ] T111 Recover backend-pending attempt
-  - Depends on: T104
+  - Depends on: T104, T110B
   - Outcome: daemon reconciles known backend execution instead of creating another attempt.
   - Red: restart submits duplicate.
   - Verify: restart/reconciliation test with real local execution registry.
