@@ -670,6 +670,134 @@ fn backend_pending_attempt_transitions_to_running_atomically() {
 }
 
 #[test]
+fn running_attempt_transitions_to_collecting_without_terminal_success() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "collecting-request",
+        "/nix/store/11111111111111111111111111111111-collecting.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "collecting-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "collecting-request",
+        "/nix/store/11111111111111111111111111111111-collecting.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "collecting-request",
+        &[(
+            "collecting-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "collecting-request")
+        .expect("request queues");
+    telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "collecting-request",
+        "collecting-attempt",
+        1,
+        "collecting-request:1",
+        "local",
+        "collecting-reservation",
+        2,
+    )
+    .expect("request dispatches");
+    telchar::persistence::record_backend_submission(
+        fixture.url(),
+        "collecting-attempt",
+        "backend-execution-collecting",
+    )
+    .expect("submission persists");
+    let running = telchar::persistence::record_backend_running(fixture.url(), "collecting-attempt")
+        .expect("running state persists");
+
+    let collecting =
+        telchar::persistence::record_backend_completed(fixture.url(), "collecting-attempt")
+            .expect("collecting state persists");
+    assert_eq!(
+        collecting.request.queue_state,
+        telchar::persistence::BuildQueueState::Collecting
+    );
+    assert_eq!(
+        collecting.attempt.state,
+        telchar::persistence::ExecutionAttemptState::Collecting
+    );
+    assert!(collecting
+        .attempt
+        .collecting_at
+        .is_some_and(|collecting_at| {
+            running
+                .attempt
+                .started_at
+                .is_some_and(|started_at| collecting_at >= started_at)
+        }));
+    assert!(collecting.attempt.completed_at.is_none());
+    assert_eq!(
+        collecting.reservation.phase,
+        telchar::persistence::CapacityReservationPhase::Collecting
+    );
+    assert_eq!(collecting.reservation.units, 2);
+    assert!(collecting.reservation.released_at.is_none());
+    assert!(
+        telchar::persistence::read_execution_outcome(fixture.url(), "collecting-attempt")
+            .expect("outcome reads")
+            .is_none()
+    );
+    assert_eq!(
+        telchar::persistence::record_backend_completed(fixture.url(), "collecting-attempt")
+            .expect_err("collection transition cannot repeat")
+            .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+
+    let mut client = fixture.connect();
+    client
+        .execute(
+            "UPDATE capacity_reservations SET released_at = transaction_timestamp() WHERE reservation_id = 'collecting-reservation'",
+            &[],
+        )
+        .expect("reservation releases for fault fixture");
+    client
+        .execute(
+            "UPDATE build_requests SET queue_state = 'running' WHERE request_id = 'collecting-request'",
+            &[],
+        )
+        .expect("request resets for fault fixture");
+    client
+        .execute(
+            "UPDATE execution_attempts SET state = 'running', collecting_at = NULL WHERE attempt_id = 'collecting-attempt'",
+            &[],
+        )
+        .expect("attempt resets for fault fixture");
+    assert_eq!(
+        telchar::persistence::record_backend_completed(fixture.url(), "collecting-attempt")
+            .expect_err("missing reservation rejects collection transition")
+            .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+    let attempt = telchar::persistence::read_execution_attempt(fixture.url(), "collecting-attempt")
+        .expect("attempt reads")
+        .expect("attempt exists");
+    assert_eq!(
+        attempt.state,
+        telchar::persistence::ExecutionAttemptState::Running
+    );
+    assert!(attempt.collecting_at.is_none());
+    assert!(attempt.completed_at.is_none());
+}
+
+#[test]
 fn dispatch_transaction_rolls_back_when_capacity_reservation_conflicts() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
