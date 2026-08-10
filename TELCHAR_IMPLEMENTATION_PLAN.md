@@ -1215,12 +1215,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL success, duplicate-transition, missing-active-reservation rollback, and absent-terminal-outcome cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: `collecting_at` is monotonic after `started_at`, `completed_at` remains absent, no execution outcome exists, reservation units remain active, and failed preconditions leave the attempt running.
 
-- [ ] T107 Transition collecting attempt to terminal success
+- [x] T107 Transition collecting attempt to terminal success
   - Depends on: T106
-  - Outcome: verified output and result metadata atomically complete attempt/request.
-  - Red: success without output lease/metadata succeeds.
-  - Verify: success transaction test.
-  - Evidence: all terminal records.
+  - Outcome: one PostgreSQL transaction requires active request output leases and bounded nonempty result metadata, releases collecting capacity, creates the immutable success outcome, and completes both attempt and request.
+  - Red: the focused test failed to compile because no terminal-success operation or persisted result metadata existed; the first implementation exposed the PostgreSQL `jsonb` parameter type boundary and was corrected to an explicit text-to-jsonb cast.
+  - Verify: real PostgreSQL missing-output-lease, missing-metadata, success, immutable-replacement, active-output-retention, and terminal-record tests; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: request `completed`, attempt `succeeded` with monotonic `completed_at`, immutable `succeeded` outcome plus exact bounded JSON metadata, released capacity reservation, and still-active output lease commit together.
 
 - [ ] T108 Transition attempt to terminal failure
   - Depends on: T103
