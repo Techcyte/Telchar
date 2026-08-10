@@ -1330,11 +1330,12 @@ Evidence: paths and output facts to record
   - Verify: concurrent unique-path and overflow persistence tests, full 79-test PostgreSQL suite, closure/config/deployment/frontend suites, all-target compilation, clippy, formatting, and diagnostics.
   - Evidence: two concurrent leases for one six-byte path both commit while global retained bytes remain six; two concurrent distinct six-byte paths yield exactly one committed lease and one `capacity` rejection; path-size disagreement conflicts; migration backfills historical derivation/input leases conservatively.
 
-- [ ] T119 Enforce per-quota-subject retained-byte limit
+- [ ] T119 Enforce per-quota-subject retained-byte limit — deferred post-MVP
   - Depends on: T116, T118
-  - Outcome: credentials mapped to same subject share transfer/storage budget.
-  - Red: two-key fixture bypasses limit.
-  - Verify: mapped-credential integration test.
+  - Outcome: optional multi-tenant policy allows credentials mapped to one subject to share a retained-storage budget.
+  - Rationale: internal company and home-lab deployments need global resource protection, not per-person storage quotas. T118 supplies the MVP safety boundary.
+  - Red: two-key fixture bypasses an explicitly configured subject limit.
+  - Verify: mapped-credential integration test if multi-tenant quotas become a requirement.
   - Evidence: shared accounting.
 
 - [ ] T120 Enforce global queued request limit
@@ -1344,11 +1345,12 @@ Evidence: paths and output facts to record
   - Verify: queue limit test.
   - Evidence: accepted/rejected request IDs.
 
-- [ ] T121 Enforce per-quota-subject queued limit
+- [ ] T121 Enforce per-quota-subject queued limit — deferred post-MVP
   - Depends on: T116, T120
-  - Outcome: mapped credentials share queued quota.
-  - Red: second credential bypasses queue limit.
-  - Verify: real multi-key request test.
+  - Outcome: optional multi-tenant policy allows mapped credentials to share a queued-request quota.
+  - Rationale: the MVP requires one global queue safety bound, not per-person queue allocation.
+  - Red: second credential bypasses an explicitly configured subject limit.
+  - Verify: real multi-key request test if multi-tenant quotas become a requirement.
   - Evidence: shared count.
 
 - [ ] T122 Enforce global dispatching limit
@@ -1379,11 +1381,12 @@ Evidence: paths and output facts to record
   - Verify: concurrent collection test.
   - Evidence: maximum observed and queued remainder.
 
-- [ ] T125 Enforce per-quota-subject state limits
+- [ ] T125 Enforce per-quota-subject state limits — deferred post-MVP
   - Depends on: T116, T122, T123, T124, T124A
-  - Outcome: separate configured subject limits apply to queued, dispatching, backend-pending, running, and collecting states without multi-key bypass.
-  - Red: mapped credentials exceed any state-specific limit.
-  - Verify: concurrent mapped-credential tests for every state.
+  - Outcome: optional multi-tenant policy applies subject limits to queued, dispatching, backend-pending, running, and collecting states.
+  - Rationale: global lifecycle capacity limits protect an internal company or home-lab deployment without per-person allocation policy.
+  - Red: mapped credentials exceed an explicitly configured state-specific subject limit.
+  - Verify: concurrent mapped-credential tests if multi-tenant quotas become a requirement.
   - Evidence: per-state configured and observed counts.
 
 ### Deterministic scheduler
@@ -1570,8 +1573,8 @@ Evidence: paths and output facts to record
 ### Gate 4 acceptance
 
 - [ ] T151 Verify Gate 4 durable scheduling
-  - Depends on: T109, T110, T111, T112, T113, T119, T124A, T125, T129, T130, T133, T134, T136, T138, T139, T143, T150
-  - Outcome: concurrent real sessions obey quotas and fairness; restart recovery avoids duplicate submission; audit and metrics remain coherent.
+  - Depends on: T109, T110, T111, T112, T113, T120, T124A, T129, T130, T133, T136, T138, T139, T143, T150
+  - Outcome: concurrent real sessions obey global safety limits; restart recovery avoids duplicate submission; audit and metrics remain coherent. Per-subject quotas and fairness are post-MVP policy.
   - Red: gate script reports missing state or concurrency evidence.
   - Verify: durable-state, scheduler, concurrency, restart, CLI, metrics, and audit suites.
   - Evidence: exact commands and pristine output.
