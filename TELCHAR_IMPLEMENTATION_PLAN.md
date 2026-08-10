@@ -1288,12 +1288,12 @@ Evidence: paths and output facts to record
 
 ### Identity and admission
 
-- [ ] T114 Persist credential identity
+- [x] T114 Persist credential identity
   - Depends on: T049, T096
-  - Outcome: credential ID and authentication authority are durable audit fields.
-  - Red: round-trip test fails.
-  - Verify: identity persistence test.
-  - Evidence: key and certificate cases.
+  - Outcome: normalized credential ID and closed OpenSSH authentication authority are immutable protocol-session audit fields; migration 7 preserves historical sessions as an explicit nullable pair rather than fabricating attribution.
+  - Red: the protocol-session round-trip test failed because the persistence API, schema, and read model had no credential fields or authentication-authority type.
+  - Verify: serial real-PostgreSQL persistence suite, migration-prefix/restart/concurrency tests, public-key and certificate round trips, malformed-pair fail-closed tests, compile, clippy, formatting, and diagnostics.
+  - Evidence: new sessions persist `ssh-pubkey:...` with `openssh-public-key` or `ssh-cert:...` with `openssh-certificate`; historical sessions retain a paired null identity; empty, oversized, unsupported, mismatched, and partial identities reject.
 
 - [ ] T115 Map credential to audit subject
   - Depends on: T114
