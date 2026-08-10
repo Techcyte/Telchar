@@ -1302,12 +1302,12 @@ Evidence: paths and output facts to record
   - Verify: service-config, deployment-config, identity, IPC frontend, executor service, and executor execution suites; all-target compilation, clippy, formatting, and diagnostics.
   - Evidence: unknown fields, unreadable explicit files, non-Unicode overrides, unsafe paths, invalid bounds, malformed mappings, and empty mapping entries fail closed; daemon, executor, and frontend consume one merged configuration; a real frontend/daemon process persists mapped audit and quota subjects.
 
-- [ ] T115 Map credential to audit subject
+- [x] T115 Map credential to audit subject
   - Depends on: T114A
-  - Outcome: configured mapping selects stable audit subject with explicit fallback.
-  - Red: table-driven mapping test fails.
-  - Verify: mapping tests.
-  - Evidence: mapped/unmapped cases.
+  - Outcome: exact normalized credential-ID lookup selects a bounded configured audit subject; an unmapped public key falls back to its authenticated fingerprint and an unmapped certificate falls back to its first authenticated principal.
+  - Red: the frontend integration test failed before core configuration and credential mapping existed.
+  - Verify: identity table tests, strict service-config mapping tests, and real frontend/daemon process persistence test.
+  - Evidence: mapped public-key ingress persists the configured stable audit subject; unmapped public-key and certificate normalization retain deterministic authenticated fallbacks; unsupported, empty, oversized, and empty-entry mappings fail closed.
 
 - [ ] T116 Map credential to quota subject
   - Depends on: T114
