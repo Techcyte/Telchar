@@ -1323,12 +1323,12 @@ Evidence: paths and output facts to record
   - Verify: real concurrent OpenSSH process test with PostgreSQL session-state evidence, full OpenSSH ingress suite, compile, clippy, formatting, and diagnostics.
   - Evidence: with `ipc.maximum_sessions = 1`, the first SSH session is open, the second exits unsuccessfully without creating another open protocol session, closing the first reduces the open count to zero, and a third SSH session succeeds.
 
-- [ ] T118 Enforce global retained-byte limit
-  - Depends on: T069, T073
-  - Outcome: aggregate retained inputs cannot exceed configured budget.
-  - Red: concurrent uploads exceed budget.
-  - Verify: retained-byte concurrency test.
-  - Evidence: bytes and rejection.
+- [x] T118 Enforce global retained-byte limit
+  - Depends on: T069, T073, T114A
+  - Outcome: migration 8 records positive authoritative NAR sizes on derivation and input lease obligations; `deployment.maximum_retained_input_bytes` and `TELCHAR_MAX_RETAINED_INPUT_BYTES` bound the sum of unique active retained gateway-store paths, with exact duplicate paths charged once globally.
+  - Red: concurrent real-PostgreSQL lease acquisition admitted two distinct six-byte paths against a six-byte budget because no durable size or serialized budget check existed.
+  - Verify: concurrent unique-path and overflow persistence tests, full 79-test PostgreSQL suite, closure/config/deployment/frontend suites, all-target compilation, clippy, formatting, and diagnostics.
+  - Evidence: two concurrent leases for one six-byte path both commit while global retained bytes remain six; two concurrent distinct six-byte paths yield exactly one committed lease and one `capacity` rejection; path-size disagreement conflicts; migration backfills historical derivation/input leases conservatively.
 
 - [ ] T119 Enforce per-quota-subject retained-byte limit
   - Depends on: T116, T118
