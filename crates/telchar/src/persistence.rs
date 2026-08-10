@@ -433,6 +433,7 @@ pub struct ExecutionAttempt {
 pub enum CapacityReservationPhase {
     Dispatching,
     BackendPending,
+    Running,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -451,6 +452,80 @@ pub struct DispatchedBuildRequest {
     pub request: BuildRequestState,
     pub attempt: ExecutionAttempt,
     pub reservation: CapacityReservation,
+}
+
+pub fn record_backend_running(
+    database_url: &str,
+    attempt_id: &str,
+) -> Result<DispatchedBuildRequest, ExecutionAttemptError> {
+    validate_execution_attempt_component(database_url, attempt_id)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let attempt_row = transaction
+        .query_opt(
+            "SELECT attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at FROM execution_attempts WHERE attempt_id = $1 FOR UPDATE",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let pending_attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    if pending_attempt.state != ExecutionAttemptState::BackendPending {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let request_row = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&pending_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    if request.queue_state != BuildQueueState::BackendPending {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let reservation_row = transaction
+        .query_opt(
+            "UPDATE capacity_reservations SET phase = 'running' WHERE attempt_id = $1 AND phase = 'backend-pending' AND released_at IS NULL RETURNING reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at",
+            &[&attempt_id],
+        )
+        .map_err(map_execution_attempt_database_error)?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let reservation = decode_capacity_reservation(&reservation_row)?;
+    let attempt_row = transaction
+        .query_one(
+            "UPDATE execution_attempts SET state = 'running', started_at = transaction_timestamp() WHERE attempt_id = $1 AND state = 'backend-pending' AND backend_execution_id IS NOT NULL AND submitted_at IS NOT NULL AND started_at IS NULL RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    let request_row = transaction
+        .query_one(
+            "UPDATE build_requests SET queue_state = 'running' WHERE request_id = $1 AND queue_state = 'backend-pending' RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&pending_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.running",
+        operation = "record_backend_running",
+        request_state = "running",
+        attempt_state = "running",
+        reservation_phase = "running",
+        units = reservation.units
+    );
+    Ok(DispatchedBuildRequest {
+        request,
+        attempt,
+        reservation,
+    })
 }
 
 pub fn record_backend_submission(
@@ -663,6 +738,7 @@ fn decode_capacity_reservation(row: &Row) -> Result<CapacityReservation, Executi
     let phase = match phase.as_str() {
         "dispatching" => CapacityReservationPhase::Dispatching,
         "backend-pending" => CapacityReservationPhase::BackendPending,
+        "running" => CapacityReservationPhase::Running,
         _ => return Err(ExecutionAttemptError(ExecutionAttemptFailure::Query)),
     };
     Ok(CapacityReservation {
