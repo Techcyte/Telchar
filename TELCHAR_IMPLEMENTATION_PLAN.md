@@ -1194,12 +1194,12 @@ Evidence: paths and output facts to record
   - Verify: concurrent dispatch and reservation-conflict rollback tests against real PostgreSQL; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: two concurrent dispatchers produce one winner and one typed invalid-state result, exactly one active attempt and reservation persist, and reservation conflict rolls back both the attempt and request transition.
 
-- [ ] T104 Transition dispatching attempt to backend-pending
+- [x] T104 Transition dispatching attempt to backend-pending
   - Depends on: T103
-  - Outcome: backend execution ID persists with attempt.
-  - Red: state/ID partial write appears.
-  - Verify: transition transaction test.
-  - Evidence: atomic row state.
+  - Outcome: one PostgreSQL transaction locks the dispatching attempt and request, persists the bounded backend execution ID and submission timestamp, moves the active reservation to backend-pending, and advances both lifecycle states.
+  - Red: the focused test failed to compile because no backend-submission transition or backend-pending capacity phase existed.
+  - Verify: real PostgreSQL success, duplicate-transition, and missing-active-reservation rollback cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: attempt ID/state/timestamp, request state, and reservation phase commit together; replacement submission rejects; reservation precondition failure leaves request and attempt dispatching without a backend execution ID.
 
 - [ ] T105 Transition pending attempt to running
   - Depends on: T104
