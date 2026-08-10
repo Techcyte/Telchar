@@ -1259,10 +1259,10 @@ Evidence: paths and output facts to record
 
 - [x] T110B Implement persistent local executor service
   - Depends on: T110A
-  - Outcome: `telchar executor` holds a distinct fixed PostgreSQL advisory lock, serves a 1 MiB bounded peer-UID-authenticated Unix submit/status protocol, and persists immutable local backend identity plus accepted state before responding.
-  - Red: persistence tests failed to compile without the registry types/operations, and process tests had no executor command or durable status boundary.
-  - Verify: real PostgreSQL exact/conflicting duplicate and restart tests; multi-process service restart, status lookup, and singleton contention; full persistence/executor-service suites; all Telchar targets; clippy; formatting; diagnostics.
-  - Evidence: exact submission is idempotent, conflicting identity/specification rejects, replacement service reads the same accepted execution, contended service never creates its socket, and exactly one registry row persists.
+  - Outcome: `telchar executor` holds a distinct fixed PostgreSQL advisory lock, serves a 1 MiB bounded peer-UID-authenticated Unix submit/status protocol, persists immutable local backend identity before responding, validates the typed execution specification against deployment policy, and durably marks accepted work running before independently owning backend execution after submitter disconnect.
+  - Red: persistence tests failed to compile without registry operations; process tests had no executor command or durable status boundary; the first execution-ownership test remained accepted because submit did not start independently owned work.
+  - Verify: real PostgreSQL exact/conflicting duplicate, accepted-to-running, and restart tests; multi-process service restart, status lookup, singleton contention, and submitter-disconnect execution ownership; full persistence/executor-service/executor-execution suites; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: exact submission is idempotent, conflicting identity/specification rejects, accepted state advances once to running, submit response is independent of backend duration, work remains executor-owned after the connection closes, replacement service reads durable state, contended service never creates its socket, and exactly one registry row persists.
 
 - [x] T111 Recover backend-pending attempt
   - Depends on: T104, T110B
