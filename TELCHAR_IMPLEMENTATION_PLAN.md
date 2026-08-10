@@ -1229,12 +1229,12 @@ Evidence: paths and output facts to record
   - Verify: ADR review against `telchar-design.md` failure domains and later retry/reconciliation tasks.
   - Evidence: classification describes immutable terminal history; backend observations remain distinct; no class itself authorizes retry, resubmission, or reconciliation.
 
-- [ ] T108 Transition attempt to terminal failure
+- [x] T108 Transition attempt to terminal failure
   - Depends on: T107A
-  - Outcome: failure classification and timing persist immutably.
-  - Red: missing classification accepted.
-  - Verify: failure transition tests.
-  - Evidence: supported classifications.
+  - Outcome: one PostgreSQL transaction terminates a dispatching, backend-pending, running, or collecting attempt using the closed failure vocabulary, bounded structured metadata, a monotonic completion timestamp, released active capacity, and matching failed request state.
+  - Red: the focused test failed to compile because no terminal-failure operation existed.
+  - Verify: real PostgreSQL missing/unsupported classification, supported-class vocabulary, successful dispatching failure, immutable replacement, terminal timestamps, outcome metadata, and capacity-release tests; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: classification and metadata are immutable, request/attempt/outcome/reservation commit together, terminal attempts reject replacement, and classification records observed failure domain without granting retry authority.
 
 - [ ] T109 Recover queued requests after daemon restart
   - Depends on: T102
