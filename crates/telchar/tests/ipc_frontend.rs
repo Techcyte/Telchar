@@ -107,6 +107,83 @@ quota_subject = "shared-build-farm"
 }
 
 #[test]
+fn frontend_maps_multiple_credentials_to_one_quota_subject() {
+    let fixture = Fixture::start_persistent(1_000);
+    let config = fixture.root.join("shared-quota.toml");
+    fs::write(
+        &config,
+        r#"
+[identity.credentials."ssh-pubkey:SHA256:first"]
+audit_subject = "first-owner"
+quota_subject = "shared-build-farm"
+
+[identity.credentials."ssh-pubkey:SHA256:second"]
+audit_subject = "second-owner"
+quota_subject = "shared-build-farm"
+"#,
+    )
+    .expect("frontend configuration writes");
+
+    for fingerprint in ["SHA256:first", "SHA256:second"] {
+        let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .arg("serve-stdio")
+            .env("TELCHAR_CONFIG", &config)
+            .env("TELCHAR_IPC_SOCKET", &fixture.socket)
+            .env("TELCHAR_AUTHENTICATED_KEY", fingerprint)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("frontend starts");
+        complete_handshake(&mut frontend);
+    }
+
+    let sessions = fixture
+        .database
+        .connect()
+        .query(
+            "SELECT credential_id, quota_subject FROM protocol_sessions ORDER BY credential_id",
+            &[],
+        )
+        .expect("sessions read");
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(
+        sessions[0].get::<_, Option<String>>(0).as_deref(),
+        Some("ssh-pubkey:SHA256:first")
+    );
+    assert_eq!(sessions[0].get::<_, String>(1), "shared-build-farm");
+    assert_eq!(
+        sessions[1].get::<_, Option<String>>(0).as_deref(),
+        Some("ssh-pubkey:SHA256:second")
+    );
+    assert_eq!(sessions[1].get::<_, String>(1), "shared-build-farm");
+    fixture.stop();
+}
+
+#[test]
+fn frontend_uses_credential_id_as_unmapped_quota_subject() {
+    let fixture = Fixture::start();
+    let mut frontend = fixture.spawn_frontend();
+    complete_handshake(&mut frontend);
+
+    let sessions = fixture
+        .database
+        .connect()
+        .query(
+            "SELECT credential_id, quota_subject FROM protocol_sessions",
+            &[],
+        )
+        .expect("sessions read");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].get::<_, Option<String>>(0).as_deref(),
+        Some("ssh-pubkey:SHA256:fixture")
+    );
+    assert_eq!(sessions[0].get::<_, String>(1), "ssh-pubkey:SHA256:fixture");
+    fixture.finish_successfully();
+}
+
+#[test]
 fn daemon_persists_authenticated_session_before_worker_handshake_and_closes_it_after_completion() {
     let fixture = Fixture::start();
     let session_id = "durable-session";

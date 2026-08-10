@@ -52,6 +52,10 @@ maximum_sessions = 32
 [identity.credentials."ssh-pubkey:SHA256:abc"]
 audit_subject = "travis"
 quota_subject = "engineering"
+
+[identity.credentials."ssh-pubkey:SHA256:def"]
+audit_subject = "automation"
+quota_subject = "engineering"
 "#,
             database_url_file.display()
         ),
@@ -85,6 +89,11 @@ quota_subject = "engineering"
         .expect("credential mapping exists");
     assert_eq!(mapping.audit_subject.as_deref(), Some("travis"));
     assert_eq!(mapping.quota_subject.as_deref(), Some("engineering"));
+    let second_mapping = config
+        .credential_mapping("ssh-pubkey:SHA256:def")
+        .expect("second credential mapping exists");
+    assert_eq!(second_mapping.audit_subject.as_deref(), Some("automation"));
+    assert_eq!(second_mapping.quota_subject.as_deref(), Some("engineering"));
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
