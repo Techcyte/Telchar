@@ -19,12 +19,10 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
         .output()
         .expect("SSH command runs");
 
-    assert!(
-        !output
-            .stdout
-            .windows(b"arbitrary-command".len())
-            .any(|window| window == b"arbitrary-command")
-    );
+    assert!(!output
+        .stdout
+        .windows(b"arbitrary-command".len())
+        .any(|window| window == b"arbitrary-command"));
     assert!(
         fs::read_to_string(fixture.root.join("forced-command-output"))
             .expect("forced command evidence reads")
@@ -221,6 +219,64 @@ fn ssh_pty_allocation_is_rejected() {
 }
 
 #[test]
+fn concurrent_openssh_sessions_obey_global_limit_and_release_capacity() {
+    let fixture = Fixture::start_with_maximum_sessions(1);
+    let mut first = fixture
+        .ssh_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("first SSH session starts");
+    let first_input = first.stdin.take().expect("first SSH stdin");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.open_protocol_session_count() != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "first session did not become active"
+        );
+        assert!(
+            first.try_wait().expect("first SSH status").is_none(),
+            "first SSH session exited before admission evidence"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let second = fixture
+        .ssh_command()
+        .stdin(Stdio::null())
+        .output()
+        .expect("second SSH session runs");
+    assert!(
+        !second.status.success(),
+        "second SSH session exceeded limit"
+    );
+    assert_eq!(fixture.open_protocol_session_count(), 1);
+
+    drop(first_input);
+    assert!(first.wait().expect("first SSH session exits").success());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.open_protocol_session_count() != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "first session did not release capacity"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let third = fixture
+        .ssh_command()
+        .stdin(Stdio::null())
+        .output()
+        .expect("third SSH session runs");
+    assert!(
+        third.status.success(),
+        "released capacity was not reusable: {third:?}"
+    );
+    fixture.finish();
+}
+
+#[test]
 fn pinned_nix_completes_handshake_through_real_openssh_and_daemon() {
     let fixture = Fixture::start();
     let output = fixture
@@ -250,11 +306,15 @@ struct Fixture {
     daemon: Child,
     sshd: Child,
     nix: PathBuf,
-    _database: PostgresFixture,
+    database: PostgresFixture,
 }
 
 impl Fixture {
     fn start() -> Self {
+        Self::start_with_maximum_sessions(64)
+    }
+
+    fn start_with_maximum_sessions(maximum_sessions: usize) -> Self {
         let root = std::env::temp_dir().join(format!(
             "telchar-openssh-integration-{}-{}",
             std::process::id(),
@@ -271,6 +331,7 @@ impl Fixture {
             .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
             .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env("TELCHAR_SUPPORTED_FEATURES", "")
+            .env("TELCHAR_IPC_MAX_SESSIONS", maximum_sessions.to_string())
             .args([
                 "daemon",
                 "--socket",
@@ -402,8 +463,19 @@ exec env TELCHAR_IPC_SOCKET={} TELCHAR_AUTHENTICATED_KEY={} {} serve-stdio\n",
             daemon,
             sshd: sshd_child,
             nix,
-            _database: database,
+            database,
         }
+    }
+
+    fn open_protocol_session_count(&self) -> i64 {
+        self.database
+            .connect()
+            .query_one(
+                "SELECT count(*) FROM protocol_sessions WHERE state = 'open'",
+                &[],
+            )
+            .expect("open session count reads")
+            .get(0)
     }
 
     fn ssh_command(&self) -> Command {
@@ -476,13 +548,11 @@ fn which(name: &str) -> String {
 }
 
 fn run<const N: usize>(program: &Path, args: [&str; N]) {
-    assert!(
-        Command::new(program)
-            .args(args)
-            .status()
-            .expect("command runs")
-            .success()
-    );
+    assert!(Command::new(program)
+        .args(args)
+        .status()
+        .expect("command runs")
+        .success());
 }
 
 fn whoami() -> String {
