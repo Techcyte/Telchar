@@ -1309,12 +1309,12 @@ Evidence: paths and output facts to record
   - Verify: identity table tests, strict service-config mapping tests, and real frontend/daemon process persistence test.
   - Evidence: mapped public-key ingress persists the configured stable audit subject; unmapped public-key and certificate normalization retain deterministic authenticated fallbacks; unsupported, empty, oversized, and empty-entry mappings fail closed.
 
-- [ ] T116 Map credential to quota subject
-  - Depends on: T114
-  - Outcome: multiple credentials can share one quota subject; fallback is credential ID.
-  - Red: multiple-key quota test fails.
-  - Verify: mapping tests.
-  - Evidence: shared and fallback cases.
+- [x] T116 Map credential to quota subject
+  - Depends on: T114A
+  - Outcome: exact normalized credential-ID mappings allow multiple credentials to share one bounded quota subject; unmapped credentials fall back to their immutable credential ID.
+  - Red: the multiple-credential process test failed before core configuration supplied quota mappings to `serve-stdio`.
+  - Verify: strict service-config mapping test, identity fallback table, and real persistent frontend/daemon process tests.
+  - Evidence: two distinct authenticated public keys persist one shared quota subject, while an unmapped public key persists its `ssh-pubkey:...` credential ID as quota subject.
 
 - [ ] T117 Enforce global concurrent session limit
   - Depends on: T097
