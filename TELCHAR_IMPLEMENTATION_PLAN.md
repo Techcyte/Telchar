@@ -1264,12 +1264,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL exact/conflicting duplicate and restart tests; multi-process service restart, status lookup, and singleton contention; full persistence/executor-service suites; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: exact submission is idempotent, conflicting identity/specification rejects, replacement service reads the same accepted execution, contended service never creates its socket, and exactly one registry row persists.
 
-- [ ] T111 Recover backend-pending attempt
+- [x] T111 Recover backend-pending attempt
   - Depends on: T104, T110B
-  - Outcome: daemon reconciles known backend execution instead of creating another attempt.
-  - Red: restart submits duplicate.
-  - Verify: restart/reconciliation test with real local execution registry.
-  - Evidence: one backend execution.
+  - Outcome: startup reconstructs a bounded deterministic snapshot of local backend-pending attempts only when gateway request, attempt, active reservation, backend execution ID, idempotency key, and independently durable accepted executor-registry row agree.
+  - Red: the real PostgreSQL restart test failed to compile because no backend-pending recovery operation existed; repeated restart then established the required stable non-mutating recovery semantics.
+  - Verify: focused real PostgreSQL restart test and two Telchar daemon process starts; full serial persistence and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: the same attempt, backend execution ID, idempotency key, submission timestamp, and active reservation survive repeated recovery; exactly one attempt and one executor-registry row persist; recovery performs no submission or state mutation.
 
 - [ ] T112 Recover running attempt
   - Depends on: T105
