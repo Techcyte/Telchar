@@ -1127,12 +1127,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence request_attachment_completed_delivery_survives_restart --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile.
   - Evidence: attached, detached, and delivered cases; monotonic terminal timestamps; mutually exclusive detach/delivery timestamps; restart round trip; repeated/competing terminal transition rejection; explicit transaction boundary; redacted domain errors.
 
-- [ ] T100 Persist execution attempt
+- [x] T100 Persist execution attempt
   - Depends on: T098
-  - Outcome: attempt has stable ID, ordinal, idempotency key, backend, and state.
-  - Red: attempt schema test fails.
-  - Verify: attempt persistence test.
-  - Evidence: uniqueness constraints.
+  - Outcome: a typed domain operation atomically persists and reads an initial dispatching attempt with stable ID, request ordinal, idempotency key, backend, and bounded timestamps.
+  - Red: the real PostgreSQL attempt test failed to compile because no attempt types or operations existed.
+  - Verify: focused real PostgreSQL attempt round trip, full serial persistence suite, all Telchar targets, clippy, formatting, and diagnostics.
+  - Evidence: restart preservation, unique attempt ID, unique global idempotency key, unique request ordinal, one active attempt constraint, initial-state timestamp invariants, bounded validation, and redacted domain errors.
 
 - [ ] T101 Persist immutable terminal outcome
   - Depends on: T100

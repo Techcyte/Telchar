@@ -201,6 +201,79 @@ fn build_request_operation_rejects_unbounded_subjects_before_connection() {
 }
 
 #[test]
+fn execution_attempt_persists_stable_identity_and_dispatching_state() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "attempt-request",
+        "/nix/store/11111111111111111111111111111111-attempt.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+
+    let created = telchar::persistence::create_execution_attempt(
+        fixture.url(),
+        "attempt-1",
+        "attempt-request",
+        1,
+        "attempt-request:1",
+        "local",
+    )
+    .expect("attempt persists");
+
+    assert_eq!(created.attempt_id, "attempt-1");
+    assert_eq!(created.request_id, "attempt-request");
+    assert_eq!(created.ordinal, 1);
+    assert_eq!(created.idempotency_key, "attempt-request:1");
+    assert_eq!(created.backend, "local");
+    assert!(created.backend_execution_id.is_none());
+    assert_eq!(
+        created.state,
+        telchar::persistence::ExecutionAttemptState::Dispatching
+    );
+    assert!(created.submitted_at.is_none());
+    assert!(created.started_at.is_none());
+    assert!(created.collecting_at.is_none());
+    assert!(created.completed_at.is_none());
+    assert!(created.fenced_at.is_none());
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_execution_attempt(fixture.url(), "attempt-1")
+            .expect("attempt reads"),
+        Some(created.clone())
+    );
+    assert_eq!(
+        telchar::persistence::create_execution_attempt(
+            fixture.url(),
+            "attempt-2",
+            "attempt-request",
+            1,
+            "attempt-request:2",
+            "local",
+        )
+        .expect_err("ordinal is unique per request")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::Conflict
+    );
+    assert_eq!(
+        telchar::persistence::create_execution_attempt(
+            fixture.url(),
+            "attempt-2",
+            "attempt-request",
+            2,
+            "attempt-request:1",
+            "local",
+        )
+        .expect_err("idempotency key is globally unique")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::Conflict
+    );
+}
+
+#[test]
 fn request_attachment_persists_exact_pair_across_restart() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

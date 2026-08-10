@@ -306,6 +306,260 @@ fn decode_build_request(row: &Row) -> Result<BuildRequestState, BuildRequestFail
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExecutionAttemptFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Query,
+    Commit,
+}
+
+impl ExecutionAttemptFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecutionAttemptError(ExecutionAttemptFailure);
+
+impl ExecutionAttemptError {
+    pub fn failure(&self) -> ExecutionAttemptFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for ExecutionAttemptError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("execution attempt state operation failed")
+    }
+}
+
+impl std::error::Error for ExecutionAttemptError {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExecutionAttemptState {
+    Dispatching,
+    BackendPending,
+    Running,
+    Collecting,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExecutionAttempt {
+    pub attempt_id: String,
+    pub request_id: String,
+    pub ordinal: i32,
+    pub idempotency_key: String,
+    pub backend: String,
+    pub backend_execution_id: Option<String>,
+    pub state: ExecutionAttemptState,
+    pub created_at: SystemTime,
+    pub submitted_at: Option<SystemTime>,
+    pub started_at: Option<SystemTime>,
+    pub collecting_at: Option<SystemTime>,
+    pub completed_at: Option<SystemTime>,
+    pub fenced_at: Option<SystemTime>,
+}
+
+pub fn create_execution_attempt(
+    database_url: &str,
+    attempt_id: &str,
+    request_id: &str,
+    ordinal: i32,
+    idempotency_key: &str,
+    backend: &str,
+) -> Result<ExecutionAttempt, ExecutionAttemptError> {
+    validate_execution_attempt_inputs(
+        database_url,
+        attempt_id,
+        request_id,
+        ordinal,
+        idempotency_key,
+        backend,
+    )?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let row = transaction
+        .query_one(
+            "INSERT INTO execution_attempts (attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at) VALUES ($1, $2, $3, $4, $5, NULL, 'dispatching', transaction_timestamp()) RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+            &[&attempt_id, &request_id, &ordinal, &idempotency_key, &backend],
+        )
+        .map_err(|error| {
+            ExecutionAttemptError(if error.as_db_error().is_some_and(|database| {
+                database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION
+            }) {
+                ExecutionAttemptFailure::Conflict
+            } else {
+                ExecutionAttemptFailure::Query
+            })
+        })?;
+    let attempt = decode_execution_attempt(&row).map_err(ExecutionAttemptError)?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    Ok(attempt)
+}
+
+pub fn read_execution_attempt(
+    database_url: &str,
+    attempt_id: &str,
+) -> Result<Option<ExecutionAttempt>, ExecutionAttemptError> {
+    validate_execution_attempt_component(database_url, attempt_id)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at FROM execution_attempts WHERE attempt_id = $1",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .map(|row| decode_execution_attempt(&row).map_err(ExecutionAttemptError))
+        .transpose()
+}
+
+fn validate_execution_attempt_inputs(
+    database_url: &str,
+    attempt_id: &str,
+    request_id: &str,
+    ordinal: i32,
+    idempotency_key: &str,
+    backend: &str,
+) -> Result<(), ExecutionAttemptError> {
+    validate_execution_attempt_component(database_url, attempt_id)?;
+    if request_id.is_empty()
+        || request_id.len() > MAX_IPC_COMPONENT_BYTES
+        || ordinal <= 0
+        || idempotency_key.is_empty()
+        || idempotency_key.len() > MAX_IPC_COMPONENT_BYTES
+        || backend.is_empty()
+        || backend.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_execution_attempt_component(
+    database_url: &str,
+    value: &str,
+) -> Result<(), ExecutionAttemptError> {
+    if database_url.trim().is_empty() || value.is_empty() || value.len() > MAX_IPC_COMPONENT_BYTES {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    Ok(())
+}
+
+fn decode_execution_attempt(row: &Row) -> Result<ExecutionAttempt, ExecutionAttemptFailure> {
+    let attempt_id: String = row.try_get(0).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let request_id: String = row.try_get(1).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let ordinal: i32 = row.try_get(2).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let idempotency_key: String = row.try_get(3).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let backend: String = row.try_get(4).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let backend_execution_id: Option<String> =
+        row.try_get(5).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let state: String = row.try_get(6).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let created_at: SystemTime = row.try_get(7).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let submitted_at: Option<SystemTime> =
+        row.try_get(8).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let started_at: Option<SystemTime> =
+        row.try_get(9).map_err(|_| ExecutionAttemptFailure::Query)?;
+    let collecting_at: Option<SystemTime> = row
+        .try_get(10)
+        .map_err(|_| ExecutionAttemptFailure::Query)?;
+    let completed_at: Option<SystemTime> = row
+        .try_get(11)
+        .map_err(|_| ExecutionAttemptFailure::Query)?;
+    let fenced_at: Option<SystemTime> = row
+        .try_get(12)
+        .map_err(|_| ExecutionAttemptFailure::Query)?;
+    validate_execution_attempt_inputs(
+        "validated",
+        &attempt_id,
+        &request_id,
+        ordinal,
+        &idempotency_key,
+        &backend,
+    )
+    .map_err(|_| ExecutionAttemptFailure::Query)?;
+    if backend_execution_id
+        .as_ref()
+        .is_some_and(|value: &String| value.is_empty() || value.len() > MAX_IPC_COMPONENT_BYTES)
+    {
+        return Err(ExecutionAttemptFailure::Query);
+    }
+    let state = match state.as_str() {
+        "dispatching"
+            if submitted_at.is_none()
+                && started_at.is_none()
+                && collecting_at.is_none()
+                && completed_at.is_none() =>
+        {
+            ExecutionAttemptState::Dispatching
+        }
+        "backend-pending"
+            if submitted_at.is_some()
+                && started_at.is_none()
+                && collecting_at.is_none()
+                && completed_at.is_none() =>
+        {
+            ExecutionAttemptState::BackendPending
+        }
+        "running"
+            if submitted_at.is_some()
+                && started_at.is_some()
+                && collecting_at.is_none()
+                && completed_at.is_none() =>
+        {
+            ExecutionAttemptState::Running
+        }
+        "collecting"
+            if submitted_at.is_some()
+                && started_at.is_some()
+                && collecting_at.is_some()
+                && completed_at.is_none() =>
+        {
+            ExecutionAttemptState::Collecting
+        }
+        "succeeded" if completed_at.is_some() => ExecutionAttemptState::Succeeded,
+        "failed" if completed_at.is_some() => ExecutionAttemptState::Failed,
+        "cancelled" if completed_at.is_some() => ExecutionAttemptState::Cancelled,
+        _ => return Err(ExecutionAttemptFailure::Query),
+    };
+    Ok(ExecutionAttempt {
+        attempt_id,
+        request_id,
+        ordinal,
+        idempotency_key,
+        backend,
+        backend_execution_id,
+        state,
+        created_at,
+        submitted_at,
+        started_at,
+        collecting_at,
+        completed_at,
+        fenced_at,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RequestAttachmentFailure {
     Configuration,
     Connection,
