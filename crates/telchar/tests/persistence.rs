@@ -201,6 +201,100 @@ fn build_request_operation_rejects_unbounded_subjects_before_connection() {
 }
 
 #[test]
+fn accepted_request_queues_only_after_required_leases_are_durable() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let request = telchar::persistence::create_build_request(
+        fixture.url(),
+        "queue-request",
+        "/nix/store/11111111111111111111111111111111-queue.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+
+    assert_eq!(
+        telchar::persistence::queue_build_request(fixture.url(), "queue-request")
+            .expect_err("request without leases cannot queue")
+            .failure(),
+        telchar::persistence::BuildRequestFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::read_build_request(fixture.url(), "queue-request")
+            .expect("request reads"),
+        Some(request)
+    );
+
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "queue-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "queue-request",
+        "/nix/store/11111111111111111111111111111111-queue.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "queue-request",
+        &[(
+            "queue-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+
+    let queued = telchar::persistence::queue_build_request(fixture.url(), "queue-request")
+        .expect("request queues");
+    assert_eq!(
+        queued.queue_state,
+        telchar::persistence::BuildQueueState::Queued
+    );
+    assert!(queued
+        .queued_at
+        .is_some_and(|queued_at| queued_at >= queued.created_at));
+    assert_eq!(
+        telchar::persistence::queue_build_request(fixture.url(), "queue-request")
+            .expect_err("request cannot queue twice")
+            .failure(),
+        telchar::persistence::BuildRequestFailure::InvalidState
+    );
+
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "queue-rollback-request",
+        "/nix/store/33333333333333333333333333333333-queue-rollback.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("rollback request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "queue-rollback-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "queue-rollback-request",
+        "/nix/store/33333333333333333333333333333333-queue-rollback.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("rollback derivation lease persists");
+    assert_eq!(
+        telchar::persistence::queue_build_request(fixture.url(), "queue-rollback-request")
+            .expect_err("partial lease set cannot queue")
+            .failure(),
+        telchar::persistence::BuildRequestFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::read_build_request(fixture.url(), "queue-rollback-request")
+            .expect("rollback request reads")
+            .expect("rollback request exists")
+            .queue_state,
+        telchar::persistence::BuildQueueState::Accepted
+    );
+}
+
+#[test]
 fn execution_attempt_persists_stable_identity_and_dispatching_state() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

@@ -111,6 +111,7 @@ pub enum BuildRequestFailure {
     Configuration,
     Connection,
     Conflict,
+    InvalidState,
     Query,
     Commit,
 }
@@ -121,6 +122,7 @@ impl BuildRequestFailure {
             Self::Configuration => "configuration",
             Self::Connection => "connection",
             Self::Conflict => "conflict",
+            Self::InvalidState => "invalid_state",
             Self::Query => "query",
             Self::Commit => "commit",
         }
@@ -198,6 +200,60 @@ pub fn create_build_request(
             &[&request_id, &derivation_path, &system, &audit_subject, &quota_subject],
         )
         .map_err(|error| BuildRequestError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { BuildRequestFailure::Conflict } else { BuildRequestFailure::Query }))?;
+    let request = decode_build_request(&row).map_err(BuildRequestError)?;
+    transaction
+        .commit()
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Commit))?;
+    Ok(request)
+}
+
+pub fn queue_build_request(
+    database_url: &str,
+    request_id: &str,
+) -> Result<BuildRequestState, BuildRequestError> {
+    validate_build_request_id(request_id)?;
+    if database_url.trim().is_empty() {
+        return Err(BuildRequestError(BuildRequestFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let request = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?;
+    match request {
+        None => return Err(BuildRequestError(BuildRequestFailure::InvalidState)),
+        Some(row) => match decode_build_request(&row) {
+            Ok(BuildRequestState {
+                queue_state: BuildQueueState::Accepted,
+                ..
+            }) => {}
+            Ok(_) => return Err(BuildRequestError(BuildRequestFailure::InvalidState)),
+            Err(_) => return Err(BuildRequestError(BuildRequestFailure::Query)),
+        },
+    }
+    let active_required_leases: i64 = transaction
+        .query_one(
+            "SELECT count(DISTINCT purpose) FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 AND purpose IN ('derivation', 'input') AND state = 'active'",
+            &[&request_id],
+        )
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?
+        .try_get(0)
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?;
+    if active_required_leases != 2 {
+        return Err(BuildRequestError(BuildRequestFailure::InvalidState));
+    }
+    let row = transaction
+        .query_one(
+            "UPDATE build_requests SET queue_state = 'queued', queued_at = transaction_timestamp() WHERE request_id = $1 AND queue_state = 'accepted' RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&request_id],
+        )
+        .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?;
     let request = decode_build_request(&row).map_err(BuildRequestError)?;
     transaction
         .commit()

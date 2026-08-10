@@ -1180,12 +1180,12 @@ Evidence: paths and output facts to record
 
 ### State transitions and recovery
 
-- [ ] T102 Transition accepted request to queued
+- [x] T102 Transition accepted request to queued
   - Depends on: T098, T101D
-  - Outcome: transaction creates queue state only after request and leases are durable.
-  - Red: partial transaction fixture exposes queued request without leases.
-  - Verify: transaction fault test.
-  - Evidence: rollback and success cases.
+  - Outcome: a locked PostgreSQL transaction changes an accepted request to queued only when active request-owned derivation and input leases are both durable.
+  - Red: the real PostgreSQL test failed to compile because no queue transition or invalid-state classification existed.
+  - Verify: focused queue precondition/rollback test, full serial persistence suite, all Telchar targets, clippy, formatting, and diagnostics.
+  - Evidence: missing and partial lease sets leave the request accepted, complete required lease purposes produce one monotonic `queued_at`, repeated transitions reject, and the typed authoritative row returns only after commit.
 
 - [ ] T103 Transition queued request to dispatching
   - Depends on: T100, T102
