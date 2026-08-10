@@ -35,7 +35,12 @@ fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_executor() -> io::Result<()> {
-    let database_url = required_database_url()?;
+    let config =
+        telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
+    let database_url = config
+        .require_database_url()
+        .map_err(|_| invalid("database migration failed"))?
+        .to_owned();
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
     let _ownership =
@@ -47,7 +52,7 @@ fn run_executor() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
-    let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
+    let deployment = config.require_deployment()?.clone();
     let executor = Arc::new(Mutex::new(
         telchar::local_executor::executor_from_environment()?,
     ));
@@ -258,12 +263,15 @@ fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_frontend() -> io::Result<()> {
-    let socket = required_path("TELCHAR_IPC_SOCKET")?;
+    let config = telchar::config::ServiceConfig::load()?;
+    let socket = config.require_ipc_socket()?;
     let fingerprint = required_string("TELCHAR_AUTHENTICATED_KEY")?;
+    let credential_id = format!("ssh-pubkey:{fingerprint}");
+    let mapping = config.credential_mapping(&credential_id);
     let requester = normalize_requester(IdentityInput::PublicKey {
         fingerprint,
-        audit_subject: None,
-        quota_subject: None,
+        audit_subject: mapping.and_then(|mapping| mapping.audit_subject.clone()),
+        quota_subject: mapping.and_then(|mapping| mapping.quota_subject.clone()),
         source_address: None,
     })
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -307,12 +315,16 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_daemon() -> io::Result<()> {
-    let deployment = telchar::deployment::DeploymentConfig::from_environment()?;
-    let running_disconnect_policy =
-        telchar::deployment::RunningDisconnectPolicy::from_environment()?;
+    let config =
+        telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
+    let deployment = config.require_deployment()?.clone();
+    let running_disconnect_policy = config.running_disconnect_policy();
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
-    let database_url = required_database_url()?;
+    let database_url = config
+        .require_database_url()
+        .map_err(|_| invalid("database migration failed"))?
+        .to_owned();
     tracing::info!(
         event = "database.migration.started",
         latest_migration_version = 7_i64,
@@ -447,7 +459,7 @@ fn run_daemon() -> io::Result<()> {
     });
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
     listener.set_nonblocking(true)?;
-    let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
+    let maximum_sessions = config.maximum_ipc_sessions();
     let active_sessions = Arc::new(Mutex::new(0_usize));
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
@@ -766,15 +778,6 @@ fn required_path(name: &'static str) -> io::Result<PathBuf> {
         .ok_or_else(|| invalid("required frontend environment is absent"))
 }
 
-fn required_database_url() -> io::Result<String> {
-    let value =
-        std::env::var("TELCHAR_DATABASE_URL").map_err(|_| invalid("database migration failed"))?;
-    if value.trim().is_empty() {
-        return Err(invalid("database migration failed"));
-    }
-    Ok(value)
-}
-
 fn required_string(name: &'static str) -> io::Result<String> {
     std::env::var(name).map_err(|_| {
         let _ = name;
@@ -796,14 +799,6 @@ fn duration_from_env(name: &str, default_ms: u64) -> Duration {
         .and_then(|value| value.parse().ok())
         .map(Duration::from_millis)
         .unwrap_or(Duration::from_millis(default_ms))
-}
-
-fn usize_from_env(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
 }
 
 fn u32_from_env(name: &str, default: u32) -> u32 {

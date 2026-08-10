@@ -66,7 +66,7 @@ impl OutputRetention {
         self.duration.as_secs()
     }
 
-    fn parse(value: &str) -> io::Result<Self> {
+    pub(crate) fn parse(value: &str) -> io::Result<Self> {
         if value.is_empty()
             || value.starts_with('0')
             || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -147,6 +147,10 @@ impl DeploymentConfig {
 
     pub fn output_retention(&self) -> OutputRetention {
         self.output_retention
+    }
+
+    pub(crate) fn set_output_retention(&mut self, output_retention: OutputRetention) {
+        self.output_retention = output_retention;
     }
 }
 

@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 sha2 = "0.10"
 base64 = "0.22"
 postgres = "0.19"
+toml = "0.8"
 
 [dev-dependencies]
 opentelemetry-proto.workspace = true

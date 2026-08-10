@@ -1,4 +1,5 @@
 pub mod build_request;
+pub mod config;
 pub mod deployment;
 pub mod disk_reserve;
 pub mod executor_service;

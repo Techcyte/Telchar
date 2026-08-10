@@ -56,6 +56,57 @@ fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
 }
 
 #[test]
+fn frontend_applies_configured_identity_mapping() {
+    let fixture = Fixture::start();
+    let config = fixture.root.join("frontend.toml");
+    fs::write(
+        &config,
+        r#"
+[ipc]
+socket = "/unused/by-environment-override.sock"
+
+[identity.credentials."ssh-pubkey:SHA256:fixture"]
+audit_subject = "release-engineering"
+quota_subject = "shared-build-farm"
+"#,
+    )
+    .expect("frontend configuration writes");
+    let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_IPC_SOCKET", &fixture.socket)
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("frontend starts");
+
+    let mut input = frontend.stdin.take().expect("frontend stdin");
+    let mut output = frontend.stdout.take().expect("frontend stdout");
+    complete_worker_handshake(&mut input, &mut output);
+    drop(input);
+    assert!(frontend.wait().expect("frontend exits").success());
+
+    let sessions = fixture
+        .database
+        .connect()
+        .query(
+            "SELECT credential_id, audit_subject, quota_subject FROM protocol_sessions",
+            &[],
+        )
+        .expect("sessions read");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].get::<_, Option<String>>(0).as_deref(),
+        Some("ssh-pubkey:SHA256:fixture")
+    );
+    assert_eq!(sessions[0].get::<_, String>(1), "release-engineering");
+    assert_eq!(sessions[0].get::<_, String>(2), "shared-build-farm");
+    fixture.finish_successfully();
+}
+
+#[test]
 fn daemon_persists_authenticated_session_before_worker_handshake_and_closes_it_after_completion() {
     let fixture = Fixture::start();
     let session_id = "durable-session";
