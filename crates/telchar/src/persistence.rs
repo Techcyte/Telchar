@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use postgres::{Client, NoTls, Row};
 use sha2::{Digest, Sha256};
 
-use crate::ipc::{MAX_IPC_COMPONENT_BYTES, RequesterMetadata};
+use crate::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
 const MIGRATION_LEDGER_SQL: &str = "\
@@ -32,6 +32,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "output_retention",
         sql: include_str!("../migrations/0002_output_retention.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "execution_state",
+        sql: include_str!("../migrations/0003_execution_state.sql"),
     },
 ];
 
@@ -1737,20 +1742,16 @@ mod tests {
 
         assert_eq!(error.failure(), MigrationFailure::MigrationSql);
         let mut client = Client::connect(fixture.url(), NoTls).expect("test database reconnects");
-        assert!(
-            client
-                .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
-                .expect("table lookup succeeds")
-                .get::<_, Option<String>>(0)
-                .is_none()
-        );
-        assert!(
-            client
-                .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
-                .expect("ledger lookup succeeds")
-                .get::<_, Option<String>>(0)
-                .is_none()
-        );
+        assert!(client
+            .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
+            .expect("table lookup succeeds")
+            .get::<_, Option<String>>(0)
+            .is_none());
+        assert!(client
+            .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
+            .expect("ledger lookup succeeds")
+            .get::<_, Option<String>>(0)
+            .is_none());
     }
 
     #[test]

@@ -1099,12 +1099,12 @@ Evidence: paths and output facts to record
 
 ### Durable request model
 
-- [ ] T096 Extend PostgreSQL migrations for execution state
+- [x] T096 Extend PostgreSQL migrations for execution state
   - Depends on: T095H, T070A
-  - Outcome: ordered PostgreSQL migrations add attempts, outcomes, queue state, capacity reservations, and audit fields transactionally.
-  - Red: Gate 3 database cannot represent execution lifecycle.
-  - Verify: real PostgreSQL upgrade migration test from Gate 3 schema.
-  - Evidence: PostgreSQL version, old/new schema versions, and preserved rows.
+  - Outcome: ordered PostgreSQL migration 3 adds execution attempts, immutable-outcome storage, request queue state, capacity reservations, and bounded audit/quota fields transactionally.
+  - Red: the real Gate 3 migration prefix applied no pending migration and could not represent attempts, outcomes, queue state, or capacity reservations.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence execution_state_migration_upgrades_gate_three_rows --locked -- --exact --nocapture`; full serial persistence suite.
+  - Evidence: real PostgreSQL version, schema versions 2→3, version-3 checksum ledger row, preserved session/request/attachment/lease rows, completed Gate 3 request backfill, no fabricated attempts/outcomes/reservations, state/timestamp constraints, and partial unique indexes for active attempts and reservations.
 
 - [ ] T097 Harden protocol session state operation
   - Depends on: T096, T070B

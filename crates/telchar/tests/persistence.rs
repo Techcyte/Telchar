@@ -3,7 +3,7 @@ mod support;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use postgres::types::Type;
 use sha2::{Digest, Sha256};
@@ -27,11 +27,9 @@ fn requester_reference_is_deterministic_and_component_separated() {
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e"
     );
     assert_eq!(reference.len(), 64);
-    assert!(
-        reference
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    );
+    assert!(reference
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
     assert_ne!(
         telchar::persistence::requester_reference(&telchar::ipc::RequesterMetadata {
             credential_id: "ab".into(),
@@ -159,15 +157,13 @@ fn request_attachment_persists_exact_pair_across_restart() {
         .expect("attachment reads"),
         Some(attached.clone())
     );
-    assert!(
-        telchar::persistence::read_request_attachment(
-            fixture.url(),
-            &session.session_id,
-            "absent-request",
-        )
-        .expect("absent attachment reads")
-        .is_none()
-    );
+    assert!(telchar::persistence::read_request_attachment(
+        fixture.url(),
+        &session.session_id,
+        "absent-request",
+    )
+    .expect("absent attachment reads")
+    .is_none());
 
     fixture.restart();
 
@@ -331,11 +327,9 @@ fn request_attachment_detaches_once_without_mutating_references() {
         telchar::persistence::RequestAttachmentState::Detached
     );
     assert_eq!(detached.attached_at, attached.attached_at);
-    assert!(
-        detached
-            .detached_at
-            .is_some_and(|detached_at| detached_at >= attached.attached_at)
-    );
+    assert!(detached
+        .detached_at
+        .is_some_and(|detached_at| detached_at >= attached.attached_at));
     assert_eq!(
         telchar::persistence::detach_request(fixture.url(), "missing", "request")
             .expect_err("missing attachment rejects")
@@ -439,15 +433,13 @@ fn attach_rejects_malformed_referenced_session() {
         .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(
-        telchar::persistence::read_request_attachment(
-            fixture.url(),
-            "invalid-reference-session",
-            "invalid-reference-request",
-        )
-        .expect("attachment reads")
-        .is_none()
-    );
+    assert!(telchar::persistence::read_request_attachment(
+        fixture.url(),
+        "invalid-reference-session",
+        "invalid-reference-request",
+    )
+    .expect("attachment reads")
+    .is_none());
 }
 
 #[test]
@@ -480,15 +472,13 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
             .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(
-        telchar::persistence::read_request_attachment(
-            fixture.url(),
-            "failure-session",
-            "failure-request",
-        )
-        .expect("attachment reads")
-        .is_none()
-    );
+    assert!(telchar::persistence::read_request_attachment(
+        fixture.url(),
+        "failure-session",
+        "failure-request",
+    )
+    .expect("attachment reads")
+    .is_none());
     client
         .batch_execute("DROP TRIGGER reject_attachment_insert ON request_attachments; DROP FUNCTION reject_attachment_insert()")
         .expect("insert failure trigger removes");
@@ -784,11 +774,9 @@ fn close_protocol_session_persists_exactly_once() {
         closed.state,
         telchar::persistence::ProtocolSessionState::Closed
     );
-    assert!(
-        closed
-            .closed_at
-            .is_some_and(|closed_at| closed_at >= opened.created_at)
-    );
+    assert!(closed
+        .closed_at
+        .is_some_and(|closed_at| closed_at >= opened.created_at));
     assert_eq!(
         telchar::persistence::close_protocol_session(fixture.url(), "session-1")
             .expect_err("closed session does not close again")
@@ -1039,11 +1027,9 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         released.state,
         telchar::persistence::StoreLeaseState::Released
     );
-    assert!(
-        released
-            .released_at
-            .is_some_and(|at| at >= created.created_at)
-    );
+    assert!(released
+        .released_at
+        .is_some_and(|at| at >= created.created_at));
     assert_eq!(
         telchar::persistence::release_store_lease(fixture.url(), "release-lease")
             .expect_err("released lease does not release again")
@@ -1223,25 +1209,19 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
         );
     });
     let events = captured.events();
-    assert!(
-        events
-            .iter()
-            .any(|event| event.contains("database.store_lease.created")
-                && event.contains("operation=\"create\""))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| event.contains("database.store_lease.released")
-                && event.contains("operation=\"release\""))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| event.contains("database.store_lease.failed")
-                && event.contains("operation=\"create\"")
-                && event.contains("failure_class=\"configuration\""))
-    );
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.created")
+            && event.contains("operation=\"create\"")));
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.released")
+            && event.contains("operation=\"release\"")));
+    assert!(events
+        .iter()
+        .any(|event| event.contains("database.store_lease.failed")
+            && event.contains("operation=\"create\"")
+            && event.contains("failure_class=\"configuration\"")));
     for forbidden in [
         fixture.url(),
         "sensitive-url",
@@ -1424,19 +1404,25 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger.len(), 3);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
     assert_eq!(ledger[1].get::<_, i64>(0), 2);
     assert_eq!(ledger[1].get::<_, String>(1), "output_retention");
     assert_eq!(ledger[1].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[2].get::<_, i64>(0), 3);
+    assert_eq!(ledger[2].get::<_, String>(1), "execution_state");
+    assert_eq!(ledger[2].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
         "build_requests",
         "request_attachments",
         "store_leases",
+        "execution_attempts",
+        "execution_outcomes",
+        "capacity_reservations",
     ] {
         let row = client
             .query_one("SELECT to_regclass($1)::text", &[&table])
@@ -1496,7 +1482,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 1);
+    assert_eq!(outcome.applied_this_run, 2);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -1524,6 +1510,148 @@ fn output_retention_migration_backfills_version_one_rows() {
 }
 
 #[test]
+fn execution_state_migration_upgrades_gate_three_rows() {
+    let fixture = PostgresFixture::start();
+    let version_one_sql = include_str!("../migrations/0001_minimum_lifecycle.sql");
+    let version_two_sql = include_str!("../migrations/0002_output_retention.sql");
+    let version_one_checksum = Sha256::digest(version_one_sql.as_bytes()).to_vec();
+    let version_two_checksum = Sha256::digest(version_two_sql.as_bytes()).to_vec();
+    let mut client = fixture.connect();
+    client
+        .batch_execute(version_one_sql)
+        .expect("version one schema migrates");
+    client
+        .batch_execute(version_two_sql)
+        .expect("version two schema migrates");
+    client
+        .batch_execute(
+            "CREATE TABLE telchar_schema_migrations (
+                 version bigint PRIMARY KEY,
+                 name text NOT NULL UNIQUE,
+                 checksum bytea NOT NULL CHECK (octet_length(checksum) = 32),
+                 applied_at timestamptz NOT NULL DEFAULT now()
+             )",
+        )
+        .expect("migration ledger creates");
+    client
+        .execute(
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES
+             (1, 'minimum_lifecycle', $1),
+             (2, 'output_retention', $2)",
+            &[&version_one_checksum, &version_two_checksum],
+        )
+        .expect("Gate 3 ledger persists");
+    client
+        .batch_execute(
+            "INSERT INTO protocol_sessions (session_id, requester_reference, state) VALUES
+             ('gate-three-session', 'f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e', 'open');
+             INSERT INTO build_requests (request_id, derivation_path, system) VALUES
+             ('gate-three-request', '/nix/store/11111111111111111111111111111111-migration.drv', 'x86_64-linux');
+             INSERT INTO request_attachments (session_id, request_id, state) VALUES
+             ('gate-three-session', 'gate-three-request', 'attached');
+             INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state) VALUES
+             ('gate-three-lease', 'request', 'gate-three-request', '/nix/store/11111111111111111111111111111111-migration.drv', 'derivation', 'active');",
+        )
+        .expect("Gate 3 rows persist");
+    let postgres_version = client
+        .query_one("SHOW server_version_num", &[])
+        .expect("PostgreSQL version reads")
+        .get::<_, String>(0);
+    drop(client);
+
+    let outcome = telchar::persistence::migrate(fixture.url()).expect("execution state migrates");
+
+    assert!(postgres_version.parse::<u32>().expect("numeric version") >= 14_00_00);
+    assert_eq!(outcome.previously_applied, 2);
+    assert_eq!(outcome.applied_this_run, 1);
+    assert_eq!(outcome.resulting_version, 3);
+    let mut client = fixture.connect();
+    let ledger = client
+        .query_one(
+            "SELECT name, octet_length(checksum), applied_at IS NOT NULL
+             FROM telchar_schema_migrations WHERE version = 3",
+            &[],
+        )
+        .expect("execution migration ledger reads");
+    assert_eq!(ledger.get::<_, String>(0), "execution_state");
+    assert_eq!(ledger.get::<_, i32>(1), 32);
+    assert!(ledger.get::<_, bool>(2));
+    for table in [
+        "execution_attempts",
+        "execution_outcomes",
+        "capacity_reservations",
+    ] {
+        assert_eq!(
+            client
+                .query_one("SELECT to_regclass($1)::text", &[&table])
+                .expect("table lookup succeeds")
+                .get::<_, Option<String>>(0)
+                .as_deref(),
+            Some(table)
+        );
+    }
+    let request = client
+        .query_one(
+            "SELECT derivation_path, system, queue_state, queued_at, audit_subject, quota_subject
+             FROM build_requests WHERE request_id = 'gate-three-request'",
+            &[],
+        )
+        .expect("preserved request reads");
+    assert_eq!(
+        request.get::<_, String>(0),
+        "/nix/store/11111111111111111111111111111111-migration.drv"
+    );
+    assert_eq!(request.get::<_, String>(1), "x86_64-linux");
+    assert_eq!(request.get::<_, String>(2), "completed");
+    assert!(request.get::<_, Option<SystemTime>>(3).is_none());
+    assert_eq!(request.get::<_, String>(4), "gate-three");
+    assert_eq!(request.get::<_, String>(5), "gate-three");
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM protocol_sessions WHERE session_id = 'gate-three-session'",
+                &[],
+            )
+            .expect("session count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM request_attachments WHERE request_id = 'gate-three-request'",
+                &[],
+            )
+            .expect("attachment count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM store_leases WHERE owner_id = 'gate-three-request'",
+                &[],
+            )
+            .expect("lease count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    for table in [
+        "execution_attempts",
+        "execution_outcomes",
+        "capacity_reservations",
+    ] {
+        assert_eq!(
+            client
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .expect("execution table count reads")
+                .get::<_, i64>(0),
+            0
+        );
+    }
+}
+
+#[test]
 fn rerunning_an_exact_prefix_is_idempotent() {
     let fixture = PostgresFixture::start();
 
@@ -1531,8 +1659,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 2);
-    assert_eq!(second.previously_applied, 2);
+    assert_eq!(first.applied_this_run, 3);
+    assert_eq!(second.previously_applied, 3);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -1540,7 +1668,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        2
+        3
     );
 }
 
@@ -1572,7 +1700,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (3, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (4, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -1625,7 +1753,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 2);
+    assert_eq!(first.applied_this_run, 3);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -1633,7 +1761,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        2
+        3
     );
 }
 
@@ -1661,7 +1789,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        2
+        3
     );
     assert_eq!(
         fixture
@@ -1669,7 +1797,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        2
+        3
     );
 }
 
@@ -2120,11 +2248,14 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
             .collect::<Vec<_>>(),
         vec!["expiry-b", "expiry-c"]
     );
-    assert!(
-        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 256,)
-            .expect("released rows are not selected again")
-            .is_empty()
-    );
+    assert!(telchar::persistence::release_expired_request_output_leases(
+        fixture.url(),
+        now,
+        None,
+        256,
+    )
+    .expect("released rows are not selected again")
+    .is_empty());
 }
 
 #[test]
@@ -2147,16 +2278,14 @@ fn release_expired_output_leases_rejects_invalid_inputs_before_connection() {
 
 #[test]
 fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
-    assert!(
-        telchar::persistence::create_request_output_leases(
-            "postgresql://127.0.0.1:1/no-connection",
-            "output-empty-request",
-            Duration::from_secs(3_600),
-            &[],
-        )
-        .expect("empty output lease batch succeeds")
-        .is_empty()
-    );
+    assert!(telchar::persistence::create_request_output_leases(
+        "postgresql://127.0.0.1:1/no-connection",
+        "output-empty-request",
+        Duration::from_secs(3_600),
+        &[],
+    )
+    .expect("empty output lease batch succeeds")
+    .is_empty());
 
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -2633,11 +2762,9 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leas
     let first = telchar::persistence::read_released_request_leases_page(fixture.url(), None, 999)
         .expect("first page reads");
     assert_eq!(first.len(), 256);
-    assert!(
-        first
-            .windows(2)
-            .all(|window| window[0].lease_id < window[1].lease_id)
-    );
+    assert!(first
+        .windows(2)
+        .all(|window| window[0].lease_id < window[1].lease_id));
     assert!(first.iter().all(|lease| {
         lease.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
             && lease.state == telchar::persistence::StoreLeaseState::Released
