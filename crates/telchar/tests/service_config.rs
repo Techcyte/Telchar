@@ -15,6 +15,7 @@ const VARIABLES: &[&str] = &[
     "TELCHAR_SUPPORTED_FEATURES",
     "TELCHAR_RUNNING_DISCONNECT_POLICY",
     "TELCHAR_OUTPUT_RETENTION_SECONDS",
+    "TELCHAR_MAX_RETAINED_INPUT_BYTES",
     "TELCHAR_IPC_SOCKET",
     "TELCHAR_IPC_MAX_SESSIONS",
     "TELCHAR_IDENTITY_MAPPINGS_FILE",
@@ -41,6 +42,7 @@ system = "x86_64-linux"
 supported_features = ["kvm", "big-parallel"]
 running_disconnect_policy = "cancel-running"
 output_retention_seconds = 7200
+maximum_retained_input_bytes = 1048576
 
 [database]
 url_file = "{}"
@@ -75,6 +77,10 @@ quota_subject = "engineering"
         telchar::deployment::RunningDisconnectPolicy::CancelRunning
     );
     assert_eq!(config.deployment().output_retention().seconds(), 7200);
+    assert_eq!(
+        config.deployment().maximum_retained_input_bytes(),
+        1_048_576
+    );
     assert_eq!(
         config.database_url().expect("database configured"),
         "postgresql://telchar@localhost/telchar"
@@ -133,6 +139,7 @@ maximum_sessions = 8
         std::env::set_var("TELCHAR_SUPPORTED_FEATURES", "big-parallel,kvm");
         std::env::set_var("TELCHAR_RUNNING_DISCONNECT_POLICY", "cancel-running");
         std::env::set_var("TELCHAR_OUTPUT_RETENTION_SECONDS", "60");
+        std::env::set_var("TELCHAR_MAX_RETAINED_INPUT_BYTES", "2048");
         std::env::set_var("TELCHAR_IPC_SOCKET", "/run/from-environment.sock");
         std::env::set_var("TELCHAR_IPC_MAX_SESSIONS", "64");
     }
@@ -155,6 +162,7 @@ maximum_sessions = 8
         Some(Path::new("/run/from-environment.sock"))
     );
     assert_eq!(config.maximum_ipc_sessions(), 64);
+    assert_eq!(config.deployment().maximum_retained_input_bytes(), 2_048);
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
