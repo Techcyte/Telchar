@@ -1279,6 +1279,7 @@ Evidence: paths and output facts to record
   - Evidence: the same running attempt, backend execution, idempotency key, start timestamps, and active reservation survive repeated recovery; one attempt and one executor-registry row persist; no terminal outcome or duplicate execution is fabricated.
 
 - [ ] T113 Recover collecting attempt
+  - Approved prerequisite: terminal local executor state now atomically owns one immutable bounded result row, with idempotent identical writes and conflict rejection for changed terminal data.
   - Depends on: T106
   - Outcome: output collection resumes idempotently.
   - Red: restart duplicates or loses import.

@@ -35,7 +35,7 @@ failed
 cancelled
 ```
 
-Terminal states are immutable. State timestamps are monotonic. A service restart reconstructs accepted and running registry rows before accepting new submissions. Recovery never creates a second row or changes submission identity.
+Terminal states are immutable. State timestamps are monotonic. Each terminal transition atomically inserts one immutable `local_backend_execution_results` row and advances the registry row from `running` to its terminal state. The result row stores a closed classification and bounded object-valued metadata. Successful metadata contains only the build status and typed output name/path pairs; failed and cancelled metadata contains no raw diagnostics or logs. An identical repeated terminal write returns the existing result, while changed terminal state, classification, or metadata conflicts. A service restart reconstructs accepted and running registry rows before accepting new submissions. Recovery never creates a second row or changes submission identity.
 
 ## Local protocol
 
