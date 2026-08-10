@@ -135,12 +135,25 @@ impl ServiceConfig {
                 .map(|seconds| parse_retention(&seconds.to_string()))
                 .transpose()?,
         };
+        let maximum_retained_input_bytes =
+            match environment_string("TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
+                Some(value) => parse_positive_u64(&value, "retained input byte limit is invalid")?,
+                None => raw
+                    .deployment
+                    .as_ref()
+                    .and_then(|value| value.maximum_retained_input_bytes)
+                    .unwrap_or(crate::deployment::DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES),
+            };
+        if maximum_retained_input_bytes > i64::MAX as u64 {
+            return Err(invalid("retained input byte limit is invalid"));
+        }
         let deployment: Option<DeploymentConfig> = system
             .map(|system| {
                 let mut deployment = DeploymentConfig::parse(&system, &features)?;
                 if let Some(retention) = retention {
                     deployment.set_output_retention(retention);
                 }
+                deployment.set_maximum_retained_input_bytes(maximum_retained_input_bytes);
                 Ok::<DeploymentConfig, io::Error>(deployment)
             })
             .transpose()?;
@@ -217,6 +230,7 @@ struct DeploymentSection {
     supported_features: Option<Vec<String>>,
     running_disconnect_policy: Option<String>,
     output_retention_seconds: Option<u64>,
+    maximum_retained_input_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -338,6 +352,16 @@ fn environment_path(name: &'static str) -> io::Result<Option<PathBuf>> {
 
 fn parse_retention(value: &str) -> io::Result<OutputRetention> {
     OutputRetention::parse(value)
+}
+
+fn parse_positive_u64(value: &str, message: &'static str) -> io::Result<u64> {
+    if value.is_empty()
+        || value.starts_with('0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(invalid(message));
+    }
+    value.parse().map_err(|_| invalid(message))
 }
 
 fn parse_positive_usize(value: &str, message: &'static str) -> io::Result<usize> {

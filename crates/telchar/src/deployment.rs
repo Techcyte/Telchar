@@ -5,6 +5,7 @@ use std::time::Duration;
 const MAXIMUM_SUPPORTED_FEATURES: usize = 64;
 const MAXIMUM_SYSTEM_BYTES: usize = 64;
 const MAXIMUM_FEATURE_BYTES: usize = 256;
+pub const DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES: u64 = i64::MAX as u64;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RunningDisconnectPolicy {
@@ -98,6 +99,7 @@ pub struct DeploymentConfig {
     system: String,
     supported_features: Vec<String>,
     output_retention: OutputRetention,
+    maximum_retained_input_bytes: u64,
 }
 
 impl DeploymentConfig {
@@ -124,6 +126,7 @@ impl DeploymentConfig {
             system: system.to_owned(),
             supported_features: features.into_iter().collect(),
             output_retention: OutputRetention::default(),
+            maximum_retained_input_bytes: DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES,
         })
     }
 
@@ -151,6 +154,14 @@ impl DeploymentConfig {
 
     pub(crate) fn set_output_retention(&mut self, output_retention: OutputRetention) {
         self.output_retention = output_retention;
+    }
+
+    pub fn maximum_retained_input_bytes(&self) -> u64 {
+        self.maximum_retained_input_bytes
+    }
+
+    pub(crate) fn set_maximum_retained_input_bytes(&mut self, maximum: u64) {
+        self.maximum_retained_input_bytes = maximum;
     }
 }
 

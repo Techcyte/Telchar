@@ -229,6 +229,17 @@ pub fn run_worker_session(
                     operation = "create",
                     "build request persisted"
                 );
+                let derivation_info =
+                    match store_export.query_path_info(std::path::Path::new(derivation_path)) {
+                        Ok(info) if info.nar_size > 0 => info,
+                        _ => {
+                            return reject(
+                                &mut output,
+                                "gateway-store-retention",
+                                "gateway store retention failed",
+                            );
+                        }
+                    };
                 let lease_id = derivation_lease_id();
                 let derivation_entries = [crate::store_retention::RetentionEntry::new(
                     lease_id.clone(),
@@ -248,13 +259,14 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                if let Err(_error) = crate::persistence::create_store_lease(
+                if let Err(_error) = crate::persistence::create_request_retained_lease(
                     database_url,
                     &lease_id,
-                    crate::persistence::StoreLeaseOwnerKind::Request,
                     &request_id,
                     derivation_path,
                     crate::persistence::StoreLeasePurpose::Derivation,
+                    derivation_info.nar_size,
+                    deployment.maximum_retained_input_bytes(),
                 ) {
                     if store_retention.rollback(&retained_derivation).is_err() {
                         retention_batch_event(
@@ -301,11 +313,17 @@ pub fn run_worker_session(
                 let input_leases = closure
                     .into_iter()
                     .enumerate()
-                    .map(|(index, path)| (format!("input-{request_id}-{index}"), path))
+                    .map(|(index, path)| {
+                        (
+                            format!("input-{request_id}-{index}"),
+                            path.store_path,
+                            path.nar_size,
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let input_entries = input_leases
                     .iter()
-                    .map(|(lease_id, store_path)| {
+                    .map(|(lease_id, store_path, _)| {
                         crate::store_retention::RetentionEntry::new(lease_id, store_path)
                     })
                     .collect::<Vec<_>>();
@@ -346,9 +364,10 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                if crate::persistence::create_request_input_leases(
+                if crate::persistence::create_request_input_leases_with_limit(
                     database_url,
                     &request_id,
+                    deployment.maximum_retained_input_bytes(),
                     &input_leases,
                 )
                 .is_err()

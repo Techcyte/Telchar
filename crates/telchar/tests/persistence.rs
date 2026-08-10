@@ -3403,6 +3403,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
          ALTER TABLE store_leases DROP CONSTRAINT store_leases_state_check;
          ALTER TABLE store_leases DROP CONSTRAINT store_leases_store_path_check;
          ALTER TABLE store_leases DROP CONSTRAINT store_leases_released_at_check;
+         ALTER TABLE store_leases DROP CONSTRAINT store_leases_retained_size_check;
          INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state)
          VALUES ('malformed-lease', 'unknown', 'owner', 'relative', 'unknown', 'active'),
                 ('malformed-active', 'request', 'owner', '/nix/store/path', 'input', 'active'),
@@ -3482,7 +3483,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 7);
+    assert_eq!(ledger.len(), 8);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -3507,6 +3508,9 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
         "protocol_session_credentials"
     );
     assert_eq!(ledger[6].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[7].get::<_, i64>(0), 8);
+    assert_eq!(ledger[7].get::<_, String>(1), "retained_store_paths");
+    assert_eq!(ledger[7].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -3593,8 +3597,8 @@ fn reconciliation_state_migration_preserves_existing_execution_rows() {
         telchar::persistence::migrate(fixture.url()).expect("reconciliation migration applies");
 
     assert_eq!(outcome.previously_applied, 3);
-    assert_eq!(outcome.applied_this_run, 4);
-    assert_eq!(outcome.resulting_version, 7);
+    assert_eq!(outcome.applied_this_run, 5);
+    assert_eq!(outcome.resulting_version, 8);
     let mut client = fixture.connect();
     assert_eq!(
         client
@@ -3666,7 +3670,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 6);
+    assert_eq!(outcome.applied_this_run, 7);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -3747,8 +3751,8 @@ fn execution_state_migration_upgrades_gate_three_rows() {
 
     assert!(postgres_version.parse::<u32>().expect("numeric version") >= 14_00_00);
     assert_eq!(outcome.previously_applied, 2);
-    assert_eq!(outcome.applied_this_run, 5);
-    assert_eq!(outcome.resulting_version, 7);
+    assert_eq!(outcome.applied_this_run, 6);
+    assert_eq!(outcome.resulting_version, 8);
     let mut client = fixture.connect();
     let ledger = client
         .query_one(
@@ -3841,8 +3845,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 7);
-    assert_eq!(second.previously_applied, 7);
+    assert_eq!(first.applied_this_run, 8);
+    assert_eq!(second.previously_applied, 8);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3850,7 +3854,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        7
+        8
     );
 }
 
@@ -3882,7 +3886,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (8, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (9, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -3935,7 +3939,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 7);
+    assert_eq!(first.applied_this_run, 8);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3943,7 +3947,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        7
+        8
     );
 }
 
@@ -3971,7 +3975,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        7
+        8
     );
     assert_eq!(
         fixture
@@ -3979,7 +3983,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        7
+        8
     );
 }
 
@@ -4008,6 +4012,134 @@ fn minimum_schema_enforces_domain_constraints() {
 }
 
 #[test]
+fn concurrent_retained_byte_admission_counts_unique_paths_once() {
+    let fixture = Arc::new(PostgresFixture::start());
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for request_id in ["retained-first", "retained-second"] {
+        telchar::persistence::create_build_request(
+            fixture.url(),
+            request_id,
+            "/nix/store/11111111111111111111111111111111-test.drv",
+            "x86_64-linux",
+            "test-audit",
+            "test-quota",
+        )
+        .expect("request persists");
+    }
+
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for (request_id, lease_id, store_path) in [
+        (
+            "retained-first",
+            "retained-first-input",
+            "/nix/store/22222222222222222222222222222222-shared",
+        ),
+        (
+            "retained-second",
+            "retained-second-input",
+            "/nix/store/22222222222222222222222222222222-shared",
+        ),
+    ] {
+        let fixture = Arc::clone(&fixture);
+        let barrier = Arc::clone(&barrier);
+        workers.push(thread::spawn(move || {
+            barrier.wait();
+            telchar::persistence::create_request_input_leases_with_limit(
+                fixture.url(),
+                request_id,
+                6,
+                &[(lease_id.to_owned(), store_path.to_owned(), 6)],
+            )
+        }));
+    }
+    barrier.wait();
+    for worker in workers {
+        assert_eq!(
+            worker.join().expect("worker does not panic").unwrap().len(),
+            1
+        );
+    }
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one(
+                "SELECT sum(nar_size)::bigint FROM (SELECT store_path, max(nar_size) AS nar_size FROM store_leases WHERE state = 'active' AND purpose IN ('derivation', 'input') GROUP BY store_path) retained",
+                &[],
+            )
+            .expect("retained byte count reads")
+            .get::<_, Option<i64>>(0),
+        Some(6)
+    );
+}
+
+#[test]
+fn concurrent_retained_byte_admission_rejects_budget_overflow_atomically() {
+    let fixture = Arc::new(PostgresFixture::start());
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for request_id in ["budget-first", "budget-second"] {
+        telchar::persistence::create_build_request(
+            fixture.url(),
+            request_id,
+            "/nix/store/11111111111111111111111111111111-test.drv",
+            "x86_64-linux",
+            "test-audit",
+            "test-quota",
+        )
+        .expect("request persists");
+    }
+
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for (request_id, lease_id, store_path) in [
+        (
+            "budget-first",
+            "budget-first-input",
+            "/nix/store/22222222222222222222222222222222-first",
+        ),
+        (
+            "budget-second",
+            "budget-second-input",
+            "/nix/store/33333333333333333333333333333333-second",
+        ),
+    ] {
+        let fixture = Arc::clone(&fixture);
+        let barrier = Arc::clone(&barrier);
+        workers.push(thread::spawn(move || {
+            barrier.wait();
+            telchar::persistence::create_request_input_leases_with_limit(
+                fixture.url(),
+                request_id,
+                6,
+                &[(lease_id.to_owned(), store_path.to_owned(), 6)],
+            )
+        }));
+    }
+    barrier.wait();
+    let results = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("worker does not panic"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .map(|error| error.failure())
+            .collect::<Vec<_>>(),
+        [telchar::persistence::StoreLeaseFailure::Capacity]
+    );
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one("SELECT count(*) FROM store_leases", &[])
+            .expect("lease count reads")
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
 fn request_input_lease_batch_is_atomic_and_typed() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -4021,17 +4153,20 @@ fn request_input_lease_batch_is_atomic_and_typed() {
     )
     .expect("request persists");
 
-    let records = telchar::persistence::create_request_input_leases(
+    let records = telchar::persistence::create_request_input_leases_with_limit(
         fixture.url(),
         "input-batch-request",
+        30,
         &[
             (
                 "input-batch-1".to_owned(),
                 "/nix/store/22222222222222222222222222222222-input-a".to_owned(),
+                10,
             ),
             (
                 "input-batch-2".to_owned(),
                 "/nix/store/33333333333333333333333333333333-input-b".to_owned(),
+                20,
             ),
         ],
     )

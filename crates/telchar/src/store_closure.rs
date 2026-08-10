@@ -6,8 +6,14 @@ use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 const MAXIMUM_CLOSURE_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
 const MAXIMUM_CLOSURE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClosurePath {
+    pub store_path: String,
+    pub nar_size: u64,
+}
+
 pub trait StoreClosureBackend: Send {
-    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>>;
+    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>>;
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
@@ -21,7 +27,7 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
 struct UnavailableStoreClosureBackend;
 
 impl StoreClosureBackend for UnavailableStoreClosureBackend {
-    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
+    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>> {
         if roots.is_empty() {
             Ok(Vec::new())
         } else {
@@ -41,7 +47,7 @@ impl GatewayStoreClosureBackend {
 }
 
 impl StoreClosureBackend for GatewayStoreClosureBackend {
-    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<String>> {
+    fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>> {
         if roots.is_empty() {
             return Ok(Vec::new());
         }
@@ -52,35 +58,39 @@ impl StoreClosureBackend for GatewayStoreClosureBackend {
 }
 
 trait PathInfoQuery {
-    fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
+    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>>;
 }
 
 impl PathInfoQuery for GatewayStoreConnection {
-    fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>> {
         self.query_path_info(path)
-            .map(|info| info.map(|info| info.references().to_vec()))
+            .map(|info| info.map(|info| (info.references().to_vec(), info.nar_size())))
     }
 }
 
 fn compute_input_closure(
     store: &mut impl PathInfoQuery,
     roots: &[Vec<u8>],
-) -> io::Result<Vec<String>> {
+) -> io::Result<Vec<ClosurePath>> {
     if roots.len() > MAXIMUM_CLOSURE_PATHS {
         return Err(query_error());
     }
     let mut pending = VecDeque::new();
     let mut discovered = BTreeSet::new();
     let mut retained_bytes = 0_usize;
+    let mut sizes = std::collections::BTreeMap::new();
     for root in roots {
         add_path(root, &mut pending, &mut discovered, &mut retained_bytes)?;
     }
 
     while let Some(path) = pending.pop_front() {
-        let references = store
-            .query_references(&path)
+        let (references, nar_size) = store
+            .query_path(&path)
             .map_err(|_| query_error())?
             .ok_or_else(query_error)?;
+        if nar_size == 0 || sizes.insert(path.clone(), nar_size).is_some() {
+            return Err(query_error());
+        }
         for reference in references {
             add_path(
                 &reference,
@@ -93,7 +103,13 @@ fn compute_input_closure(
 
     discovered
         .into_iter()
-        .map(|path| String::from_utf8(path).map_err(|_| query_error()))
+        .map(|path| {
+            let nar_size = sizes.remove(&path).ok_or_else(query_error)?;
+            Ok(ClosurePath {
+                store_path: String::from_utf8(path).map_err(|_| query_error())?,
+                nar_size,
+            })
+        })
         .collect()
 }
 
@@ -165,9 +181,13 @@ mod tests {
     }
 
     impl PathInfoQuery for Store {
-        fn query_references(&mut self, path: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>> {
             self.queries.push(path.to_vec());
-            Ok(self.paths.get(path).cloned())
+            Ok(self
+                .paths
+                .get(path)
+                .cloned()
+                .map(|references| (references, 1)))
         }
     }
 
@@ -193,7 +213,10 @@ mod tests {
             closure,
             [ROOT, LEFT, RIGHT, LEAF]
                 .into_iter()
-                .map(|path| String::from_utf8(path.to_vec()).unwrap())
+                .map(|path| ClosurePath {
+                    store_path: String::from_utf8(path.to_vec()).unwrap(),
+                    nar_size: 1,
+                })
                 .collect::<Vec<_>>()
         );
         store.queries.sort();
@@ -206,7 +229,7 @@ mod tests {
         let mut store = store();
         assert_eq!(
             compute_input_closure(&mut store, &[]).unwrap(),
-            Vec::<String>::new()
+            Vec::<ClosurePath>::new()
         );
         assert!(store.queries.is_empty());
     }
