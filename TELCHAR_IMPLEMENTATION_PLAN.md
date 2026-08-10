@@ -1208,12 +1208,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL success, duplicate-transition, and missing-active-reservation rollback cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: request state, attempt state/start timestamp, and reservation phase/units commit together; repeated transition rejects; reservation precondition failure leaves request and attempt backend-pending with no start timestamp.
 
-- [ ] T106 Transition running attempt to collecting
+- [x] T106 Transition running attempt to collecting
   - Depends on: T105
-  - Outcome: execution completion and output collection are distinct.
-  - Red: process exit directly marks request successful.
-  - Verify: transition test.
-  - Evidence: collecting state.
+  - Outcome: backend completion atomically moves the request, attempt, and active capacity reservation to collecting while leaving terminal completion and outcome absent.
+  - Red: the focused test failed to compile because no backend-completion transition or collecting capacity phase existed.
+  - Verify: real PostgreSQL success, duplicate-transition, missing-active-reservation rollback, and absent-terminal-outcome cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: `collecting_at` is monotonic after `started_at`, `completed_at` remains absent, no execution outcome exists, reservation units remain active, and failed preconditions leave the attempt running.
 
 - [ ] T107 Transition collecting attempt to terminal success
   - Depends on: T106
