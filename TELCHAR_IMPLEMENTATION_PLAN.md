@@ -1120,12 +1120,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence create_and_read_build_request_persist_immutable_state --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile.
   - Evidence: stable request ID, derivation path, system, accepted state with no queue timestamp, exact bounded audit/quota subjects, atomic `RETURNING` row, restart preservation, database constraints, and redacted domain errors.
 
-- [ ] T099 Harden request attachment state operation
+- [x] T099 Harden request attachment state operation
   - Depends on: T098, T070D
-  - Outcome: attachment state operation adds completed-delivery state, timestamps, and restart constraints.
-  - Red: migration/operation round-trip test fails.
-  - Verify: real PostgreSQL attachment-operation upgrade test.
-  - Evidence: multiple attachment cases and transaction boundary.
+  - Outcome: the domain attachment operation adds a distinct completed-delivery terminal state and timestamp while preserving detached semantics and restart-safe constraints.
+  - Red: the real PostgreSQL completed-delivery test failed to compile because no delivery operation, state variant, or timestamp existed.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence request_attachment_completed_delivery_survives_restart --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile.
+  - Evidence: attached, detached, and delivered cases; monotonic terminal timestamps; mutually exclusive detach/delivery timestamps; restart round trip; repeated/competing terminal transition rejection; explicit transaction boundary; redacted domain errors.
 
 - [ ] T100 Persist execution attempt
   - Depends on: T098

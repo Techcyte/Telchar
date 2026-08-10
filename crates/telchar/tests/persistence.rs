@@ -370,6 +370,82 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
 }
 
 #[test]
+fn request_attachment_completed_delivery_survives_restart() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "delivery-session",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "delivery-request",
+        "/nix/store/11111111111111111111111111111111-delivery.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    let attached =
+        telchar::persistence::attach_request(fixture.url(), "delivery-session", "delivery-request")
+            .expect("request attaches");
+
+    let delivered = telchar::persistence::complete_request_delivery(
+        fixture.url(),
+        "delivery-session",
+        "delivery-request",
+    )
+    .expect("delivery completes");
+
+    assert_eq!(delivered.session_id, attached.session_id);
+    assert_eq!(delivered.request_id, attached.request_id);
+    assert_eq!(delivered.attached_at, attached.attached_at);
+    assert_eq!(
+        delivered.state,
+        telchar::persistence::RequestAttachmentState::Delivered
+    );
+    assert!(delivered.detached_at.is_none());
+    assert!(delivered
+        .delivered_at
+        .is_some_and(|delivered_at| delivered_at >= attached.attached_at));
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "delivery-session",
+            "delivery-request",
+        )
+        .expect("delivered attachment reads"),
+        Some(delivered)
+    );
+    assert_eq!(
+        telchar::persistence::complete_request_delivery(
+            fixture.url(),
+            "delivery-session",
+            "delivery-request",
+        )
+        .expect_err("delivery cannot complete twice")
+        .failure(),
+        telchar::persistence::RequestAttachmentFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::detach_request(
+            fixture.url(),
+            "delivery-session",
+            "delivery-request",
+        )
+        .expect_err("delivered attachment cannot detach")
+        .failure(),
+        telchar::persistence::RequestAttachmentFailure::InvalidState
+    );
+}
+
+#[test]
 fn request_attachment_detaches_once_without_mutating_references() {
     let fixture = Arc::new(PostgresFixture::start());
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -477,7 +553,7 @@ fn malformed_request_attachment_rows_fail_closed() {
     fixture
         .connect()
         .batch_execute(
-            "ALTER TABLE request_attachments DROP CONSTRAINT request_attachments_state_check; ALTER TABLE request_attachments DROP CONSTRAINT request_attachments_detached_at_check; UPDATE request_attachments SET state = 'malformed' WHERE session_id = 'malformed-session' AND request_id = 'malformed-request'",
+            "ALTER TABLE request_attachments DROP CONSTRAINT request_attachments_state_check; ALTER TABLE request_attachments DROP CONSTRAINT request_attachments_terminal_at_check; UPDATE request_attachments SET state = 'malformed' WHERE session_id = 'malformed-session' AND request_id = 'malformed-request'",
         )
         .expect("malformed attachment row writes");
 

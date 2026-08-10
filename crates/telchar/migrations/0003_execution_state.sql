@@ -6,6 +6,19 @@ ALTER TABLE protocol_sessions
     ADD CONSTRAINT protocol_sessions_audit_subject_check CHECK (length(audit_subject) BETWEEN 1 AND 256),
     ADD CONSTRAINT protocol_sessions_quota_subject_check CHECK (length(quota_subject) BETWEEN 1 AND 1024);
 
+ALTER TABLE request_attachments
+    ADD COLUMN delivered_at timestamptz;
+
+ALTER TABLE request_attachments
+    DROP CONSTRAINT request_attachments_state_check,
+    DROP CONSTRAINT request_attachments_detached_at_check,
+    ADD CONSTRAINT request_attachments_state_check CHECK (state IN ('attached', 'detached', 'delivered')),
+    ADD CONSTRAINT request_attachments_terminal_at_check CHECK (
+        (state = 'attached' AND detached_at IS NULL AND delivered_at IS NULL)
+        OR (state = 'detached' AND detached_at IS NOT NULL AND detached_at >= attached_at AND delivered_at IS NULL)
+        OR (state = 'delivered' AND detached_at IS NULL AND delivered_at IS NOT NULL AND delivered_at >= attached_at)
+    );
+
 ALTER TABLE build_requests
     ADD COLUMN queue_state text NOT NULL DEFAULT 'completed',
     ADD COLUMN queued_at timestamptz,

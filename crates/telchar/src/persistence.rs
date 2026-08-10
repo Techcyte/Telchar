@@ -351,6 +351,7 @@ impl std::error::Error for RequestAttachmentError {}
 pub enum RequestAttachmentState {
     Attached,
     Detached,
+    Delivered,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -360,6 +361,7 @@ pub struct RequestAttachment {
     pub state: RequestAttachmentState,
     pub attached_at: SystemTime,
     pub detached_at: Option<SystemTime>,
+    pub delivered_at: Option<SystemTime>,
 }
 
 pub fn attach_request(
@@ -403,7 +405,7 @@ pub fn attach_request(
     }
     let row = transaction
         .query_one(
-            "INSERT INTO request_attachments (session_id, request_id, state, attached_at, detached_at) VALUES ($1, $2, 'attached', transaction_timestamp(), NULL) RETURNING session_id, request_id, state, attached_at, detached_at",
+            "INSERT INTO request_attachments (session_id, request_id, state, attached_at, detached_at, delivered_at) VALUES ($1, $2, 'attached', transaction_timestamp(), NULL, NULL) RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
             &[&session_id, &request_id],
         )
         .map_err(|error| RequestAttachmentError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { RequestAttachmentFailure::Conflict } else { RequestAttachmentFailure::Query }))?;
@@ -427,7 +429,7 @@ pub fn detach_request(
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let row = transaction
         .query_opt(
-            "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at",
+            "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
             &[&session_id, &request_id],
         )
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?;
@@ -441,7 +443,12 @@ pub fn detach_request(
             .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?
         {
             None => return Err(RequestAttachmentError(RequestAttachmentFailure::Missing)),
-            Some(row) if row.try_get::<_, String>(0).ok().as_deref() == Some("detached") => {
+            Some(row)
+                if matches!(
+                    row.try_get::<_, String>(0).ok().as_deref(),
+                    Some("detached" | "delivered")
+                ) =>
+            {
                 return Err(RequestAttachmentError(
                     RequestAttachmentFailure::InvalidState,
                 ));
@@ -451,6 +458,44 @@ pub fn detach_request(
             }
             Some(_) => return Err(RequestAttachmentError(RequestAttachmentFailure::Query)),
         },
+    };
+    transaction
+        .commit()
+        .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Commit))?;
+    Ok(attachment)
+}
+
+pub fn complete_request_delivery(
+    database_url: &str,
+    session_id: &str,
+    request_id: &str,
+) -> Result<RequestAttachment, RequestAttachmentError> {
+    validate_request_attachment_inputs(database_url, session_id, request_id)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
+    let row = transaction
+        .query_opt(
+            "UPDATE request_attachments SET state = 'delivered', delivered_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
+            &[&session_id, &request_id],
+        )
+        .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?;
+    let attachment = match row {
+        Some(row) => decode_request_attachment(&row).map_err(RequestAttachmentError)?,
+        None => {
+            let state = transaction
+                .query_opt(
+                    "SELECT state FROM request_attachments WHERE session_id = $1 AND request_id = $2",
+                    &[&session_id, &request_id],
+                )
+                .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?;
+            return Err(RequestAttachmentError(match state {
+                None => RequestAttachmentFailure::Missing,
+                Some(_) => RequestAttachmentFailure::InvalidState,
+            }));
+        }
     };
     transaction
         .commit()
@@ -468,7 +513,7 @@ pub fn read_request_attachment(
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     client
         .query_opt(
-            "SELECT session_id, request_id, state, attached_at, detached_at FROM request_attachments WHERE session_id = $1 AND request_id = $2",
+            "SELECT session_id, request_id, state, attached_at, detached_at, delivered_at FROM request_attachments WHERE session_id = $1 AND request_id = $2",
             &[&session_id, &request_id],
         )
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?
@@ -510,12 +555,26 @@ fn decode_request_attachment(row: &Row) -> Result<RequestAttachment, RequestAtta
     let detached_at: Option<SystemTime> = row
         .try_get(4)
         .map_err(|_| RequestAttachmentFailure::Query)?;
+    let delivered_at: Option<SystemTime> = row
+        .try_get(5)
+        .map_err(|_| RequestAttachmentFailure::Query)?;
     validate_request_attachment_inputs("validated", &session_id, &request_id)
         .map_err(|_| RequestAttachmentFailure::Query)?;
     let state = match state.as_str() {
-        "attached" if detached_at.is_none() => RequestAttachmentState::Attached,
-        "detached" if detached_at.is_some_and(|detached_at| detached_at >= attached_at) => {
+        "attached" if detached_at.is_none() && delivered_at.is_none() => {
+            RequestAttachmentState::Attached
+        }
+        "detached"
+            if detached_at.is_some_and(|detached_at| detached_at >= attached_at)
+                && delivered_at.is_none() =>
+        {
             RequestAttachmentState::Detached
+        }
+        "delivered"
+            if detached_at.is_none()
+                && delivered_at.is_some_and(|delivered_at| delivered_at >= attached_at) =>
+        {
+            RequestAttachmentState::Delivered
         }
         _ => return Err(RequestAttachmentFailure::Query),
     };
@@ -525,6 +584,7 @@ fn decode_request_attachment(row: &Row) -> Result<RequestAttachment, RequestAtta
         state,
         attached_at,
         detached_at,
+        delivered_at,
     })
 }
 
@@ -1185,7 +1245,7 @@ fn detach_request_and_release_leases_inner(
     };
     let attachment = transaction
         .query_opt(
-            "SELECT session_id, request_id, state, attached_at, detached_at FROM request_attachments WHERE session_id = $1 AND request_id = $2 FOR UPDATE",
+            "SELECT session_id, request_id, state, attached_at, detached_at, delivered_at FROM request_attachments WHERE session_id = $1 AND request_id = $2 FOR UPDATE",
             &[&session_id, &request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1203,7 +1263,7 @@ fn detach_request_and_release_leases_inner(
     let locked = lock_active_request_leases(&mut transaction, request_id)?;
     let attachment = transaction
         .query_one(
-            "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at",
+            "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
             &[&session_id, &request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -1259,7 +1319,7 @@ fn release_unattached_request_leases_inner(
     };
     if transaction
         .query_opt(
-            "SELECT session_id, request_id, state, attached_at, detached_at FROM request_attachments WHERE request_id = $1 FOR UPDATE",
+            "SELECT session_id, request_id, state, attached_at, detached_at, delivered_at FROM request_attachments WHERE request_id = $1 FOR UPDATE",
             &[&request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
