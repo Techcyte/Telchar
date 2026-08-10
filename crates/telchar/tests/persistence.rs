@@ -295,6 +295,203 @@ fn accepted_request_queues_only_after_required_leases_are_durable() {
 }
 
 #[test]
+fn queued_request_dispatches_once_with_attempt_and_capacity_reservation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "dispatch-request",
+        "/nix/store/11111111111111111111111111111111-dispatch.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "dispatch-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "dispatch-request",
+        "/nix/store/11111111111111111111111111111111-dispatch.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "dispatch-request",
+        &[(
+            "dispatch-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "dispatch-request")
+        .expect("request queues");
+
+    let database_url = fixture.url().to_owned();
+    let first = std::thread::spawn({
+        let database_url = database_url.clone();
+        move || {
+            telchar::persistence::dispatch_build_request(
+                &database_url,
+                "dispatch-request",
+                "dispatch-attempt-1",
+                1,
+                "dispatch-request:1",
+                "local",
+                "dispatch-reservation-1",
+                1,
+            )
+        }
+    });
+    let second = std::thread::spawn(move || {
+        telchar::persistence::dispatch_build_request(
+            &database_url,
+            "dispatch-request",
+            "dispatch-attempt-2",
+            2,
+            "dispatch-request:2",
+            "local",
+            "dispatch-reservation-2",
+            1,
+        )
+    });
+    let results = [
+        first.join().expect("first dispatcher joins"),
+        second.join().expect("second dispatcher joins"),
+    ];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .map(|error| error.failure())
+            .collect::<Vec<_>>(),
+        vec![telchar::persistence::ExecutionAttemptFailure::InvalidState]
+    );
+
+    let dispatched = results
+        .into_iter()
+        .find_map(Result::ok)
+        .expect("one dispatch wins");
+    assert_eq!(
+        dispatched.request.queue_state,
+        telchar::persistence::BuildQueueState::Dispatching
+    );
+    assert_eq!(
+        dispatched.attempt.state,
+        telchar::persistence::ExecutionAttemptState::Dispatching
+    );
+    assert_eq!(
+        dispatched.reservation.phase,
+        telchar::persistence::CapacityReservationPhase::Dispatching
+    );
+    assert_eq!(
+        dispatched.reservation.attempt_id,
+        dispatched.attempt.attempt_id
+    );
+    assert_eq!(dispatched.reservation.quota_subject, "test-quota");
+    assert_eq!(dispatched.reservation.units, 1);
+    assert!(dispatched.reservation.released_at.is_none());
+
+    let mut client = fixture.connect();
+    for table in ["execution_attempts", "capacity_reservations"] {
+        assert_eq!(
+            client
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .expect("row count reads")
+                .get::<_, i64>(0),
+            1
+        );
+    }
+}
+
+#[test]
+fn dispatch_transaction_rolls_back_when_capacity_reservation_conflicts() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for (request_id, derivation_hash) in [
+        ("reservation-owner", "11111111111111111111111111111111"),
+        ("reservation-target", "22222222222222222222222222222222"),
+    ] {
+        telchar::persistence::create_build_request(
+            fixture.url(),
+            request_id,
+            &format!("/nix/store/{derivation_hash}-{request_id}.drv"),
+            "x86_64-linux",
+            "test-audit",
+            "test-quota",
+        )
+        .expect("request persists");
+    }
+    telchar::persistence::create_execution_attempt(
+        fixture.url(),
+        "reservation-owner-attempt",
+        "reservation-owner",
+        1,
+        "reservation-owner:1",
+        "local",
+    )
+    .expect("reservation owner attempt persists");
+    let mut client = fixture.connect();
+    client
+        .execute(
+            "INSERT INTO capacity_reservations (reservation_id, attempt_id, phase, quota_subject, units) VALUES ('shared-reservation', 'reservation-owner-attempt', 'dispatching', 'test-quota', 1)",
+            &[],
+        )
+        .expect("conflicting reservation persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "reservation-target-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "reservation-target",
+        "/nix/store/22222222222222222222222222222222-reservation-target.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "reservation-target",
+        &[(
+            "reservation-target-input".to_owned(),
+            "/nix/store/33333333333333333333333333333333-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "reservation-target")
+        .expect("request queues");
+
+    assert_eq!(
+        telchar::persistence::dispatch_build_request(
+            fixture.url(),
+            "reservation-target",
+            "reservation-target-attempt",
+            1,
+            "reservation-target:1",
+            "local",
+            "shared-reservation",
+            1,
+        )
+        .expect_err("reservation conflict rolls back dispatch")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::Conflict
+    );
+    assert_eq!(
+        telchar::persistence::read_build_request(fixture.url(), "reservation-target")
+            .expect("request reads")
+            .expect("request exists")
+            .queue_state,
+        telchar::persistence::BuildQueueState::Queued
+    );
+    assert!(telchar::persistence::read_execution_attempt(
+        fixture.url(),
+        "reservation-target-attempt"
+    )
+    .expect("attempt lookup succeeds")
+    .is_none());
+}
+
+#[test]
 fn execution_attempt_persists_stable_identity_and_dispatching_state() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

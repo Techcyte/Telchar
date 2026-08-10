@@ -366,6 +366,7 @@ pub enum ExecutionAttemptFailure {
     Configuration,
     Connection,
     Conflict,
+    InvalidState,
     Query,
     Commit,
 }
@@ -376,6 +377,7 @@ impl ExecutionAttemptFailure {
             Self::Configuration => "configuration",
             Self::Connection => "connection",
             Self::Conflict => "conflict",
+            Self::InvalidState => "invalid_state",
             Self::Query => "query",
             Self::Commit => "commit",
         }
@@ -425,6 +427,171 @@ pub struct ExecutionAttempt {
     pub collecting_at: Option<SystemTime>,
     pub completed_at: Option<SystemTime>,
     pub fenced_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CapacityReservationPhase {
+    Dispatching,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CapacityReservation {
+    pub reservation_id: String,
+    pub attempt_id: String,
+    pub phase: CapacityReservationPhase,
+    pub quota_subject: String,
+    pub units: i32,
+    pub created_at: SystemTime,
+    pub released_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DispatchedBuildRequest {
+    pub request: BuildRequestState,
+    pub attempt: ExecutionAttempt,
+    pub reservation: CapacityReservation,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_build_request(
+    database_url: &str,
+    request_id: &str,
+    attempt_id: &str,
+    ordinal: i32,
+    idempotency_key: &str,
+    backend: &str,
+    reservation_id: &str,
+    units: i32,
+) -> Result<DispatchedBuildRequest, ExecutionAttemptError> {
+    validate_execution_attempt_inputs(
+        database_url,
+        attempt_id,
+        request_id,
+        ordinal,
+        idempotency_key,
+        backend,
+    )?;
+    if reservation_id.is_empty() || reservation_id.len() > MAX_IPC_COMPONENT_BYTES || units <= 0 {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let request_row = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let queued_request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    if queued_request.queue_state != BuildQueueState::Queued {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let attempt_row = transaction
+        .query_one(
+            "INSERT INTO execution_attempts (attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at) VALUES ($1, $2, $3, $4, $5, NULL, 'dispatching', transaction_timestamp()) RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+            &[&attempt_id, &request_id, &ordinal, &idempotency_key, &backend],
+        )
+        .map_err(map_execution_attempt_database_error)?;
+    let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    let reservation_row = transaction
+        .query_one(
+            "INSERT INTO capacity_reservations (reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at) VALUES ($1, $2, 'dispatching', $3, $4, transaction_timestamp(), NULL) RETURNING reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at",
+            &[&reservation_id, &attempt_id, &queued_request.quota_subject, &units],
+        )
+        .map_err(map_execution_attempt_database_error)?;
+    let reservation = decode_capacity_reservation(&reservation_row)?;
+    let request_row = transaction
+        .query_one(
+            "UPDATE build_requests SET queue_state = 'dispatching' WHERE request_id = $1 AND queue_state = 'queued' RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.build_request.dispatched",
+        operation = "dispatch",
+        request_state = "dispatching",
+        attempt_state = "dispatching",
+        reservation_phase = "dispatching",
+        units
+    );
+    Ok(DispatchedBuildRequest {
+        request,
+        attempt,
+        reservation,
+    })
+}
+
+fn map_execution_attempt_database_error(error: postgres::Error) -> ExecutionAttemptError {
+    ExecutionAttemptError(
+        if error
+            .as_db_error()
+            .is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION)
+        {
+            ExecutionAttemptFailure::Conflict
+        } else {
+            ExecutionAttemptFailure::Query
+        },
+    )
+}
+
+fn decode_capacity_reservation(row: &Row) -> Result<CapacityReservation, ExecutionAttemptError> {
+    let reservation_id: String = row
+        .try_get(0)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let attempt_id: String = row
+        .try_get(1)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let phase: String = row
+        .try_get(2)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let quota_subject: String = row
+        .try_get(3)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let units: i32 = row
+        .try_get(4)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let created_at: SystemTime = row
+        .try_get(5)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let released_at: Option<SystemTime> = row
+        .try_get(6)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    if reservation_id.is_empty()
+        || reservation_id.len() > MAX_IPC_COMPONENT_BYTES
+        || attempt_id.is_empty()
+        || attempt_id.len() > MAX_IPC_COMPONENT_BYTES
+        || quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || units <= 0
+        || released_at.is_some_and(|released_at| released_at < created_at)
+    {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::Query));
+    }
+    let phase = match phase.as_str() {
+        "dispatching" => CapacityReservationPhase::Dispatching,
+        _ => return Err(ExecutionAttemptError(ExecutionAttemptFailure::Query)),
+    };
+    Ok(CapacityReservation {
+        reservation_id,
+        attempt_id,
+        phase,
+        quota_subject,
+        units,
+        created_at,
+        released_at,
+    })
 }
 
 pub fn create_execution_attempt(

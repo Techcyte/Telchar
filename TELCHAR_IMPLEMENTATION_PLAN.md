@@ -1187,12 +1187,12 @@ Evidence: paths and output facts to record
   - Verify: focused queue precondition/rollback test, full serial persistence suite, all Telchar targets, clippy, formatting, and diagnostics.
   - Evidence: missing and partial lease sets leave the request accepted, complete required lease purposes produce one monotonic `queued_at`, repeated transitions reject, and the typed authoritative row returns only after commit.
 
-- [ ] T103 Transition queued request to dispatching
+- [x] T103 Transition queued request to dispatching
   - Depends on: T100, T102
-  - Outcome: atomic transaction creates attempt and reserves capacity before backend submission.
-  - Red: concurrent dispatch creates duplicate attempts or exceeds capacity.
-  - Verify: concurrent real PostgreSQL transition test using row locking and transactional capacity reservation.
-  - Evidence: single active attempt.
+  - Outcome: one PostgreSQL transaction locks a queued request, creates its dispatching attempt and request-attributed capacity reservation, then advances the request before backend submission.
+  - Red: the concurrent real PostgreSQL test failed to compile because no dispatch transition, capacity-reservation type, or invalid-state classification existed.
+  - Verify: concurrent dispatch and reservation-conflict rollback tests against real PostgreSQL; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: two concurrent dispatchers produce one winner and one typed invalid-state result, exactly one active attempt and reservation persist, and reservation conflict rolls back both the attempt and request transition.
 
 - [ ] T104 Transition dispatching attempt to backend-pending
   - Depends on: T103
