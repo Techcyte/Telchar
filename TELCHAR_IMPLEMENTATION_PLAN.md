@@ -1236,12 +1236,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL missing/unsupported classification, supported-class vocabulary, successful dispatching failure, immutable replacement, terminal timestamps, outcome metadata, and capacity-release tests; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: classification and metadata are immutable, request/attempt/outcome/reservation commit together, terminal attempts reject replacement, and classification records observed failure domain without granting retry authority.
 
-- [ ] T109 Recover queued requests after daemon restart
+- [x] T109 Recover queued requests after daemon restart
   - Depends on: T102
-  - Outcome: queued work is reconstructed deterministically.
-  - Red: restart loses or duplicates queue entries.
-  - Verify: process restart integration test.
-  - Evidence: before/after request IDs.
+  - Outcome: startup reconstructs a bounded deterministic queued-request snapshot after singleton ownership and before admission readiness without mutating queue state or creating attempts.
+  - Red: the restart test failed to compile because no queued recovery operation existed.
+  - Verify: real PostgreSQL restart round trip plus two Telchar daemon process starts against the same durable queued request; full persistence and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: stable `(queued_at, request_id)` ordering and exact request IDs survive PostgreSQL and daemon restart, one queued row remains, and no execution attempt is fabricated or duplicated.
 
 - [ ] T110 Recover dispatching attempt before backend ID persistence
   - Depends on: T103
