@@ -274,6 +274,56 @@ fn execution_attempt_persists_stable_identity_and_dispatching_state() {
 }
 
 #[test]
+fn execution_outcome_is_immutable_and_survives_restart() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "outcome-request",
+        "/nix/store/11111111111111111111111111111111-outcome.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_execution_attempt(
+        fixture.url(),
+        "outcome-attempt",
+        "outcome-request",
+        1,
+        "outcome-request:1",
+        "local",
+    )
+    .expect("attempt persists");
+
+    let created = telchar::persistence::create_execution_outcome(
+        fixture.url(),
+        "outcome-attempt",
+        "backend-failure",
+    )
+    .expect("outcome persists");
+
+    assert_eq!(created.attempt_id, "outcome-attempt");
+    assert_eq!(created.classification, "backend-failure");
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_execution_outcome(fixture.url(), "outcome-attempt")
+            .expect("outcome reads"),
+        Some(created)
+    );
+    assert_eq!(
+        telchar::persistence::create_execution_outcome(
+            fixture.url(),
+            "outcome-attempt",
+            "different-classification",
+        )
+        .expect_err("terminal outcome cannot be replaced")
+        .failure(),
+        telchar::persistence::ExecutionOutcomeFailure::Conflict
+    );
+}
+
+#[test]
 fn request_attachment_persists_exact_pair_across_restart() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

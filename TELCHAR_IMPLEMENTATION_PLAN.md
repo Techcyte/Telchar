@@ -1134,12 +1134,12 @@ Evidence: paths and output facts to record
   - Verify: focused real PostgreSQL attempt round trip, full serial persistence suite, all Telchar targets, clippy, formatting, and diagnostics.
   - Evidence: restart preservation, unique attempt ID, unique global idempotency key, unique request ordinal, one active attempt constraint, initial-state timestamp invariants, bounded validation, and redacted domain errors.
 
-- [ ] T101 Persist immutable terminal outcome
+- [x] T101 Persist immutable terminal outcome
   - Depends on: T100
-  - Outcome: terminal outcome and classification cannot be overwritten.
-  - Red: update-after-terminal succeeds.
-  - Verify: immutability test.
-  - Evidence: rejected mutation.
+  - Outcome: a typed domain operation atomically persists and reads one immutable terminal classification per attempt.
+  - Red: the real PostgreSQL immutability test failed to compile because no outcome types or operations existed.
+  - Verify: focused outcome restart/immutability test, full serial persistence suite, all Telchar targets, clippy, formatting, and diagnostics.
+  - Evidence: primary-key ownership by attempt, bounded classification, restart preservation, rejected replacement, explicit transaction boundary, and redacted domain errors.
 
 ### Single-active ownership enforcement
 

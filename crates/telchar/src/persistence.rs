@@ -560,6 +560,138 @@ fn decode_execution_attempt(row: &Row) -> Result<ExecutionAttempt, ExecutionAtte
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExecutionOutcomeFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Query,
+    Commit,
+}
+
+impl ExecutionOutcomeFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecutionOutcomeError(ExecutionOutcomeFailure);
+
+impl ExecutionOutcomeError {
+    pub fn failure(&self) -> ExecutionOutcomeFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for ExecutionOutcomeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("execution outcome state operation failed")
+    }
+}
+
+impl std::error::Error for ExecutionOutcomeError {}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExecutionOutcome {
+    pub attempt_id: String,
+    pub classification: String,
+    pub created_at: SystemTime,
+}
+
+pub fn create_execution_outcome(
+    database_url: &str,
+    attempt_id: &str,
+    classification: &str,
+) -> Result<ExecutionOutcome, ExecutionOutcomeError> {
+    validate_execution_outcome_inputs(database_url, attempt_id, classification)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Connection))?;
+    let row = transaction
+        .query_one(
+            "INSERT INTO execution_outcomes (attempt_id, classification, result_metadata, created_at) VALUES ($1, $2, '{}'::jsonb, transaction_timestamp()) RETURNING attempt_id, classification, created_at",
+            &[&attempt_id, &classification],
+        )
+        .map_err(|error| {
+            ExecutionOutcomeError(if error.as_db_error().is_some_and(|database| {
+                database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION
+            }) {
+                ExecutionOutcomeFailure::Conflict
+            } else {
+                ExecutionOutcomeFailure::Query
+            })
+        })?;
+    let outcome = decode_execution_outcome(&row).map_err(ExecutionOutcomeError)?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Commit))?;
+    Ok(outcome)
+}
+
+pub fn read_execution_outcome(
+    database_url: &str,
+    attempt_id: &str,
+) -> Result<Option<ExecutionOutcome>, ExecutionOutcomeError> {
+    if database_url.trim().is_empty()
+        || attempt_id.is_empty()
+        || attempt_id.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(ExecutionOutcomeError(
+            ExecutionOutcomeFailure::Configuration,
+        ));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT attempt_id, classification, created_at FROM execution_outcomes WHERE attempt_id = $1",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Query))?
+        .map(|row| decode_execution_outcome(&row).map_err(ExecutionOutcomeError))
+        .transpose()
+}
+
+fn validate_execution_outcome_inputs(
+    database_url: &str,
+    attempt_id: &str,
+    classification: &str,
+) -> Result<(), ExecutionOutcomeError> {
+    if database_url.trim().is_empty()
+        || attempt_id.is_empty()
+        || attempt_id.len() > MAX_IPC_COMPONENT_BYTES
+        || classification.is_empty()
+        || classification.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(ExecutionOutcomeError(
+            ExecutionOutcomeFailure::Configuration,
+        ));
+    }
+    Ok(())
+}
+
+fn decode_execution_outcome(row: &Row) -> Result<ExecutionOutcome, ExecutionOutcomeFailure> {
+    let attempt_id: String = row.try_get(0).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    let classification: String = row.try_get(1).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    let created_at: SystemTime = row.try_get(2).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    validate_execution_outcome_inputs("validated", &attempt_id, &classification)
+        .map_err(|_| ExecutionOutcomeFailure::Query)?;
+    Ok(ExecutionOutcome {
+        attempt_id,
+        classification,
+        created_at,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RequestAttachmentFailure {
     Configuration,
     Connection,
