@@ -1271,12 +1271,12 @@ Evidence: paths and output facts to record
   - Verify: focused real PostgreSQL restart test and two Telchar daemon process starts; full serial persistence and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: the same attempt, backend execution ID, idempotency key, submission timestamp, and active reservation survive repeated recovery; exactly one attempt and one executor-registry row persist; recovery performs no submission or state mutation.
 
-- [ ] T112 Recover running attempt
-  - Depends on: T105
-  - Outcome: daemon reconciles completion/running state and preserves logs/outcome rules.
-  - Red: restart loses running attempt.
-  - Verify: restart during long local build.
-  - Evidence: eventual state and attempt count.
+- [x] T112 Recover running attempt
+  - Depends on: T105, T110B
+  - Outcome: startup reconstructs a bounded deterministic snapshot of local running attempts only when gateway request, attempt, active reservation, backend execution ID, idempotency key, and independently durable running executor-registry row agree; executor-owned work remains independent of daemon connections.
+  - Red: the real PostgreSQL restart test failed to compile because no running recovery operation existed; executor ownership first required a durable accepted-to-running transition and independent execution thread.
+  - Verify: submitter-disconnect process test plus real PostgreSQL running-state restart test; full serial persistence, executor-service, executor-execution, and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: the same running attempt, backend execution, idempotency key, start timestamps, and active reservation survive repeated recovery; one attempt and one executor-registry row persist; no terminal outcome or duplicate execution is fabricated.
 
 - [ ] T113 Recover collecting attempt
   - Depends on: T106
