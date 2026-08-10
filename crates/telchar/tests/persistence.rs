@@ -798,6 +798,137 @@ fn running_attempt_transitions_to_collecting_without_terminal_success() {
 }
 
 #[test]
+fn collecting_attempt_completes_only_with_output_leases_and_result_metadata() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "success-request",
+        "/nix/store/11111111111111111111111111111111-success.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "success-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "success-request",
+        "/nix/store/11111111111111111111111111111111-success.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "success-request",
+        &[(
+            "success-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "success-request")
+        .expect("request queues");
+    telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "success-request",
+        "success-attempt",
+        1,
+        "success-request:1",
+        "local",
+        "success-reservation",
+        2,
+    )
+    .expect("request dispatches");
+    telchar::persistence::record_backend_submission(
+        fixture.url(),
+        "success-attempt",
+        "backend-execution-success",
+    )
+    .expect("submission persists");
+    telchar::persistence::record_backend_running(fixture.url(), "success-attempt")
+        .expect("running state persists");
+    telchar::persistence::record_backend_completed(fixture.url(), "success-attempt")
+        .expect("collecting state persists");
+
+    assert_eq!(
+        telchar::persistence::complete_execution_success(
+            fixture.url(),
+            "success-attempt",
+            &serde_json::json!({"outputs": 1})
+        )
+        .expect_err("success requires active output leases")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+    telchar::persistence::create_request_output_leases(
+        fixture.url(),
+        "success-request",
+        std::time::Duration::from_secs(3_600),
+        &[(
+            "success-output".to_owned(),
+            "/nix/store/33333333333333333333333333333333-output".to_owned(),
+        )],
+    )
+    .expect("output lease persists");
+    assert_eq!(
+        telchar::persistence::complete_execution_success(
+            fixture.url(),
+            "success-attempt",
+            &serde_json::json!({})
+        )
+        .expect_err("success requires result metadata")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::Configuration
+    );
+
+    let completed = telchar::persistence::complete_execution_success(
+        fixture.url(),
+        "success-attempt",
+        &serde_json::json!({"outputs": 1}),
+    )
+    .expect("success persists");
+    assert_eq!(
+        completed.request.queue_state,
+        telchar::persistence::BuildQueueState::Completed
+    );
+    assert_eq!(
+        completed.attempt.state,
+        telchar::persistence::ExecutionAttemptState::Succeeded
+    );
+    assert!(completed.attempt.completed_at.is_some_and(|completed_at| {
+        completed
+            .attempt
+            .collecting_at
+            .is_some_and(|collecting_at| completed_at >= collecting_at)
+    }));
+    assert_eq!(completed.outcome.classification, "succeeded");
+    assert_eq!(
+        completed.outcome.result_metadata,
+        serde_json::json!({"outputs": 1})
+    );
+    assert!(completed.reservation.released_at.is_some());
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "success-output")
+            .expect("output lease reads")
+            .expect("output lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+    assert_eq!(
+        telchar::persistence::complete_execution_success(
+            fixture.url(),
+            "success-attempt",
+            &serde_json::json!({"outputs": 2})
+        )
+        .expect_err("terminal success cannot be replaced")
+        .failure(),
+        telchar::persistence::ExecutionAttemptFailure::InvalidState
+    );
+}
+
+#[test]
 fn dispatch_transaction_rolls_back_when_capacity_reservation_conflicts() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

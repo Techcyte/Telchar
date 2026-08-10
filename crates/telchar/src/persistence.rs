@@ -1058,7 +1058,123 @@ impl std::error::Error for ExecutionOutcomeError {}
 pub struct ExecutionOutcome {
     pub attempt_id: String,
     pub classification: String,
+    pub result_metadata: serde_json::Value,
     pub created_at: SystemTime,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CompletedBuildRequest {
+    pub request: BuildRequestState,
+    pub attempt: ExecutionAttempt,
+    pub outcome: ExecutionOutcome,
+    pub reservation: CapacityReservation,
+}
+
+pub fn complete_execution_success(
+    database_url: &str,
+    attempt_id: &str,
+    result_metadata: &serde_json::Value,
+) -> Result<CompletedBuildRequest, ExecutionAttemptError> {
+    validate_execution_attempt_component(database_url, attempt_id)?;
+    let result_metadata_text = serde_json::to_string(result_metadata)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Configuration))?;
+    if result_metadata
+        .as_object()
+        .is_none_or(|metadata| metadata.is_empty())
+        || result_metadata_text.len() > MAX_IPC_COMPONENT_BYTES
+    {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let attempt_row = transaction
+        .query_opt(
+            "SELECT attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at FROM execution_attempts WHERE attempt_id = $1 FOR UPDATE",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let collecting_attempt =
+        decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    if collecting_attempt.state != ExecutionAttemptState::Collecting {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let request_row = transaction
+        .query_opt(
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
+            &[&collecting_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    if request.queue_state != BuildQueueState::Collecting {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let output_lease_count: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 AND purpose = 'output' AND state = 'active'",
+            &[&collecting_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+        .try_get(0)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    if output_lease_count == 0 {
+        return Err(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState));
+    }
+    let reservation_row = transaction
+        .query_opt(
+            "UPDATE capacity_reservations SET released_at = transaction_timestamp() WHERE attempt_id = $1 AND phase = 'collecting' AND released_at IS NULL RETURNING reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at",
+            &[&attempt_id],
+        )
+        .map_err(map_execution_attempt_database_error)?
+        .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+    let reservation = decode_capacity_reservation(&reservation_row)?;
+    let attempt_row = transaction
+        .query_one(
+            "UPDATE execution_attempts SET state = 'succeeded', completed_at = transaction_timestamp() WHERE attempt_id = $1 AND state = 'collecting' AND collecting_at IS NOT NULL AND completed_at IS NULL RETURNING attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at, completed_at, fenced_at",
+            &[&attempt_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+    let outcome_row = transaction
+        .query_one(
+            "INSERT INTO execution_outcomes (attempt_id, classification, result_metadata, created_at) VALUES ($1, 'succeeded', $2::text::jsonb, transaction_timestamp()) RETURNING attempt_id, classification, result_metadata::text, created_at",
+            &[&attempt_id, &result_metadata_text],
+        )
+        .map_err(map_execution_attempt_database_error)?;
+    let outcome = decode_execution_outcome(&outcome_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request_row = transaction
+        .query_one(
+            "UPDATE build_requests SET queue_state = 'completed' WHERE request_id = $1 AND queue_state = 'collecting' RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&collecting_attempt.request_id],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let request = decode_build_request(&request_row)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.succeeded",
+        operation = "complete_execution_success",
+        request_state = "completed",
+        attempt_state = "succeeded",
+        reservation_state = "released",
+        output_lease_count
+    );
+    Ok(CompletedBuildRequest {
+        request,
+        attempt,
+        outcome,
+        reservation,
+    })
 }
 
 pub fn create_execution_outcome(
@@ -1074,7 +1190,7 @@ pub fn create_execution_outcome(
         .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Connection))?;
     let row = transaction
         .query_one(
-            "INSERT INTO execution_outcomes (attempt_id, classification, result_metadata, created_at) VALUES ($1, $2, '{}'::jsonb, transaction_timestamp()) RETURNING attempt_id, classification, created_at",
+            "INSERT INTO execution_outcomes (attempt_id, classification, result_metadata, created_at) VALUES ($1, $2, '{}'::jsonb, transaction_timestamp()) RETURNING attempt_id, classification, result_metadata::text, created_at",
             &[&attempt_id, &classification],
         )
         .map_err(|error| {
@@ -1109,7 +1225,7 @@ pub fn read_execution_outcome(
         .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Connection))?;
     client
         .query_opt(
-            "SELECT attempt_id, classification, created_at FROM execution_outcomes WHERE attempt_id = $1",
+            "SELECT attempt_id, classification, result_metadata::text, created_at FROM execution_outcomes WHERE attempt_id = $1",
             &[&attempt_id],
         )
         .map_err(|_| ExecutionOutcomeError(ExecutionOutcomeFailure::Query))?
@@ -1138,12 +1254,19 @@ fn validate_execution_outcome_inputs(
 fn decode_execution_outcome(row: &Row) -> Result<ExecutionOutcome, ExecutionOutcomeFailure> {
     let attempt_id: String = row.try_get(0).map_err(|_| ExecutionOutcomeFailure::Query)?;
     let classification: String = row.try_get(1).map_err(|_| ExecutionOutcomeFailure::Query)?;
-    let created_at: SystemTime = row.try_get(2).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    let result_metadata: String = row.try_get(2).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    let created_at: SystemTime = row.try_get(3).map_err(|_| ExecutionOutcomeFailure::Query)?;
     validate_execution_outcome_inputs("validated", &attempt_id, &classification)
         .map_err(|_| ExecutionOutcomeFailure::Query)?;
+    let result_metadata: serde_json::Value =
+        serde_json::from_str(&result_metadata).map_err(|_| ExecutionOutcomeFailure::Query)?;
+    if !result_metadata.is_object() {
+        return Err(ExecutionOutcomeFailure::Query);
+    }
     Ok(ExecutionOutcome {
         attempt_id,
         classification,
+        result_metadata,
         created_at,
     })
 }
