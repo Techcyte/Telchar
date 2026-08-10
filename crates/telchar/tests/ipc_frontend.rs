@@ -567,6 +567,44 @@ fn daemon_exits_and_releases_socket_after_ownership_connection_loss() {
 }
 
 #[test]
+fn replacement_daemon_is_refused_until_fenced_owner_exits() {
+    let first_root = temporary_root();
+    let contended_root = temporary_root();
+    let first_socket = first_root.join("daemon.sock");
+    let contended_socket = contended_root.join("daemon.sock");
+    let database = PostgresFixture::start();
+    let mut first = daemon_command(&first_socket, 1_000, false, database.url())
+        .spawn()
+        .expect("first daemon starts");
+    wait_for_socket(&first_socket, &mut first);
+
+    let output = daemon_command(&contended_socket, 1_000, true, database.url())
+        .output()
+        .expect("contended replacement runs");
+
+    assert!(
+        !output.status.success(),
+        "replacement overlapped active owner"
+    );
+    assert!(
+        !contended_socket.exists(),
+        "contended replacement opened admission"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("database.singleton_ownership.refused")
+    );
+    assert!(
+        first.try_wait().expect("first daemon status").is_none(),
+        "active owner stopped during contention"
+    );
+
+    first.kill().expect("first daemon stops");
+    let _ = first.wait();
+    let _ = fs::remove_dir_all(first_root);
+    let _ = fs::remove_dir_all(contended_root);
+}
+
+#[test]
 fn replacement_daemon_starts_only_after_fenced_owner_exits() {
     let first_root = temporary_root();
     let replacement_root = temporary_root();

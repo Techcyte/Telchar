@@ -1164,12 +1164,19 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test ipc_frontend daemon_exits_and_releases_socket_after_ownership_connection_loss --locked -- --exact --nocapture`; full IPC frontend and singleton ownership suites.
   - Evidence: forced PostgreSQL connection loss produces nonzero bounded exit, removes the admission socket, releases the advisory lock for a replacement process, emits `database.singleton_ownership.lost`, and does not expose the database URL. Queue, retry, cancellation, and backend-submission paths do not exist yet and therefore cannot bypass the central admission fence.
 
-- [ ] T101D Prove singleton recovery without split brain
+- [x] T101D Prove singleton takeover without split brain
   - Depends on: T101C
-  - Outcome: after the first daemon is definitively stopped or fenced, a replacement acquires ownership and performs ordinary restart reconciliation without duplicate active attempts.
-  - Red: replacement starts before ownership release, or takeover duplicates backend execution.
-  - Verify: multi-daemon `nixosTest` with lock contention, forced lock loss, takeover, and reconciliation.
-  - Evidence: ownership timeline, one active owner, one backend execution per attempt, and recovered terminal state.
+  - Outcome: a replacement process is refused while the first daemon owns the PostgreSQL session lock and becomes ready only after the first process is stopped or fenced and PostgreSQL authoritatively releases ownership.
+  - Red: the dependency review found the original task required attempt reconciliation before queue, dispatch, backend lifecycle, and restart-recovery operations exist; the process fixture then established the missing no-overlap/takeover evidence separately.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test ipc_frontend replacement_daemon_ --locked -- --test-threads=1 --nocapture`; authoritative multi-machine ownership proof remains in T113A after restart reconciliation exists.
+  - Evidence: deterministic contention refusal before socket readiness, active owner remains live during contention, forced connection-loss fencing, replacement readiness only after authoritative release, and sanitized ownership events.
+
+- [ ] T113A Prove singleton restart reconciliation without duplicate execution
+  - Depends on: T109, T110, T111, T112, T113
+  - Outcome: a multi-daemon `nixosTest` combines contention, forced ownership loss, takeover, and ordinary queued/attempt reconciliation without duplicate backend execution or split brain.
+  - Red: replacement overlaps the owner, resubmits an existing attempt, or fails to recover the terminal state.
+  - Verify: multi-machine ownership and restart-reconciliation test with real PostgreSQL and the local execution registry.
+  - Evidence: ownership timeline, one active owner, one backend execution per attempt, stable idempotency key, and recovered terminal state.
 
 ### State transitions and recovery
 
