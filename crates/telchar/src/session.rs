@@ -108,6 +108,8 @@ pub fn run_worker_session(
     store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
     database_url: &str,
     session_id: &str,
+    audit_subject: &str,
+    quota_subject: &str,
     transfer_limits: &crate::transfer_limits::TransferLimits,
     object_admission: &crate::transfer_limits::ObjectAdmissionState,
     rate_admission: &crate::transfer_limits::RateAdmissionState,
@@ -207,6 +209,8 @@ pub fn run_worker_session(
                     &request_id,
                     derivation_path,
                     admitted.system(),
+                    audit_subject,
+                    quota_subject,
                 ) {
                     tracing::warn!(
                         event = "database.build_request.failed",

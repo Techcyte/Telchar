@@ -130,12 +130,22 @@ fn protocol_session_operation_rejects_unbounded_audit_metadata_before_connection
 fn create_and_read_build_request_persist_immutable_state() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "request-session",
+        "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "release-engineering",
+        "build-farm",
+    )
+    .expect("session opens");
 
     let created = telchar::persistence::create_build_request(
         fixture.url(),
         "request-1",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "release-engineering",
+        "build-farm",
     )
     .expect("build request persists");
     let read = telchar::persistence::read_build_request(fixture.url(), "request-1")
@@ -149,11 +159,45 @@ fn create_and_read_build_request_persist_immutable_state() {
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv"
     );
     assert_eq!(read.system, "x86_64-linux");
+    assert_eq!(
+        read.queue_state,
+        telchar::persistence::BuildQueueState::Accepted
+    );
+    assert!(read.queued_at.is_none());
+    assert_eq!(read.audit_subject, "release-engineering");
+    assert_eq!(read.quota_subject, "build-farm");
     assert!(
         telchar::persistence::read_build_request(fixture.url(), "absent-request")
             .expect("absent request reads")
             .is_none()
     );
+}
+
+#[test]
+fn build_request_operation_rejects_unbounded_subjects_before_connection() {
+    let path = "/nix/store/11111111111111111111111111111111-bounded-request.drv";
+    let long_audit_subject = "a".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1);
+    let long_quota_subject = "q".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
+    for (audit_subject, quota_subject) in [
+        ("", "quota"),
+        ("audit", ""),
+        (long_audit_subject.as_str(), "quota"),
+        ("audit", long_quota_subject.as_str()),
+    ] {
+        assert_eq!(
+            telchar::persistence::create_build_request(
+                "postgresql://127.0.0.1:1/no-connection",
+                "bounded-request",
+                path,
+                "x86_64-linux",
+                audit_subject,
+                quota_subject,
+            )
+            .expect_err("invalid metadata rejects before connection")
+            .failure(),
+            telchar::persistence::BuildRequestFailure::Configuration
+        );
+    }
 }
 
 #[test]
@@ -174,6 +218,8 @@ fn request_attachment_persists_exact_pair_across_restart() {
         "attachment-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -258,6 +304,8 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
         "request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -339,6 +387,8 @@ fn request_attachment_detaches_once_without_mutating_references() {
         "detach-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let attached = telchar::persistence::attach_request(
@@ -418,6 +468,8 @@ fn malformed_request_attachment_rows_fail_closed() {
         "malformed-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::attach_request(fixture.url(), "malformed-session", "malformed-request")
@@ -469,6 +521,8 @@ fn attach_rejects_malformed_referenced_session() {
         "invalid-reference-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     fixture
@@ -516,6 +570,8 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
         "failure-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let mut client = fixture.connect();
@@ -602,6 +658,8 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
         "maximum-path",
         &maximum_path,
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("maximum protocol store path persists");
 
@@ -634,6 +692,8 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
             request_id,
             derivation_path,
             system,
+            "test-audit",
+            "test-quota",
         )
         .expect_err("invalid build request rejects");
         assert_eq!(
@@ -648,6 +708,8 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
         "request-1",
         path,
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("first request persists");
     for (derivation_path, system) in [(path, "x86_64-linux"), ("/nix/store/other.drv", "other")] {
@@ -657,6 +719,8 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
                 "request-1",
                 derivation_path,
                 system,
+                "test-audit",
+                "test-quota",
             )
             .expect_err("duplicate request rejects")
             .failure(),
@@ -679,6 +743,8 @@ fn build_request_state_survives_restart_and_malformed_rows_fail_closed() {
         "restart-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -720,6 +786,8 @@ fn failed_build_request_statement_and_commit_do_not_persist_rows() {
         "failed-statement",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect_err("statement failure rejects");
     assert_eq!(
@@ -745,6 +813,8 @@ fn failed_build_request_statement_and_commit_do_not_persist_rows() {
         "failed-commit",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect_err("commit failure rejects");
     assert_eq!(
@@ -1039,6 +1109,8 @@ fn store_lease_persists_across_restart() {
         "lease-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -1069,6 +1141,8 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         "release-request",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let created = telchar::persistence::create_store_lease(
@@ -1143,6 +1217,8 @@ fn duplicate_store_lease_id_rejects_without_mutating_original() {
         "duplicate-owner",
         "/nix/store/11111111111111111111111111111111-original.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let original = telchar::persistence::create_store_lease(
@@ -1184,6 +1260,8 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
         "failure-owner",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let mut client = fixture.connect();
@@ -1267,6 +1345,8 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
         "telemetry-owner",
         "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let captured = EventCapture::default();
@@ -1936,6 +2016,8 @@ fn request_input_lease_batch_is_atomic_and_typed() {
         "input-batch-request",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -1997,6 +2079,8 @@ fn request_input_lease_batch_rolls_back_statement_failure() {
         "input-statement-failure",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let mut client = fixture.connect();
@@ -2047,6 +2131,8 @@ fn request_input_lease_batch_rolls_back_deferred_commit_failure() {
         "input-commit-failure",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let mut client = fixture.connect();
@@ -2091,6 +2177,8 @@ fn create_request_output_leases_commits_complete_ordered_set() {
         "output-batch-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
 
@@ -2172,6 +2260,8 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
             request_id,
             "/nix/store/11111111111111111111111111111111-output-test.drv",
             "x86_64-linux",
+            "test-audit",
+            "test-quota",
         )
         .expect("request persists");
     }
@@ -2227,6 +2317,8 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
         "output-validation-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let valid = (
@@ -2300,6 +2392,8 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
         "expiry-request",
         "/nix/store/11111111111111111111111111111111-expiry.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::create_request_output_leases(
@@ -2396,6 +2490,8 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
         "output-telemetry-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let captured = EventCapture::default();
@@ -2457,6 +2553,8 @@ fn create_request_output_leases_rolls_back_deferred_commit_failure() {
         "output-commit-failure-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let mut client = fixture.connect();
@@ -2523,6 +2621,8 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
             request_id,
             "/nix/store/11111111111111111111111111111111-release-invalid.drv",
             "x86_64-linux",
+            "test-audit",
+            "test-quota",
         )
         .expect("request persists");
         telchar::persistence::attach_request(fixture.url(), "release-invalid-session", request_id)
@@ -2603,6 +2703,8 @@ fn request_lease_release_preserves_active_output_leases() {
         "release-output-request",
         "/nix/store/11111111111111111111111111111111-release-output.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::attach_request(
@@ -2696,6 +2798,8 @@ fn request_lease_release_commit_failure_keeps_attachment_and_leases_active() {
         "release-commit-request",
         "/nix/store/11111111111111111111111111111111-release-commit.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::attach_request(
@@ -2768,6 +2872,8 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
         "release-failure-request",
         "/nix/store/11111111111111111111111111111111-release-failure.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::attach_request(
@@ -2831,6 +2937,8 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leas
         "released-page-request",
         "/nix/store/11111111111111111111111111111111-released-page.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::create_store_lease(
@@ -2863,6 +2971,8 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leas
         "released-page-other",
         "/nix/store/ffffffffffffffffffffffffffffffff-released-page-other",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("other request persists");
     telchar::persistence::create_store_lease(
@@ -2912,6 +3022,8 @@ fn released_request_lease_page_includes_output_reconciliation_authority() {
         "released-output-page-request",
         "/nix/store/11111111111111111111111111111111-released-output-page.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::create_request_output_leases(
@@ -2952,6 +3064,8 @@ fn request_lease_release_unattached_releases_only_without_attachment() {
         "unattached-release-request",
         "/nix/store/11111111111111111111111111111111-unattached-release.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::create_store_lease(
@@ -2980,6 +3094,8 @@ fn request_lease_release_unattached_releases_only_without_attachment() {
         "attached-release-request",
         "/nix/store/22222222222222222222222222222222-attached-release.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("attached request persists");
     telchar::persistence::open_protocol_session(
@@ -3042,6 +3158,8 @@ fn request_lease_release_detaches_and_releases_complete_active_set_atomically() 
         "release-request",
         "/nix/store/11111111111111111111111111111111-release.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::attach_request(fixture.url(), "release-session", "release-request")

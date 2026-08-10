@@ -366,6 +366,8 @@ fn serve_accepted_connection(
             store_retention.as_mut(),
             database_url,
             &session_id,
+            &connection.envelope().requester.audit_subject,
+            &connection.envelope().requester.quota_subject,
             transfer_limits,
             object_admission,
             rate_admission,

@@ -20,8 +20,8 @@ ALTER TABLE build_requests
         (queue_state = 'accepted' AND queued_at IS NULL)
         OR (queue_state != 'accepted' AND (queue_state = 'completed' OR queued_at IS NOT NULL))
     ),
-    ADD CONSTRAINT build_requests_audit_subject_check CHECK (length(audit_subject) BETWEEN 1 AND 4096),
-    ADD CONSTRAINT build_requests_quota_subject_check CHECK (length(quota_subject) BETWEEN 1 AND 4096);
+    ADD CONSTRAINT build_requests_audit_subject_check CHECK (length(audit_subject) BETWEEN 1 AND 256),
+    ADD CONSTRAINT build_requests_quota_subject_check CHECK (length(quota_subject) BETWEEN 1 AND 1024);
 
 CREATE TABLE execution_attempts (
     attempt_id text PRIMARY KEY CONSTRAINT execution_attempts_attempt_id_check CHECK (length(attempt_id) BETWEEN 1 AND 4096),

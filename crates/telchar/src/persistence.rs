@@ -144,11 +144,28 @@ impl fmt::Display for BuildRequestError {
 
 impl std::error::Error for BuildRequestError {}
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BuildQueueState {
+    Accepted,
+    Queued,
+    Dispatching,
+    BackendPending,
+    Running,
+    Collecting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BuildRequestState {
     pub request_id: String,
     pub derivation_path: String,
     pub system: String,
+    pub queue_state: BuildQueueState,
+    pub queued_at: Option<SystemTime>,
+    pub audit_subject: String,
+    pub quota_subject: String,
     pub created_at: SystemTime,
 }
 
@@ -157,8 +174,17 @@ pub fn create_build_request(
     request_id: &str,
     derivation_path: &str,
     system: &str,
+    audit_subject: &str,
+    quota_subject: &str,
 ) -> Result<BuildRequestState, BuildRequestError> {
-    validate_build_request_inputs(database_url, request_id, derivation_path, system)?;
+    validate_build_request_inputs(
+        database_url,
+        request_id,
+        derivation_path,
+        system,
+        audit_subject,
+        quota_subject,
+    )?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     let mut transaction = client
@@ -166,8 +192,10 @@ pub fn create_build_request(
         .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     let row = transaction
         .query_one(
-            "INSERT INTO build_requests (request_id, derivation_path, system, created_at) VALUES ($1, $2, $3, transaction_timestamp()) RETURNING request_id, derivation_path, system, created_at",
-            &[&request_id, &derivation_path, &system],
+            "INSERT INTO build_requests (request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at)
+             VALUES ($1, $2, $3, 'accepted', NULL, $4, $5, transaction_timestamp())
+             RETURNING request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at",
+            &[&request_id, &derivation_path, &system, &audit_subject, &quota_subject],
         )
         .map_err(|error| BuildRequestError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { BuildRequestFailure::Conflict } else { BuildRequestFailure::Query }))?;
     let request = decode_build_request(&row).map_err(BuildRequestError)?;
@@ -189,7 +217,7 @@ pub fn read_build_request(
         .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     client
         .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1",
+            "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1",
             &[&request_id],
         )
         .map_err(|_| BuildRequestError(BuildRequestFailure::Query))?
@@ -202,6 +230,8 @@ fn validate_build_request_inputs(
     request_id: &str,
     derivation_path: &str,
     system: &str,
+    audit_subject: &str,
+    quota_subject: &str,
 ) -> Result<(), BuildRequestError> {
     validate_build_request_id(request_id)?;
     if database_url.trim().is_empty()
@@ -209,6 +239,10 @@ fn validate_build_request_inputs(
         || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
         || system.is_empty()
         || system.len() > MAX_IPC_COMPONENT_BYTES
+        || audit_subject.is_empty()
+        || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
+        || quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
     {
         return Err(BuildRequestError(BuildRequestFailure::Configuration));
     }
@@ -226,13 +260,47 @@ fn decode_build_request(row: &Row) -> Result<BuildRequestState, BuildRequestFail
     let request_id: String = row.try_get(0).map_err(|_| BuildRequestFailure::Query)?;
     let derivation_path: String = row.try_get(1).map_err(|_| BuildRequestFailure::Query)?;
     let system: String = row.try_get(2).map_err(|_| BuildRequestFailure::Query)?;
-    let created_at: SystemTime = row.try_get(3).map_err(|_| BuildRequestFailure::Query)?;
-    validate_build_request_inputs("validated", &request_id, &derivation_path, &system)
-        .map_err(|_| BuildRequestFailure::Query)?;
+    let queue_state: String = row.try_get(3).map_err(|_| BuildRequestFailure::Query)?;
+    let queued_at: Option<SystemTime> = row.try_get(4).map_err(|_| BuildRequestFailure::Query)?;
+    let audit_subject: String = row.try_get(5).map_err(|_| BuildRequestFailure::Query)?;
+    let quota_subject: String = row.try_get(6).map_err(|_| BuildRequestFailure::Query)?;
+    let created_at: SystemTime = row.try_get(7).map_err(|_| BuildRequestFailure::Query)?;
+    validate_build_request_inputs(
+        "validated",
+        &request_id,
+        &derivation_path,
+        &system,
+        &audit_subject,
+        &quota_subject,
+    )
+    .map_err(|_| BuildRequestFailure::Query)?;
+    if audit_subject.is_empty()
+        || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
+        || quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+    {
+        return Err(BuildRequestFailure::Query);
+    }
+    let queue_state = match (queue_state.as_str(), queued_at) {
+        ("accepted", None) => BuildQueueState::Accepted,
+        ("queued", Some(_)) => BuildQueueState::Queued,
+        ("dispatching", Some(_)) => BuildQueueState::Dispatching,
+        ("backend-pending", Some(_)) => BuildQueueState::BackendPending,
+        ("running", Some(_)) => BuildQueueState::Running,
+        ("collecting", Some(_)) => BuildQueueState::Collecting,
+        ("completed", _) => BuildQueueState::Completed,
+        ("failed", Some(_)) => BuildQueueState::Failed,
+        ("cancelled", Some(_)) => BuildQueueState::Cancelled,
+        _ => return Err(BuildRequestFailure::Query),
+    };
     Ok(BuildRequestState {
         request_id,
         derivation_path,
         system,
+        queue_state,
+        queued_at,
+        audit_subject,
+        quota_subject,
         created_at,
     })
 }
@@ -326,11 +394,7 @@ pub fn attach_request(
             Err(_) => return Err(RequestAttachmentError(RequestAttachmentFailure::Query)),
         },
     }
-    match transaction
-        .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1",
-            &[&request_id],
-        )
+    match transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1", &[&request_id])
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?
     {
         None => return Err(RequestAttachmentError(RequestAttachmentFailure::Missing)),
@@ -850,11 +914,7 @@ fn create_store_lease_inner(
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     match owner_kind {
-        StoreLeaseOwnerKind::Request => match transaction
-            .query_opt(
-                "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1",
-                &[&owner_id],
-            )
+        StoreLeaseOwnerKind::Request => match transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1", &[&owner_id])
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
         {
             None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
@@ -943,11 +1003,7 @@ fn create_request_input_leases_inner(
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
-    let request = transaction
-        .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE",
-            &[&request_id],
-        )
+    let request = transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE", &[&request_id])
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
     match request {
         None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
@@ -1042,11 +1098,7 @@ fn create_request_output_leases_inner(
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
-    let request = transaction
-        .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE",
-            &[&request_id],
-        )
+    let request = transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE", &[&request_id])
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
     match request {
         None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
@@ -1123,11 +1175,7 @@ fn detach_request_and_release_leases_inner(
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
-    let request = transaction
-        .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
-            &[&request_id],
-        )
+    let request = transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE", &[&request_id])
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
     match request {
         None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
@@ -1201,11 +1249,7 @@ fn release_unattached_request_leases_inner(
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
-    let request = transaction
-        .query_opt(
-            "SELECT request_id, derivation_path, system, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE",
-            &[&request_id],
-        )
+    let request = transaction.query_opt("SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR UPDATE", &[&request_id])
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
     match request {
         None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),

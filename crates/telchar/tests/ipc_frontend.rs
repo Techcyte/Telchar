@@ -14,7 +14,7 @@ mod support;
 use support::postgres::PostgresFixture;
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};
+use telchar::ipc::{IpcEnvelope, IpcError, IpcListener, RequesterMetadata, IPC_VERSION};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -369,6 +369,8 @@ fn daemon_reconciles_expired_output_before_readiness() {
         "startup-expiry-request",
         "/nix/store/11111111111111111111111111111111-startup-expiry.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     let lease = telchar::persistence::create_request_output_leases(
@@ -433,6 +435,8 @@ fn daemon_refuses_readiness_when_output_reconciliation_fails() {
         "startup-conflict-request",
         "/nix/store/11111111111111111111111111111111-startup-conflict.drv",
         "x86_64-linux",
+        "test-audit",
+        "test-quota",
     )
     .expect("request persists");
     telchar::persistence::create_request_output_leases(

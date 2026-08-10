@@ -1113,12 +1113,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence open_and_read_protocol_session_persist_requested_state --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile with `cargo test -p telchar --no-run --locked`.
   - Evidence: exact requester reference, audit subject, quota subject, state, created/closed timestamps, pre-connection bounds enforcement, PostgreSQL constraints, atomic `RETURNING` rows, restart preservation, and redacted domain errors.
 
-- [ ] T098 Harden build request state operation
+- [x] T098 Harden build request state operation
   - Depends on: T097, T070C
-  - Outcome: request state operation adds normalized immutable fields, queue metadata, and constraints without changing identity or exposing generic CRUD.
-  - Red: migration/operation round-trip test fails.
-  - Verify: real PostgreSQL request-operation upgrade test.
-  - Evidence: preserved ID, added fields, and transaction boundary.
+  - Outcome: the domain request operation persists immutable derivation identity, normalized audit/quota subjects, and typed queue metadata through one explicit PostgreSQL transaction without exposing generic CRUD.
+  - Red: the real PostgreSQL request round-trip failed to compile because `create_build_request` accepted no requester subjects and `BuildRequestState` exposed no queue or audit metadata.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence create_and_read_build_request_persist_immutable_state --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile.
+  - Evidence: stable request ID, derivation path, system, accepted state with no queue timestamp, exact bounded audit/quota subjects, atomic `RETURNING` row, restart preservation, database constraints, and redacted domain errors.
 
 - [ ] T099 Harden request attachment state operation
   - Depends on: T098, T070D
