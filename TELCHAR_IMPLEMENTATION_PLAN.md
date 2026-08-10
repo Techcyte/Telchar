@@ -1201,12 +1201,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL success, duplicate-transition, and missing-active-reservation rollback cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: attempt ID/state/timestamp, request state, and reservation phase commit together; replacement submission rejects; reservation precondition failure leaves request and attempt dispatching without a backend execution ID.
 
-- [ ] T105 Transition pending attempt to running
+- [x] T105 Transition pending attempt to running
   - Depends on: T104
-  - Outcome: running timestamp and counters update atomically.
-  - Red: counter/state mismatch test fails.
-  - Verify: transition test.
-  - Evidence: state and counters.
+  - Outcome: one PostgreSQL transaction locks the backend-pending attempt and request, moves the active reservation and its preserved units to running, records `started_at`, and advances both lifecycle states.
+  - Red: the focused test failed to compile because no running transition or running capacity phase existed.
+  - Verify: real PostgreSQL success, duplicate-transition, and missing-active-reservation rollback cases; full serial persistence suite; all Telchar targets; clippy; formatting; diagnostics.
+  - Evidence: request state, attempt state/start timestamp, and reservation phase/units commit together; repeated transition rejects; reservation precondition failure leaves request and attempt backend-pending with no start timestamp.
 
 - [ ] T106 Transition running attempt to collecting
   - Depends on: T105
