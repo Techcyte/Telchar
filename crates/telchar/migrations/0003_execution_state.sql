@@ -3,8 +3,8 @@ ALTER TABLE protocol_sessions
     ADD COLUMN quota_subject text NOT NULL DEFAULT 'gate-three';
 
 ALTER TABLE protocol_sessions
-    ADD CONSTRAINT protocol_sessions_audit_subject_check CHECK (length(audit_subject) BETWEEN 1 AND 4096),
-    ADD CONSTRAINT protocol_sessions_quota_subject_check CHECK (length(quota_subject) BETWEEN 1 AND 4096);
+    ADD CONSTRAINT protocol_sessions_audit_subject_check CHECK (length(audit_subject) BETWEEN 1 AND 256),
+    ADD CONSTRAINT protocol_sessions_quota_subject_check CHECK (length(quota_subject) BETWEEN 1 AND 1024);
 
 ALTER TABLE build_requests
     ADD COLUMN queue_state text NOT NULL DEFAULT 'completed',

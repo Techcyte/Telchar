@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use telchar::identity::{IdentityInput, normalize_requester};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+use telchar::identity::{normalize_requester, IdentityInput};
+use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
@@ -194,24 +194,22 @@ fn run_daemon() -> io::Result<()> {
         );
     }
     let maintenance_database_url = database_url.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(60));
-            let result =
-                telchar::store_retention::backend_from_environment().and_then(|mut backend| {
-                    telchar::store_retention::reconcile_output_retention(
-                        &maintenance_database_url,
-                        backend.as_mut(),
-                        SystemTime::now(),
-                    )
-                });
-            if result.is_err() {
-                tracing::warn!(
-                    event = "gateway.output_retention.maintenance_failed",
-                    operation = "expire-output-retention",
-                    result = "failed",
-                );
-            }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        let result =
+            telchar::store_retention::backend_from_environment().and_then(|mut backend| {
+                telchar::store_retention::reconcile_output_retention(
+                    &maintenance_database_url,
+                    backend.as_mut(),
+                    SystemTime::now(),
+                )
+            });
+        if result.is_err() {
+            tracing::warn!(
+                event = "gateway.output_retention.maintenance_failed",
+                operation = "expire-output-retention",
+                result = "failed",
+            );
         }
     });
     let maximum_sessions = usize_from_env("TELCHAR_IPC_MAX_SESSIONS", 64);
@@ -321,9 +319,13 @@ fn serve_accepted_connection(
     let session_id = connection.envelope().session_id.clone();
     let requester_reference =
         telchar::persistence::requester_reference(&connection.envelope().requester);
-    if let Err(error) =
-        telchar::persistence::open_protocol_session(database_url, &session_id, &requester_reference)
-    {
+    if let Err(error) = telchar::persistence::open_protocol_session(
+        database_url,
+        &session_id,
+        &requester_reference,
+        &connection.envelope().requester.audit_subject,
+        &connection.envelope().requester.quota_subject,
+    ) {
         tracing::warn!(
             event = "database.protocol_session.failed",
             operation = "open",

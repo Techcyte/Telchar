@@ -73,6 +73,8 @@ fn open_and_read_protocol_session_persist_requested_state() {
         fixture.url(),
         "session-1",
         requester_reference,
+        "release-engineering",
+        "build-farm",
     )
     .expect("session opens");
     let read = telchar::persistence::read_protocol_session(fixture.url(), "session-1")
@@ -82,8 +84,46 @@ fn open_and_read_protocol_session_persist_requested_state() {
     assert_eq!(opened, read);
     assert_eq!(read.session_id, "session-1");
     assert_eq!(read.requester_reference, requester_reference);
+    assert_eq!(read.audit_subject, "release-engineering");
+    assert_eq!(read.quota_subject, "build-farm");
     assert_eq!(read.state, telchar::persistence::ProtocolSessionState::Open);
     assert!(read.closed_at.is_none());
+
+    let closed = telchar::persistence::close_protocol_session(fixture.url(), "session-1")
+        .expect("session closes");
+    assert_eq!(closed.audit_subject, "release-engineering");
+    assert_eq!(closed.quota_subject, "build-farm");
+    assert_eq!(
+        telchar::persistence::read_protocol_session(fixture.url(), "session-1")
+            .expect("closed session reads"),
+        Some(closed)
+    );
+}
+
+#[test]
+fn protocol_session_operation_rejects_unbounded_audit_metadata_before_connection() {
+    let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    let long_audit_subject = "a".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1);
+    let long_quota_subject = "q".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
+    for (audit_subject, quota_subject) in [
+        ("", "quota"),
+        ("audit", ""),
+        (long_audit_subject.as_str(), "quota"),
+        ("audit", long_quota_subject.as_str()),
+    ] {
+        assert_eq!(
+            telchar::persistence::open_protocol_session(
+                "postgresql://127.0.0.1:1/no-connection",
+                "bounded-session",
+                requester_reference,
+                audit_subject,
+                quota_subject,
+            )
+            .expect_err("invalid metadata rejects before connection")
+            .failure(),
+            telchar::persistence::ProtocolSessionFailure::Configuration
+        );
+    }
 }
 
 #[test]
@@ -125,6 +165,8 @@ fn request_attachment_persists_exact_pair_across_restart() {
         fixture.url(),
         "attachment-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     let request = telchar::persistence::create_build_request(
@@ -193,12 +235,20 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "open-session", requester_reference)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "open-session",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     telchar::persistence::open_protocol_session(
         fixture.url(),
         "closed-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::close_protocol_session(fixture.url(), "closed-session")
@@ -280,6 +330,8 @@ fn request_attachment_detaches_once_without_mutating_references() {
         fixture.url(),
         "detach-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     let request = telchar::persistence::create_build_request(
@@ -357,6 +409,8 @@ fn malformed_request_attachment_rows_fail_closed() {
         fixture.url(),
         "malformed-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::create_build_request(
@@ -406,6 +460,8 @@ fn attach_rejects_malformed_referenced_session() {
         fixture.url(),
         "invalid-reference-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::create_build_request(
@@ -451,6 +507,8 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
         fixture.url(),
         "failure-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::create_build_request(
@@ -705,16 +763,27 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "session-1", requester_reference)
-        .expect("first open succeeds");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "session-1",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("first open succeeds");
 
     for reference in [
         requester_reference,
         "d97fcc940167deddfb3b76c3a5398037de37729288d7111cad50e693000e2ec3",
     ] {
-        let error =
-            telchar::persistence::open_protocol_session(fixture.url(), "session-1", reference)
-                .expect_err("duplicate session rejects");
+        let error = telchar::persistence::open_protocol_session(
+            fixture.url(),
+            "session-1",
+            reference,
+            "test-audit",
+            "test-quota",
+        )
+        .expect_err("duplicate session rejects");
         assert_eq!(
             error.failure(),
             telchar::persistence::ProtocolSessionFailure::Conflict
@@ -733,9 +802,14 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
             "F3D3E3C63821A33F175CBE0DC4288E6E906EC8FE000DF17C91D6AE616CC4AB1E",
         ),
     ] {
-        let error =
-            telchar::persistence::open_protocol_session(fixture.url(), session_id, reference)
-                .expect_err("invalid open rejects");
+        let error = telchar::persistence::open_protocol_session(
+            fixture.url(),
+            session_id,
+            reference,
+            "test-audit",
+            "test-quota",
+        )
+        .expect_err("invalid open rejects");
         assert_eq!(
             error.failure(),
             telchar::persistence::ProtocolSessionFailure::Configuration
@@ -762,6 +836,8 @@ fn close_protocol_session_persists_exactly_once() {
         fixture.url(),
         "session-1",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
 
@@ -804,6 +880,8 @@ fn concurrent_protocol_session_closers_have_one_winner() {
         fixture.url(),
         "session-1",
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     let first_url = fixture.url().to_owned();
@@ -840,12 +918,16 @@ fn protocol_session_state_survives_database_restart() {
         fixture.url(),
         "open-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("open session persists");
     telchar::persistence::open_protocol_session(
         fixture.url(),
         "closed-session",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect("closed session opens");
     let closed = telchar::persistence::close_protocol_session(fixture.url(), "closed-session")
@@ -901,6 +983,8 @@ fn failed_protocol_session_statements_do_not_claim_or_persist_transitions() {
         fixture.url(),
         "failed-open",
         requester_reference,
+        "test-audit",
+        "test-quota",
     )
     .expect_err("statement failure rejects open");
     assert_eq!(
@@ -916,8 +1000,14 @@ fn failed_protocol_session_statements_do_not_claim_or_persist_transitions() {
     client
         .batch_execute("DROP TRIGGER reject_protocol_session_insert ON protocol_sessions; DROP FUNCTION reject_protocol_session_insert()")
         .expect("failure trigger removes");
-    telchar::persistence::open_protocol_session(fixture.url(), "failed-close", requester_reference)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "failed-close",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     client
         .batch_execute(
             "CREATE FUNCTION reject_protocol_session_close() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject close'; END $$; CREATE TRIGGER reject_protocol_session_close BEFORE UPDATE ON protocol_sessions FOR EACH ROW EXECUTE FUNCTION reject_protocol_session_close();",
@@ -1241,10 +1331,22 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "open-owner", requester_reference)
-        .expect("session opens");
-    telchar::persistence::open_protocol_session(fixture.url(), "closed-owner", requester_reference)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "open-owner",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "closed-owner",
+        requester_reference,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     telchar::persistence::close_protocol_session(fixture.url(), "closed-owner")
         .expect("session closes");
 
@@ -2400,6 +2502,8 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
         fixture.url(),
         "release-invalid-session",
         requester,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     for (request_id, derivation_lease, input_lease) in [
@@ -2486,8 +2590,14 @@ fn request_lease_release_preserves_active_output_leases() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "release-output-session", requester)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "release-output-session",
+        requester,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     telchar::persistence::create_build_request(
         fixture.url(),
         "release-output-request",
@@ -2573,8 +2683,14 @@ fn request_lease_release_commit_failure_keeps_attachment_and_leases_active() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "release-commit-session", requester)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "release-commit-session",
+        requester,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     telchar::persistence::create_build_request(
         fixture.url(),
         "release-commit-request",
@@ -2643,6 +2759,8 @@ fn request_lease_release_rejects_statement_failure_without_mutation() {
         fixture.url(),
         "release-failure-session",
         requester,
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::create_build_request(
@@ -2868,6 +2986,8 @@ fn request_lease_release_unattached_releases_only_without_attachment() {
         fixture.url(),
         "attached-release-session",
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e",
+        "test-audit",
+        "test-quota",
     )
     .expect("session opens");
     telchar::persistence::attach_request(
@@ -2909,8 +3029,14 @@ fn request_lease_release_detaches_and_releases_complete_active_set_atomically() 
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
-    telchar::persistence::open_protocol_session(fixture.url(), "release-session", requester)
-        .expect("session opens");
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "release-session",
+        requester,
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
     telchar::persistence::create_build_request(
         fixture.url(),
         "release-request",

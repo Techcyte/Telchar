@@ -1106,12 +1106,12 @@ Evidence: paths and output facts to record
   - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence execution_state_migration_upgrades_gate_three_rows --locked -- --exact --nocapture`; full serial persistence suite.
   - Evidence: real PostgreSQL version, schema versions 2→3, version-3 checksum ledger row, preserved session/request/attachment/lease rows, completed Gate 3 request backfill, no fabricated attempts/outcomes/reservations, state/timestamp constraints, and partial unique indexes for active attempts and reservations.
 
-- [ ] T097 Harden protocol session state operation
+- [x] T097 Harden protocol session state operation
   - Depends on: T096, T070B
-  - Outcome: session state operation adds bounded audit metadata, timestamps, and constraints without exposing SQL or losing Gate 3 rows.
-  - Red: migration/operation round-trip test fails.
-  - Verify: real PostgreSQL session-operation upgrade test.
-  - Evidence: preserved and added fields plus transaction boundary.
+  - Outcome: the domain session operation persists bounded audit and quota subjects with immutable requester identity and transactional open/close timestamps, while Gate 3 migration rows remain preserved.
+  - Red: the real PostgreSQL session round-trip test failed to compile because `open_protocol_session` accepted no audit metadata and `ProtocolSession` exposed no audit or quota fields.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test persistence open_and_read_protocol_session_persist_requested_state --locked -- --exact --nocapture`; full serial persistence suite; all Telchar targets compile with `cargo test -p telchar --no-run --locked`.
+  - Evidence: exact requester reference, audit subject, quota subject, state, created/closed timestamps, pre-connection bounds enforcement, PostgreSQL constraints, atomic `RETURNING` rows, restart preservation, and redacted domain errors.
 
 - [ ] T098 Harden build request state operation
   - Depends on: T097, T070C

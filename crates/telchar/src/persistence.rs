@@ -307,7 +307,7 @@ pub fn attach_request(
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let session = transaction
         .query_opt(
-            "SELECT session_id, requester_reference, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
+            "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
             &[&session_id],
         )
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Query))?;
@@ -516,6 +516,8 @@ pub enum ProtocolSessionState {
 pub struct ProtocolSession {
     pub session_id: String,
     pub requester_reference: String,
+    pub audit_subject: String,
+    pub quota_subject: String,
     pub state: ProtocolSessionState,
     pub created_at: SystemTime,
     pub closed_at: Option<SystemTime>,
@@ -525,8 +527,16 @@ pub fn open_protocol_session(
     database_url: &str,
     session_id: &str,
     requester_reference: &str,
+    audit_subject: &str,
+    quota_subject: &str,
 ) -> Result<ProtocolSession, ProtocolSessionError> {
-    validate_protocol_session_inputs(database_url, session_id, requester_reference)?;
+    validate_protocol_session_inputs(
+        database_url,
+        session_id,
+        requester_reference,
+        audit_subject,
+        quota_subject,
+    )?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let mut transaction = client
@@ -534,8 +544,8 @@ pub fn open_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let row = transaction
         .query_one(
-            "INSERT INTO protocol_sessions (session_id, requester_reference, state, created_at, closed_at) VALUES ($1, $2, 'open', transaction_timestamp(), NULL) RETURNING session_id, requester_reference, state, created_at, closed_at",
-            &[&session_id, &requester_reference],
+            "INSERT INTO protocol_sessions (session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at) VALUES ($1, $2, $3, $4, 'open', transaction_timestamp(), NULL) RETURNING session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at",
+            &[&session_id, &requester_reference, &audit_subject, &quota_subject],
         )
         .map_err(|error| ProtocolSessionError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { ProtocolSessionFailure::Conflict } else { ProtocolSessionFailure::Query }))?;
     let session = decode_protocol_session(&row).map_err(ProtocolSessionError)?;
@@ -560,7 +570,7 @@ pub fn close_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let row = transaction
         .query_opt(
-            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE session_id = $1 AND state = 'open' RETURNING session_id, requester_reference, state, created_at, closed_at",
+            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE session_id = $1 AND state = 'open' RETURNING session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at",
             &[&session_id],
         )
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?;
@@ -597,7 +607,7 @@ pub fn read_protocol_session(
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     client
         .query_opt(
-            "SELECT session_id, requester_reference, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
+            "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
             &[&session_id],
         )
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?
@@ -609,9 +619,17 @@ fn validate_protocol_session_inputs(
     database_url: &str,
     session_id: &str,
     requester_reference: &str,
+    audit_subject: &str,
+    quota_subject: &str,
 ) -> Result<(), ProtocolSessionError> {
     validate_session_id(session_id)?;
-    if database_url.trim().is_empty() || !is_requester_reference(requester_reference) {
+    if database_url.trim().is_empty()
+        || !is_requester_reference(requester_reference)
+        || audit_subject.is_empty()
+        || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
+        || quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+    {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
     Ok(())
@@ -634,17 +652,30 @@ fn is_requester_reference(value: &str) -> bool {
 fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSessionFailure> {
     let session_id: String = row.try_get(0).map_err(|_| ProtocolSessionFailure::Query)?;
     let requester_reference: String = row.try_get(1).map_err(|_| ProtocolSessionFailure::Query)?;
-    let state: String = row.try_get(2).map_err(|_| ProtocolSessionFailure::Query)?;
-    let created_at: SystemTime = row.try_get(3).map_err(|_| ProtocolSessionFailure::Query)?;
+    let audit_subject: String = row.try_get(2).map_err(|_| ProtocolSessionFailure::Query)?;
+    let quota_subject: String = row.try_get(3).map_err(|_| ProtocolSessionFailure::Query)?;
+    let state: String = row.try_get(4).map_err(|_| ProtocolSessionFailure::Query)?;
+    let created_at: SystemTime = row.try_get(5).map_err(|_| ProtocolSessionFailure::Query)?;
     let closed_at: Option<SystemTime> =
-        row.try_get(4).map_err(|_| ProtocolSessionFailure::Query)?;
+        row.try_get(6).map_err(|_| ProtocolSessionFailure::Query)?;
     let state = match state.as_str() {
-        "open" if closed_at.is_none() && is_requester_reference(&requester_reference) => {
+        "open"
+            if closed_at.is_none()
+                && is_requester_reference(&requester_reference)
+                && !audit_subject.is_empty()
+                && audit_subject.len() <= MAX_IPC_COMPONENT_BYTES
+                && !quota_subject.is_empty()
+                && quota_subject.len() <= crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
+        {
             ProtocolSessionState::Open
         }
         "closed"
             if closed_at.is_some_and(|closed_at| closed_at >= created_at)
-                && is_requester_reference(&requester_reference) =>
+                && is_requester_reference(&requester_reference)
+                && !audit_subject.is_empty()
+                && audit_subject.len() <= MAX_IPC_COMPONENT_BYTES
+                && !quota_subject.is_empty()
+                && quota_subject.len() <= crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
         {
             ProtocolSessionState::Closed
         }
@@ -653,6 +684,8 @@ fn decode_protocol_session(row: &Row) -> Result<ProtocolSession, ProtocolSession
     Ok(ProtocolSession {
         session_id,
         requester_reference,
+        audit_subject,
+        quota_subject,
         state,
         created_at,
         closed_at,
@@ -830,7 +863,7 @@ fn create_store_lease_inner(
         },
         StoreLeaseOwnerKind::Session => match transaction
             .query_opt(
-                "SELECT session_id, requester_reference, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
+                "SELECT session_id, requester_reference, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1 FOR NO KEY UPDATE",
                 &[&owner_id],
             )
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
