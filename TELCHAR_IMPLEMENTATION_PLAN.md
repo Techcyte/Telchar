@@ -1243,12 +1243,12 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL restart round trip plus two Telchar daemon process starts against the same durable queued request; full persistence and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: stable `(queued_at, request_id)` ordering and exact request IDs survive PostgreSQL and daemon restart, one queued row remains, and no execution attempt is fabricated or duplicated.
 
-- [ ] T110 Recover dispatching attempt before backend ID persistence
+- [x] T110 Recover dispatching attempt before backend ID persistence
   - Depends on: T103
-  - Outcome: recovery marks attempt ambiguous and reconciles idempotency key before resubmission.
-  - Red: restart blindly submits duplicate.
-  - Verify: crash-point integration test.
-  - Evidence: submission count and state.
+  - Outcome: migration 4 adds explicit reconciling request and attempt states; startup atomically fences pre-ID dispatching attempts, releases dispatch capacity, and preserves stable backend/idempotency identity for later authoritative reconciliation without resubmission.
+  - Red: the crash-point test failed to compile because no reconciling states or dispatch recovery operation existed.
+  - Verify: real PostgreSQL restart test, migration upgrade test, repeated-recovery idempotency, late-submission rejection, full persistence and IPC frontend suites, all Telchar targets, clippy, formatting, and diagnostics.
+  - Evidence: dispatching request/attempt/reservation become reconciling/reconciling/released in one transaction, `fenced_at` is durable, backend execution ID remains absent, idempotency key is unchanged, and a second recovery returns no work.
 
 - [ ] T111 Recover backend-pending attempt
   - Depends on: T104
