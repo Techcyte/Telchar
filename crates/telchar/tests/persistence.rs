@@ -564,6 +564,101 @@ fn dispatching_attempt_recovery_fences_ambiguous_submission_atomically() {
 }
 
 #[test]
+fn backend_pending_attempt_is_recovered_without_new_attempt_or_submission() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "pending-recovery-request",
+        "/nix/store/11111111111111111111111111111111-pending-recovery.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "pending-recovery-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "pending-recovery-request",
+        "/nix/store/11111111111111111111111111111111-pending-recovery.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_request_input_leases(
+        fixture.url(),
+        "pending-recovery-request",
+        &[(
+            "pending-recovery-input".to_owned(),
+            "/nix/store/22222222222222222222222222222222-input".to_owned(),
+        )],
+    )
+    .expect("input lease persists");
+    telchar::persistence::queue_build_request(fixture.url(), "pending-recovery-request")
+        .expect("request queues");
+    telchar::persistence::dispatch_build_request(
+        fixture.url(),
+        "pending-recovery-request",
+        "pending-recovery-attempt",
+        1,
+        "pending-recovery-request:1",
+        "local",
+        "pending-recovery-reservation",
+        1,
+    )
+    .expect("request dispatches");
+    telchar::persistence::register_local_backend_execution(
+        fixture.url(),
+        "local-pending-recovery",
+        "pending-recovery-request:1",
+        &[7_u8; 32],
+    )
+    .expect("backend execution persists");
+    let submitted = telchar::persistence::record_backend_submission(
+        fixture.url(),
+        "pending-recovery-attempt",
+        "local-pending-recovery",
+    )
+    .expect("backend submission persists");
+
+    fixture.restart();
+    let recovered = telchar::persistence::recover_backend_pending_attempts(fixture.url(), 256)
+        .expect("pending recovery succeeds");
+
+    assert_eq!(recovered, vec![submitted.clone()]);
+    assert_eq!(
+        telchar::persistence::recover_backend_pending_attempts(fixture.url(), 256)
+            .expect("repeated recovery succeeds"),
+        vec![submitted]
+    );
+    let mut client = fixture.connect();
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM execution_attempts", &[])
+            .expect("attempt count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM local_backend_executions", &[])
+            .expect("backend count reads")
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM execution_attempts WHERE attempt_id = 'pending-recovery-attempt' AND idempotency_key = 'pending-recovery-request:1' AND backend_execution_id = 'local-pending-recovery' AND state = 'backend-pending'",
+                &[],
+            )
+            .expect("stable attempt reads")
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
 fn dispatching_attempt_records_backend_submission_atomically() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

@@ -759,6 +759,68 @@ pub fn recover_dispatching_attempts(
     Ok(recovered)
 }
 
+pub fn recover_backend_pending_attempts(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<DispatchedBuildRequest>, ExecutionAttemptError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(ExecutionAttemptError(
+            ExecutionAttemptFailure::Configuration,
+        ));
+    }
+    let limit = limit as i64;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Connection))?;
+    let attempt_rows = transaction
+        .query(
+            "SELECT attempt.attempt_id, attempt.request_id, attempt.ordinal, attempt.idempotency_key, attempt.backend, attempt.backend_execution_id, attempt.state, attempt.created_at, attempt.submitted_at, attempt.started_at, attempt.collecting_at, attempt.completed_at, attempt.fenced_at FROM execution_attempts AS attempt JOIN local_backend_executions AS backend ON backend.backend_execution_id = attempt.backend_execution_id AND backend.idempotency_key = attempt.idempotency_key WHERE attempt.state = 'backend-pending' AND attempt.backend = 'local' AND attempt.backend_execution_id IS NOT NULL AND attempt.submitted_at IS NOT NULL AND attempt.started_at IS NULL AND attempt.collecting_at IS NULL AND attempt.completed_at IS NULL AND attempt.fenced_at IS NULL AND backend.state = 'accepted' ORDER BY attempt.submitted_at, attempt.attempt_id LIMIT $1 FOR UPDATE OF attempt",
+            &[&limit],
+        )
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+    let mut recovered = Vec::with_capacity(attempt_rows.len());
+    for attempt_row in attempt_rows {
+        let attempt = decode_execution_attempt(&attempt_row).map_err(ExecutionAttemptError)?;
+        let request_row = transaction
+            .query_opt(
+                "SELECT request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 AND queue_state = 'backend-pending' FOR UPDATE",
+                &[&attempt.request_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let request = decode_build_request(&request_row)
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?;
+        let reservation_row = transaction
+            .query_opt(
+                "SELECT reservation_id, attempt_id, phase, quota_subject, units, created_at, released_at FROM capacity_reservations WHERE attempt_id = $1 AND phase = 'backend-pending' AND released_at IS NULL FOR UPDATE",
+                &[&attempt.attempt_id],
+            )
+            .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Query))?
+            .ok_or(ExecutionAttemptError(ExecutionAttemptFailure::InvalidState))?;
+        let reservation = decode_capacity_reservation(&reservation_row)?;
+        recovered.push(DispatchedBuildRequest {
+            request,
+            attempt,
+            reservation,
+        });
+    }
+    transaction
+        .commit()
+        .map_err(|_| ExecutionAttemptError(ExecutionAttemptFailure::Commit))?;
+    tracing::info!(
+        event = "database.execution_attempt.recovered",
+        operation = "recover_backend_pending",
+        request_state = "backend_pending",
+        attempt_state = "backend_pending",
+        backend_state = "accepted",
+        recovered_count = recovered.len(),
+        "backend-pending attempts recovered"
+    );
+    Ok(recovered)
+}
+
 pub fn record_backend_completed(
     database_url: &str,
     attempt_id: &str,
