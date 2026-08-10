@@ -123,7 +123,7 @@ fn run_daemon() -> io::Result<()> {
     let database_url = required_database_url()?;
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 2_i64,
+        latest_migration_version = 3_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -139,12 +139,34 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 2_i64,
+        latest_migration_version = 3_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
         "database migration completed"
     );
+    let _singleton_ownership =
+        match telchar::singleton_ownership::SingletonOwnership::acquire(&database_url) {
+            Ok(ownership) => {
+                tracing::info!(
+                    event = "database.singleton_ownership.acquired",
+                    operation = "acquire",
+                    result = "success",
+                    "singleton daemon ownership acquired"
+                );
+                ownership
+            }
+            Err(error) => {
+                tracing::error!(
+                    event = "database.singleton_ownership.refused",
+                    operation = "acquire",
+                    result = "failed",
+                    failure_class = error.failure().as_str(),
+                    "singleton daemon ownership refused"
+                );
+                return Err(invalid("singleton daemon ownership refused"));
+            }
+        };
     let mut store_retention = telchar::store_retention::backend_from_environment()?;
     telchar::store_retention::reconcile_output_retention(
         &database_url,

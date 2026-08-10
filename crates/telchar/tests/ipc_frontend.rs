@@ -508,6 +508,37 @@ fn daemon_secures_socket_path_and_cleans_up_after_once() {
 }
 
 #[test]
+fn second_daemon_is_refused_by_database_ownership_before_socket_binding() {
+    let first_root = temporary_root();
+    let second_root = temporary_root();
+    let first_socket = first_root.join("daemon.sock");
+    let second_socket = second_root.join("daemon.sock");
+    let database = PostgresFixture::start();
+    let mut first = daemon_command(&first_socket, 1_000, false, database.url())
+        .spawn()
+        .expect("first daemon starts");
+    wait_for_socket(&first_socket, &mut first);
+
+    let output = daemon_command(&second_socket, 1_000, true, database.url())
+        .output()
+        .expect("second daemon runs");
+
+    assert!(!output.status.success(), "second daemon became active");
+    assert!(!second_socket.exists(), "contended daemon bound its socket");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("database.singleton_ownership.refused"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(database.url()), "{stderr}");
+
+    first.kill().expect("first daemon stops");
+    let _ = first.wait();
+    let _ = fs::remove_dir_all(first_root);
+    let _ = fs::remove_dir_all(second_root);
+}
+
+#[test]
 fn second_daemon_cannot_replace_live_socket() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");

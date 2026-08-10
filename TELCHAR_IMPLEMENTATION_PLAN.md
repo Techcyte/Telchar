@@ -1150,12 +1150,12 @@ Evidence: paths and output facts to record
   - Verify: `sh scripts/check-singleton-ownership-contract.sh`.
   - Evidence: `docs/adr/singleton-ownership.md` covers contention, database disconnect, forbidden reconnect continuity, graceful shutdown, process crash, selected fixed key derivation, side-effect fencing, takeover boundary, and sanitized telemetry.
 
-- [ ] T101B Acquire singleton ownership before service activation
+- [x] T101B Acquire singleton ownership before service activation
   - Depends on: T101A
-  - Outcome: daemon acquires the fixed PostgreSQL advisory lock on a dedicated connection before opening admission, scheduling, reconciliation, or administrative mutation paths; contention fails startup cleanly.
-  - Red: two daemon processes sharing PostgreSQL both become ready.
-  - Verify: real PostgreSQL two-process startup integration test.
-  - Evidence: one ready daemon, one deterministic refusal, and structured telemetry.
+  - Outcome: the daemon acquires the fixed PostgreSQL advisory lock on a dedicated lifetime connection after migrations and before reconciliation, socket binding, admission, or other service activation; contention fails startup without waiting.
+  - Red: the real PostgreSQL ownership test failed to compile because no singleton ownership module or operation existed.
+  - Verify: `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 nix develop -c cargo test -p telchar --test singleton_ownership --locked -- --test-threads=1 --nocapture`; all Telchar targets and lint checks.
+  - Evidence: one owner acquires, a concurrent owner receives typed contention, replacement acquires only after connection release, daemon startup emits bounded acquired/refused telemetry, and lock values or database details are not emitted.
 
 - [ ] T101C Fence daemon after ownership loss
   - Depends on: T101B

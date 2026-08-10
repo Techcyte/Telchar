@@ -8,6 +8,7 @@ pub mod nar;
 pub mod nix_fixture;
 pub mod persistence;
 pub mod session;
+pub mod singleton_ownership;
 pub mod store_closure;
 pub mod store_daemon;
 pub mod store_export;
