@@ -1278,13 +1278,13 @@ Evidence: paths and output facts to record
   - Verify: submitter-disconnect process test plus real PostgreSQL running-state restart test; full serial persistence, executor-service, executor-execution, and IPC frontend suites; all Telchar targets; clippy; formatting; diagnostics.
   - Evidence: the same running attempt, backend execution, idempotency key, start timestamps, and active reservation survive repeated recovery; one attempt and one executor-registry row persist; no terminal outcome or duplicate execution is fabricated.
 
-- [ ] T113 Recover collecting attempt
-  - Approved prerequisite: terminal local executor state now atomically owns one immutable bounded result row, with idempotent identical writes and conflict rejection for changed terminal data.
-  - Depends on: T106
-  - Outcome: output collection resumes idempotently.
-  - Red: restart duplicates or loses import.
-  - Verify: collection crash-point test.
-  - Evidence: one valid output and terminal state.
+- [x] T113 Recover collecting attempt
+  - Approved prerequisite: terminal local executor state atomically owns one immutable bounded result row, with idempotent identical writes and conflict rejection for changed terminal data.
+  - Depends on: T106, T110B
+  - Outcome: startup reconstructs collecting attempts only when gateway lifecycle, active collecting reservation, stable backend identity, terminal executor registry state, and immutable backend result agree; successful output validation, deterministic root identity, durable output leases, and terminal success then resume idempotently.
+  - Red: the restart fixture first failed because no collecting recovery operation existed, then because output-lease creation had no exact-set idempotent recovery operation.
+  - Verify: real PostgreSQL restart at the collecting crash point, repeated recovery, idempotent output-lease creation, terminal completion, full serial persistence and IPC suites, executor process tests, compile, clippy, formatting, diagnostics.
+  - Evidence: one attempt, one backend result, one output lease, and one immutable execution outcome persist; repeated pre-terminal recovery returns the same work and post-terminal recovery returns none.
 
 ### Identity and admission
 
