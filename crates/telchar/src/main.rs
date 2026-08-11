@@ -425,7 +425,30 @@ fn run_daemon() -> io::Result<()> {
         config.static_ssh_backends(),
         Duration::from_secs(10),
     )?;
-    let backends = Arc::new(telchar::backend_routing::ConfiguredBackends::new(&config)?);
+    let mut configured_backends = telchar::backend_routing::ConfiguredBackends::new(&config)?;
+    let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
+        .map_err(|_| invalid("shared build recovery failed"))?;
+    let reconciliation = if active_shared_builds.is_empty() {
+        telchar::shared_build_recovery::ReconciliationOutcome::default()
+    } else {
+        let mut shared_build_outputs =
+            telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment()?;
+        telchar::shared_build_recovery::reconcile_shared_builds(
+            &database_url,
+            deployment.output_retention().duration(),
+            active_shared_builds,
+            &mut shared_build_outputs,
+            &mut configured_backends,
+        )?
+    };
+    tracing::info!(
+        event = "database.shared_build.reconciled",
+        succeeded_count = reconciliation.succeeded,
+        failed_count = reconciliation.failed,
+        monitoring_count = reconciliation.monitoring,
+        "active shared builds reconciled"
+    );
+    let backends = Arc::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);

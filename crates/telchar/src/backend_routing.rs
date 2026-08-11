@@ -1,7 +1,9 @@
 use std::io;
 use std::sync::Arc;
 
-use crate::backend::{BackendKind, BackendPool, BuildBackend, BuildExecution, BuildResult};
+use crate::backend::{
+    BackendCapabilities, BackendKind, BackendPool, BuildBackend, BuildExecution, BuildResult,
+};
 use crate::config::{ServiceConfig, StaticSshBackendConfig};
 use crate::store_daemon::GatewayStoreEndpoint;
 
@@ -41,6 +43,26 @@ impl ConfiguredBackends {
         BackendExecutor {
             backends: self.clone(),
         }
+    }
+}
+
+impl crate::shared_build_recovery::RecoveryBackend for ConfiguredBackends {
+    fn capabilities(&self, backend_name: &str) -> Option<(BackendKind, BackendCapabilities)> {
+        self.inner
+            .pool
+            .targets()
+            .find(|target| target.name() == backend_name)
+            .map(|target| (target.kind(), target.capabilities()))
+    }
+
+    fn adopt(
+        &mut self,
+        _build: &crate::persistence::SharedBuild,
+    ) -> io::Result<crate::shared_build_recovery::AdoptedExecution> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend execution adoption is unavailable",
+        ))
     }
 }
 

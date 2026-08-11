@@ -3,11 +3,44 @@ use std::time::Duration;
 
 use crate::backend::{BackendCapabilities, BackendKind, ExecutionRecovery};
 use crate::persistence::{self, SharedBuild, SharedBuildState};
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 const MAXIMUM_ACTIVE_SHARED_BUILDS: usize = 256;
 
 pub trait SharedBuildOutputStore {
     fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool>;
+}
+
+pub struct GatewaySharedBuildOutputStore {
+    endpoint: GatewayStoreEndpoint,
+}
+
+impl GatewaySharedBuildOutputStore {
+    pub fn from_environment() -> io::Result<Self> {
+        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })?;
+        let endpoint = GatewayStoreEndpoint::parse_os(&endpoint)?;
+        Ok(Self { endpoint })
+    }
+}
+
+impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
+    fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool> {
+        if outputs.is_empty() {
+            return Ok(true);
+        }
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        for output in outputs {
+            if connection.query_path_info(output.as_bytes())?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +70,16 @@ pub fn reconcile_active_shared_builds(
 ) -> io::Result<ReconciliationOutcome> {
     let active = persistence::read_active_shared_builds(database_url, MAXIMUM_ACTIVE_SHARED_BUILDS)
         .map_err(|_| io::Error::other("shared build recovery failed"))?;
+    reconcile_shared_builds(database_url, retention, active, outputs, backends)
+}
+
+pub fn reconcile_shared_builds(
+    database_url: &str,
+    retention: Duration,
+    active: Vec<SharedBuild>,
+    outputs: &mut dyn SharedBuildOutputStore,
+    backends: &mut dyn RecoveryBackend,
+) -> io::Result<ReconciliationOutcome> {
     let mut outcome = ReconciliationOutcome::default();
     for build in active {
         if outputs.contains_all(&build.expected_outputs)? {

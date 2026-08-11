@@ -197,6 +197,10 @@ impl BackendPool {
         })
     }
 
+    pub fn targets(&self) -> impl Iterator<Item = &BackendTarget> {
+        self.inner.targets.iter()
+    }
+
     pub fn acquire(
         &self,
         system: &str,
