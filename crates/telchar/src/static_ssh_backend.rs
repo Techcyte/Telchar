@@ -1,6 +1,7 @@
 use std::io::{self, Read, Seek, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{ChildStdin, ChildStdout, Stdio};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use nix_worker_protocol::{
@@ -15,6 +16,70 @@ use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 const MAXIMUM_BUILD_LOG_CHUNK_BYTES: usize = 8192;
 const MAXIMUM_QUEUED_BUILD_LOG_CHUNKS: usize = 8;
+
+pub fn verify_configured_backends(
+    backends: &[StaticSshBackendConfig],
+    timeout: Duration,
+) -> io::Result<()> {
+    for backend in backends {
+        verify_backend(backend, timeout)?;
+        tracing::info!(
+            event = "backend.static_ssh.verified",
+            backend = backend.target().name(),
+            system = backend.target().system(),
+            "static SSH backend verified"
+        );
+    }
+    Ok(())
+}
+
+fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration) -> io::Result<()> {
+    let mut command = ssh_command(config);
+    let mut child = ChildGuard::new(command.spawn()?);
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stdin is unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stdout is unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stderr is unavailable"))?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut reader = stderr.take(MAXIMUM_BUILD_LOG_CHUNK_BYTES as u64);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).map(|_| ())
+    });
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let result = WorkerClient::connect(WorkerStream { stdin, stdout }).map(|_| ());
+        let _ = sender.send(result);
+    });
+    let result = match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            child.kill_and_reap();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "static SSH verification timed out",
+            ))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("static SSH verification failed"))
+        }
+    };
+    child.kill_and_reap();
+    worker
+        .join()
+        .map_err(|_| io::Error::other("static SSH verification failed"))?;
+    stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("static SSH verification failed"))??;
+    result.map_err(|_| io::Error::other("static SSH worker protocol failed"))
+}
 
 pub fn executor_from_config(
     config: &crate::config::ServiceConfig,
@@ -56,32 +121,7 @@ impl StaticSshBackend {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
-        let mut command = std::process::Command::new(self.config.ssh_program());
-        configure_child_lifecycle(&mut command);
-        command
-            .args([
-                "-T",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ClearAllForwardings=yes",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-            ])
-            .arg(format!(
-                "UserKnownHostsFile={}",
-                self.config.known_hosts_file().display()
-            ))
-            .arg("-i")
-            .arg(self.config.identity_file())
-            .arg(self.config.destination())
-            .arg("nix-daemon --stdio")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut command = ssh_command(&self.config);
         let mut child = ChildGuard::new(command.spawn()?);
         let stdin = child
             .stdin
@@ -461,6 +501,36 @@ fn join_log_reader(reader: std::thread::JoinHandle<io::Result<()>>) -> io::Resul
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn ssh_command(config: &StaticSshBackendConfig) -> std::process::Command {
+    let mut command = std::process::Command::new(config.ssh_program());
+    configure_child_lifecycle(&mut command);
+    command
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+        ])
+        .arg(format!(
+            "UserKnownHostsFile={}",
+            config.known_hosts_file().display()
+        ))
+        .arg("-i")
+        .arg(config.identity_file())
+        .arg(config.destination())
+        .arg("nix-daemon --stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
 fn configure_child_lifecycle(command: &mut std::process::Command) {
     unsafe {
         command.pre_exec(|| {
