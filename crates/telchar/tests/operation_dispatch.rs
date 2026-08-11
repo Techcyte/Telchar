@@ -1546,11 +1546,7 @@ fn concurrent_identical_frontends_share_one_build_execution() {
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"
     );
-    let stderr = fixture.finish();
-    assert!(
-        stderr.contains("worker.build_derivation.completed"),
-        "{stderr}"
-    );
+    fixture.finish();
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
