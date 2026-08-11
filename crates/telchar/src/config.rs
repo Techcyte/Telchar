@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -16,6 +17,9 @@ const MAXIMUM_CREDENTIAL_MAPPINGS: usize = 4_096;
 const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
 const MAXIMUM_STATIC_SSH_BACKENDS: usize = 256;
+const MAXIMUM_BACKEND_CONCURRENT_BUILDS: usize = 65_536;
+const DEFAULT_BACKEND_PERMIT_WAIT_SECONDS: u64 = 30;
+const MAXIMUM_BACKEND_PERMIT_WAIT_SECONDS: u64 = 3_600;
 const MAXIMUM_SSH_DESTINATION_BYTES: usize = 512;
 const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
 const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
@@ -27,8 +31,25 @@ pub struct CredentialMapping {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalBackendConfig {
+    target: BackendTarget,
+    maximum_concurrent_builds: usize,
+}
+
+impl LocalBackendConfig {
+    pub fn target(&self) -> &BackendTarget {
+        &self.target
+    }
+
+    pub fn maximum_concurrent_builds(&self) -> usize {
+        self.maximum_concurrent_builds
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticSshBackendConfig {
     target: BackendTarget,
+    maximum_concurrent_builds: usize,
     destination: String,
     identity_file: PathBuf,
     known_hosts_file: PathBuf,
@@ -38,6 +59,10 @@ pub struct StaticSshBackendConfig {
 impl StaticSshBackendConfig {
     pub fn target(&self) -> &BackendTarget {
         &self.target
+    }
+
+    pub fn maximum_concurrent_builds(&self) -> usize {
+        self.maximum_concurrent_builds
     }
 
     pub fn destination(&self) -> &str {
@@ -65,6 +90,8 @@ pub struct ServiceConfig {
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
     credential_mappings: BTreeMap<String, CredentialMapping>,
+    backend_permit_wait: Duration,
+    local_backend: Option<LocalBackendConfig>,
     static_ssh_backends: Vec<StaticSshBackendConfig>,
 }
 
@@ -126,6 +153,14 @@ impl ServiceConfig {
 
     pub fn credential_mapping(&self, credential_id: &str) -> Option<&CredentialMapping> {
         self.credential_mappings.get(credential_id)
+    }
+
+    pub fn backend_permit_wait(&self) -> Duration {
+        self.backend_permit_wait
+    }
+
+    pub fn local_backend(&self) -> Option<&LocalBackendConfig> {
+        self.local_backend.as_ref()
     }
 
     pub fn static_ssh_backends(&self) -> &[StaticSshBackendConfig] {
@@ -239,11 +274,17 @@ impl ServiceConfig {
                 .map(|identity| identity.credentials)
                 .unwrap_or_default(),
         )?;
-        let static_ssh_backends = validate_static_ssh_backends(
-            raw.backends
-                .map(|backends| backends.static_ssh)
-                .unwrap_or_default(),
-        )?;
+        let backends = raw.backends.unwrap_or_default();
+        let backend_permit_wait_seconds = backends
+            .permit_wait_seconds
+            .unwrap_or(DEFAULT_BACKEND_PERMIT_WAIT_SECONDS);
+        if backend_permit_wait_seconds == 0
+            || backend_permit_wait_seconds > MAXIMUM_BACKEND_PERMIT_WAIT_SECONDS
+        {
+            return Err(invalid("backend permit wait is invalid"));
+        }
+        let local_backend = backends.local.map(validate_local_backend).transpose()?;
+        let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
         Ok(Self {
             deployment,
             running_disconnect_policy,
@@ -251,6 +292,8 @@ impl ServiceConfig {
             ipc_socket,
             maximum_ipc_sessions,
             credential_mappings,
+            backend_permit_wait: Duration::from_secs(backend_permit_wait_seconds),
+            local_backend,
             static_ssh_backends,
         })
     }
@@ -315,11 +358,23 @@ impl RawIdentityConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BackendConfig {
+    permit_wait_seconds: Option<u64>,
+    local: Option<RawLocalBackendConfig>,
     #[serde(default)]
     static_ssh: Vec<RawStaticSshBackendConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLocalBackendConfig {
+    name: String,
+    system: String,
+    #[serde(default)]
+    supported_features: Vec<String>,
+    maximum_concurrent_builds: usize,
 }
 
 #[derive(Deserialize)]
@@ -329,6 +384,7 @@ struct RawStaticSshBackendConfig {
     system: String,
     #[serde(default)]
     supported_features: Vec<String>,
+    maximum_concurrent_builds: usize,
     destination: String,
     identity_file: PathBuf,
     known_hosts_file: PathBuf,
@@ -382,6 +438,19 @@ fn validate_mappings(
         .collect()
 }
 
+fn validate_local_backend(raw: RawLocalBackendConfig) -> io::Result<LocalBackendConfig> {
+    validate_backend_capacity(raw.maximum_concurrent_builds)?;
+    Ok(LocalBackendConfig {
+        target: BackendTarget::new(
+            &raw.name,
+            BackendKind::Local,
+            &raw.system,
+            &raw.supported_features,
+        )?,
+        maximum_concurrent_builds: raw.maximum_concurrent_builds,
+    })
+}
+
 fn validate_static_ssh_backends(
     raw: Vec<RawStaticSshBackendConfig>,
 ) -> io::Result<Vec<StaticSshBackendConfig>> {
@@ -396,6 +465,7 @@ fn validate_static_ssh_backends(
         {
             return Err(invalid("static SSH backend name is ambiguous"));
         }
+        validate_backend_capacity(backend.maximum_concurrent_builds)?;
         if !valid_ssh_destination(&backend.destination) {
             return Err(invalid("static SSH destination is invalid"));
         }
@@ -412,6 +482,7 @@ fn validate_static_ssh_backends(
                 &backend.system,
                 &backend.supported_features,
             )?,
+            maximum_concurrent_builds: backend.maximum_concurrent_builds,
             destination: backend.destination,
             identity_file: backend.identity_file,
             known_hosts_file: backend.known_hosts_file,
@@ -419,6 +490,13 @@ fn validate_static_ssh_backends(
         });
     }
     Ok(backends)
+}
+
+fn validate_backend_capacity(maximum: usize) -> io::Result<()> {
+    if maximum == 0 || maximum > MAXIMUM_BACKEND_CONCURRENT_BUILDS {
+        return Err(invalid("backend concurrency limit is invalid"));
+    }
+    Ok(())
 }
 
 fn valid_ssh_destination(value: &str) -> bool {

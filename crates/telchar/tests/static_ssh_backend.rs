@@ -35,7 +35,7 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()

@@ -60,6 +60,15 @@ quota_subject = "engineering"
 [identity.credentials."ssh-pubkey:SHA256:def"]
 audit_subject = "automation"
 quota_subject = "engineering"
+
+[backends]
+permit_wait_seconds = 30
+
+[backends.local]
+name = "local"
+system = "x86_64-linux"
+supported_features = ["kvm"]
+maximum_concurrent_builds = 2
 "#,
             database_url_file.display()
         ),
@@ -92,6 +101,10 @@ quota_subject = "engineering"
         Path::new("/run/telchar/daemon.sock")
     );
     assert_eq!(config.maximum_ipc_sessions(), 32);
+    assert_eq!(config.backend_permit_wait().as_secs(), 30);
+    let local = config.local_backend().expect("local backend exists");
+    assert_eq!(local.target().name(), "local");
+    assert_eq!(local.maximum_concurrent_builds(), 2);
     let mapping = config
         .credential_mapping("ssh-pubkey:SHA256:abc")
         .expect("credential mapping exists");
@@ -131,6 +144,7 @@ fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
 name = "darwin-builder"
 system = "aarch64-darwin"
 supported_features = ["apple-virt", "big-parallel"]
+maximum_concurrent_builds = 4
 destination = "telchar-builder@builder.example"
 identity_file = "{}"
 known_hosts_file = "{}"
@@ -154,6 +168,7 @@ ssh_program = "{}"
     assert_eq!(backend.target().kind(), BackendKind::StaticSsh);
     assert_eq!(backend.target().system(), "aarch64-darwin");
     assert_eq!(backend.target().features(), ["apple-virt", "big-parallel"]);
+    assert_eq!(backend.maximum_concurrent_builds(), 4);
     assert_eq!(backend.destination(), "telchar-builder@builder.example");
     assert_eq!(backend.identity_file(), identity_file);
     assert_eq!(backend.known_hosts_file(), known_hosts_file);
