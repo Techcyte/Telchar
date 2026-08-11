@@ -187,6 +187,74 @@ let
     };
   };
 
+  staticSshBuilderModule = machineModule {
+    role = "static-ssh-builder";
+    extraConfig = {
+      environment.systemPackages = [ pkgs.nix ];
+      services.openssh = {
+        enable = true;
+        settings = {
+          PasswordAuthentication = false;
+          KbdInteractiveAuthentication = false;
+          PermitRootLogin = "no";
+          PermitTTY = false;
+          AllowTcpForwarding = false;
+          AllowAgentForwarding = false;
+          X11Forwarding = false;
+          PermitUserEnvironment = false;
+        };
+      };
+      users.users.telchar-builder = {
+        isSystemUser = true;
+        uid = 994;
+        group = "telchar-builder";
+        home = "/var/lib/telchar-builder";
+        createHome = true;
+        shell = "${pkgs.bashInteractive}/bin/bash";
+      };
+      users.groups.telchar-builder = { };
+      nix.settings.trusted-users = [
+        "root"
+        "telchar-builder"
+      ];
+      environment.etc."telchar-static-ssh/forced-command" = {
+        mode = "0555";
+        text = ''
+          #!${pkgs.runtimeShell}
+          set -eu
+          evidence=/var/lib/telchar-builder/forced-command-evidence
+          printf 'original_command=%s agent_socket=%s display=%s\n' \
+            "''${SSH_ORIGINAL_COMMAND-}" "''${SSH_AUTH_SOCK-}" "''${DISPLAY-}" >> "$evidence"
+          case "''${SSH_ORIGINAL_COMMAND-}" in
+            "nix-daemon --stdio") exec ${pkgs.nix}/bin/nix-daemon --stdio ;;
+            *) exit 126 ;;
+          esac
+        '';
+      };
+      systemd.tmpfiles.rules = [
+        "f /var/lib/telchar-builder/forced-command-evidence 0600 telchar-builder telchar-builder -"
+      ];
+      environment.etc."ssh/sshd_config.d/telchar-static-builder.conf".text = ''
+        Match User telchar-builder
+          AuthorizedKeysFile /var/lib/telchar-builder/.ssh/authorized_keys
+          ForceCommand /etc/telchar-static-ssh/forced-command
+          DisableForwarding yes
+          PermitTTY no
+          PermitUserEnvironment no
+      '';
+    };
+  };
+
+  staticSshClientModule = machineModule {
+    role = "static-ssh-client";
+    extraConfig = {
+      environment.systemPackages = [
+        pkgs.nix
+        pkgs.openssh
+      ];
+    };
+  };
+
   restartDatabaseModule = machineModule {
     role = "postgres";
     extraConfig = {
@@ -294,6 +362,43 @@ rec {
     waitForTelchar = machine: "${machine}.wait_for_unit(\"telchar.service\")";
     assertNetwork = source: destination: "${source}.succeed(\"ping -c 1 ${destination}\")";
   };
+
+  mkStaticSshFixtureTest =
+    {
+      name,
+      testScript ? "",
+    }:
+    pkgs.testers.nixosTest {
+      inherit name;
+      nodes = {
+        client = staticSshClientModule;
+        builder = staticSshBuilderModule;
+      };
+      testScript = ''
+        start_all()
+        builder.wait_for_unit("sshd.service")
+        client.succeed("mkdir -p /root/.ssh && ssh-keygen -q -t ed25519 -N \"\" -f /root/.ssh/telchar-builder")
+        public_key = client.succeed("cat /root/.ssh/telchar-builder.pub").strip()
+        builder.succeed("mkdir -p /var/lib/telchar-builder/.ssh")
+        builder.succeed("printf 'command=\"/etc/telchar-static-ssh/forced-command\",restrict %s\\n' '" + public_key + "' > /var/lib/telchar-builder/.ssh/authorized_keys")
+        builder.succeed("chown -R telchar-builder:telchar-builder /var/lib/telchar-builder/.ssh && chmod 700 /var/lib/telchar-builder/.ssh && chmod 600 /var/lib/telchar-builder/.ssh/authorized_keys")
+        client.succeed("ssh-keyscan -t ed25519 builder > /root/.ssh/known_hosts 2>/dev/null")
+        ssh_options = "-i /root/.ssh/telchar-builder -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts telchar-builder@builder"
+        client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar-builder -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts' timeout 30 nix --extra-experimental-features nix-command store ping --store ssh-ng://telchar-builder@builder > /tmp/store-ping 2>&1")
+        client.succeed("grep -q 'Store URL: ssh-ng://telchar-builder@builder' /tmp/store-ping || { cat /tmp/store-ping >&2; exit 1; }")
+        builder.succeed("grep -Eq '^original_command=.*/?nix-daemon --stdio agent_socket= display=$' /var/lib/telchar-builder/forced-command-evidence || { cat /var/lib/telchar-builder/forced-command-evidence >&2; exit 1; }")
+        client.fail("timeout 10 ssh " + ssh_options + " true")
+        builder.succeed("grep -q '^original_command=true agent_socket= display=$' /var/lib/telchar-builder/forced-command-evidence")
+        client.succeed("test $(timeout -s KILL 5 ssh -tt " + ssh_options + " true >/tmp/pty.out 2>&1; echo $?) -ne 0")
+        client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:22345:127.0.0.1:22 -N " + ssh_options + " >/tmp/local-forward.out 2>&1; echo $?) -ne 0")
+        client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:22346:127.0.0.1:22 -N " + ssh_options + " >/tmp/remote-forward.out 2>&1; echo $?) -ne 0")
+        client.succeed("eval $(ssh-agent -s) >/tmp/agent-env && ssh-add /root/.ssh/telchar-builder >/dev/null")
+        client.succeed("test $(timeout -s KILL 5 ssh -A " + ssh_options + " true >/tmp/agent-forward.out 2>&1; echo $?) -ne 0")
+        client.succeed("test $(DISPLAY=:99 timeout -s KILL 5 ssh -X " + ssh_options + " true >/tmp/x11.out 2>&1; echo $?) -ne 0")
+        builder.succeed("! grep -Eq 'agent_socket=[^ ]+|display=[^ ]+' /var/lib/telchar-builder/forced-command-evidence")
+        ${testScript}
+      '';
+    };
 
   mkRestartRecoveryTest =
     {

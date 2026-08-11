@@ -120,6 +120,19 @@
                 stock_client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:22345:127.0.0.1:22 -N " + ssh_options + " >/tmp/local-forward.out 2>&1; echo $?) -ne 0")
               '';
             };
+          nixos-static-ssh-fixture =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+            in
+            harness.mkStaticSshFixtureTest {
+              name = "telchar-nixos-static-ssh-fixture";
+              testScript = ''
+                start_all()
+              '';
+            };
           nixos-gate-3-contract =
             let
               harness = import ./tests/nixos/lib.nix {
