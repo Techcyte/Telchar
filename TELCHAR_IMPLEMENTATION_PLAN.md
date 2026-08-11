@@ -1368,10 +1368,12 @@ Completed durable-state work above remains valid implementation history and may 
   - Verify: 9 service configuration tests, all-target compilation, clippy, formatting, diff, and diagnostics.
   - Evidence: valid configuration produces a `BackendKind::StaticSsh` target; relative or missing files, permissive private-key mode, writable known-hosts mode, absent pinned keys, unsafe destinations, duplicate names, excessive counts, unsupported fields, and invalid target metadata fail startup.
 
-- [ ] T124 Provision a restricted static SSH builder fixture
+- [x] T124 Provision a restricted static SSH builder fixture
   - Depends on: T123
-  - Outcome: a real SSH builder accepts only the required build path and denies general shell and forwarding access.
-  - Verify: NixOS VM security fixture.
+  - Outcome: a real two-node NixOS VM fixture provisions a dedicated unprivileged SSH builder account whose fixed command accepts only `nix-daemon --stdio`; public-key authentication uses a pinned client-side host key and shell, PTY, local/remote TCP forwarding, agent forwarding, X11 forwarding, and user environment requests are denied.
+  - Red: flake evaluation failed because no static SSH fixture harness existed; the first VM runs exposed missing forced-command execution, unwritable evidence state, command-shape assumptions, and PTY test-driver hangs before the fixture became authoritative.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-static-ssh-fixture --no-link -L`, flake evaluation, nixfmt, diff, and diagnostics.
+  - Evidence: stock Nix `ssh-ng` successfully completes `store ping` through the restricted account while arbitrary commands and every tested forwarding or interactive channel fail; server evidence contains no forwarded agent socket or display.
 
 - [ ] T125 Execute and collect one build through static SSH
   - Depends on: T122, T124
