@@ -13,6 +13,7 @@ pub mod nix_fixture;
 pub mod persistence;
 pub mod session;
 pub mod shared_build;
+pub mod shared_build_recovery;
 pub mod singleton_ownership;
 pub mod static_ssh_backend;
 pub mod store_closure;
