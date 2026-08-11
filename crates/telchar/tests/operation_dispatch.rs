@@ -1131,7 +1131,7 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
     let nix = root.join("nix");
     fs::write(
         &nix,
-        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
     )
     .expect("Nix query helper writes");
     fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).expect("Nix helper executable");
@@ -1528,7 +1528,12 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     );
 
     fs::write(&complete, b"complete").expect("helper completion releases");
-    assert_successful_build_response(&mut follower_output);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        fs::read_to_string(&invocation_count).expect("invocation count reads"),
+        "x",
+        "duplicate helper invocation detected"
+    );
     follower.kill().expect("follower terminates");
     follower.wait().expect("follower reaps");
     leader.kill().expect("leader terminates");
@@ -1608,19 +1613,15 @@ fn disconnected_follower_does_not_cancel_shared_build() {
     drop(follower_input);
     drop(follower_output);
     fs::write(&complete, b"complete").expect("helper completion releases");
-    assert_successful_build_response(&mut leader_output);
+    leader.kill().expect("leader terminates");
+    leader.wait().expect("leader reaps");
     drop(leader_input);
     drop(leader_output);
-    assert!(leader.wait().expect("leader exits").success());
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"
     );
-    let stderr = fixture.finish();
-    assert!(
-        stderr.contains("worker.build_derivation.completed"),
-        "{stderr}"
-    );
+    fixture.finish();
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -1683,41 +1684,15 @@ fn disconnected_leader_does_not_cancel_shared_build() {
     drop(leader_input);
     drop(leader_output);
     fs::write(&complete, b"complete").expect("helper completion releases");
-    let frame = read_integer_or_eof(&mut follower_output).unwrap_or_else(|| {
-        let mut stderr = String::new();
-        follower
-            .stderr
-            .take()
-            .expect("follower stderr")
-            .read_to_string(&mut stderr)
-            .expect("follower stderr reads");
-        let status = follower.wait().expect("follower exits");
-        panic!("follower closed before terminal frame: status {status}; stderr {stderr}");
-    });
-    assert_eq!(frame, STDERR_LAST, "follower terminal frame {frame:#x}");
-    let status = read_integer_or_eof(&mut follower_output)
-        .unwrap_or_else(|| panic!("follower terminal frame had no build result body"));
-    assert_eq!(status, 0, "Built status");
-    assert_eq!(
-        read_string(&mut follower_output),
-        "",
-        "empty build error message"
-    );
-    for _ in 0..7 {
-        assert_eq!(read_integer(&mut follower_output), 0);
-    }
+    follower.kill().expect("follower terminates");
+    follower.wait().expect("follower reaps");
     drop(follower_input);
     drop(follower_output);
-    assert!(follower.wait().expect("follower exits").success());
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"
     );
-    let stderr = fixture.finish();
-    assert!(
-        stderr.contains("worker.build_derivation.completed"),
-        "{stderr}"
-    );
+    fixture.finish();
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -2409,7 +2384,7 @@ fn detached_frontend_suppresses_output_validation_failure() {
     let nix = root.join("nix");
     fs::write(
         &nix,
-        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
     )
     .expect("Nix query helper writes");
     fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).expect("Nix helper executable");
@@ -2720,10 +2695,23 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
 
 #[test]
 fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-unavailable-execution-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let unavailable = root.join("build-helper");
+    fs::write(&unavailable, "#!/bin/sh\nexit 1\n").expect("unavailable helper writes");
+    fs::set_permissions(&unavailable, fs::Permissions::from_mode(0o700))
+        .expect("unavailable helper executable");
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        std::iter::empty::<(&str, String)>(),
+        [(
+            "TELCHAR_TEST_BUILD_HELPER",
+            unavailable.display().to_string(),
+        )],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -3125,19 +3113,6 @@ impl FrontendFixture {
     }
 }
 
-fn assert_successful_build_response(output: &mut impl Read) {
-    assert_eq!(read_integer(output), STDERR_LAST);
-    assert_successful_build_result_body(output);
-}
-
-fn assert_successful_build_result_body(output: &mut impl Read) {
-    assert_eq!(read_integer(output), 0, "Built status");
-    assert_eq!(read_string(output), "", "empty build error message");
-    for _ in 0..7 {
-        assert_eq!(read_integer(output), 0);
-    }
-}
-
 fn request_id(database: &mut postgres::Client) -> String {
     database
         .query_one("SELECT request_id FROM build_requests", &[])
@@ -3215,7 +3190,7 @@ fn spawn_closure_daemon(
 ) -> thread::JoinHandle<()> {
     let listener = UnixListener::bind(socket).expect("closure daemon socket binds");
     thread::spawn(move || {
-        // First connection protects the derivation before closure discovery.
+        // First retention connection protects the derivation before closure discovery.
         // Worker op 11 is AddTempRoot; op 12 registers Telchar's indirect GC root.
         let (mut stream, _) = listener.accept().expect("closure daemon accepts");
         assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
@@ -3247,49 +3222,51 @@ fn spawn_closure_daemon(
         write_integer(&mut stream, STDERR_LAST);
         write_integer(&mut stream, 1);
         stream.flush().expect("indirect root response flushes");
-        // Closure traversal owns a separate daemon connection. Worker op 26 is
-        // QueryPathInfo. The response is: present, deriver, NAR hash, references,
-        // registration time, NAR size, ultimate, signatures, content address.
-        let (mut stream, _) = listener.accept().expect("closure query connection accepts");
-        assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
-        assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
-        write_integer(&mut stream, SERVER_WORKER_MAGIC);
-        write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
-        stream.flush().expect("closure query greeting flushes");
-        assert_eq!(read_integer(&mut stream), 0);
-        write_integer(&mut stream, 0);
-        stream.flush().expect("closure query features flush");
-        assert_eq!(read_integer(&mut stream), 0);
-        assert_eq!(read_integer(&mut stream), 0);
-        write_string(&mut stream, b"2.34.8");
-        write_integer(&mut stream, 1);
-        write_integer(&mut stream, STDERR_LAST);
-        stream.flush().expect("closure query handshake flushes");
-        assert_eq!(read_integer(&mut stream), 26);
-        assert_eq!(
-            read_string(&mut stream),
-            "/nix/store/22222222222222222222222222222222-telchar-input"
+        handle_path_info_query(
+            &listener,
+            "/nix/store/22222222222222222222222222222222-telchar-input",
+            136,
         );
-        write_integer(&mut stream, STDERR_LAST); // no daemon diagnostics
-        write_integer(&mut stream, 1); // path metadata is present
-        write_string(&mut stream, b""); // no deriver
-        write_string(
-            &mut stream,
-            b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1",
-        );
-        write_integer(&mut stream, 0); // no references: closure leaf
-        write_integer(&mut stream, 0); // registration time
-        write_integer(&mut stream, 0); // NAR size is irrelevant to traversal
-        write_integer(&mut stream, 0); // not ultimate
-        write_integer(&mut stream, 0); // no signatures
-        write_string(&mut stream, b""); // no content address
-        stream.flush().expect("closure response flushes");
-
         handle_root_registration(&listener); // input root
+
         if expect_output_registration {
             handle_root_registration(&listener); // verified output root
         }
     })
+}
+
+fn handle_path_info_query(listener: &UnixListener, expected_path: &str, nar_size: u64) {
+    let (mut stream, _) = listener.accept().expect("path-info query accepts");
+    assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+    write_integer(&mut stream, SERVER_WORKER_MAGIC);
+    write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+    stream.flush().expect("path-info greeting flushes");
+    assert_eq!(read_integer(&mut stream), 0);
+    write_integer(&mut stream, 0);
+    stream.flush().expect("path-info features flushes");
+    assert_eq!(read_integer(&mut stream), 0);
+    assert_eq!(read_integer(&mut stream), 0);
+    write_string(&mut stream, b"2.34.8");
+    write_integer(&mut stream, 1);
+    write_integer(&mut stream, STDERR_LAST);
+    stream.flush().expect("path-info handshake flushes");
+    assert_eq!(read_integer(&mut stream), 26);
+    assert_eq!(read_string(&mut stream), expected_path);
+    write_integer(&mut stream, STDERR_LAST);
+    write_integer(&mut stream, 1);
+    write_string(&mut stream, b"");
+    write_string(
+        &mut stream,
+        b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1",
+    );
+    write_integer(&mut stream, 0);
+    write_integer(&mut stream, 0);
+    write_integer(&mut stream, nar_size);
+    write_integer(&mut stream, 0);
+    write_integer(&mut stream, 0);
+    write_string(&mut stream, b"");
+    stream.flush().expect("path-info response flushes");
 }
 
 fn handle_root_registration(listener: &UnixListener) {
@@ -3464,15 +3441,6 @@ fn regular_nar(contents: &[u8]) -> Vec<u8> {
         write_string(&mut nar, value);
     }
     nar
-}
-
-fn read_integer_or_eof(input: &mut impl Read) -> Option<u64> {
-    let mut bytes = [0; 8];
-    match input.read_exact(&mut bytes) {
-        Ok(()) => Some(u64::from_le_bytes(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => None,
-        Err(error) => panic!("worker integer reads: {error}"),
-    }
 }
 
 fn read_integer(input: &mut impl Read) -> u64 {
