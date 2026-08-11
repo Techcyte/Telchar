@@ -167,6 +167,17 @@ impl ServiceConfig {
         &self.static_ssh_backends
     }
 
+    pub fn backend_targets(&self) -> impl Iterator<Item = &BackendTarget> {
+        self.local_backend
+            .iter()
+            .map(LocalBackendConfig::target)
+            .chain(
+                self.static_ssh_backends
+                    .iter()
+                    .map(StaticSshBackendConfig::target),
+            )
+    }
+
     fn load_path(path: &Path, required: bool) -> io::Result<Self> {
         let raw = match fs::read_to_string(path) {
             Ok(raw) => RawServiceConfig::parse(&raw)?,

@@ -318,6 +318,22 @@ fn run_daemon() -> io::Result<()> {
     let config =
         telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
     let deployment = config.require_deployment()?.clone();
+    let aggregate_features = config
+        .backend_targets()
+        .filter(|target| target.system() == deployment.system())
+        .flat_map(|target| target.features().iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    if aggregate_features
+        != deployment
+            .supported_features()
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+    {
+        return Err(invalid(
+            "deployment supported features do not match configured backends",
+        ));
+    }
     let running_disconnect_policy = config.running_disconnect_policy();
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
