@@ -274,7 +274,18 @@ impl ServiceConfig {
                 .map(|identity| identity.credentials)
                 .unwrap_or_default(),
         )?;
-        let backends = raw.backends.unwrap_or_default();
+        let mut backends = raw.backends.unwrap_or_default();
+        if backends.local.is_none()
+            && backends.static_ssh.is_empty()
+            && let Some(deployment) = &deployment
+        {
+            backends.local = Some(RawLocalBackendConfig {
+                name: "local".to_owned(),
+                system: deployment.system().to_owned(),
+                supported_features: deployment.supported_features().to_vec(),
+                maximum_concurrent_builds: 1,
+            });
+        }
         let backend_permit_wait_seconds = backends
             .permit_wait_seconds
             .unwrap_or(DEFAULT_BACKEND_PERMIT_WAIT_SECONDS);
