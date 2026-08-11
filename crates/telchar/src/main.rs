@@ -82,7 +82,7 @@ fn run_executor() -> io::Result<()> {
                     {
                         return;
                     }
-                    let Ok(request) = telchar::local_executor::LocalExecutionRequest::new(
+                    let Ok(request) = telchar::backend::BuildExecution::new(
                         &specification.request_id,
                         &specification.build,
                         Duration::from_secs(specification.timeout_seconds),
@@ -113,8 +113,8 @@ fn run_executor() -> io::Result<()> {
                                     "succeeded",
                                     serde_json::json!({
                                         "status": match result.status() {
-                                            telchar::local_executor::LocalBuildStatus::Built => "built",
-                                            telchar::local_executor::LocalBuildStatus::AlreadyValid => "already-valid",
+                                            telchar::backend::BuildStatus::Built => "built",
+                                            telchar::backend::BuildStatus::AlreadyValid => "already-valid",
                                         },
                                         "outputs": outputs,
                                     }),

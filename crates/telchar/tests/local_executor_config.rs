@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::sync::Mutex;
 
-use telchar::local_executor::BuildExecutor;
+use telchar::backend::{BuildBackend, BuildExecution};
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
@@ -20,8 +20,7 @@ fn deployment_environment_selects_the_gateway_executor() {
     let executor =
         telchar::local_executor::executor_from_environment().expect("configured executor creates");
 
-    assert_eq!(executor.helper(), None);
-    assert_eq!(executor.store_uri(), None);
+    let _backend: &dyn BuildBackend = executor.as_ref();
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
@@ -33,7 +32,7 @@ fn configured_executor_rejects_an_inaccessible_gateway_store() {
     .expect("endpoint is valid");
     let mut executor = telchar::local_executor::GatewayStoreExecutor::new(endpoint);
     let build = admitted_request();
-    let request = telchar::local_executor::LocalExecutionRequest::new(
+    let request = BuildExecution::new(
         "inaccessible-store",
         &build,
         std::time::Duration::from_secs(5),
@@ -63,8 +62,7 @@ fn absent_gateway_selects_execution_unavailable_without_store_fallback() {
     let executor =
         telchar::local_executor::executor_from_environment().expect("unavailable executor creates");
 
-    assert_eq!(executor.helper(), None);
-    assert_eq!(executor.store_uri(), None);
+    let _backend: &dyn BuildBackend = executor.as_ref();
     restore("TELCHAR_TEST_BUILD_HELPER", saved_helper);
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }

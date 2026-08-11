@@ -8,9 +8,9 @@ use nix_worker_protocol::{
     write_query_valid_paths_response,
 };
 
+use crate::backend::{BuildBackend, BuildExecution, BuildStatus};
 use crate::build_request::BuildRequest;
 use crate::deployment::DeploymentConfig;
-use crate::local_executor::{BuildExecutor, LocalBuildStatus, LocalExecutionRequest};
 use crate::store_query::QueryValidPathsStore;
 
 static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -101,7 +101,7 @@ pub fn run_worker_session(
     deployment: &DeploymentConfig,
     running_disconnect_policy: crate::deployment::RunningDisconnectPolicy,
     store_query: &mut dyn QueryValidPathsStore,
-    build_executor: &mut dyn BuildExecutor,
+    build_executor: &mut dyn BuildBackend,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
     store_import: &mut dyn crate::store_import::StoreImportBackend,
     store_closure: &mut dyn crate::store_closure::StoreClosureBackend,
@@ -453,28 +453,26 @@ pub fn run_worker_session(
                     build_mode = request.build_mode(),
                     "BuildDerivation request admitted"
                 );
-                let execution = match LocalExecutionRequest::new(
-                    &request_id,
-                    &admitted,
-                    Duration::from_secs(30 * 60),
-                ) {
-                    Ok(execution) => execution,
-                    Err(error) => {
-                        if let Err(release_error) = release_attached_request_leases(
-                            store_retention,
-                            database_url,
-                            session_id,
-                            &request_id,
-                        ) {
-                            return reject(
-                                &mut output,
-                                "request-lease-release",
-                                release_error_message(&release_error),
-                            );
+                let execution =
+                    match BuildExecution::new(&request_id, &admitted, Duration::from_secs(30 * 60))
+                    {
+                        Ok(execution) => execution,
+                        Err(error) => {
+                            if let Err(release_error) = release_attached_request_leases(
+                                store_retention,
+                                database_url,
+                                session_id,
+                                &request_id,
+                            ) {
+                                return reject(
+                                    &mut output,
+                                    "request-lease-release",
+                                    release_error_message(&release_error),
+                                );
+                            }
+                            return Err(error);
                         }
-                        return Err(error);
-                    }
-                };
+                    };
                 let requester_detached = std::cell::Cell::new(false);
                 let result = match build_executor.execute_with_logs(
                     &execution,
@@ -722,7 +720,7 @@ pub fn run_worker_session(
                     nix_worker_protocol::write_build_derivation_success_response(
                         &mut output,
                         negotiated.version,
-                        result.status() == LocalBuildStatus::AlreadyValid,
+                        result.status() == BuildStatus::AlreadyValid,
                     )?;
                 }
                 tracing::info!(

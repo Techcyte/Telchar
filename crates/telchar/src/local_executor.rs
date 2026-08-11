@@ -6,100 +6,17 @@ use nix_worker_protocol::{
     BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus,
 };
 
+use crate::backend::{BuildBackend, BuildExecution, BuildResult, BuildStatus, OutputTrust};
 use crate::build_request::BuildRequest;
 use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
-const MAXIMUM_REQUEST_ID_BYTES: usize = 4096;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 const MAXIMUM_BUILD_LOG_CHUNK_BYTES: usize = 8192;
 const MAXIMUM_QUEUED_BUILD_LOG_CHUNKS: usize = 8;
 const MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES: usize =
     MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocalExecutionRequest<'a> {
-    request_id: &'a str,
-    build: &'a BuildRequest,
-    timeout: Duration,
-}
-
-impl<'a> LocalExecutionRequest<'a> {
-    pub fn new(
-        request_id: &'a str,
-        build: &'a BuildRequest,
-        timeout: Duration,
-    ) -> io::Result<Self> {
-        if request_id.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "local execution request ID is empty",
-            ));
-        }
-        if request_id.len() > MAXIMUM_REQUEST_ID_BYTES || request_id.contains('\0') {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "local execution request ID is invalid",
-            ));
-        }
-        if timeout.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "local execution timeout is zero",
-            ));
-        }
-        Ok(Self {
-            request_id,
-            build,
-            timeout,
-        })
-    }
-
-    pub fn request_id(&self) -> &str {
-        self.request_id
-    }
-
-    pub fn build(&self) -> &BuildRequest {
-        self.build
-    }
-
-    pub fn timeout(&self) -> Duration {
-        self.timeout
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LocalBuildStatus {
-    Built,
-    AlreadyValid,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OutputTrust {
-    TrustedExecutor,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocalBuildResult {
-    status: LocalBuildStatus,
-    outputs: Vec<(Vec<u8>, Vec<u8>)>,
-    output_trust: OutputTrust,
-}
-
-impl LocalBuildResult {
-    pub fn status(&self) -> LocalBuildStatus {
-        self.status
-    }
-
-    pub fn outputs(&self) -> &[(Vec<u8>, Vec<u8>)] {
-        &self.outputs
-    }
-
-    pub fn output_trust(&self) -> OutputTrust {
-        self.output_trust
-    }
-}
-
-pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
+pub fn executor_from_environment() -> io::Result<Box<dyn BuildBackend>> {
     if let Some(helper) = std::env::var_os("TELCHAR_TEST_BUILD_HELPER") {
         return Ok(Box::new(NixStoreExecutor::new(
             PathBuf::from(helper),
@@ -118,36 +35,15 @@ pub fn executor_from_environment() -> io::Result<Box<dyn BuildExecutor>> {
     Ok(Box::new(GatewayStoreExecutor::new(endpoint)))
 }
 
-pub trait BuildExecutor: Send {
-    fn execute_with_logs(
-        &mut self,
-        request: &LocalExecutionRequest<'_>,
-        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-        cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult>;
-
-    fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
-        self.execute_with_logs(request, &mut |_| Ok(()), &mut || Ok(false))
-    }
-
-    fn helper(&self) -> Option<&Path> {
-        None
-    }
-
-    fn store_uri(&self) -> Option<&str> {
-        None
-    }
-}
-
 pub struct UnavailableBuildExecutor;
 
-impl BuildExecutor for UnavailableBuildExecutor {
+impl BuildBackend for UnavailableBuildExecutor {
     fn execute_with_logs(
         &mut self,
-        _request: &LocalExecutionRequest<'_>,
+        _request: &BuildExecution<'_>,
         _logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         _cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
+    ) -> io::Result<BuildResult> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "BuildDerivation execution is unavailable",
@@ -166,10 +62,10 @@ impl GatewayStoreExecutor {
 
     fn execute_request(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
+    ) -> io::Result<BuildResult> {
         let mut connection =
             GatewayStoreConnection::connect_with_timeout(&self.endpoint, request.timeout())?;
         let shutdown = connection.shutdown_handle()?;
@@ -266,24 +162,24 @@ impl GatewayStoreExecutor {
                 ));
             }
         }
-        Ok(LocalBuildResult {
-            status: match result.status() {
-                WorkerBuildStatus::Built => LocalBuildStatus::Built,
-                WorkerBuildStatus::AlreadyValid => LocalBuildStatus::AlreadyValid,
+        BuildResult::new(
+            match result.status() {
+                WorkerBuildStatus::Built => BuildStatus::Built,
+                WorkerBuildStatus::AlreadyValid => BuildStatus::AlreadyValid,
             },
-            outputs: build.expected_outputs().to_vec(),
-            output_trust: OutputTrust::TrustedExecutor,
-        })
+            build.expected_outputs().to_vec(),
+            OutputTrust::TrustedExecutor,
+        )
     }
 }
 
-impl BuildExecutor for GatewayStoreExecutor {
+impl BuildBackend for GatewayStoreExecutor {
     fn execute_with_logs(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
+    ) -> io::Result<BuildResult> {
         self.execute_request(request, logs, cancelled)
     }
 }
@@ -322,10 +218,10 @@ impl NixStoreExecutor {
 
     fn execute_request(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
+    ) -> io::Result<BuildResult> {
         let payload = encode_request(request)?;
         let mut command = std::process::Command::new(&self.helper);
         configure_child_lifecycle(&mut command);
@@ -458,49 +354,41 @@ struct EnvironmentRequest<'a> {
     value: &'a str,
 }
 
-impl BuildExecutor for NixStoreExecutor {
+impl BuildBackend for NixStoreExecutor {
     fn execute_with_logs(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
+    ) -> io::Result<BuildResult> {
         self.execute_request(request, logs, cancelled)
-    }
-
-    fn helper(&self) -> Option<&Path> {
-        Some(&self.helper)
-    }
-
-    fn store_uri(&self) -> Option<&str> {
-        Some(&self.store_uri)
     }
 }
 
 impl NixStoreExecutor {
-    pub fn execute(&mut self, request: &LocalExecutionRequest<'_>) -> io::Result<LocalBuildResult> {
-        BuildExecutor::execute(self, request)
+    pub fn execute(&mut self, request: &BuildExecution<'_>) -> io::Result<BuildResult> {
+        BuildBackend::execute(self, request)
     }
 
     pub fn execute_with_logs(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-    ) -> io::Result<LocalBuildResult> {
-        BuildExecutor::execute_with_logs(self, request, logs, &mut || Ok(false))
+    ) -> io::Result<BuildResult> {
+        BuildBackend::execute_with_logs(self, request, logs, &mut || Ok(false))
     }
 
     pub fn execute_with_cancellation(
         &mut self,
-        request: &LocalExecutionRequest<'_>,
+        request: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
-    ) -> io::Result<LocalBuildResult> {
-        BuildExecutor::execute_with_logs(self, request, logs, cancelled)
+    ) -> io::Result<BuildResult> {
+        BuildBackend::execute_with_logs(self, request, logs, cancelled)
     }
 }
 
-fn encode_request(request: &LocalExecutionRequest<'_>) -> io::Result<Vec<u8>> {
+fn encode_request(request: &BuildExecution<'_>) -> io::Result<Vec<u8>> {
     fn text(bytes: &[u8]) -> io::Result<&str> {
         std::str::from_utf8(bytes).map_err(|_| {
             io::Error::new(
@@ -565,7 +453,7 @@ struct ExecutionResponse {
     outputs: Vec<(String, String)>,
 }
 
-fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildResult> {
+fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<BuildResult> {
     let response: ExecutionResponse = serde_json::from_slice(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid build helper response"))?;
     if response.version != 1 || !response.success {
@@ -575,8 +463,8 @@ fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildRe
         ));
     }
     let status = match response.status.as_str() {
-        "built" => LocalBuildStatus::Built,
-        "already-valid" => LocalBuildStatus::AlreadyValid,
+        "built" => BuildStatus::Built,
+        "already-valid" => BuildStatus::AlreadyValid,
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -601,11 +489,7 @@ fn parse_response(bytes: &[u8], build: &BuildRequest) -> io::Result<LocalBuildRe
             "build helper output set mismatch",
         ));
     }
-    Ok(LocalBuildResult {
-        status,
-        outputs,
-        output_trust: OutputTrust::TrustedExecutor,
-    })
+    BuildResult::new(status, outputs, OutputTrust::TrustedExecutor)
 }
 
 struct ChildGuard {

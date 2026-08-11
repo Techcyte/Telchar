@@ -5,12 +5,10 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
+use telchar::backend::{BuildBackend, BuildExecution, BuildStatus, OutputTrust};
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
-use telchar::local_executor::{
-    BuildExecutor, GatewayStoreExecutor, LocalBuildStatus, LocalExecutionRequest, NixStoreExecutor,
-    OutputTrust,
-};
+use telchar::local_executor::{GatewayStoreExecutor, NixStoreExecutor, UnavailableBuildExecutor};
 use telchar::nix_fixture::NixFixture;
 use telchar::store_daemon::GatewayStoreEndpoint;
 
@@ -19,16 +17,25 @@ const DERIVATION_PATH: &[u8] =
 const OUTPUT_PATH: &[u8] = b"/nix/store/11111111111111111111111111111111-telchar-local-executor";
 
 #[test]
-fn local_execution_request_retains_only_the_admitted_build_and_control_metadata() {
+fn local_executors_implement_the_backend_contract() {
+    fn assert_backend<T: BuildBackend>() {}
+
+    assert_backend::<GatewayStoreExecutor>();
+    assert_backend::<NixStoreExecutor>();
+    assert_backend::<UnavailableBuildExecutor>();
+}
+
+#[test]
+fn build_execution_retains_only_the_admitted_build_and_control_metadata() {
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("request-1", &build, Duration::from_secs(30))
+    let request = BuildExecution::new("request-1", &build, Duration::from_secs(30))
         .expect("execution request is valid");
 
     assert_eq!(request.request_id(), "request-1");
     assert_eq!(request.build(), &build);
     assert_eq!(request.timeout(), Duration::from_secs(30));
-    assert!(LocalExecutionRequest::new("", &build, Duration::from_secs(30)).is_err());
-    assert!(LocalExecutionRequest::new("request-1", &build, Duration::ZERO).is_err());
+    assert!(BuildExecution::new("", &build, Duration::from_secs(30)).is_err());
+    assert!(BuildExecution::new("request-1", &build, Duration::ZERO).is_err());
 }
 
 #[test]
@@ -51,7 +58,7 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
 
     let build = admitted_request();
-    let request = LocalExecutionRequest::new(
+    let request = BuildExecution::new(
         "request-$(touch should-not-exist)",
         &build,
         Duration::from_secs(5),
@@ -61,7 +68,7 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
         .expect("executor config is valid");
     let result = executor.execute(&request).expect("fake helper succeeds");
 
-    assert_eq!(result.status(), LocalBuildStatus::Built);
+    assert_eq!(result.status(), BuildStatus::Built);
     assert_eq!(result.outputs(), &[(b"out".to_vec(), OUTPUT_PATH.to_vec())]);
     let recorded = fs::read_to_string(&record).expect("record reads");
     let mut lines = recorded.lines();
@@ -87,8 +94,8 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
 #[test]
 fn built_and_already_valid_results_have_output_trust() {
     for (status, expected_status) in [
-        ("built", LocalBuildStatus::Built),
-        ("already-valid", LocalBuildStatus::AlreadyValid),
+        ("built", BuildStatus::Built),
+        ("already-valid", BuildStatus::AlreadyValid),
     ] {
         let root = unique_root(status);
         fs::create_dir_all(&root).expect("fixture root creates");
@@ -104,7 +111,7 @@ fn built_and_already_valid_results_have_output_trust() {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
             .expect("helper is executable");
         let build = admitted_request();
-        let request = LocalExecutionRequest::new(status, &build, Duration::from_secs(5))
+        let request = BuildExecution::new(status, &build, Duration::from_secs(5))
             .expect("execution request is valid");
         let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
             .expect("executor config is valid");
@@ -150,7 +157,7 @@ fn executor_streams_bounded_helper_logs_before_returning_result() {
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("logs", &build, Duration::from_secs(5))
+    let request = BuildExecution::new("logs", &build, Duration::from_secs(5))
         .expect("execution request is valid");
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
@@ -163,7 +170,7 @@ fn executor_streams_bounded_helper_logs_before_returning_result() {
         })
         .expect("fake helper succeeds");
 
-    assert_eq!(result.status(), LocalBuildStatus::Built);
+    assert_eq!(result.status(), BuildStatus::Built);
     assert_eq!(logs, b"first log\nsecond log\n");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
@@ -183,7 +190,7 @@ fn executor_streams_logs_larger_than_the_result_limit() {
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("large-logs", &build, Duration::from_secs(5))
+    let request = BuildExecution::new("large-logs", &build, Duration::from_secs(5))
         .expect("execution request is valid");
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
@@ -216,7 +223,7 @@ fn log_writer_failure_kills_and_reaps_the_helper() {
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("log-writer-failure", &build, Duration::from_secs(5))
+    let request = BuildExecution::new("log-writer-failure", &build, Duration::from_secs(5))
         .expect("execution request is valid");
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
@@ -257,7 +264,7 @@ fn cancellation_kills_and_reaps_a_silent_helper() {
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("cancelled", &build, Duration::from_secs(5))
+    let request = BuildExecution::new("cancelled", &build, Duration::from_secs(5))
         .expect("execution request is valid");
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
@@ -324,7 +331,7 @@ fn executor_rejects_malformed_success_output_sets() {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
             .expect("helper is executable");
         let build = admitted_request();
-        let request = LocalExecutionRequest::new("hostile", &build, Duration::from_secs(5))
+        let request = BuildExecution::new("hostile", &build, Duration::from_secs(5))
             .expect("execution request is valid");
         let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
             .expect("executor config is valid");
@@ -362,7 +369,7 @@ fn executor_rejects_oversized_or_malformed_helper_output() {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
             .expect("helper is executable");
         let build = admitted_request();
-        let request = LocalExecutionRequest::new("hostile", &build, Duration::from_secs(5))
+        let request = BuildExecution::new("hostile", &build, Duration::from_secs(5))
             .expect("execution request is valid");
         let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
             .expect("executor config is valid");
@@ -397,7 +404,7 @@ fn executor_times_out_and_reaps_the_helper() {
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper is executable");
     let build = admitted_request();
-    let request = LocalExecutionRequest::new("timeout", &build, Duration::from_millis(100))
+    let request = BuildExecution::new("timeout", &build, Duration::from_millis(100))
         .expect("execution request is valid");
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
@@ -423,7 +430,7 @@ fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
         .start_daemon(telchar::nix_fixture::TrustMode::Trusted)
         .expect("Nix daemon starts");
     let build = admitted_request_with_builder(b"exit 0");
-    let request = LocalExecutionRequest::new("missing-output", &build, Duration::from_secs(30))
+    let request = BuildExecution::new("missing-output", &build, Duration::from_secs(30))
         .expect("execution request is valid");
     let endpoint = GatewayStoreEndpoint::parse(&store.store_url()).expect("endpoint parses");
     let mut executor = GatewayStoreExecutor::new(endpoint);
