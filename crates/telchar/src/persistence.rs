@@ -3530,11 +3530,15 @@ pub fn create_request_retained_lease(
         maximum_retained_bytes,
         purpose,
         &[(lease_id.to_owned(), store_path.to_owned(), nar_size)],
-    )?;
+    )
+    .and_then(|leases| {
+        leases
+            .into_iter()
+            .next()
+            .ok_or(StoreLeaseError(StoreLeaseFailure::Query))
+    });
+    emit_store_lease_failure("create", &result);
     result
-        .into_iter()
-        .next()
-        .ok_or(StoreLeaseError(StoreLeaseFailure::Query))
 }
 
 fn create_store_lease_inner(
