@@ -6,6 +6,7 @@ use crate::backend::BuildResult;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SharedBuildTerminalFailure {
     Backend,
+    BackendUnavailable,
     Internal,
 }
 

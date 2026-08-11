@@ -3,6 +3,7 @@ use std::io;
 
 use nix_worker_protocol::BuildDerivationRequest;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::deployment::DeploymentConfig;
 
@@ -89,6 +90,23 @@ impl BuildRequest {
         Ok(())
     }
 
+    pub fn shared_build_key(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"telchar-shared-build-v1\0");
+        update_digest_bytes(&mut digest, &self.derivation_path);
+        update_digest_pairs(&mut digest, &self.expected_outputs);
+        update_digest_values(&mut digest, &self.input_sources);
+        update_digest_bytes(&mut digest, self.system.as_bytes());
+        update_digest_bytes(&mut digest, &self.builder);
+        update_digest_values(&mut digest, &self.arguments);
+        update_digest_pairs(&mut digest, &self.environment);
+        format!(
+            "{}:{:x}",
+            String::from_utf8_lossy(&self.derivation_path),
+            digest.finalize()
+        )
+    }
+
     pub fn derivation_path(&self) -> &[u8] {
         &self.derivation_path
     }
@@ -116,6 +134,26 @@ impl BuildRequest {
     pub fn environment(&self) -> &[(Vec<u8>, Vec<u8>)] {
         &self.environment
     }
+}
+
+fn update_digest_values(digest: &mut Sha256, values: &[Vec<u8>]) {
+    digest.update((values.len() as u64).to_le_bytes());
+    for value in values {
+        update_digest_bytes(digest, value);
+    }
+}
+
+fn update_digest_pairs(digest: &mut Sha256, values: &[(Vec<u8>, Vec<u8>)]) {
+    digest.update((values.len() as u64).to_le_bytes());
+    for (name, value) in values {
+        update_digest_bytes(digest, name);
+        update_digest_bytes(digest, value);
+    }
+}
+
+fn update_digest_bytes(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_le_bytes());
+    digest.update(value);
 }
 
 impl fmt::Debug for BuildRequest {

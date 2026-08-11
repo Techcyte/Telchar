@@ -405,6 +405,7 @@ fn run_daemon() -> io::Result<()> {
         .map_err(|_| invalid("collecting attempt recovery failed"))?;
     recover_collecting_build_requests(&database_url, &deployment, collecting)?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
+    let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
@@ -437,6 +438,7 @@ fn run_daemon() -> io::Result<()> {
             &rate_admission,
             disk_reserve,
             &disk_probe,
+            &shared_builds,
         );
     }
     let maintenance_database_url = database_url.clone();
@@ -505,6 +507,7 @@ fn run_daemon() -> io::Result<()> {
         let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
+        let shared_builds = Arc::clone(&shared_builds);
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
@@ -521,6 +524,7 @@ fn run_daemon() -> io::Result<()> {
                         &rate_admission,
                         disk_reserve,
                         &telchar::disk_reserve::OsDiskReserveProbe,
+                        &shared_builds,
                     )
                 });
             if let Err(error) = result {
@@ -548,6 +552,7 @@ fn serve_connection(
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
     disk_reserve: telchar::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
+    shared_builds: &telchar::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
@@ -560,6 +565,7 @@ fn serve_connection(
         rate_admission,
         disk_reserve,
         disk_probe,
+        shared_builds,
     )
 }
 
@@ -575,6 +581,7 @@ fn serve_accepted_connection(
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
     disk_reserve: telchar::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
+    shared_builds: &telchar::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -649,6 +656,7 @@ fn serve_accepted_connection(
             rate_admission,
             disk_reserve,
             disk_probe,
+            shared_builds,
         )
     })();
     match telchar::persistence::close_protocol_session(database_url, &session_id) {

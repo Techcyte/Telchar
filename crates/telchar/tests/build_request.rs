@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    ProtocolSessionLimits, WorkerReader, write_worker_byte_string, write_worker_integer,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
 };
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
@@ -15,11 +15,9 @@ fn normalizes_gate_3_request_without_backend_objects() {
     let request = BuildRequest::from_worker_request(&worker, &deployment)
         .expect("Gate 3 request is admitted");
 
-    assert!(
-        request
-            .derivation_path()
-            .ends_with(b"-telchar-gate-3-contract.drv")
-    );
+    assert!(request
+        .derivation_path()
+        .ends_with(b"-telchar-gate-3-contract.drv"));
     assert_eq!(request.expected_outputs().len(), 1);
     assert_eq!(request.expected_outputs()[0].0, b"out");
     assert_eq!(request.system(), "x86_64-linux");
@@ -27,6 +25,35 @@ fn normalizes_gate_3_request_without_backend_objects() {
     assert_eq!(request.arguments().len(), 2);
     assert_eq!(request.environment().len(), 4);
     assert!(request.input_sources().is_empty());
+}
+
+#[test]
+fn equivalent_requests_have_the_same_shared_build_key() {
+    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses");
+    let first =
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+            .expect("first request admits");
+    let second =
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+            .expect("second request admits");
+
+    assert_eq!(first.shared_build_key(), second.shared_build_key());
+    assert_eq!(first.shared_build_key().len(), drv_path().len() + 1 + 64);
+}
+
+#[test]
+fn admitted_semantic_difference_changes_shared_build_key() {
+    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses");
+    let first =
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+            .expect("first request admits");
+    let second = BuildRequest::from_worker_request(
+        &decode_request_with_command("printf different > $out"),
+        &deployment,
+    )
+    .expect("second request admits");
+
+    assert_ne!(first.shared_build_key(), second.shared_build_key());
 }
 
 #[test]
@@ -102,7 +129,36 @@ fn decode_request(
         .expect("worker request decodes for admission test")
 }
 
+fn decode_request_with_command(command: &str) -> nix_worker_protocol::BuildDerivationRequest {
+    let wire = build_request_wire_with_command("x86_64-linux", output_path(), 0, command);
+    let mut reader = WorkerReader::new(
+        wire.as_slice(),
+        ProtocolSessionLimits::new(16 * 1024 * 1024, Duration::from_secs(1)),
+    );
+    assert_eq!(
+        reader.read_operation().expect("operation reads"),
+        nix_worker_protocol::WorkerOperation::BuildDerivation
+    );
+    reader
+        .complete_build_derivation()
+        .expect("worker request decodes")
+}
+
 fn build_request_wire(system: &str, environment_output: &[u8], mode: u64) -> Vec<u8> {
+    build_request_wire_with_command(
+        system,
+        environment_output,
+        mode,
+        "printf telchar-remote-build > $out",
+    )
+}
+
+fn build_request_wire_with_command(
+    system: &str,
+    environment_output: &[u8],
+    mode: u64,
+    command: &str,
+) -> Vec<u8> {
     let mut wire = Vec::new();
     write_worker_integer(&mut wire, 36);
     write_worker_byte_string(&mut wire, drv_path());
@@ -116,7 +172,7 @@ fn build_request_wire(system: &str, environment_output: &[u8], mode: u64) -> Vec
     write_worker_byte_string(&mut wire, b"/bin/sh");
     write_worker_integer(&mut wire, 2);
     write_worker_byte_string(&mut wire, b"-c");
-    write_worker_byte_string(&mut wire, b"printf telchar-remote-build > $out");
+    write_worker_byte_string(&mut wire, command.as_bytes());
     write_worker_integer(&mut wire, 4);
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),

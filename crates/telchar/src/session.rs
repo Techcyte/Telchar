@@ -115,6 +115,7 @@ pub fn run_worker_session(
     rate_admission: &crate::transfer_limits::RateAdmissionState,
     disk_reserve: crate::disk_reserve::DiskReserve,
     disk_probe: &dyn crate::disk_reserve::DiskReserveProbe,
+    shared_builds: &crate::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
@@ -474,48 +475,89 @@ pub fn run_worker_session(
                         }
                     };
                 let requester_detached = std::cell::Cell::new(false);
-                let result = match build_executor.execute_with_logs(
-                    &execution,
-                    &mut |chunk| {
-                        if requester_detached.get() {
-                            return Ok(());
+                let shared_build_key = admitted.shared_build_key();
+                let shared_result = match shared_builds.acquire(&shared_build_key) {
+                    crate::shared_build::SharedBuildAccess::Leader(leader) => {
+                        let result = build_executor.execute_with_logs(
+                            &execution,
+                            &mut |chunk| {
+                                if requester_detached.get() {
+                                    return Ok(());
+                                }
+                                match nix_worker_protocol::write_stderr_frame(
+                                    &mut output,
+                                    nix_worker_protocol::StderrFrame::Next {
+                                        message: chunk.to_vec(),
+                                    },
+                                )
+                                .and_then(|_| output.flush())
+                                {
+                                    Ok(()) => Ok(()),
+                                    Err(_error)
+                                        if running_disconnect_policy
+                                            == crate::deployment::RunningDisconnectPolicy::DetachAndFinish =>
+                                    {
+                                        requester_detached.set(true);
+                                        tracing::info!(
+                                            event = "worker.build_derivation.requester_detached",
+                                            running_disconnect_policy = running_disconnect_policy.as_str(),
+                                            "running build detached from requester"
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            },
+                            &mut || {
+                                let disconnected = requester_disconnected(&mut cancellation_input)?;
+                                if disconnected
+                                    && running_disconnect_policy
+                                        == crate::deployment::RunningDisconnectPolicy::DetachAndFinish
+                                {
+                                    requester_detached.set(true);
+                                    return Ok(false);
+                                }
+                                Ok(disconnected)
+                            },
+                        );
+                        match result {
+                            Ok(result) => leader.complete(Ok(result)).map_err(|_| {
+                                io::Error::other("shared BuildDerivation execution failed")
+                            }),
+                            Err(error) => {
+                                let failure = if error.kind() == io::ErrorKind::Unsupported {
+                                    crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable
+                                } else {
+                                    crate::shared_build::SharedBuildTerminalFailure::Backend
+                                };
+                                let _ = leader.complete(Err(failure));
+                                Err(error)
+                            }
                         }
-                        match nix_worker_protocol::write_stderr_frame(
+                    }
+                    crate::shared_build::SharedBuildAccess::Follower(follower) => {
+                        nix_worker_protocol::write_stderr_frame(
                             &mut output,
                             nix_worker_protocol::StderrFrame::Next {
-                                message: chunk.to_vec(),
+                                message: b"identical build already in progress\n".to_vec(),
                             },
-                        )
-                        .and_then(|_| output.flush())
-                        {
-                            Ok(()) => Ok(()),
-                            Err(_error)
-                                if running_disconnect_policy
-                                    == crate::deployment::RunningDisconnectPolicy::DetachAndFinish =>
-                            {
-                                requester_detached.set(true);
-                                tracing::info!(
-                                    event = "worker.build_derivation.requester_detached",
-                                    running_disconnect_policy = running_disconnect_policy.as_str(),
-                                    "running build detached from requester"
-                                );
-                                Ok(())
+                        )?;
+                        output.flush()?;
+                        follower.wait().map_err(|failure| match failure {
+                            crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable => {
+                                io::Error::new(
+                                    io::ErrorKind::Unsupported,
+                                    "shared BuildDerivation execution is unavailable",
+                                )
                             }
-                            Err(error) => Err(error),
-                        }
-                    },
-                    &mut || {
-                        let disconnected = requester_disconnected(&mut cancellation_input)?;
-                        if disconnected
-                            && running_disconnect_policy
-                                == crate::deployment::RunningDisconnectPolicy::DetachAndFinish
-                        {
-                            requester_detached.set(true);
-                            return Ok(false);
-                        }
-                        Ok(disconnected)
-                    },
-                ) {
+                            crate::shared_build::SharedBuildTerminalFailure::Backend
+                            | crate::shared_build::SharedBuildTerminalFailure::Internal => {
+                                io::Error::other("shared BuildDerivation execution failed")
+                            }
+                        })
+                    }
+                };
+                let result = match shared_result {
                     Ok(result) => result,
                     Err(error) => {
                         let unavailable = error.kind() == io::ErrorKind::Unsupported;

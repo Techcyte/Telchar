@@ -98,7 +98,7 @@ fn explicit_leader_and_follower_share_terminal_result() {
     };
 
     let expected = successful_result().expect("result constructs");
-    leader.complete(Ok(expected.clone()));
+    assert_eq!(leader.complete(Ok(expected.clone())), Ok(expected.clone()));
 
     assert_eq!(follower.wait(), Ok(expected));
     assert_eq!(registry.active_build_count(), 0);
