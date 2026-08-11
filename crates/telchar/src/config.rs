@@ -17,6 +17,8 @@ const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
 const MAXIMUM_STATIC_SSH_BACKENDS: usize = 256;
 const MAXIMUM_SSH_DESTINATION_BYTES: usize = 512;
+const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
+const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialMapping {
@@ -30,6 +32,7 @@ pub struct StaticSshBackendConfig {
     destination: String,
     identity_file: PathBuf,
     known_hosts_file: PathBuf,
+    ssh_program: PathBuf,
 }
 
 impl StaticSshBackendConfig {
@@ -47,6 +50,10 @@ impl StaticSshBackendConfig {
 
     pub fn known_hosts_file(&self) -> &Path {
         &self.known_hosts_file
+    }
+
+    pub fn ssh_program(&self) -> &Path {
+        &self.ssh_program
     }
 }
 
@@ -325,6 +332,7 @@ struct RawStaticSshBackendConfig {
     destination: String,
     identity_file: PathBuf,
     known_hosts_file: PathBuf,
+    ssh_program: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -393,6 +401,10 @@ fn validate_static_ssh_backends(
         }
         validate_identity_file(&backend.identity_file)?;
         validate_known_hosts_file(&backend.known_hosts_file)?;
+        let ssh_program = backend
+            .ssh_program
+            .unwrap_or_else(|| PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM)));
+        validate_executable_file(&ssh_program, "static SSH program is invalid")?;
         backends.push(StaticSshBackendConfig {
             target: BackendTarget::new(
                 &backend.name,
@@ -403,6 +415,7 @@ fn validate_static_ssh_backends(
             destination: backend.destination,
             identity_file: backend.identity_file,
             known_hosts_file: backend.known_hosts_file,
+            ssh_program,
         });
     }
     Ok(backends)
@@ -459,6 +472,17 @@ fn validate_regular_file(path: &Path, message: &'static str) -> io::Result<fs::M
         return Err(invalid(message));
     }
     Ok(metadata)
+}
+
+fn validate_executable_file(path: &Path, message: &'static str) -> io::Result<()> {
+    let metadata = fs::metadata(path).map_err(|_| invalid(message))?;
+    if !path.is_absolute()
+        || !metadata.file_type().is_file()
+        || metadata.permissions().mode() & 0o111 == 0
+    {
+        return Err(invalid(message));
+    }
+    Ok(())
 }
 
 fn validate_subject(value: String, message: &'static str) -> io::Result<String> {

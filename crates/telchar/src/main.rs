@@ -430,6 +430,7 @@ fn run_daemon() -> io::Result<()> {
             envelope_timeout,
             &database_url,
             &deployment,
+            &config,
             running_disconnect_policy,
             &transfer_limits,
             &object_admission,
@@ -501,6 +502,7 @@ fn run_daemon() -> io::Result<()> {
         };
         let database_url = database_url.clone();
         let deployment = deployment.clone();
+        let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
         std::thread::spawn(move || {
@@ -512,6 +514,7 @@ fn run_daemon() -> io::Result<()> {
                         connection,
                         &database_url,
                         &deployment,
+                        &service_config,
                         running_disconnect_policy,
                         &transfer_limits,
                         &object_admission,
@@ -538,6 +541,7 @@ fn serve_connection(
     envelope_timeout: Duration,
     database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
+    service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
@@ -549,6 +553,7 @@ fn serve_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
         database_url,
         deployment,
+        service_config,
         running_disconnect_policy,
         transfer_limits,
         object_admission,
@@ -563,6 +568,7 @@ fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
     database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
+    service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
@@ -613,7 +619,11 @@ fn serve_accepted_connection(
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
-        let mut build_executor = telchar::local_executor::executor_from_environment()?;
+        let mut build_executor =
+            match telchar::static_ssh_backend::executor_from_config(service_config)? {
+                Some(executor) => executor,
+                None => telchar::local_executor::executor_from_environment()?,
+            };
         let mut store_export = telchar::store_export::backend_from_environment()?;
         let mut store_import = telchar::store_import::importer_from_environment()?;
         let mut store_closure = telchar::store_closure::backend_from_environment()?;

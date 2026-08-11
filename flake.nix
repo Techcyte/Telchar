@@ -133,6 +133,34 @@
                 start_all()
               '';
             };
+          nixos-static-ssh-build =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+              remoteOnlyDerivation = pkgs.writeText "telchar-static-ssh-build.nix" ''
+                derivation {
+                  name = "telchar-static-ssh-build";
+                  system = builtins.currentSystem;
+                  builder = builtins.storePath "${pkgs.runtimeShell}";
+                  args = [ "-c" "printf 'static-ssh-build-log\\n' >&2; printf static-ssh-source > $out" ];
+                }
+              '';
+            in
+            harness.mkStaticSshBuildTest {
+              name = "telchar-nixos-static-ssh-build";
+              testScript = ''
+                stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/static-ssh-build.nix")
+                derivation_path = stock_client.succeed("nix-instantiate /tmp/static-ssh-build.nix").strip()
+                gateway.succeed("test \"$(nix-instantiate ${remoteOnlyDerivation})\" = '" + derivation_path + "'")
+                stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --print-build-logs --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/static-ssh-build.nix > /tmp/static-ssh-build.out 2>&1 || { cat /tmp/static-ssh-build.out >&2; exit 1; }")
+                output_path = stock_client.succeed("tail -n 1 /tmp/static-ssh-build.out").strip()
+                stock_client.succeed("test \"$(cat " + output_path + ")\" = static-ssh-source")
+                builder.succeed("grep -Eq '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence")
+                gateway.succeed("nix-store --verify-path '" + output_path + "'")
+              '';
+            };
           nixos-gate-3-contract =
             let
               harness = import ./tests/nixos/lib.nix {
@@ -318,6 +346,7 @@
           src = source;
           pname = "telchar";
           version = "0.1.0";
+          TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
           cargoExtraArgs = "-p telchar";
           nativeBuildInputs = [ pkgs.postgresql ];
           cargoTestExtraArgs = "--lib";

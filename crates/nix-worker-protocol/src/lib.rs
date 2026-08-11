@@ -2378,11 +2378,13 @@ impl<S: Read + Write> WorkerClient<S> {
 
     pub fn is_valid_path(&mut self, path: &[u8]) -> io::Result<bool> {
         self.write_store_path_operation(WorkerOperation::IsValidPath, path)?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
         read_strict_client_boolean(&mut self.stream)
     }
 
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.write_store_path_operation(WorkerOperation::QueryPathInfo, path)?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
         if !read_strict_client_boolean(&mut self.stream)? {
             return Ok(None);
         }
@@ -2429,6 +2431,7 @@ impl<S: Read + Write> WorkerClient<S> {
         sink: &mut dyn Write,
     ) -> io::Result<()> {
         self.write_store_path_operation(WorkerOperation::NarFromPath, path)?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
         let copied = io::copy(&mut Read::by_ref(&mut self.stream).take(nar_size), sink)
             .map_err(|_| protocol_client_error())?;
         if copied != nar_size {
@@ -2509,7 +2512,7 @@ impl<S: Read + Write> WorkerClient<S> {
         write_worker_integer_to(&mut self.stream, operation.code())?;
         write_worker_byte_string_to(&mut self.stream, path)?;
         self.stream.flush()?;
-        read_operation_frames(&mut self.stream, self.profile.version)
+        Ok(())
     }
 
     fn execute_path_operation(

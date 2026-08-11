@@ -114,10 +114,14 @@ fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
     let root = fixture_root("static-ssh");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
+    let ssh_program = root.join("ssh");
     fs::write(&identity_file, "private-key").expect("identity writes");
     fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
         .expect("identity permissions set");
     fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n").expect("known hosts writes");
+    fs::write(&ssh_program, "#!/bin/sh\nexit 1\n").expect("SSH program writes");
+    fs::set_permissions(&ssh_program, fs::Permissions::from_mode(0o755))
+        .expect("SSH program permissions set");
     let config_path = root.join("telchar.toml");
     fs::write(
         &config_path,
@@ -130,9 +134,11 @@ supported_features = ["apple-virt", "big-parallel"]
 destination = "telchar-builder@builder.example"
 identity_file = "{}"
 known_hosts_file = "{}"
+ssh_program = "{}"
 "#,
             identity_file.display(),
-            known_hosts_file.display()
+            known_hosts_file.display(),
+            ssh_program.display()
         ),
     )
     .expect("configuration writes");
@@ -151,6 +157,7 @@ known_hosts_file = "{}"
     assert_eq!(backend.destination(), "telchar-builder@builder.example");
     assert_eq!(backend.identity_file(), identity_file);
     assert_eq!(backend.known_hosts_file(), known_hosts_file);
+    assert_eq!(backend.ssh_program(), ssh_program);
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
