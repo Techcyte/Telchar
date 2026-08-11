@@ -188,6 +188,142 @@ fn shared_build_claim_rejects_digest_conflict_and_requires_adoptable_identity() 
 }
 
 #[test]
+fn shared_build_lifecycle_persists_immutable_terminal_success() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/77777777777777777777777777777777-lifecycle.drv";
+    let output_path = "/nix/store/88888888888888888888888888888888-lifecycle";
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[4_u8; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("telchar-build-lifecycle"),
+        &[output_path],
+    )
+    .expect("shared build claim succeeds");
+    assert_eq!(
+        telchar::persistence::start_shared_build(fixture.url(), derivation_path)
+            .expect("shared build starts")
+            .state,
+        telchar::persistence::SharedBuildState::Running
+    );
+    assert_eq!(
+        telchar::persistence::collect_shared_build(fixture.url(), derivation_path)
+            .expect("shared build collects")
+            .state,
+        telchar::persistence::SharedBuildState::Collecting
+    );
+    let completed = telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation_path,
+        &serde_json::json!({"status": "built", "output_count": 1}),
+        Duration::from_secs(3_600),
+    )
+    .expect("shared build succeeds");
+
+    assert_eq!(
+        completed.state,
+        telchar::persistence::SharedBuildState::Succeeded
+    );
+    assert_eq!(
+        completed.result_metadata,
+        Some(serde_json::json!({"status": "built", "output_count": 1}))
+    );
+    assert!(completed.failure_classification.is_none());
+    assert!(completed.started_at.is_some());
+    assert!(completed.collecting_at.is_some());
+    assert!(completed.completed_at.is_some());
+    assert!(completed.expires_at.is_some());
+
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation_path)
+            .expect("shared build reads")
+            .expect("shared build exists"),
+        completed
+    );
+    assert_eq!(
+        telchar::persistence::complete_shared_build_failure(
+            fixture.url(),
+            derivation_path,
+            "infrastructure-failure",
+            &serde_json::json!({"stage": "monitor"}),
+            Duration::from_secs(3_600),
+        )
+        .expect_err("terminal shared build is immutable")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::InvalidState
+    );
+}
+
+#[test]
+fn shared_build_lifecycle_rejects_skipped_transitions_and_bounds_terminal_data() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/99999999999999999999999999999999-lifecycle.drv";
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[5_u8; 32],
+        "local",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-lifecycle"],
+    )
+    .expect("shared build claim succeeds");
+
+    assert_eq!(
+        telchar::persistence::collect_shared_build(fixture.url(), derivation_path)
+            .expect_err("claimed build cannot collect")
+            .failure(),
+        telchar::persistence::SharedBuildFailure::InvalidState
+    );
+    telchar::persistence::start_shared_build(fixture.url(), derivation_path)
+        .expect("shared build starts");
+    assert_eq!(
+        telchar::persistence::complete_shared_build_success(
+            fixture.url(),
+            derivation_path,
+            &serde_json::json!({"status": "built"}),
+            Duration::from_secs(3_600),
+        )
+        .expect_err("running build cannot skip collection")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::InvalidState
+    );
+    assert_eq!(
+        telchar::persistence::complete_shared_build_failure(
+            fixture.url(),
+            derivation_path,
+            "",
+            &serde_json::json!({}),
+            Duration::from_secs(3_600),
+        )
+        .expect_err("empty classification rejects")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::Configuration
+    );
+    assert_eq!(
+        telchar::persistence::complete_shared_build_failure(
+            fixture.url(),
+            derivation_path,
+            "build-failure",
+            &serde_json::json!([]),
+            Duration::from_secs(3_600),
+        )
+        .expect_err("non-object result rejects")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::Configuration
+    );
+}
+
+#[test]
 fn open_and_read_protocol_session_persist_requested_state() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

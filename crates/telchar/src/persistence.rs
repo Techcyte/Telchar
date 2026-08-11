@@ -145,6 +145,7 @@ pub enum SharedBuildFailure {
     Configuration,
     Connection,
     Conflict,
+    InvalidState,
     Query,
     Commit,
 }
@@ -155,6 +156,7 @@ impl SharedBuildFailure {
             Self::Configuration => "configuration",
             Self::Connection => "connection",
             Self::Conflict => "conflict",
+            Self::InvalidState => "invalid_state",
             Self::Query => "query",
             Self::Commit => "commit",
         }
@@ -203,7 +205,13 @@ pub struct SharedBuild {
     pub capabilities: BackendCapabilities,
     pub backend_execution_id: Option<String>,
     pub expected_outputs: Vec<String>,
+    pub result_metadata: Option<serde_json::Value>,
+    pub failure_classification: Option<String>,
     pub created_at: SystemTime,
+    pub started_at: Option<SystemTime>,
+    pub collecting_at: Option<SystemTime>,
+    pub completed_at: Option<SystemTime>,
+    pub expires_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -274,7 +282,9 @@ pub fn claim_shared_build(
         .query_one(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
                     execution_recovery, cancellation, log_recovery,
-                    backend_execution_id, expected_outputs, created_at
+                    backend_execution_id, expected_outputs, result_metadata::text,
+                    failure_classification, created_at, started_at, collecting_at,
+                    completed_at, expires_at
              FROM shared_builds WHERE derivation_path = $1",
             &[&derivation_path],
         )
@@ -294,6 +304,231 @@ pub fn claim_shared_build(
         },
         build,
     })
+}
+
+pub fn read_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+) -> Result<Option<SharedBuild>, SharedBuildError> {
+    validate_shared_build_identity(database_url, derivation_path)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
+                    execution_recovery, cancellation, log_recovery,
+                    backend_execution_id, expected_outputs, result_metadata::text,
+                    failure_classification, created_at, started_at, collecting_at,
+                    completed_at, expires_at
+             FROM shared_builds WHERE derivation_path = $1",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .map(|row| decode_shared_build(&row).map_err(SharedBuildError))
+        .transpose()
+}
+
+pub fn start_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+) -> Result<SharedBuild, SharedBuildError> {
+    transition_shared_build(
+        database_url,
+        derivation_path,
+        "claimed",
+        "UPDATE shared_builds
+         SET state = 'running', started_at = transaction_timestamp()
+         WHERE derivation_path = $1 AND state = 'claimed'
+         RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                   execution_recovery, cancellation, log_recovery,
+                   backend_execution_id, expected_outputs, result_metadata::text,
+                   failure_classification, created_at, started_at, collecting_at,
+                   completed_at, expires_at",
+    )
+}
+
+pub fn collect_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+) -> Result<SharedBuild, SharedBuildError> {
+    transition_shared_build(
+        database_url,
+        derivation_path,
+        "running",
+        "UPDATE shared_builds
+         SET state = 'collecting', collecting_at = transaction_timestamp()
+         WHERE derivation_path = $1 AND state = 'running'
+         RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                   execution_recovery, cancellation, log_recovery,
+                   backend_execution_id, expected_outputs, result_metadata::text,
+                   failure_classification, created_at, started_at, collecting_at,
+                   completed_at, expires_at",
+    )
+}
+
+pub fn complete_shared_build_success(
+    database_url: &str,
+    derivation_path: &str,
+    result_metadata: &serde_json::Value,
+    retention: Duration,
+) -> Result<SharedBuild, SharedBuildError> {
+    complete_shared_build(
+        database_url,
+        derivation_path,
+        SharedBuildState::Succeeded,
+        None,
+        result_metadata,
+        retention,
+    )
+}
+
+pub fn complete_shared_build_failure(
+    database_url: &str,
+    derivation_path: &str,
+    failure_classification: &str,
+    result_metadata: &serde_json::Value,
+    retention: Duration,
+) -> Result<SharedBuild, SharedBuildError> {
+    complete_shared_build(
+        database_url,
+        derivation_path,
+        SharedBuildState::Failed,
+        Some(failure_classification),
+        result_metadata,
+        retention,
+    )
+}
+
+fn transition_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+    expected_state: &str,
+    statement: &str,
+) -> Result<SharedBuild, SharedBuildError> {
+    validate_shared_build_identity(database_url, derivation_path)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let current_state = transaction
+        .query_opt(
+            "SELECT state FROM shared_builds WHERE derivation_path = $1 FOR UPDATE",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
+        .try_get::<_, String>(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if current_state != expected_state {
+        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+    }
+    let row = transaction
+        .query_one(statement, &[&derivation_path])
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(build)
+}
+
+fn complete_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+    terminal_state: SharedBuildState,
+    failure_classification: Option<&str>,
+    result_metadata: &serde_json::Value,
+    retention: Duration,
+) -> Result<SharedBuild, SharedBuildError> {
+    validate_shared_build_identity(database_url, derivation_path)?;
+    let result_metadata_text = serde_json::to_string(result_metadata)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    if !result_metadata.is_object()
+        || result_metadata_text.len() > 1_048_576
+        || retention.is_zero()
+        || retention > Duration::from_secs(86_400)
+        || failure_classification.is_some_and(|classification| {
+            classification.is_empty()
+                || classification.len() > MAX_IPC_COMPONENT_BYTES
+                || classification.contains('\0')
+        })
+        || (terminal_state == SharedBuildState::Failed && failure_classification.is_none())
+        || (terminal_state == SharedBuildState::Succeeded && failure_classification.is_some())
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let state = match terminal_state {
+        SharedBuildState::Succeeded => "succeeded",
+        SharedBuildState::Failed => "failed",
+        _ => return Err(SharedBuildError(SharedBuildFailure::Configuration)),
+    };
+    let retention_seconds = f64::from(
+        u32::try_from(retention.as_secs())
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?,
+    );
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let current_state = transaction
+        .query_opt(
+            "SELECT state FROM shared_builds WHERE derivation_path = $1 FOR UPDATE",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
+        .try_get::<_, String>(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if (terminal_state == SharedBuildState::Succeeded && current_state != "collecting")
+        || (terminal_state == SharedBuildState::Failed
+            && !matches!(current_state.as_str(), "claimed" | "running" | "collecting"))
+    {
+        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+    }
+    let row = transaction
+        .query_one(
+            "UPDATE shared_builds
+             SET state = $2,
+                 result_metadata = $3::text::jsonb,
+                 failure_classification = $4::text,
+                 completed_at = transaction_timestamp(),
+                 expires_at = transaction_timestamp() + make_interval(secs => $5)
+             WHERE derivation_path = $1
+             RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                       execution_recovery, cancellation, log_recovery,
+                       backend_execution_id, expected_outputs, result_metadata::text,
+                       failure_classification, created_at, started_at, collecting_at,
+                       completed_at, expires_at",
+            &[
+                &derivation_path,
+                &state,
+                &result_metadata_text,
+                &failure_classification,
+                &retention_seconds,
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(build)
+}
+
+fn validate_shared_build_identity(
+    database_url: &str,
+    derivation_path: &str,
+) -> Result<(), SharedBuildError> {
+    if database_url.trim().is_empty()
+        || derivation_path.is_empty()
+        || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || derivation_path.contains('\0')
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -354,7 +589,16 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
     let backend_execution_id: Option<String> =
         row.try_get(8).map_err(|_| SharedBuildFailure::Query)?;
     let expected_outputs: Vec<String> = row.try_get(9).map_err(|_| SharedBuildFailure::Query)?;
-    let created_at: SystemTime = row.try_get(10).map_err(|_| SharedBuildFailure::Query)?;
+    let result_metadata: Option<String> = row.try_get(10).map_err(|_| SharedBuildFailure::Query)?;
+    let failure_classification: Option<String> =
+        row.try_get(11).map_err(|_| SharedBuildFailure::Query)?;
+    let created_at: SystemTime = row.try_get(12).map_err(|_| SharedBuildFailure::Query)?;
+    let started_at: Option<SystemTime> = row.try_get(13).map_err(|_| SharedBuildFailure::Query)?;
+    let collecting_at: Option<SystemTime> =
+        row.try_get(14).map_err(|_| SharedBuildFailure::Query)?;
+    let completed_at: Option<SystemTime> =
+        row.try_get(15).map_err(|_| SharedBuildFailure::Query)?;
+    let expires_at: Option<SystemTime> = row.try_get(16).map_err(|_| SharedBuildFailure::Query)?;
     let request_digest: [u8; 32] = request_digest
         .try_into()
         .map_err(|_| SharedBuildFailure::Query)?;
@@ -386,6 +630,31 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
         "failed" => SharedBuildState::Failed,
         _ => return Err(SharedBuildFailure::Query),
     };
+    let result_metadata: Option<serde_json::Value> = result_metadata
+        .map(|metadata| serde_json::from_str(&metadata).map_err(|_| SharedBuildFailure::Query))
+        .transpose()?;
+    if result_metadata
+        .as_ref()
+        .is_some_and(|metadata| !metadata.is_object())
+        || failure_classification
+            .as_ref()
+            .is_some_and(|classification| {
+                classification.is_empty() || classification.len() > MAX_IPC_COMPONENT_BYTES
+            })
+        || (state == SharedBuildState::Succeeded
+            && (result_metadata.is_none() || failure_classification.is_some()))
+        || (state == SharedBuildState::Failed
+            && (result_metadata.is_none() || failure_classification.is_none()))
+        || (!matches!(
+            state,
+            SharedBuildState::Succeeded | SharedBuildState::Failed
+        ) && (result_metadata.is_some()
+            || failure_classification.is_some()
+            || completed_at.is_some()
+            || expires_at.is_some()))
+    {
+        return Err(SharedBuildFailure::Query);
+    }
     Ok(SharedBuild {
         derivation_path,
         request_digest,
@@ -395,7 +664,13 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
         capabilities,
         backend_execution_id,
         expected_outputs,
+        result_metadata,
+        failure_classification,
         created_at,
+        started_at,
+        collecting_at,
+        completed_at,
+        expires_at,
     })
 }
 
