@@ -405,6 +405,11 @@ fn run_daemon() -> io::Result<()> {
         .map_err(|_| invalid("collecting attempt recovery failed"))?;
     recover_collecting_build_requests(&database_url, &deployment, collecting)?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
+    telchar::static_ssh_backend::verify_configured_backends(
+        config.static_ssh_backends(),
+        Duration::from_secs(10),
+    )?;
+    let backends = Arc::new(telchar::backend_routing::ConfiguredBackends::new(&config)?);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
@@ -438,6 +443,7 @@ fn run_daemon() -> io::Result<()> {
             &rate_admission,
             disk_reserve,
             &disk_probe,
+            &backends,
             &shared_builds,
         );
     }
@@ -507,6 +513,7 @@ fn run_daemon() -> io::Result<()> {
         let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
+        let backends = Arc::clone(&backends);
         let shared_builds = Arc::clone(&shared_builds);
         std::thread::spawn(move || {
             let _permit = permit;
@@ -524,6 +531,7 @@ fn run_daemon() -> io::Result<()> {
                         &rate_admission,
                         disk_reserve,
                         &telchar::disk_reserve::OsDiskReserveProbe,
+                        &backends,
                         &shared_builds,
                     )
                 });
@@ -552,6 +560,7 @@ fn serve_connection(
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
     disk_reserve: telchar::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
+    backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     serve_accepted_connection(
@@ -565,6 +574,7 @@ fn serve_connection(
         rate_admission,
         disk_reserve,
         disk_probe,
+        backends,
         shared_builds,
     )
 }
@@ -574,13 +584,14 @@ fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
     database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
-    service_config: &telchar::config::ServiceConfig,
+    _service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
     disk_reserve: telchar::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
+    backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
@@ -626,11 +637,7 @@ fn serve_accepted_connection(
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
-        let mut build_executor =
-            match telchar::static_ssh_backend::executor_from_config(service_config)? {
-                Some(executor) => executor,
-                None => telchar::local_executor::executor_from_environment()?,
-            };
+        let mut build_executor = backends.executor();
         let mut store_export = telchar::store_export::backend_from_environment()?;
         let mut store_import = telchar::store_import::importer_from_environment()?;
         let mut store_closure = telchar::store_closure::backend_from_environment()?;
@@ -642,7 +649,7 @@ fn serve_accepted_connection(
             deployment,
             running_disconnect_policy,
             &mut store_query,
-            build_executor.as_mut(),
+            &mut build_executor,
             store_export.as_mut(),
             store_import.as_mut(),
             store_closure.as_mut(),

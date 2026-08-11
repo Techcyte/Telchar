@@ -1,0 +1,99 @@
+use std::io;
+use std::sync::Arc;
+
+use crate::backend::{BackendKind, BackendPool, BuildBackend, BuildExecution, BuildResult};
+use crate::config::{ServiceConfig, StaticSshBackendConfig};
+use crate::store_daemon::GatewayStoreEndpoint;
+
+#[derive(Clone)]
+pub struct ConfiguredBackends {
+    inner: Arc<ConfiguredBackendsInner>,
+}
+
+struct ConfiguredBackendsInner {
+    pool: BackendPool,
+    permit_wait: std::time::Duration,
+    static_ssh: Vec<StaticSshBackendConfig>,
+}
+
+impl ConfiguredBackends {
+    pub fn new(config: &ServiceConfig) -> io::Result<Self> {
+        let mut targets = Vec::new();
+        let mut maximums = Vec::new();
+        if let Some(local) = config.local_backend() {
+            targets.push(local.target().clone());
+            maximums.push(local.maximum_concurrent_builds());
+        }
+        for backend in config.static_ssh_backends() {
+            targets.push(backend.target().clone());
+            maximums.push(backend.maximum_concurrent_builds());
+        }
+        Ok(Self {
+            inner: Arc::new(ConfiguredBackendsInner {
+                pool: BackendPool::new(targets, maximums)?,
+                permit_wait: config.backend_permit_wait(),
+                static_ssh: config.static_ssh_backends().to_vec(),
+            }),
+        })
+    }
+
+    pub fn executor(&self) -> BackendExecutor {
+        BackendExecutor {
+            backends: self.clone(),
+        }
+    }
+}
+
+pub struct BackendExecutor {
+    backends: ConfiguredBackends,
+}
+
+impl BuildBackend for BackendExecutor {
+    fn execute_with_logs(
+        &mut self,
+        execution: &BuildExecution<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
+        let required_features = execution
+            .build()
+            .required_system_features()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let permit = self.backends.inner.pool.acquire(
+            execution.build().system(),
+            &required_features,
+            self.backends.inner.permit_wait,
+        )?;
+        let mut backend: Box<dyn BuildBackend> = match permit.target().kind() {
+            BackendKind::Local => crate::local_executor::executor_from_environment()?,
+            BackendKind::StaticSsh => {
+                let config = self
+                    .backends
+                    .inner
+                    .static_ssh
+                    .iter()
+                    .find(|config| config.target().name() == permit.target().name())
+                    .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
+                let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "gateway store endpoint is not configured",
+                    )
+                })?;
+                Box::new(crate::static_ssh_backend::StaticSshBackend::new(
+                    config.clone(),
+                    GatewayStoreEndpoint::parse_os(&endpoint)?,
+                ))
+            }
+            BackendKind::Nomad => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "BuildDerivation execution is unavailable",
+                ));
+            }
+        };
+        backend.execute_with_logs(execution, logs, cancelled)
+    }
+}
