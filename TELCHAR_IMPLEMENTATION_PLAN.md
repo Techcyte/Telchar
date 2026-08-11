@@ -1345,10 +1345,12 @@ Completed durable-state work above remains valid implementation history and may 
   - Verify: focused backend contract test, all-target compilation, clippy, formatting, diff, and diagnostics.
   - Evidence: a fixture backend observes exact request metadata, forwards a log chunk before completion, checks cancellation, and returns a trusted terminal output set without queue, scheduler, reconnect, or cache behavior.
 
-- [ ] T121 Route builds by configured system and features
+- [x] T121 Route builds by configured system and features
   - Depends on: T120
-  - Outcome: Telchar selects one compatible local, static SSH, or Nomad backend using operator configuration and deterministic declaration order; no fair queue or priority scheduler exists.
-  - Verify: compact compatibility table test.
+  - Outcome: bounded `BackendTarget` declarations identify local, static SSH, and Nomad backends; `select_backend` returns the first declaration matching the exact system and containing every required feature, with no fair queue, priority, or capacity scheduler.
+  - Red: the compact routing test failed to compile because no backend target, kind, or selection operation existed.
+  - Verify: routing and backend contract tests, all-target compilation, clippy, formatting, diff, and diagnostics.
+  - Evidence: declaration order selects local for `kvm`, static SSH for `big-parallel+kvm`, and rejects unsupported systems or features.
 
 - [ ] T122 Adapt the existing local executor to the minimal backend contract
   - Depends on: T120
