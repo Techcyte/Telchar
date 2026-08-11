@@ -1407,10 +1407,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: serial real PostgreSQL persistence suite, all-target compilation, clippy with warnings denied, canonical formatting, diff, and diagnostics.
   - Evidence: migration 9 adds the bounded five-state `shared_builds` table and indexes; simultaneous equivalent claims yield one owner and one joiner; digest, backend, capability, execution-ID, and output disagreement fail closed; adoptable records require stable execution IDs; typed transitions enforce `claimed → running → collecting → succeeded` and failure from any nonterminal state; terminal results are immutable and bounded; active rows survive restart in deterministic order; and a later independent request atomically replaces one failed row without automatic retry or attempt history.
 
-- [ ] T128 Coalesce connected requests around one execution
+- [x] T128 Coalesce connected requests around one execution
   - Depends on: T127
   - Outcome: one request becomes leader, matching concurrent requests attach as in-memory followers, exactly one backend execution runs, followers receive a bounded already-in-progress message and the shared terminal result, and disconnecting requesters never own or cancel backend work.
-  - Verify: concurrent identical-request, follower disconnect, shared success, shared failure, and later-request-after-failure tests.
+  - Red: focused tests first failed because no process-local registry or explicit leader/follower roles existed; production integration then exposed overlapping mutable output ownership and required an explicit acquisition API rather than dual execution callbacks.
+  - Verify: concurrent identical-request, follower disconnect, shared success, shared failure, later-request-after-failure, full operation-dispatch suite, all-target compilation, clippy, canonical formatting, diff, and diagnostics.
+  - Evidence: one process-wide registry is shared by daemon session threads; admitted request semantics produce a derivation-path plus 32-byte SHA-256 identity; exactly one frontend executes the helper while followers receive the bounded already-in-progress frame and shared terminal result; leader and follower disconnect fixtures leave the backend execution independent of either requester; failure wakes all waiters and releases the key for a later request.
 
 - [ ] T129 Route each leader across configured backends
   - Depends on: T121, T128
