@@ -46,6 +46,8 @@ impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdoptedExecution {
     Monitoring,
+    Succeeded,
+    Failed,
     Missing,
 }
 
@@ -106,7 +108,16 @@ pub fn reconcile_shared_builds(
                 }
                 match backends.adopt(&build) {
                     Ok(AdoptedExecution::Monitoring) => outcome.monitoring += 1,
-                    Ok(AdoptedExecution::Missing) | Err(_) => {
+                    Ok(AdoptedExecution::Succeeded) => {
+                        if outputs.contains_all(&build.expected_outputs)? {
+                            complete_recovered_success(database_url, &build, retention)?;
+                            outcome.succeeded += 1;
+                        } else {
+                            complete_recovery_failure(database_url, &build, retention)?;
+                            outcome.failed += 1;
+                        }
+                    }
+                    Ok(AdoptedExecution::Failed | AdoptedExecution::Missing) | Err(_) => {
                         complete_recovery_failure(database_url, &build, retention)?;
                         outcome.failed += 1;
                     }
