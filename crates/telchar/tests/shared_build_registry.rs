@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use telchar::backend::{BuildResult, BuildStatus, OutputTrust};
-use telchar::shared_build::{SharedBuildRegistry, SharedBuildTerminalFailure};
+use telchar::shared_build::{SharedBuildAccess, SharedBuildRegistry, SharedBuildTerminalFailure};
 
 #[test]
 fn identical_connected_builds_share_one_execution() {
@@ -82,6 +82,48 @@ fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
     assert!(registry
         .execute_or_wait("failed-build", successful_result)
         .is_ok());
+}
+
+#[test]
+fn explicit_leader_and_follower_share_terminal_result() {
+    let registry = SharedBuildRegistry::new();
+
+    let leader = match registry.acquire("shared-build") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let follower = match registry.acquire("shared-build") {
+        SharedBuildAccess::Follower(follower) => follower,
+        SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
+    };
+
+    let expected = successful_result().expect("result constructs");
+    leader.complete(Ok(expected.clone()));
+
+    assert_eq!(follower.wait(), Ok(expected));
+    assert_eq!(registry.active_build_count(), 0);
+}
+
+#[test]
+fn dropped_leader_fails_followers_and_releases_build_key() {
+    let registry = SharedBuildRegistry::new();
+
+    let leader = match registry.acquire("abandoned-build") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let follower = match registry.acquire("abandoned-build") {
+        SharedBuildAccess::Follower(follower) => follower,
+        SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
+    };
+
+    drop(leader);
+
+    assert_eq!(follower.wait(), Err(SharedBuildTerminalFailure::Internal));
+    assert!(matches!(
+        registry.acquire("abandoned-build"),
+        SharedBuildAccess::Leader(_)
+    ));
 }
 
 #[test]
