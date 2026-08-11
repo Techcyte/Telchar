@@ -8,6 +8,9 @@ use std::time::{Duration, SystemTime};
 use postgres::types::Type;
 use sha2::{Digest, Sha256};
 use support::postgres::PostgresFixture;
+use telchar::backend::{
+    BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
+};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
@@ -61,6 +64,127 @@ fn requester_reference_is_deterministic_and_component_separated() {
             reference
         );
     }
+}
+
+#[test]
+fn equivalent_shared_build_claims_have_one_owner() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let database_url = fixture.url().to_owned();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+
+    let claims = thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let database_url = database_url.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(scope.spawn(move || {
+                barrier.wait();
+                telchar::persistence::claim_shared_build(
+                    &database_url,
+                    "/nix/store/11111111111111111111111111111111-shared.drv",
+                    &[7_u8; 32],
+                    "ssh-fast",
+                    BackendKind::StaticSsh,
+                    BackendCapabilities::new(
+                        ExecutionRecovery::OutputOnly,
+                        CancellationCapability::ConnectionBound,
+                        LogRecovery::LiveOnly,
+                    ),
+                    None,
+                    &["/nix/store/22222222222222222222222222222222-shared"],
+                )
+                .expect("shared build claim succeeds")
+            }));
+        }
+        barrier.wait();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim thread joins"))
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| claim.ownership == telchar::persistence::SharedBuildOwnership::Claimed)
+            .count(),
+        1
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| claim.ownership == telchar::persistence::SharedBuildOwnership::Joined)
+            .count(),
+        1
+    );
+    assert!(claims.iter().all(|claim| {
+        claim.build.derivation_path == "/nix/store/11111111111111111111111111111111-shared.drv"
+            && claim.build.state == telchar::persistence::SharedBuildState::Claimed
+            && claim.build.backend_name == "ssh-fast"
+            && claim.build.capabilities.execution_recovery() == ExecutionRecovery::OutputOnly
+            && claim.build.backend_execution_id.is_none()
+    }));
+}
+
+#[test]
+fn shared_build_claim_rejects_digest_conflict_and_requires_adoptable_identity() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/33333333333333333333333333333333-conflict.drv";
+    let output_path = "/nix/store/44444444444444444444444444444444-conflict";
+    let output_only = BackendCapabilities::new(
+        ExecutionRecovery::OutputOnly,
+        CancellationCapability::ConnectionBound,
+        LogRecovery::LiveOnly,
+    );
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[1_u8; 32],
+        "local",
+        BackendKind::Local,
+        output_only,
+        None,
+        &[output_path],
+    )
+    .expect("first shared build claim succeeds");
+
+    assert_eq!(
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            derivation_path,
+            &[2_u8; 32],
+            "local",
+            BackendKind::Local,
+            output_only,
+            None,
+            &[output_path],
+        )
+        .expect_err("digest disagreement fails closed")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::Conflict
+    );
+    assert_eq!(
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            "/nix/store/55555555555555555555555555555555-adoptable.drv",
+            &[3_u8; 32],
+            "nomad",
+            BackendKind::Nomad,
+            BackendCapabilities::new(
+                ExecutionRecovery::Adoptable,
+                CancellationCapability::Explicit,
+                LogRecovery::LiveOnly,
+            ),
+            None,
+            &["/nix/store/66666666666666666666666666666666-adoptable"],
+        )
+        .expect_err("adoptable execution requires a stable identity")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::Configuration
+    );
 }
 
 #[test]
@@ -3483,7 +3607,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 8);
+    assert_eq!(ledger.len(), 9);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -3511,6 +3635,9 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[7].get::<_, i64>(0), 8);
     assert_eq!(ledger[7].get::<_, String>(1), "retained_store_paths");
     assert_eq!(ledger[7].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[8].get::<_, i64>(0), 9);
+    assert_eq!(ledger[8].get::<_, String>(1), "shared_builds");
+    assert_eq!(ledger[8].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -3522,6 +3649,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
         "capacity_reservations",
         "local_backend_executions",
         "local_backend_execution_results",
+        "shared_builds",
     ] {
         let row = client
             .query_one("SELECT to_regclass($1)::text", &[&table])
@@ -3597,8 +3725,8 @@ fn reconciliation_state_migration_preserves_existing_execution_rows() {
         telchar::persistence::migrate(fixture.url()).expect("reconciliation migration applies");
 
     assert_eq!(outcome.previously_applied, 3);
-    assert_eq!(outcome.applied_this_run, 5);
-    assert_eq!(outcome.resulting_version, 8);
+    assert_eq!(outcome.applied_this_run, 6);
+    assert_eq!(outcome.resulting_version, 9);
     let mut client = fixture.connect();
     assert_eq!(
         client
@@ -3670,7 +3798,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 7);
+    assert_eq!(outcome.applied_this_run, 8);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -3751,8 +3879,8 @@ fn execution_state_migration_upgrades_gate_three_rows() {
 
     assert!(postgres_version.parse::<u32>().expect("numeric version") >= 14_00_00);
     assert_eq!(outcome.previously_applied, 2);
-    assert_eq!(outcome.applied_this_run, 6);
-    assert_eq!(outcome.resulting_version, 8);
+    assert_eq!(outcome.applied_this_run, 7);
+    assert_eq!(outcome.resulting_version, 9);
     let mut client = fixture.connect();
     let ledger = client
         .query_one(
@@ -3845,8 +3973,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 8);
-    assert_eq!(second.previously_applied, 8);
+    assert_eq!(first.applied_this_run, 9);
+    assert_eq!(second.previously_applied, 9);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3854,7 +3982,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        8
+        9
     );
 }
 
@@ -3886,7 +4014,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (9, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (10, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -3939,7 +4067,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 8);
+    assert_eq!(first.applied_this_run, 9);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -3947,7 +4075,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        8
+        9
     );
 }
 
@@ -3975,7 +4103,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        8
+        9
     );
     assert_eq!(
         fixture
@@ -3983,7 +4111,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        8
+        9
     );
 }
 

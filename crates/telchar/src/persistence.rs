@@ -5,6 +5,9 @@ use std::time::{Duration, SystemTime};
 use postgres::{Client, NoTls, Row};
 use sha2::{Digest, Sha256};
 
+use crate::backend::{
+    BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
+};
 use crate::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
@@ -63,6 +66,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "retained_store_paths",
         sql: include_str!("../migrations/0008_retained_store_paths.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "shared_builds",
+        sql: include_str!("../migrations/0009_shared_builds.sql"),
     },
 ];
 
@@ -130,6 +138,327 @@ pub fn requester_reference(requester: &RequesterMetadata) -> String {
     digest.update(b"\0");
     digest.update(requester.quota_subject.as_bytes());
     format!("{:x}", digest.finalize())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SharedBuildFailure {
+    Configuration,
+    Connection,
+    Conflict,
+    Query,
+    Commit,
+}
+
+impl SharedBuildFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Connection => "connection",
+            Self::Conflict => "conflict",
+            Self::Query => "query",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SharedBuildError(SharedBuildFailure);
+
+impl SharedBuildError {
+    pub fn failure(&self) -> SharedBuildFailure {
+        self.0
+    }
+}
+
+impl fmt::Display for SharedBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("shared build state operation failed")
+    }
+}
+
+impl std::error::Error for SharedBuildError {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SharedBuildState {
+    Claimed,
+    Running,
+    Collecting,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SharedBuildOwnership {
+    Claimed,
+    Joined,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedBuild {
+    pub derivation_path: String,
+    pub request_digest: [u8; 32],
+    pub state: SharedBuildState,
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub capabilities: BackendCapabilities,
+    pub backend_execution_id: Option<String>,
+    pub expected_outputs: Vec<String>,
+    pub created_at: SystemTime,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedBuildClaim {
+    pub ownership: SharedBuildOwnership,
+    pub build: SharedBuild,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn claim_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+    request_digest: &[u8],
+    backend_name: &str,
+    backend_kind: BackendKind,
+    capabilities: BackendCapabilities,
+    backend_execution_id: Option<&str>,
+    expected_outputs: &[&str],
+) -> Result<SharedBuildClaim, SharedBuildError> {
+    validate_shared_build_claim(
+        database_url,
+        derivation_path,
+        request_digest,
+        backend_name,
+        backend_kind,
+        capabilities,
+        backend_execution_id,
+        expected_outputs,
+    )?;
+    let backend_kind_value = backend_kind_name(backend_kind);
+    let execution_recovery = execution_recovery_name(capabilities.execution_recovery());
+    let cancellation = cancellation_name(capabilities.cancellation());
+    let log_recovery = log_recovery_name(capabilities.log_recovery());
+    let expected_outputs = expected_outputs
+        .iter()
+        .map(|output| (*output).to_owned())
+        .collect::<Vec<_>>();
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let inserted = transaction
+        .query_opt(
+            "INSERT INTO shared_builds (
+                 derivation_path, request_digest, backend_name, backend_kind,
+                 execution_recovery, cancellation, log_recovery,
+                 backend_execution_id, expected_outputs
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (derivation_path) DO NOTHING
+             RETURNING derivation_path",
+            &[
+                &derivation_path,
+                &request_digest,
+                &backend_name,
+                &backend_kind_value,
+                &execution_recovery,
+                &cancellation,
+                &log_recovery,
+                &backend_execution_id,
+                &expected_outputs,
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .is_some();
+    let row = transaction
+        .query_one(
+            "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
+                    execution_recovery, cancellation, log_recovery,
+                    backend_execution_id, expected_outputs, created_at
+             FROM shared_builds WHERE derivation_path = $1",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    if build.request_digest.as_slice() != request_digest {
+        return Err(SharedBuildError(SharedBuildFailure::Conflict));
+    }
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(SharedBuildClaim {
+        ownership: if inserted {
+            SharedBuildOwnership::Claimed
+        } else {
+            SharedBuildOwnership::Joined
+        },
+        build,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_shared_build_claim(
+    database_url: &str,
+    derivation_path: &str,
+    request_digest: &[u8],
+    backend_name: &str,
+    backend_kind: BackendKind,
+    capabilities: BackendCapabilities,
+    backend_execution_id: Option<&str>,
+    expected_outputs: &[&str],
+) -> Result<(), SharedBuildError> {
+    let valid_execution_id = backend_execution_id.is_none_or(|execution_id| {
+        !execution_id.is_empty()
+            && execution_id.len() <= nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+            && !execution_id.contains('\0')
+    });
+    let valid_outputs = !expected_outputs.is_empty()
+        && expected_outputs.len() <= 64
+        && expected_outputs.iter().all(|output| {
+            !output.is_empty()
+                && output.len() <= nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+                && !output.contains('\0')
+        })
+        && expected_outputs
+            .iter()
+            .enumerate()
+            .all(|(index, output)| !expected_outputs[..index].contains(output));
+    if database_url.trim().is_empty()
+        || derivation_path.is_empty()
+        || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || derivation_path.contains('\0')
+        || request_digest.len() != 32
+        || backend_name.is_empty()
+        || backend_name.len() > MAX_IPC_COMPONENT_BYTES
+        || backend_name.contains('\0')
+        || capabilities != backend_kind.capabilities()
+        || !valid_execution_id
+        || (capabilities.execution_recovery() == ExecutionRecovery::Adoptable
+            && backend_execution_id.is_none())
+        || !valid_outputs
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    Ok(())
+}
+
+fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
+    let derivation_path: String = row.try_get(0).map_err(|_| SharedBuildFailure::Query)?;
+    let request_digest: Vec<u8> = row.try_get(1).map_err(|_| SharedBuildFailure::Query)?;
+    let state: String = row.try_get(2).map_err(|_| SharedBuildFailure::Query)?;
+    let backend_name: String = row.try_get(3).map_err(|_| SharedBuildFailure::Query)?;
+    let backend_kind: String = row.try_get(4).map_err(|_| SharedBuildFailure::Query)?;
+    let execution_recovery: String = row.try_get(5).map_err(|_| SharedBuildFailure::Query)?;
+    let cancellation: String = row.try_get(6).map_err(|_| SharedBuildFailure::Query)?;
+    let log_recovery: String = row.try_get(7).map_err(|_| SharedBuildFailure::Query)?;
+    let backend_execution_id: Option<String> =
+        row.try_get(8).map_err(|_| SharedBuildFailure::Query)?;
+    let expected_outputs: Vec<String> = row.try_get(9).map_err(|_| SharedBuildFailure::Query)?;
+    let created_at: SystemTime = row.try_get(10).map_err(|_| SharedBuildFailure::Query)?;
+    let request_digest: [u8; 32] = request_digest
+        .try_into()
+        .map_err(|_| SharedBuildFailure::Query)?;
+    let backend_kind = parse_backend_kind(&backend_kind).ok_or(SharedBuildFailure::Query)?;
+    let capabilities = BackendCapabilities::new(
+        parse_execution_recovery(&execution_recovery).ok_or(SharedBuildFailure::Query)?,
+        parse_cancellation(&cancellation).ok_or(SharedBuildFailure::Query)?,
+        parse_log_recovery(&log_recovery).ok_or(SharedBuildFailure::Query)?,
+    );
+    validate_shared_build_claim(
+        "validated",
+        &derivation_path,
+        &request_digest,
+        &backend_name,
+        backend_kind,
+        capabilities,
+        backend_execution_id.as_deref(),
+        &expected_outputs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| SharedBuildFailure::Query)?;
+    let state = match state.as_str() {
+        "claimed" => SharedBuildState::Claimed,
+        "running" => SharedBuildState::Running,
+        "collecting" => SharedBuildState::Collecting,
+        "succeeded" => SharedBuildState::Succeeded,
+        "failed" => SharedBuildState::Failed,
+        _ => return Err(SharedBuildFailure::Query),
+    };
+    Ok(SharedBuild {
+        derivation_path,
+        request_digest,
+        state,
+        backend_name,
+        backend_kind,
+        capabilities,
+        backend_execution_id,
+        expected_outputs,
+        created_at,
+    })
+}
+
+fn backend_kind_name(kind: BackendKind) -> &'static str {
+    match kind {
+        BackendKind::Local => "local",
+        BackendKind::StaticSsh => "static-ssh",
+        BackendKind::Nomad => "nomad",
+    }
+}
+
+fn parse_backend_kind(value: &str) -> Option<BackendKind> {
+    match value {
+        "local" => Some(BackendKind::Local),
+        "static-ssh" => Some(BackendKind::StaticSsh),
+        "nomad" => Some(BackendKind::Nomad),
+        _ => None,
+    }
+}
+
+fn execution_recovery_name(capability: ExecutionRecovery) -> &'static str {
+    match capability {
+        ExecutionRecovery::OutputOnly => "output-only",
+        ExecutionRecovery::Adoptable => "adoptable",
+    }
+}
+
+fn parse_execution_recovery(value: &str) -> Option<ExecutionRecovery> {
+    match value {
+        "output-only" => Some(ExecutionRecovery::OutputOnly),
+        "adoptable" => Some(ExecutionRecovery::Adoptable),
+        _ => None,
+    }
+}
+
+fn cancellation_name(capability: CancellationCapability) -> &'static str {
+    match capability {
+        CancellationCapability::ConnectionBound => "connection-bound",
+        CancellationCapability::Explicit => "explicit",
+    }
+}
+
+fn parse_cancellation(value: &str) -> Option<CancellationCapability> {
+    match value {
+        "connection-bound" => Some(CancellationCapability::ConnectionBound),
+        "explicit" => Some(CancellationCapability::Explicit),
+        _ => None,
+    }
+}
+
+fn log_recovery_name(capability: LogRecovery) -> &'static str {
+    match capability {
+        LogRecovery::LiveOnly => "live-only",
+        LogRecovery::Replayable => "replayable",
+    }
+}
+
+fn parse_log_recovery(value: &str) -> Option<LogRecovery> {
+    match value {
+        "live-only" => Some(LogRecovery::LiveOnly),
+        "replayable" => Some(LogRecovery::Replayable),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
