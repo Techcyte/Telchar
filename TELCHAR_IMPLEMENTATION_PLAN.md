@@ -1332,9 +1332,11 @@ Evidence: paths and output facts to record
 
 ## MVP remaining work — focused build gateway
 
-The MVP is one stable stock-Nix `ssh-ng` endpoint that chooses a compatible configured backend and services the submitted build. Backend execution appears synchronous to the client. Telchar does not provide a general queue, fairness policy, client reattachment, or cache service. If a client disconnects, no reconnect guarantee is made; the client may retry through ordinary Nix behavior. Existing Nix substituters and publishers such as Attic or S3-backed caches remain external infrastructure.
+The MVP is one stable stock-Nix `ssh-ng` endpoint backed by a small durable build coordinator. Equivalent normal-mode derivation requests coalesce into one shared execution, each connected requester waits synchronously for that execution, and backend work continues independently of client attachment. Completed outputs live in the gateway store, so a reconnecting or retrying Nix client either attaches to the active shared build or receives the already-valid result.
 
-Completed durable-state work above remains valid implementation history and may support simple execution bookkeeping. It does not require the MVP to activate a scheduler.
+The coordinator selects one compatible configured backend by exact system, required-feature subset, declaration order, and a bounded backend permit. It does not provide a general durable queue, fairness policy, priorities, automatic retries, attempt history, per-subject capacity reservations, detached-client result APIs, or cache service. Nomad owns cluster placement, pending allocations, and any infrastructure autoscaling. Existing Nix substituters and publishers such as Attic or S3-backed caches remain external infrastructure.
+
+The durable coordinator is intentionally an extension seam rather than a reduced copy of the previous scheduler design. Future queueing, fairness, priorities, quotas, retries, or administrative controls can consume the same admitted build key, backend declarations, shared-build record, terminal result, and attachment events. Those features must add their own policy and schema only when demonstrated need exists; the MVP does not preserve dormant scheduler transitions in anticipation of them.
 
 ### Minimal backend boundary
 
@@ -1383,96 +1385,132 @@ Completed durable-state work above remains valid implementation history and may 
   - Verify: `nix build .#checks.x86_64-linux.nixos-static-ssh-build --no-link -L`, focused worker-protocol/config/backend tests, all-target compilation, Clippy with warnings denied, canonical formatting, diff, and diagnostics.
   - Evidence: the authoritative three-node NixOS VM completes in 28.09 seconds; the remote builder receives only the forced `nix-daemon --stdio` command, the gateway imports and verifies the output, and the stock client reads the expected result.
 
-- [ ] T126 Handle static SSH timeout and failure
-  - Depends on: T125
-  - Outcome: build, transport, staging, collection, and timeout failures terminate cleanly without leaking credentials or unbounded data.
-  - Verify: focused hostile SSH cases.
+### Durable shared-build coordinator
 
-- [ ] T127 Verify the static SSH gateway
+- [x] T126 Record the lean coordinator decision and cleanup boundary
+  - Depends on: T125
+  - Outcome: an ADR defines normal-mode derivation coalescing, client-independent execution ownership, five shared-build states (`claimed`, `running`, `collecting`, `succeeded`, `failed`), backend-specific restart reconciliation, connection-scoped MVP logs, and explicit exclusions for queues, retries, attempts, fairness, priorities, quotas, and capacity reservations.
+  - Verify: design review against stock-Nix behavior, gateway-store authority, singleton ownership, and the three backend contracts.
+  - Evidence: `docs/adr/durable-shared-build-coordinator.md` makes the gateway store authoritative for completed outputs, gives Nomad deterministic adoptable identity, lets local/static SSH recover exact outputs or fail cleanly, and preserves explicit extension seams for later queueing, policy, retry attempts, administration, and log archives without retaining dormant machinery.
+
+- [ ] T127 Persist one shared build per equivalent derivation
   - Depends on: T126
-  - Outcome: a pinned stock Nix client builds through Telchar without knowing which static SSH machine serviced the request.
+  - Outcome: PostgreSQL atomically claims one bounded request digest per normal-mode derivation path, records the selected backend and stable backend execution ID where available, stores bounded expected-output and terminal metadata, and permits a later client request to replace a failed build without automatic retry.
+  - Verify: real PostgreSQL concurrent claim, conflicting-digest rejection, state-transition, terminal immutability, bounded-retention, and restart round-trip tests.
+
+- [ ] T128 Coalesce connected requests around one execution
+  - Depends on: T127
+  - Outcome: one request becomes leader, matching concurrent requests attach as in-memory followers, exactly one backend execution runs, followers receive a bounded already-in-progress message and the shared terminal result, and disconnecting requesters never own or cancel backend work.
+  - Verify: concurrent identical-request, follower disconnect, shared success, shared failure, and later-request-after-failure tests.
+
+- [ ] T129 Route each leader across configured backends
+  - Depends on: T121, T128
+  - Outcome: production execution uses `select_backend(...)` per admitted build, honors exact system and required features, acquires one bounded per-backend permit, and fans different derivations across local, static SSH, and Nomad targets without a durable queue or Telchar capacity reservation.
+  - Verify: mixed-backend routing, busy-backend waiting, timeout, and permit-release tests.
+
+- [ ] T130 Reconcile active shared builds after restart
+  - Depends on: T127, T129
+  - Outcome: startup validates expected outputs in the gateway store first, resumes monitoring backends with durable external identities, adopts deterministic Nomad jobs, recovers local/static-SSH success from exact verified outputs where possible, and marks unrecoverable executions failed so an ordinary later request may claim them again.
+  - Verify: restart fixtures for completed output, active Nomad adoption, missing backend execution, and failed local/static-SSH recovery.
+
+- [ ] T131 Remove dormant scheduler lifecycle machinery
+  - Depends on: T127, T128, T130
+  - Outcome: queue states, execution attempts, outcomes, capacity reservations, generic submission reconciliation, automatic-retry scaffolding, and the unused local executor registry are removed from production startup, persistence, migrations, tests, and terminology while protocol sessions, shared builds, store leases, output retention, and singleton ownership remain.
+  - Verify: schema inspection, dead-symbol search, persistence suite, startup fixtures, migration ledger, all-target compilation, and diagnostics.
+
+### Static SSH completion
+
+- [ ] T132 Handle static SSH timeout, failure, and shared-build recovery
+  - Depends on: T125, T130
+  - Outcome: authentication, worker protocol, staging, execution, collection, missing-output, timeout, and cancellation failures terminate cleanly without leaking credentials or unbounded data; restart reconciliation imports exact remote outputs when available and otherwise fails the shared build cleanly.
+  - Verify: focused hostile SSH and restart cases.
+
+- [ ] T133 Verify the static SSH gateway
+  - Depends on: T128, T129, T132
+  - Outcome: pinned stock Nix clients submit identical and distinct derivations through Telchar without knowing which static SSH machine serviced them; duplicates coalesce and distinct builds fan out according to configured compatibility and permits.
   - Verify: authoritative multi-machine `nixosTest`.
 
 ### Nomad backend
 
-- [ ] T128 Define and parse the minimum Nomad backend configuration
-  - Depends on: T121
-  - Outcome: operator configuration supplies the Nomad endpoint, namespace, fixed credential files, system/features, task driver, resources, and runtime bound.
+- [ ] T134 Define and parse the minimum Nomad backend configuration
+  - Depends on: T121, T126
+  - Outcome: operator configuration supplies the Nomad endpoint, namespace, protected credential files, system/features, task driver, resources, deterministic job-name scope, polling bound, and runtime bound.
   - Verify: strict configuration and rendered-job tests.
 
-- [ ] T129 Provision a real Nomad development fixture
-  - Depends on: T128
-  - Outcome: reproducible Nomad server/client nodes can run and clean up one isolated build job.
-  - Verify: fixture smoke test.
+- [ ] T135 Provision a real Nomad development fixture
+  - Depends on: T134
+  - Outcome: reproducible Nomad server/client nodes can run, query, and clean up one isolated batch job whose deterministic identity survives a Telchar process restart.
+  - Verify: fixture smoke and job-adoption tests.
 
-- [ ] T130 Submit and wait for one Nomad build
-  - Depends on: T122, T129
-  - Outcome: Telchar renders one build-derived batch job, submits it, polls until terminal state, and appears synchronous to the connected Nix client.
-  - Verify: real Nomad submission and completion test.
+- [ ] T136 Submit and monitor one durable Nomad build
+  - Depends on: T122, T127, T130, T135
+  - Outcome: the shared-build leader renders one deterministic batch job, submits it once, records its identity, polls until terminal state independently of client attachment, and resumes monitoring the same job after Telchar restart without blind resubmission.
+  - Verify: real submission, client disconnect, daemon restart, adoption, and completion tests.
 
-- [ ] T131 Transfer inputs, logs, and outputs for Nomad
-  - Depends on: T130
-  - Outcome: the allocation receives only required inputs, emits bounded logs, and returns declared outputs for gateway import and validation.
-  - Verify: real private-input and output-collection test.
+- [ ] T137 Transfer inputs, logs, and outputs for Nomad
+  - Depends on: T136
+  - Outcome: the allocation receives only the admitted input closure, emits bounded live logs to currently attached clients, and returns the exact declared outputs for gateway import and validation; historical log replay is not promised.
+  - Verify: real private-input, bounded-log, follower-attachment, and output-collection tests.
 
-- [ ] T132 Handle Nomad timeout and failure
-  - Depends on: T131
-  - Outcome: pending, allocation, task, transfer, collection, missing-job, and timeout failures map to clean terminal Nix failures without a scheduler or reconnect protocol.
+- [ ] T138 Handle Nomad timeout and failure
+  - Depends on: T137
+  - Outcome: pending, allocation, task, transfer, collection, missing-job, and timeout failures produce one clean terminal shared-build failure; Telchar performs no automatic retry and leaves placement, pending work, and autoscaling interaction to Nomad.
   - Verify: focused controlled Nomad failures.
 
-- [ ] T133 Verify the Nomad gateway
-  - Depends on: T132
-  - Outcome: a pinned stock Nix client builds through Telchar without knowing which Nomad allocation serviced the request.
+- [ ] T139 Verify the Nomad gateway
+  - Depends on: T128, T129, T138
+  - Outcome: pinned stock Nix clients build through Telchar without knowing the Nomad allocation; concurrent duplicates create one job, reconnecting clients attach to active work, and completed gateway outputs satisfy later requests.
   - Verify: authoritative Nomad integration test.
 
 ### MVP operations and release
 
-- [ ] T134 Complete strict MVP service configuration
-  - Depends on: T123, T128
-  - Outcome: one TOML schema configures the public system/features, PostgreSQL, IPC/OpenSSH ingress, and local/static-SSH/Nomad backends; secrets use protected file references and unknown fields fail startup.
+- [ ] T140 Complete strict MVP service configuration
+  - Depends on: T123, T134
+  - Outcome: one TOML schema configures the public system/features, PostgreSQL, IPC/OpenSSH ingress, shared-build retention, backend permits, and local/static-SSH/Nomad backends; secrets use protected file references and unknown fields fail startup.
   - Verify: configuration suite.
 
-- [ ] T135 Bound shutdown, runtime, and logs
-  - Depends on: T126, T132
-  - Outcome: daemon shutdown, backend runtime, child processes, and logs have explicit bounded behavior without cancellation, drain orchestration, or detached-client recovery features.
-  - Verify: shutdown, timeout, and bounded-log tests.
+- [ ] T141 Bound shutdown, runtime, coordination, and logs
+  - Depends on: T132, T138
+  - Outcome: daemon shutdown, shared-build monitoring, backend runtime, follower waiting, child processes, polling, and live logs have explicit bounded behavior; active backend work remains client-independent and optional historical log archival remains deferred.
+  - Verify: shutdown, timeout, follower, polling, and bounded-log tests.
 
-- [ ] T136 Build the reproducible package and NixOS module
-  - Depends on: T134, T135
-  - Outcome: flake outputs install Telchar services, restricted OpenSSH ingress, configuration, credentials, gateway Nix-daemon access, and optional local executor service.
+- [ ] T142 Build the reproducible package and NixOS module
+  - Depends on: T140, T141
+  - Outcome: flake outputs install Telchar services, restricted OpenSSH ingress, configuration, credentials, gateway Nix-daemon access, PostgreSQL coordination, and the selected backend dependencies.
   - Verify: package build and NixOS module VM test.
 
-- [ ] T137 Document external Nix cache integration
-  - Depends on: T136
-  - Outcome: operator docs show how ordinary Nix substituters and existing Attic, post-build-hook, or `nix copy` publication fit beside Telchar; Telchar implements no cache service or publication state.
-  - Verify: tested configuration examples.
+- [ ] T143 Document external cache and optional log-archive integration
+  - Depends on: T142
+  - Outcome: operator docs show ordinary Nix substituters and existing Attic, post-build-hook, or `nix copy` publication beside Telchar; they also define the post-MVP extension seam for a bounded local zstd log spool mounted on durable storage or uploaded by external tooling. Telchar implements no cache service, Redis log store, or object-storage client in the MVP.
+  - Verify: tested configuration examples and explicit log-loss behavior after late attachment or restart.
 
-- [ ] T138 Document deployment, security assumptions, and limitations
-  - Depends on: T136
-  - Outcome: docs cover trust, credentials, host keys, stores, PostgreSQL, supported backends, client retry after disconnect, and explicit non-goals.
+- [ ] T144 Document deployment, security assumptions, and limitations
+  - Depends on: T142
+  - Outcome: docs cover trust, credentials, host keys, stores, PostgreSQL shared-build ownership, backend-specific restart recovery, supported backends, normal Nix retry behavior, connection-scoped logs, and explicit non-goals.
   - Verify: operator checklist.
 
-- [ ] T139 Add one focused release verification command
-  - Depends on: T127, T133, T136, T137, T138
-  - Outcome: one command verifies formatting, lint, tests, package/module checks, and stock-Nix builds through local, static SSH, and Nomad backends.
+- [ ] T145 Add one focused release verification command
+  - Depends on: T133, T139, T142, T143, T144
+  - Outcome: one command verifies formatting, lint, tests, package/module checks, duplicate coalescing, restart reconciliation, and stock-Nix builds through local, static SSH, and Nomad backends.
   - Verify: clean-shell release command.
 
-- [ ] T140 Verify the MVP release candidate
-  - Depends on: T139
-  - Outcome: Telchar demonstrably acts as a stable Nix build gateway across the three supported backends with documented residual limitations.
+- [ ] T146 Verify the MVP release candidate
+  - Depends on: T145
+  - Outcome: Telchar demonstrably acts as a stable Nix build gateway with one durable shared execution per equivalent derivation, compatible-backend fan-out, client-independent monitoring, and documented residual limitations.
   - Verify: immutable release report with exact commands and versions.
 
 ## Explicitly deferred work
 
 These features require a demonstrated operational need before design or implementation:
 
-- General durable queues, detached-client reattachment, and log resumption.
+- General durable queues, durable client attachments, and historical log resumption.
 - FIFO, round-robin, fairness, priorities, non-starvation proofs, and scheduler load testing.
 - Per-person, per-credential, or per-quota-subject limits and accounting.
-- Automatic retry frameworks, exact-once execution promises, duplicate request coalescing, and ambiguous-execution reconciliation beyond clean failure.
+- Automatic retry frameworks, attempt history, exact-once execution promises, and ambiguous-execution reconciliation beyond deterministic backend identity plus clean failure.
 - Administrative queue/status/cancellation APIs and cancellation-race machinery.
 - Backend drain orchestration, autoscaling demand signals, and provider-specific provisioning.
 - Telchar-owned binary-cache lookup, storage, publication, credentials, or durable publication state. Existing Nix, Attic, S3, post-build hooks, and `nix copy` own cache behavior.
+- Redis-backed live logs, Telchar-native object-storage upload, or historical log replay. A bounded local zstd spool and external uploader remain post-MVP extension options.
 - Active/passive or active/active high availability and distributed scheduler ownership.
 - Hostile multi-tenant isolation, per-tenant stores, or per-path client authorization.
 - Reproducible-build consensus or cryptographic provenance for classic input-addressed outputs.

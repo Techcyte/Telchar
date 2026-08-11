@@ -1,0 +1,66 @@
+# Durable shared-build coordinator
+
+## Status
+
+Accepted for the MVP roadmap.
+
+## Context
+
+Telchar exposes one stock-Nix `ssh-ng` endpoint and executes admitted normal-mode derivations through local, static SSH, or Nomad backends. Multiple clients may request the same derivation concurrently. Starting one backend execution per client wastes Nix's stable derivation identity and can create duplicate work on different builders.
+
+The earlier control-plane design included durable queues, execution attempts, capacity reservations, generic backend submission reconciliation, fairness, quotas, and retry policy. Those mechanisms solve a larger shared scheduling service than the MVP requires.
+
+## Decision
+
+Telchar will implement a small durable shared-build coordinator.
+
+One equivalent normal-mode derivation has at most one active shared execution. The derivation store path is the primary key and a bounded digest of the admitted execution specification detects inconsistent requests for the same path.
+
+A shared build has five states:
+
+```text
+claimed
+running
+collecting
+succeeded
+failed
+```
+
+The durable record contains only the identity and state needed to coalesce requests, select and identify one backend execution, reconcile after restart, validate expected outputs, and publish one terminal result. It does not contain queue position, retry attempts, fairness state, priority, quota allocation, or capacity reservations.
+
+Connected requesters are process-local followers of the durable shared build. One requester becomes the execution leader. Matching requesters receive a bounded already-in-progress diagnostic and wait synchronously for the shared terminal result. Client disconnect never owns or cancels backend work. A later normal Nix retry either attaches to the active shared build or receives an already-valid result from the gateway store.
+
+Backend selection uses exact system compatibility, required-feature subset compatibility, declaration order, and a bounded per-backend permit. Different derivations may fan out concurrently. Nomad owns cluster placement, pending allocations, resource scheduling, and interaction with infrastructure autoscaling.
+
+Telchar performs no automatic retry. A failed shared build is terminal for its current requesters. A later client request may atomically replace the failed record and start a fresh execution after checking the gateway store.
+
+## Restart behavior
+
+Startup first verifies the exact expected output set in the gateway store. Valid outputs complete the shared build regardless of its previous nonterminal state.
+
+Recovery is backend-specific:
+
+- Nomad jobs use a deterministic persisted execution identity. Telchar queries and adopts the existing job, resumes monitoring it independently of client attachment, and collects its outputs without blind resubmission.
+- Local and static SSH executions are recovered from exact verified outputs where possible. If no externally queryable execution or complete output set exists, Telchar marks the shared build failed. A later normal Nix request may start it again.
+
+Startup reconciliation establishes bounded monitors and does not wait indefinitely for active backend jobs before service readiness.
+
+## Logs
+
+MVP logs are connection-scoped. The execution leader receives live backend logs. Followers and reconnecting clients receive a bounded already-in-progress message but no historical replay. Losing Telchar's process may lose unarchived log history without losing durable shared-build identity or completed outputs.
+
+Optional historical log archival is deferred. The preferred first extension is a bounded local zstd spool with opaque filenames, restrictive permissions, disk-reserve checks, atomic finalization, and external durable-volume or object-storage upload. Redis, PostgreSQL log bytes, Telchar-native object-storage upload, and mandatory archival are not MVP requirements.
+
+## Consequences
+
+The MVP gains duplicate suppression, compatible-backend fan-out, client-independent execution ownership, durable Nomad adoption, and ordinary Nix retry behavior without implementing a general scheduler.
+
+The coordinator preserves clear extension seams:
+
+- A future queue can select unclaimed or waiting shared builds before backend execution.
+- Fairness, priorities, and per-subject quotas can rank or admit shared-build claims without changing backend contracts.
+- Automatic retries can add explicit attempt records linked to a shared build without redefining request equivalence or terminal outputs.
+- Administrative status and cancellation APIs can address stable shared-build and backend execution identities.
+- Durable log archives can attach metadata to the stable shared-build identity.
+
+These extensions require new policy and schema when justified. The MVP will not retain dormant scheduler transitions merely to make those additions appear pre-implemented.
