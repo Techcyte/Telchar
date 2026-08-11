@@ -1375,10 +1375,13 @@ Completed durable-state work above remains valid implementation history and may 
   - Verify: `nix build .#checks.x86_64-linux.nixos-static-ssh-fixture --no-link -L`, flake evaluation, nixfmt, diff, and diagnostics.
   - Evidence: stock Nix `ssh-ng` successfully completes `store ping` through the restricted account while arbitrary commands and every tested forwarding or interactive channel fail; server evidence contains no forwarded agent socket or display.
 
-- [ ] T125 Execute and collect one build through static SSH
+- [x] T125 Execute and collect one build through static SSH
   - Depends on: T122, T124
-  - Outcome: Telchar stages required private inputs, runs the derivation, forwards bounded logs, imports and validates declared outputs, and returns a normal Nix result.
-  - Verify: real static SSH build integration test.
+  - Outcome: Telchar selects a compatible configured static SSH backend, stages the admitted derivation closure through typed worker-protocol NAR operations, runs `BuildDerivation` over a pinned OpenSSH connection, drains bounded SSH diagnostics and Nix build logs, imports declared outputs into the gateway store, validates the exact output set, and returns a normal trusted Nix result.
+  - Configuration: `ssh_program` is an optional absolute executable override. Nix packaging embeds `${pkgs.openssh}/bin/ssh`; non-Nix builds use `/usr/bin/ssh`. No `PATH` discovery occurs.
+  - Red: the backend module was absent; real VM execution then exposed duplicate worker-operation frame consumption, streaming deadlocks when one protocol session performed both sides concurrently, imported `ultimate` metadata rejection, and waiting for a persistent `nix-daemon --stdio` session after the terminal result.
+  - Verify: `nix build .#checks.x86_64-linux.nixos-static-ssh-build --no-link -L`, focused worker-protocol/config/backend tests, all-target compilation, Clippy with warnings denied, canonical formatting, diff, and diagnostics.
+  - Evidence: the authoritative three-node NixOS VM completes in 28.09 seconds; the remote builder receives only the forced `nix-daemon --stdio` command, the gateway imports and verifies the output, and the stock client reads the expected result.
 
 - [ ] T126 Handle static SSH timeout and failure
   - Depends on: T125
