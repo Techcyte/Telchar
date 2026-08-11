@@ -1469,6 +1469,259 @@ fn root_release_failure_reports_retention_error_after_durable_release() {
 }
 
 #[test]
+fn concurrent_identical_frontends_share_one_build_execution() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-shared-build-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let invocation_count = root.join("invocations");
+    let started = root.join("started");
+    let complete = root.join("complete");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            invocation_count.display(),
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+    );
+    let mut follower = fixture.spawn_frontend();
+    let leader = &mut fixture.frontend;
+    let mut leader_input = leader.stdin.take().expect("leader input");
+    let mut leader_output = leader.stdout.take().expect("leader output");
+    let mut follower_input = follower.stdin.take().expect("follower input");
+    let mut follower_output = follower.stdout.take().expect("follower output");
+    complete_handshake(&mut leader_input, &mut leader_output);
+    complete_handshake(&mut follower_input, &mut follower_output);
+
+    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    leader_input.flush().expect("leader request flushes");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "leader helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    follower_input.flush().expect("follower request flushes");
+
+    assert_eq!(
+        read_integer(&mut follower_output),
+        nix_worker_protocol::STDERR_NEXT
+    );
+    assert_eq!(
+        read_string(&mut follower_output),
+        "identical build already in progress\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&invocation_count).expect("invocation count reads"),
+        "x"
+    );
+
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    assert_successful_build_response(&mut follower_output);
+    follower.kill().expect("follower terminates");
+    follower.wait().expect("follower reaps");
+    leader.kill().expect("leader terminates");
+    leader.wait().expect("leader reaps");
+    drop(leader_input);
+    drop(leader_output);
+    drop(follower_input);
+    drop(follower_output);
+    assert_eq!(
+        fs::read_to_string(&invocation_count).expect("invocation count reads"),
+        "x"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.completed"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn disconnected_follower_does_not_cancel_shared_build() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-shared-build-follower-disconnect-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let invocation_count = root.join("invocations");
+    let started = root.join("started");
+    let complete = root.join("complete");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            invocation_count.display(),
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+    );
+    let mut follower = fixture.spawn_frontend();
+    let leader = &mut fixture.frontend;
+    let mut leader_input = leader.stdin.take().expect("leader input");
+    let mut leader_output = leader.stdout.take().expect("leader output");
+    let mut follower_input = follower.stdin.take().expect("follower input");
+    let mut follower_output = follower.stdout.take().expect("follower output");
+    complete_handshake(&mut leader_input, &mut leader_output);
+    complete_handshake(&mut follower_input, &mut follower_output);
+
+    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    leader_input.flush().expect("leader request flushes");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "leader helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    follower_input.flush().expect("follower request flushes");
+    assert_eq!(
+        read_integer(&mut follower_output),
+        nix_worker_protocol::STDERR_NEXT
+    );
+    assert_eq!(
+        read_string(&mut follower_output),
+        "identical build already in progress\n"
+    );
+
+    follower.kill().expect("follower terminates");
+    follower.wait().expect("follower reaps");
+    drop(follower_input);
+    drop(follower_output);
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    assert_successful_build_response(&mut leader_output);
+    drop(leader_input);
+    drop(leader_output);
+    assert!(leader.wait().expect("leader exits").success());
+    assert_eq!(
+        fs::read_to_string(&invocation_count).expect("invocation count reads"),
+        "x"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.completed"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn disconnected_leader_does_not_cancel_shared_build() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-shared-build-leader-disconnect-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let invocation_count = root.join("invocations");
+    let started = root.join("started");
+    let complete = root.join("complete");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            invocation_count.display(),
+            started.display(),
+            complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+    );
+    let mut follower = fixture.spawn_frontend();
+    let leader = &mut fixture.frontend;
+    let mut leader_input = leader.stdin.take().expect("leader input");
+    let mut leader_output = leader.stdout.take().expect("leader output");
+    let mut follower_input = follower.stdin.take().expect("follower input");
+    let mut follower_output = follower.stdout.take().expect("follower output");
+    complete_handshake(&mut leader_input, &mut leader_output);
+    complete_handshake(&mut follower_input, &mut follower_output);
+
+    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    leader_input.flush().expect("leader request flushes");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "leader helper did not start");
+        thread::sleep(Duration::from_millis(5));
+    }
+    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    follower_input.flush().expect("follower request flushes");
+    assert_eq!(
+        read_integer(&mut follower_output),
+        nix_worker_protocol::STDERR_NEXT
+    );
+    assert_eq!(
+        read_string(&mut follower_output),
+        "identical build already in progress\n"
+    );
+
+    leader.kill().expect("leader terminates");
+    leader.wait().expect("leader reaps");
+    drop(leader_input);
+    drop(leader_output);
+    fs::write(&complete, b"complete").expect("helper completion releases");
+    let frame = read_integer_or_eof(&mut follower_output).unwrap_or_else(|| {
+        let mut stderr = String::new();
+        follower
+            .stderr
+            .take()
+            .expect("follower stderr")
+            .read_to_string(&mut stderr)
+            .expect("follower stderr reads");
+        let status = follower.wait().expect("follower exits");
+        panic!("follower closed before terminal frame: status {status}; stderr {stderr}");
+    });
+    assert_eq!(frame, STDERR_LAST, "follower terminal frame {frame:#x}");
+    let status = read_integer_or_eof(&mut follower_output)
+        .unwrap_or_else(|| panic!("follower terminal frame had no build result body"));
+    assert_eq!(status, 0, "Built status");
+    assert_eq!(
+        read_string(&mut follower_output),
+        "",
+        "empty build error message"
+    );
+    for _ in 0..7 {
+        assert_eq!(read_integer(&mut follower_output), 0);
+    }
+    drop(follower_input);
+    drop(follower_output);
+    assert!(follower.wait().expect("follower exits").success());
+    assert_eq!(
+        fs::read_to_string(&invocation_count).expect("invocation count reads"),
+        "x"
+    );
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("worker.build_derivation.completed"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",
@@ -2600,6 +2853,13 @@ impl FrontendFixture {
         )
     }
 
+    fn spawn_multi_with_store(
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Self {
+        Self::spawn_with_store_policy_and_mode(None, store_uri, environment, None, false)
+    }
+
     fn spawn_with_store(
         worker_timeout_ms: Option<u64>,
         store_uri: &str,
@@ -2627,6 +2887,22 @@ impl FrontendFixture {
         environment: impl IntoIterator<Item = (&'static str, String)>,
         running_disconnect_policy: Option<&str>,
     ) -> Self {
+        Self::spawn_with_store_policy_and_mode(
+            worker_timeout_ms,
+            store_uri,
+            environment,
+            running_disconnect_policy,
+            true,
+        )
+    }
+
+    fn spawn_with_store_policy_and_mode(
+        worker_timeout_ms: Option<u64>,
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+        running_disconnect_policy: Option<&str>,
+        once: bool,
+    ) -> Self {
         let environment = environment.into_iter().collect::<Vec<_>>();
         let has_export = environment
             .iter()
@@ -2635,11 +2911,12 @@ impl FrontendFixture {
             .iter()
             .any(|(name, _)| *name == "TELCHAR_TEST_BUILD_HELPER");
         if has_export || !has_build {
-            Self::spawn_configured(
+            Self::spawn_configured_with_mode(
                 worker_timeout_ms,
                 Some(store_uri),
                 environment,
                 running_disconnect_policy,
+                once,
             )
         } else {
             let root = std::env::temp_dir().join(format!(
@@ -2676,11 +2953,12 @@ impl FrontendFixture {
                 export_helper.display().to_string(),
             ));
             environment.push(("TELCHAR_NIX", nix.display().to_string()));
-            Self::spawn_configured(
+            Self::spawn_configured_with_mode(
                 worker_timeout_ms,
                 Some(store_uri),
                 environment,
                 running_disconnect_policy,
+                once,
             )
         }
     }
@@ -2690,6 +2968,22 @@ impl FrontendFixture {
         store_uri: Option<&str>,
         environment: impl IntoIterator<Item = (&'static str, String)>,
         running_disconnect_policy: Option<&str>,
+    ) -> Self {
+        Self::spawn_configured_with_mode(
+            worker_timeout_ms,
+            store_uri,
+            environment,
+            running_disconnect_policy,
+            true,
+        )
+    }
+
+    fn spawn_configured_with_mode(
+        worker_timeout_ms: Option<u64>,
+        store_uri: Option<&str>,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+        running_disconnect_policy: Option<&str>,
+        once: bool,
     ) -> Self {
         let root = std::env::temp_dir().join(format!(
             "telchar-operation-{}-{}-{}",
@@ -2713,15 +3007,17 @@ impl FrontendFixture {
         let configured_store_uri = store_uri.map(str::to_owned);
         let database = PostgresFixture::start();
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+        daemon_command.args([
+            "daemon",
+            "--socket",
+            socket.to_str().expect("UTF-8 socket path"),
+            "--frontend-uid",
+            &rustix::process::getuid().as_raw().to_string(),
+        ]);
+        if once {
+            daemon_command.arg("--once");
+        }
         daemon_command
-            .args([
-                "daemon",
-                "--socket",
-                socket.to_str().expect("UTF-8 socket path"),
-                "--frontend-uid",
-                &rustix::process::getuid().as_raw().to_string(),
-                "--once",
-            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -2785,6 +3081,18 @@ impl FrontendFixture {
         }
     }
 
+    fn spawn_frontend(&self) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .arg("serve-stdio")
+            .env("TELCHAR_IPC_SOCKET", self.root.join("daemon.sock"))
+            .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("frontend starts")
+    }
+
     fn finish(mut self) -> String {
         let mut frontend_stderr = String::new();
         self.frontend
@@ -2793,16 +3101,40 @@ impl FrontendFixture {
             .expect("frontend stderr")
             .read_to_string(&mut frontend_stderr)
             .expect("frontend stderr reads");
+        let terminated = if self
+            .daemon
+            .try_wait()
+            .expect("daemon status reads")
+            .is_none()
+        {
+            self.daemon.kill().expect("daemon terminates");
+            true
+        } else {
+            false
+        };
         let daemon_output = self.daemon.wait_with_output().expect("daemon exits");
         let _ = fs::remove_dir_all(self.root);
         assert!(
-            daemon_output.status.success(),
+            terminated || daemon_output.status.success(),
             "daemon failed: {daemon_output:?}"
         );
         format!(
             "{frontend_stderr}{}",
             String::from_utf8_lossy(&daemon_output.stderr)
         )
+    }
+}
+
+fn assert_successful_build_response(output: &mut impl Read) {
+    assert_eq!(read_integer(output), STDERR_LAST);
+    assert_successful_build_result_body(output);
+}
+
+fn assert_successful_build_result_body(output: &mut impl Read) {
+    assert_eq!(read_integer(output), 0, "Built status");
+    assert_eq!(read_string(output), "", "empty build error message");
+    for _ in 0..7 {
+        assert_eq!(read_integer(output), 0);
     }
 }
 
@@ -3132,6 +3464,15 @@ fn regular_nar(contents: &[u8]) -> Vec<u8> {
         write_string(&mut nar, value);
     }
     nar
+}
+
+fn read_integer_or_eof(input: &mut impl Read) -> Option<u64> {
+    let mut bytes = [0; 8];
+    match input.read_exact(&mut bytes) {
+        Ok(()) => Some(u64::from_le_bytes(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => None,
+        Err(error) => panic!("worker integer reads: {error}"),
+    }
 }
 
 fn read_integer(input: &mut impl Read) -> u64 {
