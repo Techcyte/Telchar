@@ -1361,10 +1361,12 @@ Completed durable-state work above remains valid implementation history and may 
 
 ### Static SSH backend
 
-- [ ] T123 Parse and validate static SSH backend configuration
+- [x] T123 Parse and validate static SSH backend configuration
   - Depends on: T121
-  - Outcome: configuration supplies backend name, system/features, destination, fixed credential files, and pinned host-key policy; unsafe or ambiguous configuration fails startup.
-  - Verify: configuration tests.
+  - Outcome: strict `[[backends.static_ssh]]` entries supply a bounded unique name, exact system, bounded features, safe destination, fixed private identity file, and fixed known-hosts file containing at least one pinned host key.
+  - Red: the focused configuration test failed to compile because `ServiceConfig` exposed no static SSH backend configuration; later hostile tests exposed missing pinned-key-content and writable-known-hosts checks.
+  - Verify: 9 service configuration tests, all-target compilation, clippy, formatting, diff, and diagnostics.
+  - Evidence: valid configuration produces a `BackendKind::StaticSsh` target; relative or missing files, permissive private-key mode, writable known-hosts mode, absent pinned keys, unsafe destinations, duplicate names, excessive counts, unsupported fields, and invalid target metadata fail startup.
 
 - [ ] T124 Provision a restricted static SSH builder fixture
   - Depends on: T123
