@@ -1414,10 +1414,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: concurrent identical-request, follower disconnect, shared success, shared failure, later-request-after-failure, full operation-dispatch suite, all-target compilation, clippy, canonical formatting, diff, and diagnostics.
   - Evidence: one process-wide registry is shared by daemon session threads; admitted request semantics produce a derivation-path plus 32-byte SHA-256 identity; exactly one frontend executes the helper while followers receive the bounded already-in-progress frame and shared terminal result; leader and follower disconnect fixtures leave the backend execution independent of either requester; failure wakes all waiters and releases the key for a later request.
 
-- [ ] T129 Route each leader across configured backends
+- [x] T129 Route each leader across configured backends
   - Depends on: T121, T128
-  - Outcome: production execution uses `select_backend(...)` per admitted build, honors exact system and required features, acquires one bounded per-backend permit, and fans different derivations across local, static SSH, and Nomad targets without a durable queue or Telchar capacity reservation.
-  - Verify: mixed-backend routing, busy-backend waiting, timeout, and permit-release tests.
+  - Outcome: production execution selects a configured backend per admitted leader, honors exact system and derivation `requiredSystemFeatures`, acquires one bounded per-backend permit in declaration order, and leaves followers outside backend capacity accounting without a durable queue or Telchar capacity reservation.
+  - Red: request tests first proved required feature metadata was discarded; backend tests then proved no shared permit pool existed; integration failed because production selected one executor per session and unconfigured fixtures lost their local execution path.
+  - Verify: feature admission and shared identity, mixed-backend selection, busy-backend waiting, timeout, permit release, strict capacity configuration, static-SSH startup worker handshake, full operation-dispatch suite, all-target compilation, clippy, canonical formatting, diff, and diagnostics.
+  - Evidence: deployment-advertised features must exactly equal the aggregate features of configured same-system backends; local and static-SSH backends have bounded explicit concurrency; leaders wait for the first compatible target while followers share the active execution; static-SSH targets complete a bounded `nix-daemon --stdio` worker handshake before the daemon accepts traffic; the default environment-only deployment retains one bounded local target for existing deployments.
 
 - [ ] T130 Reconcile active shared builds after restart
   - Depends on: T127, T129
