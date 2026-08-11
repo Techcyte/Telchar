@@ -24,7 +24,36 @@ fn normalizes_gate_3_request_without_backend_objects() {
     assert_eq!(request.builder(), b"/bin/sh");
     assert_eq!(request.arguments().len(), 2);
     assert_eq!(request.environment().len(), 4);
+    assert!(request.required_system_features().is_empty());
     assert!(request.input_sources().is_empty());
+}
+
+#[test]
+fn preserves_bounded_required_system_features() {
+    let worker = decode_request_with_features("kvm big-parallel");
+    let deployment = DeploymentConfig::parse("x86_64-linux", "kvm,big-parallel")
+        .expect("deployment config parses");
+
+    let request = BuildRequest::from_worker_request(&worker, &deployment)
+        .expect("required features are admitted");
+
+    assert_eq!(request.required_system_features(), ["big-parallel", "kvm"]);
+}
+
+#[test]
+fn rejects_unsupported_or_malformed_required_system_features() {
+    let deployment =
+        DeploymentConfig::parse("x86_64-linux", "kvm").expect("deployment config parses");
+
+    for features in ["benchmark", "kvm kvm", "kvm feature/unsafe"] {
+        let worker = decode_request_with_features(features);
+        assert_eq!(
+            BuildRequest::from_worker_request(&worker, &deployment)
+                .expect_err("invalid required features must fail")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
 }
 
 #[test]
@@ -129,8 +158,23 @@ fn decode_request(
         .expect("worker request decodes for admission test")
 }
 
+fn decode_request_with_features(features: &str) -> nix_worker_protocol::BuildDerivationRequest {
+    let wire = build_request_wire_with_environment(
+        "x86_64-linux",
+        output_path(),
+        0,
+        "printf telchar-remote-build > $out",
+        Some(features),
+    );
+    decode_wire(wire)
+}
+
 fn decode_request_with_command(command: &str) -> nix_worker_protocol::BuildDerivationRequest {
     let wire = build_request_wire_with_command("x86_64-linux", output_path(), 0, command);
+    decode_wire(wire)
+}
+
+fn decode_wire(wire: Vec<u8>) -> nix_worker_protocol::BuildDerivationRequest {
     let mut reader = WorkerReader::new(
         wire.as_slice(),
         ProtocolSessionLimits::new(16 * 1024 * 1024, Duration::from_secs(1)),
@@ -159,6 +203,16 @@ fn build_request_wire_with_command(
     mode: u64,
     command: &str,
 ) -> Vec<u8> {
+    build_request_wire_with_environment(system, environment_output, mode, command, None)
+}
+
+fn build_request_wire_with_environment(
+    system: &str,
+    environment_output: &[u8],
+    mode: u64,
+    command: &str,
+    required_system_features: Option<&str>,
+) -> Vec<u8> {
     let mut wire = Vec::new();
     write_worker_integer(&mut wire, 36);
     write_worker_byte_string(&mut wire, drv_path());
@@ -173,7 +227,7 @@ fn build_request_wire_with_command(
     write_worker_integer(&mut wire, 2);
     write_worker_byte_string(&mut wire, b"-c");
     write_worker_byte_string(&mut wire, command.as_bytes());
-    write_worker_integer(&mut wire, 4);
+    write_worker_integer(&mut wire, 4 + u64::from(required_system_features.is_some()));
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
         (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
@@ -182,6 +236,10 @@ fn build_request_wire_with_command(
     ] {
         write_worker_byte_string(&mut wire, key);
         write_worker_byte_string(&mut wire, value);
+    }
+    if let Some(features) = required_system_features {
+        write_worker_byte_string(&mut wire, b"requiredSystemFeatures");
+        write_worker_byte_string(&mut wire, features.as_bytes());
     }
     write_worker_integer(&mut wire, mode);
     wire
