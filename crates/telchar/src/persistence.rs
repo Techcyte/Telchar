@@ -262,7 +262,24 @@ pub fn claim_shared_build(
                  backend_execution_id, expected_outputs
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (derivation_path) DO NOTHING
+             ON CONFLICT (derivation_path) DO UPDATE
+             SET request_digest = EXCLUDED.request_digest,
+                 state = 'claimed',
+                 backend_name = EXCLUDED.backend_name,
+                 backend_kind = EXCLUDED.backend_kind,
+                 execution_recovery = EXCLUDED.execution_recovery,
+                 cancellation = EXCLUDED.cancellation,
+                 log_recovery = EXCLUDED.log_recovery,
+                 backend_execution_id = EXCLUDED.backend_execution_id,
+                 expected_outputs = EXCLUDED.expected_outputs,
+                 result_metadata = NULL,
+                 failure_classification = NULL,
+                 created_at = transaction_timestamp(),
+                 started_at = NULL,
+                 collecting_at = NULL,
+                 completed_at = NULL,
+                 expires_at = NULL
+             WHERE shared_builds.state = 'failed'
              RETURNING derivation_path",
             &[
                 &derivation_path,
@@ -291,6 +308,15 @@ pub fn claim_shared_build(
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     let build = decode_shared_build(&row).map_err(SharedBuildError)?;
     if build.request_digest.as_slice() != request_digest {
+        return Err(SharedBuildError(SharedBuildFailure::Conflict));
+    }
+    if !inserted
+        && (build.backend_name != backend_name
+            || build.backend_kind != backend_kind
+            || build.capabilities != capabilities
+            || build.backend_execution_id.as_deref() != backend_execution_id
+            || build.expected_outputs != expected_outputs)
+    {
         return Err(SharedBuildError(SharedBuildFailure::Conflict));
     }
     transaction
@@ -326,6 +352,36 @@ pub fn read_shared_build(
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .map(|row| decode_shared_build(&row).map_err(SharedBuildError))
         .transpose()
+}
+
+pub fn read_active_shared_builds(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<SharedBuild>, SharedBuildError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let limit =
+        i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query(
+            "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
+                    execution_recovery, cancellation, log_recovery,
+                    backend_execution_id, expected_outputs, result_metadata::text,
+                    failure_classification, created_at, started_at, collecting_at,
+                    completed_at, expires_at
+             FROM shared_builds
+             WHERE state IN ('claimed', 'running', 'collecting')
+             ORDER BY created_at, derivation_path
+             LIMIT $1",
+            &[&limit],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .into_iter()
+        .map(|row| decode_shared_build(&row).map_err(SharedBuildError))
+        .collect()
 }
 
 pub fn start_shared_build(

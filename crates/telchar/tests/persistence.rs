@@ -324,6 +324,123 @@ fn shared_build_lifecycle_rejects_skipped_transitions_and_bounds_terminal_data()
 }
 
 #[test]
+fn later_request_replaces_failed_shared_build_without_automatic_retry() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-retry.drv";
+    let output_path = "/nix/store/cccccccccccccccccccccccccccccccc-retry";
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[6_u8; 32],
+        "local",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &[output_path],
+    )
+    .expect("first shared build claims");
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        derivation_path,
+        "infrastructure-failure",
+        &serde_json::json!({"stage": "execute"}),
+        Duration::from_secs(3_600),
+    )
+    .expect("first shared build fails");
+
+    let replacement = telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[7_u8; 32],
+        "ssh-fast",
+        BackendKind::StaticSsh,
+        BackendKind::StaticSsh.capabilities(),
+        None,
+        &[output_path],
+    )
+    .expect("later independent request claims a replacement");
+
+    assert_eq!(
+        replacement.ownership,
+        telchar::persistence::SharedBuildOwnership::Claimed
+    );
+    assert_eq!(
+        replacement.build.state,
+        telchar::persistence::SharedBuildState::Claimed
+    );
+    assert_eq!(replacement.build.request_digest, [7_u8; 32]);
+    assert_eq!(replacement.build.backend_name, "ssh-fast");
+    assert!(replacement.build.result_metadata.is_none());
+    assert!(replacement.build.completed_at.is_none());
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one(
+                "SELECT count(*) FROM shared_builds WHERE derivation_path = $1",
+                &[&derivation_path],
+            )
+            .expect("shared build count reads")
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
+fn active_shared_builds_survive_restart_in_deterministic_order() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for (derivation_path, digest) in [
+        (
+            "/nix/store/dddddddddddddddddddddddddddddddd-active-a.drv",
+            [8_u8; 32],
+        ),
+        (
+            "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-active-b.drv",
+            [9_u8; 32],
+        ),
+    ] {
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            derivation_path,
+            &digest,
+            "nomad",
+            BackendKind::Nomad,
+            BackendKind::Nomad.capabilities(),
+            Some(if digest[0] == 8 { "nomad-a" } else { "nomad-b" }),
+            &["/nix/store/ffffffffffffffffffffffffffffffff-active"],
+        )
+        .expect("active shared build claims");
+    }
+    telchar::persistence::start_shared_build(
+        fixture.url(),
+        "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-active-b.drv",
+    )
+    .expect("second shared build starts");
+
+    fixture.restart();
+    let active = telchar::persistence::read_active_shared_builds(fixture.url(), 16)
+        .expect("active shared builds read");
+
+    assert_eq!(active.len(), 2);
+    assert!(active[0].created_at <= active[1].created_at);
+    assert_eq!(
+        active.iter().map(|build| build.state).collect::<Vec<_>>(),
+        [
+            telchar::persistence::SharedBuildState::Claimed,
+            telchar::persistence::SharedBuildState::Running,
+        ]
+    );
+    assert_eq!(
+        telchar::persistence::read_active_shared_builds(fixture.url(), 0)
+            .expect_err("zero active-build limit rejects")
+            .failure(),
+        telchar::persistence::SharedBuildFailure::Configuration
+    );
+}
+
+#[test]
 fn open_and_read_protocol_session_persist_requested_state() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

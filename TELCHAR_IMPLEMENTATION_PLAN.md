@@ -1400,10 +1400,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: design review against stock-Nix behavior, gateway-store authority, singleton ownership, and the three backend contracts.
   - Evidence: `docs/adr/durable-shared-build-coordinator.md` makes the gateway store authoritative for completed outputs; defines typed execution-recovery, cancellation, and log-recovery capabilities; gives Nomad deterministic adoptable identity; lets local/static SSH recover exact outputs or fail cleanly; distinguishes coordinator log fan-out from backend replay; and preserves explicit extension seams without retaining dormant machinery.
 
-- [ ] T127 Persist one shared build per equivalent derivation
+- [x] T127 Persist one shared build per equivalent derivation
   - Depends on: T121A, T126
   - Outcome: PostgreSQL atomically claims one bounded request digest per normal-mode derivation path, records the selected backend and its coordination capabilities, requires a stable backend execution ID for adoptable executions, stores bounded expected-output and terminal metadata, and permits a later client request to replace a failed build without automatic retry.
-  - Verify: real PostgreSQL concurrent claim, conflicting-digest rejection, capability/execution-ID constraints, state-transition, terminal immutability, bounded-retention, and restart round-trip tests.
+  - Red: focused real-PostgreSQL tests failed to compile because shared-build claim, lifecycle, restart-read, and failed-row replacement APIs did not exist; the first terminal update then exposed PostgreSQL parameter-type ambiguity before explicit typed casts were added.
+  - Verify: serial real PostgreSQL persistence suite, all-target compilation, clippy with warnings denied, canonical formatting, diff, and diagnostics.
+  - Evidence: migration 9 adds the bounded five-state `shared_builds` table and indexes; simultaneous equivalent claims yield one owner and one joiner; digest, backend, capability, execution-ID, and output disagreement fail closed; adoptable records require stable execution IDs; typed transitions enforce `claimed → running → collecting → succeeded` and failure from any nonterminal state; terminal results are immutable and bounded; active rows survive restart in deterministic order; and a later independent request atomically replaces one failed row without automatic retry or attempt history.
 
 - [ ] T128 Coalesce connected requests around one execution
   - Depends on: T127
