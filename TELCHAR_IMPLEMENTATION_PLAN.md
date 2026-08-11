@@ -1352,10 +1352,12 @@ Completed durable-state work above remains valid implementation history and may 
   - Verify: routing and backend contract tests, all-target compilation, clippy, formatting, diff, and diagnostics.
   - Evidence: declaration order selects local for `kvm`, static SSH for `big-parallel+kvm`, and rejects unsupported systems or features.
 
-- [ ] T122 Adapt the existing local executor to the minimal backend contract
+- [x] T122 Adapt the existing local executor to the minimal backend contract
   - Depends on: T120
-  - Outcome: current local execution remains functional through the same boundary used by remote backends.
-  - Verify: existing real local build and stock-Nix gateway tests.
+  - Outcome: gateway-daemon, helper-process, unavailable, session, and executor-service paths use `BuildBackend`, `BuildExecution`, `BuildResult`, and `BuildStatus` directly; duplicate local-neutral request, result, status, trust, and executor abstractions are removed without changing client-visible behavior.
+  - Red: the local contract test required all three local executor implementations to implement `BuildBackend`, which failed before adaptation.
+  - Verify: 13 local executor tests, 3 local configuration tests, 2 backend tests, all-target compilation, clippy, formatting, diff, and diagnostics.
+  - Evidence: bounded logs, cancellation, timeout, output-set validation, gateway-store verification, trusted terminal results, session framing, and executor-service persistence remain on the same execution paths behind the shared contract.
 
 ### Static SSH backend
 
