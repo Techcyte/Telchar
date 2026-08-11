@@ -1522,6 +1522,7 @@ These features require a demonstrated operational need before design or implemen
 - Redis-backed live logs, Telchar-native object-storage upload, or historical log replay. A bounded local zstd spool and external uploader remain post-MVP extension options.
 - Active/passive or active/active high availability and distributed scheduler ownership.
 - Hostile multi-tenant isolation, per-tenant stores, or per-path client authorization.
+- Fixed-output derivation execution. A post-MVP implementation must admit and preserve supported output hash metadata, include it in shared-build identity, forward it unchanged through every backend, validate realized outputs through Nix, and prove correct-hash and wrong-hash behavior with stock-Nix fixtures.
 - Reproducible-build consensus or cryptographic provenance for classic input-addressed outputs.
 - Kubernetes, cloud batch, or additional backend kinds.
 - OCI images, extended compatibility candidates, soak tests, and performance architecture changes unless required by an actual deployment.
