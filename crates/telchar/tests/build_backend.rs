@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::backend::{
-    select_backend, BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildResult,
-    BuildStatus, OutputTrust,
+    select_backend, BackendCapabilities, BackendKind, BackendTarget, BuildBackend, BuildExecution,
+    BuildResult, BuildStatus, CancellationCapability, ExecutionRecovery, LogRecovery, OutputTrust,
 };
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
@@ -44,6 +44,30 @@ fn routing_selects_first_backend_with_matching_system_and_features() {
     );
     assert!(select_backend(&backends, "aarch64-linux", &[]).is_none());
     assert!(select_backend(&backends, "x86_64-linux", &["benchmark"]).is_none());
+}
+
+#[test]
+fn backend_kinds_advertise_coordination_capabilities() {
+    let output_only = BackendCapabilities::new(
+        ExecutionRecovery::OutputOnly,
+        CancellationCapability::ConnectionBound,
+        LogRecovery::LiveOnly,
+    );
+    let adoptable = BackendCapabilities::new(
+        ExecutionRecovery::Adoptable,
+        CancellationCapability::Explicit,
+        LogRecovery::LiveOnly,
+    );
+
+    for kind in [BackendKind::Local, BackendKind::StaticSsh] {
+        let target = BackendTarget::new("builder", kind, "x86_64-linux", [] as [&str; 0])
+            .expect("backend target is valid");
+        assert_eq!(target.capabilities(), output_only);
+    }
+
+    let nomad = BackendTarget::new("nomad", BackendKind::Nomad, "x86_64-linux", [] as [&str; 0])
+        .expect("Nomad target is valid");
+    assert_eq!(nomad.capabilities(), adoptable);
 }
 
 #[test]

@@ -16,6 +16,74 @@ pub enum BackendKind {
     Nomad,
 }
 
+impl BackendKind {
+    pub fn capabilities(self) -> BackendCapabilities {
+        match self {
+            Self::Local | Self::StaticSsh => BackendCapabilities::new(
+                ExecutionRecovery::OutputOnly,
+                CancellationCapability::ConnectionBound,
+                LogRecovery::LiveOnly,
+            ),
+            Self::Nomad => BackendCapabilities::new(
+                ExecutionRecovery::Adoptable,
+                CancellationCapability::Explicit,
+                LogRecovery::LiveOnly,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionRecovery {
+    OutputOnly,
+    Adoptable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancellationCapability {
+    ConnectionBound,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogRecovery {
+    LiveOnly,
+    Replayable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendCapabilities {
+    execution_recovery: ExecutionRecovery,
+    cancellation: CancellationCapability,
+    log_recovery: LogRecovery,
+}
+
+impl BackendCapabilities {
+    pub const fn new(
+        execution_recovery: ExecutionRecovery,
+        cancellation: CancellationCapability,
+        log_recovery: LogRecovery,
+    ) -> Self {
+        Self {
+            execution_recovery,
+            cancellation,
+            log_recovery,
+        }
+    }
+
+    pub fn execution_recovery(self) -> ExecutionRecovery {
+        self.execution_recovery
+    }
+
+    pub fn cancellation(self) -> CancellationCapability {
+        self.cancellation
+    }
+
+    pub fn log_recovery(self) -> LogRecovery {
+        self.log_recovery
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendTarget {
     name: String,
@@ -66,6 +134,10 @@ impl BackendTarget {
 
     pub fn kind(&self) -> BackendKind {
         self.kind
+    }
+
+    pub fn capabilities(&self) -> BackendCapabilities {
+        self.kind.capabilities()
     }
 
     pub fn system(&self) -> &str {

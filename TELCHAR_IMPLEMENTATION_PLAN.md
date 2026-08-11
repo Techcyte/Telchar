@@ -1354,10 +1354,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: routing and backend contract tests, all-target compilation, clippy, formatting, diff, and diagnostics.
   - Evidence: declaration order selects local for `kvm`, static SSH for `big-parallel+kvm`, and rejects unsupported systems or features.
 
-- [ ] T121A Advertise bounded backend coordination capabilities
+- [x] T121A Advertise bounded backend coordination capabilities
   - Depends on: T120, T121, T126
   - Outcome: each backend target exposes typed execution recovery (`output-only` or `adoptable`), cancellation (`connection-bound` or `explicit`), and log recovery (`live-only` or `replayable`) capabilities. Local and static SSH are output-only/connection-bound/live-only; Nomad is adoptable/explicit/live-only. Capability values come from backend kind and verified implementation, never client input or free-form operator claims.
-  - Verify: capability contract tests prove exhaustive declarations, reject impossible persisted/configured capability disagreement, and show that multiple local followers consume coordinator fan-out rather than requiring backend multi-consumer support.
+  - Red: the focused backend contract test failed to compile because capability types and `BackendTarget::capabilities()` did not exist.
+  - Verify: focused backend contract tests, all-target compilation, clippy, canonical formatting, diff, and diagnostics.
+  - Evidence: exhaustive `BackendKind::capabilities()` maps local/static SSH to output-only/connection-bound/live-only and Nomad to adoptable/explicit/live-only; immutable typed accessors expose each axis without adding operator- or client-controlled capability fields. Persisted/configured disagreement remains a T127 database invariant, and coordinator log fan-out remains T128 work.
 
 - [x] T122 Adapt the existing local executor to the minimal backend contract
   - Depends on: T120
