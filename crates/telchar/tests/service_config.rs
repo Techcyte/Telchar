@@ -1,10 +1,12 @@
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use telchar::backend::BackendKind;
 use telchar::config::ServiceConfig;
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
@@ -100,6 +102,150 @@ quota_subject = "engineering"
         .expect("second credential mapping exists");
     assert_eq!(second_mapping.audit_subject.as_deref(), Some("automation"));
     assert_eq!(second_mapping.quota_subject.as_deref(), Some("engineering"));
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("static-ssh");
+    let identity_file = root.join("builder-key");
+    let known_hosts_file = root.join("known-hosts");
+    fs::write(&identity_file, "private-key").expect("identity writes");
+    fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
+        .expect("identity permissions set");
+    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n").expect("known hosts writes");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.static_ssh]]
+name = "darwin-builder"
+system = "aarch64-darwin"
+supported_features = ["apple-virt", "big-parallel"]
+destination = "telchar-builder@builder.example"
+identity_file = "{}"
+known_hosts_file = "{}"
+"#,
+            identity_file.display(),
+            known_hosts_file.display()
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    let backend = config
+        .static_ssh_backends()
+        .first()
+        .expect("static SSH backend exists");
+
+    assert_eq!(backend.target().name(), "darwin-builder");
+    assert_eq!(backend.target().kind(), BackendKind::StaticSsh);
+    assert_eq!(backend.target().system(), "aarch64-darwin");
+    assert_eq!(backend.target().features(), ["apple-virt", "big-parallel"]);
+    assert_eq!(backend.destination(), "telchar-builder@builder.example");
+    assert_eq!(backend.identity_file(), identity_file);
+    assert_eq!(backend.known_hosts_file(), known_hosts_file);
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn static_ssh_backend_rejects_unpinned_or_unsafe_credentials() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-static-ssh");
+    let identity_file = root.join("builder-key");
+    fs::write(&identity_file, "private-key").expect("identity writes");
+    fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o644))
+        .expect("identity permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.static_ssh]]
+name = "builder"
+system = "x86_64-linux"
+destination = "builder.example"
+identity_file = "{}"
+known_hosts_file = "relative-known-hosts"
+"#,
+            identity_file.display()
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("unsafe SSH backend rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn static_ssh_backend_rejects_duplicate_names_and_missing_host_keys() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("ambiguous-static-ssh");
+    let identity_file = root.join("builder-key");
+    let known_hosts_file = root.join("known-hosts");
+    fs::write(&identity_file, "private-key").expect("identity writes");
+    fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
+        .expect("identity permissions set");
+    fs::write(&known_hosts_file, "\n# no pinned keys\n").expect("known hosts writes");
+    let config_path = root.join("telchar.toml");
+    let backend = format!(
+        r#"
+[[backends.static_ssh]]
+name = "builder"
+system = "x86_64-linux"
+destination = "builder.example"
+identity_file = "{}"
+known_hosts_file = "{}"
+"#,
+        identity_file.display(),
+        known_hosts_file.display()
+    );
+    fs::write(&config_path, format!("{backend}{backend}")).expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("ambiguous SSH backend rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    fs::write(&config_path, &backend).expect("configuration rewrites");
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("known-hosts file without a key rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n")
+        .expect("known hosts rewrites");
+    fs::set_permissions(&known_hosts_file, fs::Permissions::from_mode(0o666))
+        .expect("known hosts permissions set");
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("writable known-hosts file rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");

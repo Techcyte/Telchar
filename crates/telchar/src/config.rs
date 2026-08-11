@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::backend::{BackendKind, BackendTarget};
 use crate::deployment::{DeploymentConfig, OutputRetention, RunningDisconnectPolicy};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/telchar/telchar.toml";
@@ -13,11 +15,39 @@ const MAXIMUM_IPC_SESSIONS: usize = 65_536;
 const MAXIMUM_CREDENTIAL_MAPPINGS: usize = 4_096;
 const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
+const MAXIMUM_STATIC_SSH_BACKENDS: usize = 256;
+const MAXIMUM_SSH_DESTINATION_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialMapping {
     pub audit_subject: Option<String>,
     pub quota_subject: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticSshBackendConfig {
+    target: BackendTarget,
+    destination: String,
+    identity_file: PathBuf,
+    known_hosts_file: PathBuf,
+}
+
+impl StaticSshBackendConfig {
+    pub fn target(&self) -> &BackendTarget {
+        &self.target
+    }
+
+    pub fn destination(&self) -> &str {
+        &self.destination
+    }
+
+    pub fn identity_file(&self) -> &Path {
+        &self.identity_file
+    }
+
+    pub fn known_hosts_file(&self) -> &Path {
+        &self.known_hosts_file
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +58,7 @@ pub struct ServiceConfig {
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
     credential_mappings: BTreeMap<String, CredentialMapping>,
+    static_ssh_backends: Vec<StaticSshBackendConfig>,
 }
 
 impl ServiceConfig {
@@ -88,6 +119,10 @@ impl ServiceConfig {
 
     pub fn credential_mapping(&self, credential_id: &str) -> Option<&CredentialMapping> {
         self.credential_mappings.get(credential_id)
+    }
+
+    pub fn static_ssh_backends(&self) -> &[StaticSshBackendConfig] {
+        &self.static_ssh_backends
     }
 
     fn load_path(path: &Path, required: bool) -> io::Result<Self> {
@@ -197,6 +232,11 @@ impl ServiceConfig {
                 .map(|identity| identity.credentials)
                 .unwrap_or_default(),
         )?;
+        let static_ssh_backends = validate_static_ssh_backends(
+            raw.backends
+                .map(|backends| backends.static_ssh)
+                .unwrap_or_default(),
+        )?;
         Ok(Self {
             deployment,
             running_disconnect_policy,
@@ -204,6 +244,7 @@ impl ServiceConfig {
             ipc_socket,
             maximum_ipc_sessions,
             credential_mappings,
+            static_ssh_backends,
         })
     }
 }
@@ -215,6 +256,7 @@ struct RawServiceConfig {
     database: Option<DatabaseSection>,
     ipc: Option<IpcSection>,
     identity: Option<IdentityConfig>,
+    backends: Option<BackendConfig>,
 }
 
 impl RawServiceConfig {
@@ -268,6 +310,25 @@ impl RawIdentityConfig {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BackendConfig {
+    #[serde(default)]
+    static_ssh: Vec<RawStaticSshBackendConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawStaticSshBackendConfig {
+    name: String,
+    system: String,
+    #[serde(default)]
+    supported_features: Vec<String>,
+    destination: String,
+    identity_file: PathBuf,
+    known_hosts_file: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCredentialMapping {
     audit_subject: Option<String>,
     quota_subject: Option<String>,
@@ -311,6 +372,93 @@ fn validate_mappings(
             ))
         })
         .collect()
+}
+
+fn validate_static_ssh_backends(
+    raw: Vec<RawStaticSshBackendConfig>,
+) -> io::Result<Vec<StaticSshBackendConfig>> {
+    if raw.len() > MAXIMUM_STATIC_SSH_BACKENDS {
+        return Err(invalid("static SSH backend count exceeds limit"));
+    }
+    let mut backends = Vec::with_capacity(raw.len());
+    for backend in raw {
+        if backends
+            .iter()
+            .any(|existing: &StaticSshBackendConfig| existing.target.name() == backend.name)
+        {
+            return Err(invalid("static SSH backend name is ambiguous"));
+        }
+        if !valid_ssh_destination(&backend.destination) {
+            return Err(invalid("static SSH destination is invalid"));
+        }
+        validate_identity_file(&backend.identity_file)?;
+        validate_known_hosts_file(&backend.known_hosts_file)?;
+        backends.push(StaticSshBackendConfig {
+            target: BackendTarget::new(
+                &backend.name,
+                BackendKind::StaticSsh,
+                &backend.system,
+                &backend.supported_features,
+            )?,
+            destination: backend.destination,
+            identity_file: backend.identity_file,
+            known_hosts_file: backend.known_hosts_file,
+        });
+    }
+    Ok(backends)
+}
+
+fn valid_ssh_destination(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAXIMUM_SSH_DESTINATION_BYTES
+        && !value.starts_with('-')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'_' | b'-' | b'.' | b'@' | b':' | b'[' | b']')
+        })
+}
+
+fn validate_identity_file(path: &Path) -> io::Result<()> {
+    let metadata = validate_regular_file(path, "static SSH identity file is invalid")?;
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(invalid("static SSH identity file permissions are unsafe"));
+    }
+    Ok(())
+}
+
+fn validate_known_hosts_file(path: &Path) -> io::Result<()> {
+    let metadata = validate_regular_file(path, "static SSH known-hosts file is invalid")?;
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(invalid(
+            "static SSH known-hosts file permissions are unsafe",
+        ));
+    }
+    if metadata.size() == 0 || metadata.size() > 1024 * 1024 {
+        return Err(invalid("static SSH known-hosts file is invalid"));
+    }
+    let contents =
+        fs::read_to_string(path).map_err(|_| invalid("static SSH known-hosts file is invalid"))?;
+    let pinned_key = contents.lines().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && !line.starts_with('#') && line.split_ascii_whitespace().count() >= 3
+    });
+    if !pinned_key {
+        return Err(invalid(
+            "static SSH known-hosts file has no pinned host key",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_regular_file(path: &Path, message: &'static str) -> io::Result<fs::Metadata> {
+    if !path.is_absolute() {
+        return Err(invalid(message));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| invalid(message))?;
+    if !metadata.file_type().is_file() {
+        return Err(invalid(message));
+    }
+    Ok(metadata)
 }
 
 fn validate_subject(value: String, message: &'static str) -> io::Result<String> {
