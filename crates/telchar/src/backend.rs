@@ -1,5 +1,6 @@
 use std::io;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::build_request::BuildRequest;
 
@@ -153,6 +154,130 @@ impl BackendTarget {
             && required_features
                 .iter()
                 .all(|required| self.features.iter().any(|feature| feature == required))
+    }
+}
+
+#[derive(Clone)]
+pub struct BackendPool {
+    inner: Arc<BackendPoolInner>,
+}
+
+#[derive(Debug)]
+struct BackendPoolInner {
+    targets: Vec<BackendTarget>,
+    permits: Mutex<Vec<BackendPermits>>,
+    changed: Condvar,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BackendPermits {
+    maximum: usize,
+    active: usize,
+}
+
+impl BackendPool {
+    pub fn new(targets: Vec<BackendTarget>, maximums: Vec<usize>) -> io::Result<Self> {
+        if targets.is_empty() || targets.len() != maximums.len() || maximums.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend pool is invalid",
+            ));
+        }
+        Ok(Self {
+            inner: Arc::new(BackendPoolInner {
+                targets,
+                permits: Mutex::new(
+                    maximums
+                        .into_iter()
+                        .map(|maximum| BackendPermits { maximum, active: 0 })
+                        .collect(),
+                ),
+                changed: Condvar::new(),
+            }),
+        })
+    }
+
+    pub fn acquire(
+        &self,
+        system: &str,
+        required_features: &[&str],
+        timeout: Duration,
+    ) -> io::Result<BackendPermit> {
+        let index = self
+            .inner
+            .targets
+            .iter()
+            .position(|target| target.supports(system, required_features))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "compatible backend is unavailable",
+                )
+            })?;
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend permit wait is invalid",
+            )
+        })?;
+        let mut permits = self
+            .inner
+            .permits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            let selected = &mut permits[index];
+            if selected.active < selected.maximum {
+                selected.active += 1;
+                return Ok(BackendPermit {
+                    pool: Arc::clone(&self.inner),
+                    index,
+                });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "backend permit wait timed out",
+                ));
+            }
+            let (next, result) = self
+                .inner
+                .changed
+                .wait_timeout(permits, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            permits = next;
+            if result.timed_out() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "backend permit wait timed out",
+                ));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BackendPermit {
+    pool: Arc<BackendPoolInner>,
+    index: usize,
+}
+
+impl BackendPermit {
+    pub fn target(&self) -> &BackendTarget {
+        &self.pool.targets[self.index]
+    }
+}
+
+impl Drop for BackendPermit {
+    fn drop(&mut self) {
+        let mut permits = self
+            .pool
+            .permits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        permits[self.index].active -= 1;
+        self.pool.changed.notify_all();
     }
 }
 
