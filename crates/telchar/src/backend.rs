@@ -4,6 +4,103 @@ use std::time::Duration;
 use crate::build_request::BuildRequest;
 
 const MAXIMUM_REQUEST_ID_BYTES: usize = 4096;
+const MAXIMUM_BACKEND_NAME_BYTES: usize = 256;
+const MAXIMUM_SYSTEM_BYTES: usize = 64;
+const MAXIMUM_FEATURE_BYTES: usize = 64;
+const MAXIMUM_FEATURES: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendKind {
+    Local,
+    StaticSsh,
+    Nomad,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackendTarget {
+    name: String,
+    kind: BackendKind,
+    system: String,
+    features: Vec<String>,
+}
+
+impl BackendTarget {
+    pub fn new<I, S>(name: &str, kind: BackendKind, system: &str, features: I) -> io::Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        if !valid_component(name, MAXIMUM_BACKEND_NAME_BYTES)
+            || !valid_component(system, MAXIMUM_SYSTEM_BYTES)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend target is invalid",
+            ));
+        }
+        let mut normalized = Vec::new();
+        for feature in features {
+            let feature = feature.as_ref();
+            if normalized.len() >= MAXIMUM_FEATURES
+                || !valid_component(feature, MAXIMUM_FEATURE_BYTES)
+                || normalized.iter().any(|existing| existing == feature)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "backend target is invalid",
+                ));
+            }
+            normalized.push(feature.to_owned());
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            kind,
+            system: system.to_owned(),
+            features: normalized,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn kind(&self) -> BackendKind {
+        self.kind
+    }
+
+    pub fn system(&self) -> &str {
+        &self.system
+    }
+
+    pub fn features(&self) -> &[String] {
+        &self.features
+    }
+
+    fn supports(&self, system: &str, required_features: &[&str]) -> bool {
+        self.system == system
+            && required_features
+                .iter()
+                .all(|required| self.features.iter().any(|feature| feature == required))
+    }
+}
+
+pub fn select_backend<'a>(
+    backends: &'a [BackendTarget],
+    system: &str,
+    required_features: &[&str],
+) -> Option<&'a BackendTarget> {
+    backends
+        .iter()
+        .find(|backend| backend.supports(system, required_features))
+}
+
+fn valid_component(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+'))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildExecution<'a> {

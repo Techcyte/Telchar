@@ -2,9 +2,49 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
-use telchar::backend::{BuildBackend, BuildExecution, BuildResult, BuildStatus, OutputTrust};
+use telchar::backend::{
+    select_backend, BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildResult,
+    BuildStatus, OutputTrust,
+};
 use telchar::build_request::BuildRequest;
 use telchar::deployment::DeploymentConfig;
+
+#[test]
+fn routing_selects_first_backend_with_matching_system_and_features() {
+    let backends = [
+        BackendTarget::new("local", BackendKind::Local, "x86_64-linux", ["kvm"])
+            .expect("local backend is valid"),
+        BackendTarget::new(
+            "ssh-fast",
+            BackendKind::StaticSsh,
+            "x86_64-linux",
+            ["big-parallel", "kvm"],
+        )
+        .expect("SSH backend is valid"),
+        BackendTarget::new(
+            "nomad-fallback",
+            BackendKind::Nomad,
+            "x86_64-linux",
+            ["big-parallel", "kvm"],
+        )
+        .expect("Nomad backend is valid"),
+    ];
+
+    assert_eq!(
+        select_backend(&backends, "x86_64-linux", &["kvm"])
+            .expect("compatible backend exists")
+            .name(),
+        "local"
+    );
+    assert_eq!(
+        select_backend(&backends, "x86_64-linux", &["big-parallel", "kvm"])
+            .expect("compatible backend exists")
+            .name(),
+        "ssh-fast"
+    );
+    assert!(select_backend(&backends, "aarch64-linux", &[]).is_none());
+    assert!(select_backend(&backends, "x86_64-linux", &["benchmark"]).is_none());
+}
 
 #[test]
 fn backend_contract_forwards_logs_and_returns_terminal_result() {
