@@ -1338,10 +1338,12 @@ Completed durable-state work above remains valid implementation history and may 
 
 ### Minimal backend boundary
 
-- [ ] T120 Define the minimal synchronous backend contract
+- [x] T120 Define the minimal synchronous backend contract
   - Depends on: T118
-  - Outcome: one small interface accepts an admitted build, forwards bounded logs while connected, and returns a normalized terminal result.
-  - Verify: local backend contract test.
+  - Outcome: `BuildBackend` accepts a bounded `BuildExecution`, forwards logs and cancellation observations synchronously, and returns a normalized `BuildResult` with closed status and output-trust values.
+  - Red: the backend contract test failed to compile because no backend-neutral module or types existed.
+  - Verify: focused backend contract test, all-target compilation, clippy, formatting, diff, and diagnostics.
+  - Evidence: a fixture backend observes exact request metadata, forwards a log chunk before completion, checks cancellation, and returns a trusted terminal output set without queue, scheduler, reconnect, or cache behavior.
 
 - [ ] T121 Route builds by configured system and features
   - Depends on: T120
