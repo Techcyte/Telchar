@@ -32,16 +32,36 @@ Connected requesters are process-local followers of the durable shared build. On
 
 Backend selection uses exact system compatibility, required-feature subset compatibility, declaration order, and a bounded per-backend permit. Different derivations may fan out concurrently. Nomad owns cluster placement, pending allocations, resource scheduling, and interaction with infrastructure autoscaling.
 
+Each backend advertises a small typed capability set consumed by the coordinator. Capabilities describe observable control-plane guarantees, not implementation details:
+
+- Execution recovery is either `output-only` or `adoptable`. An adoptable backend supplies a stable external execution ID and can query and resume monitoring that exact execution after coordinator ownership changes. An output-only backend can verify completed outputs but cannot prove that an incomplete execution remains active.
+- Cancellation is either `connection-bound` or `explicit`. Explicit cancellation addresses a stable backend execution ID. Connection-bound cancellation cannot be transferred to another coordinator instance.
+- Log recovery is either `live-only` or `replayable`. Replayable means a monitor can resume from a bounded backend cursor or durable archive; it does not imply unlimited retention.
+
+System, features, declaration order, and configured permits remain backend target properties rather than capabilities. Multiple connected Telchar clients consuming one live log stream is coordinator fan-out, not a backend capability: the coordinator owns one backend monitor and broadcasts bounded chunks to current local followers. Cross-instance or post-restart log attachment requires `replayable` log recovery and is outside the MVP.
+
+MVP declarations are:
+
+```text
+local:      output-only, connection-bound cancellation, live-only logs
+static SSH: output-only, connection-bound cancellation, live-only logs
+Nomad:      adoptable, explicit cancellation, live-only logs
+```
+
+Nomad log replay may be added later only if its bounded cursor, retention, and redaction semantics are specified and tested.
+
 Telchar performs no automatic retry. A failed shared build is terminal for its current requesters. A later client request may atomically replace the failed record and start a fresh execution after checking the gateway store.
 
 ## Restart behavior
 
 Startup first verifies the exact expected output set in the gateway store. Valid outputs complete the shared build regardless of its previous nonterminal state.
 
-Recovery is backend-specific:
+Recovery follows the persisted backend identity and advertised execution-recovery capability:
 
-- Nomad jobs use a deterministic persisted execution identity. Telchar queries and adopts the existing job, resumes monitoring it independently of client attachment, and collects its outputs without blind resubmission.
-- Local and static SSH executions are recovered from exact verified outputs where possible. If no externally queryable execution or complete output set exists, Telchar marks the shared build failed. A later normal Nix request may start it again.
+- An `adoptable` backend must query the exact persisted external execution ID. Nomad jobs use a deterministic identity, so Telchar adopts the existing job, resumes monitoring it independently of client attachment, and collects its outputs without blind resubmission.
+- An `output-only` backend checks exact verified outputs. Local and static SSH executions cannot be identified or reattached through a fresh connection. If the complete output set does not exist, Telchar marks the shared build failed. A later normal Nix request may start it again.
+
+Capability disagreement between current configuration and a persisted active shared build fails closed. Telchar never upgrades an `output-only` record into an adoptable execution by guessing or resubmitting work.
 
 Startup reconciliation establishes bounded monitors and does not wait indefinitely for active backend jobs before service readiness.
 
@@ -60,7 +80,8 @@ The coordinator preserves clear extension seams:
 - A future queue can select unclaimed or waiting shared builds before backend execution.
 - Fairness, priorities, and per-subject quotas can rank or admit shared-build claims without changing backend contracts.
 - Automatic retries can add explicit attempt records linked to a shared build without redefining request equivalence or terminal outputs.
-- Administrative status and cancellation APIs can address stable shared-build and backend execution identities.
-- Durable log archives can attach metadata to the stable shared-build identity.
+- Administrative status and cancellation APIs can address stable shared-build and backend execution identities, gated by advertised cancellation capability.
+- Durable log archives or backend cursors can add replayable log recovery without changing live coordinator fan-out.
+- Additional backend kinds can join by declaring the same bounded capabilities rather than adding backend-kind conditionals throughout the coordinator.
 
 These extensions require new policy and schema when justified. The MVP will not retain dormant scheduler transitions merely to make those additions appear pre-implemented.

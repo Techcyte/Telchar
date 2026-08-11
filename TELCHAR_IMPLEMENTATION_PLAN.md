@@ -1354,6 +1354,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: routing and backend contract tests, all-target compilation, clippy, formatting, diff, and diagnostics.
   - Evidence: declaration order selects local for `kvm`, static SSH for `big-parallel+kvm`, and rejects unsupported systems or features.
 
+- [ ] T121A Advertise bounded backend coordination capabilities
+  - Depends on: T120, T121, T126
+  - Outcome: each backend target exposes typed execution recovery (`output-only` or `adoptable`), cancellation (`connection-bound` or `explicit`), and log recovery (`live-only` or `replayable`) capabilities. Local and static SSH are output-only/connection-bound/live-only; Nomad is adoptable/explicit/live-only. Capability values come from backend kind and verified implementation, never client input or free-form operator claims.
+  - Verify: capability contract tests prove exhaustive declarations, reject impossible persisted/configured capability disagreement, and show that multiple local followers consume coordinator fan-out rather than requiring backend multi-consumer support.
+
 - [x] T122 Adapt the existing local executor to the minimal backend contract
   - Depends on: T120
   - Outcome: gateway-daemon, helper-process, unavailable, session, and executor-service paths use `BuildBackend`, `BuildExecution`, `BuildResult`, and `BuildStatus` directly; duplicate local-neutral request, result, status, trust, and executor abstractions are removed without changing client-visible behavior.
@@ -1389,14 +1394,14 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 - [x] T126 Record the lean coordinator decision and cleanup boundary
   - Depends on: T125
-  - Outcome: an ADR defines normal-mode derivation coalescing, client-independent execution ownership, five shared-build states (`claimed`, `running`, `collecting`, `succeeded`, `failed`), backend-specific restart reconciliation, connection-scoped MVP logs, and explicit exclusions for queues, retries, attempts, fairness, priorities, quotas, and capacity reservations.
+  - Outcome: an ADR defines normal-mode derivation coalescing, client-independent execution ownership, five shared-build states (`claimed`, `running`, `collecting`, `succeeded`, `failed`), capability-driven restart reconciliation, connection-scoped MVP logs, and explicit exclusions for queues, retries, attempts, fairness, priorities, quotas, and capacity reservations.
   - Verify: design review against stock-Nix behavior, gateway-store authority, singleton ownership, and the three backend contracts.
-  - Evidence: `docs/adr/durable-shared-build-coordinator.md` makes the gateway store authoritative for completed outputs, gives Nomad deterministic adoptable identity, lets local/static SSH recover exact outputs or fail cleanly, and preserves explicit extension seams for later queueing, policy, retry attempts, administration, and log archives without retaining dormant machinery.
+  - Evidence: `docs/adr/durable-shared-build-coordinator.md` makes the gateway store authoritative for completed outputs; defines typed execution-recovery, cancellation, and log-recovery capabilities; gives Nomad deterministic adoptable identity; lets local/static SSH recover exact outputs or fail cleanly; distinguishes coordinator log fan-out from backend replay; and preserves explicit extension seams without retaining dormant machinery.
 
 - [ ] T127 Persist one shared build per equivalent derivation
-  - Depends on: T126
-  - Outcome: PostgreSQL atomically claims one bounded request digest per normal-mode derivation path, records the selected backend and stable backend execution ID where available, stores bounded expected-output and terminal metadata, and permits a later client request to replace a failed build without automatic retry.
-  - Verify: real PostgreSQL concurrent claim, conflicting-digest rejection, state-transition, terminal immutability, bounded-retention, and restart round-trip tests.
+  - Depends on: T121A, T126
+  - Outcome: PostgreSQL atomically claims one bounded request digest per normal-mode derivation path, records the selected backend and its coordination capabilities, requires a stable backend execution ID for adoptable executions, stores bounded expected-output and terminal metadata, and permits a later client request to replace a failed build without automatic retry.
+  - Verify: real PostgreSQL concurrent claim, conflicting-digest rejection, capability/execution-ID constraints, state-transition, terminal immutability, bounded-retention, and restart round-trip tests.
 
 - [ ] T128 Coalesce connected requests around one execution
   - Depends on: T127
@@ -1410,8 +1415,8 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 - [ ] T130 Reconcile active shared builds after restart
   - Depends on: T127, T129
-  - Outcome: startup validates expected outputs in the gateway store first, resumes monitoring backends with durable external identities, adopts deterministic Nomad jobs, recovers local/static-SSH success from exact verified outputs where possible, and marks unrecoverable executions failed so an ordinary later request may claim them again.
-  - Verify: restart fixtures for completed output, active Nomad adoption, missing backend execution, and failed local/static-SSH recovery.
+  - Outcome: startup validates expected outputs in the gateway store first, uses persisted typed capabilities rather than backend-kind guesses, resumes monitoring only adoptable executions with exact durable IDs, recovers output-only executions from exact verified outputs, and marks missing, unsupported, or capability-inconsistent executions failed so an ordinary later request may claim them again.
+  - Verify: restart fixtures for completed output, active Nomad adoption, missing backend execution, capability disagreement, and failed local/static-SSH recovery.
 
 - [ ] T131 Remove dormant scheduler lifecycle machinery
   - Depends on: T127, T128, T130
