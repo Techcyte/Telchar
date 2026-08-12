@@ -547,6 +547,88 @@ rec {
       '';
     };
 
+  mkNomadFixtureTest =
+    {
+      name,
+      testScript ? "",
+    }:
+    pkgs.testers.nixosTest {
+      inherit name;
+      nodes = {
+        nomad-server =
+          { ... }:
+          {
+            networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkOverride 0 [
+              {
+                address = "192.168.1.1";
+                prefixLength = 24;
+              }
+            ];
+            networking.firewall.enable = false;
+            system.stateVersion = "26.05";
+            environment.variables.NOMAD_ADDR = "http://192.168.1.1:4646";
+            services.nomad = {
+              enable = true;
+              enableDocker = false;
+              dropPrivileges = false;
+              settings = {
+                bind_addr = "0.0.0.0";
+                advertise = {
+                  http = "192.168.1.1:4646";
+                  rpc = "192.168.1.1:4647";
+                  serf = "192.168.1.1:4648";
+                };
+                server = {
+                  enabled = true;
+                  bootstrap_expect = 1;
+                };
+              };
+            };
+          };
+        nomad-client =
+          { ... }:
+          {
+            networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkOverride 0 [
+              {
+                address = "192.168.1.2";
+                prefixLength = 24;
+              }
+            ];
+            networking.firewall.enable = false;
+            system.stateVersion = "26.05";
+            services.nomad = {
+              enable = true;
+              enableDocker = false;
+              dropPrivileges = false;
+              extraPackages = [ pkgs.bash ];
+              settings = {
+                bind_addr = "0.0.0.0";
+                advertise = {
+                  http = "192.168.1.2:4646";
+                  rpc = "192.168.1.2:4647";
+                  serf = "192.168.1.2:4648";
+                };
+                client = {
+                  enabled = true;
+                  servers = [ "192.168.1.1:4647" ];
+                  options = {
+                    "driver.raw_exec.enable" = "1";
+                  };
+                };
+              };
+            };
+          };
+      };
+      testScript = ''
+        start_all()
+        nomad_server.wait_for_unit("nomad.service")
+        nomad_client.wait_for_unit("nomad.service")
+        nomad_server.wait_until_succeeds("nomad operator raft list-peers | grep -q true", timeout=60)
+        nomad_server.wait_until_succeeds("nomad node status -json | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].Status == \"ready\"'", timeout=60)
+        ${testScript}
+      '';
+    };
+
   mkRestartRecoveryTest =
     {
       name,

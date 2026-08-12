@@ -120,6 +120,28 @@
                 stock_client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:22345:127.0.0.1:22 -N " + ssh_options + " >/tmp/local-forward.out 2>&1; echo $?) -ne 0")
               '';
             };
+          nixos-nomad-fixture =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+            in
+            harness.mkNomadFixtureTest {
+              name = "telchar-nixos-nomad-fixture";
+              testScript = ''
+                nomad_server.succeed("cat > /tmp/telchar-smoke.nomad.hcl <<'EOF'\njob \"telchar-fixture-smoke\" {\n  datacenters = [\"dc1\"]\n  type = \"batch\"\n  group \"smoke\" {\n    task \"write\" {\n      driver = \"raw_exec\"\n      config {\n        command = \"${pkgs.bash}/bin/bash\"\n        args = [\"-c\", \"printf telchar-nomad-fixture > /tmp/telchar-nomad-fixture-output\"]\n      }\n    }\n  }\n}\nEOF\nnomad job run -detach /tmp/telchar-smoke.nomad.hcl")
+                nomad_server.wait_until_succeeds("nomad job allocs -json telchar-fixture-smoke | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].ClientStatus == \"complete\"'", timeout=60)
+                allocation = nomad_server.succeed("nomad job allocs -json telchar-fixture-smoke | ${pkgs.jq}/bin/jq -r '.[0].ID'").strip()
+                nomad_server.succeed("nomad alloc status -json " + allocation + " | ${pkgs.jq}/bin/jq -e '.ClientStatus == \"complete\"'")
+                nomad_client.succeed("test \"$(cat /tmp/telchar-nomad-fixture-output)\" = telchar-nomad-fixture")
+                nomad_server.succeed("systemctl restart nomad.service")
+                nomad_server.wait_until_succeeds("nomad operator raft list-peers | grep -q true", timeout=60)
+                nomad_server.wait_until_succeeds("nomad job inspect -json telchar-fixture-smoke | ${pkgs.jq}/bin/jq -e '.ID == \"telchar-fixture-smoke\"'", timeout=60)
+                nomad_server.succeed("nomad job stop -purge telchar-fixture-smoke")
+                nomad_server.wait_until_fails("nomad job status telchar-fixture-smoke", timeout=30)
+              '';
+            };
           nixos-static-ssh-fixture =
             let
               harness = import ./tests/nixos/lib.nix {
