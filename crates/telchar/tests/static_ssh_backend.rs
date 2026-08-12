@@ -281,6 +281,22 @@ impl Drop for BlockingTransportFixture {
 }
 
 #[test]
+fn output_recovery_timeout_terminates_the_static_ssh_process_group() {
+    let fixture = BlockingTransportFixture::new("recovery-timeout");
+
+    let error = telchar::static_ssh_backend::recover_outputs(
+        &fixture.config,
+        &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],
+        Duration::from_millis(50),
+    )
+    .expect_err("blocked recovery times out");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    fixture.assert_descendant_stopped();
+}
+
+#[test]
 fn startup_verification_requires_a_compatible_reachable_nix_daemon() {
     let root = std::env::temp_dir().join(format!(
         "telchar-static-ssh-verification-{}-{}",

@@ -33,6 +33,84 @@ pub fn verify_configured_backends(
     Ok(())
 }
 
+pub fn recover_outputs(
+    config: &StaticSshBackendConfig,
+    gateway: &GatewayStoreEndpoint,
+    outputs: &[String],
+    timeout: Duration,
+) -> io::Result<()> {
+    let mut command = ssh_command(config);
+    let mut child = ChildGuard::new(command.spawn()?);
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stdin is unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stdout is unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("static SSH stderr is unavailable"))?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut reader = stderr.take(MAXIMUM_BUILD_LOG_CHUNK_BYTES as u64);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).map(|_| ())
+    });
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let gateway = gateway.clone();
+    let outputs = outputs.to_vec();
+    let worker = std::thread::spawn(move || {
+        let result = recover_remote_outputs(WorkerStream { stdin, stdout }, &gateway, &outputs);
+        let _ = sender.send(result);
+    });
+    let result = match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            child.kill_and_reap();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "static SSH output recovery timed out",
+            ))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("static SSH output recovery failed"))
+        }
+    };
+    child.kill_and_reap();
+    worker
+        .join()
+        .map_err(|_| io::Error::other("static SSH output recovery failed"))?;
+    stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("static SSH output recovery failed"))??;
+    result
+}
+
+fn recover_remote_outputs(
+    stream: WorkerStream,
+    gateway: &GatewayStoreEndpoint,
+    outputs: &[String],
+) -> io::Result<()> {
+    let mut remote = WorkerClient::connect(stream)?;
+    for output in outputs {
+        let path = output.as_bytes();
+        let info = remote.query_path_info(path)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "remote output is unavailable")
+        })?;
+        copy_remote_path_to_gateway(&mut remote, gateway, path, &info)?;
+        let mut verification = GatewayStoreConnection::connect(gateway)?;
+        if verification.query_path_info(path)?.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "build output verification failed",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration) -> io::Result<()> {
     let mut command = ssh_command(config);
     let mut child = ChildGuard::new(command.spawn()?);

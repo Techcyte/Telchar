@@ -55,6 +55,28 @@ impl crate::shared_build_recovery::RecoveryBackend for ConfiguredBackends {
             .map(|target| (target.kind(), target.capabilities()))
     }
 
+    fn recover_outputs(&mut self, build: &crate::persistence::SharedBuild) -> io::Result<bool> {
+        let config = self
+            .inner
+            .static_ssh
+            .iter()
+            .find(|config| config.target().name() == build.backend_name)
+            .ok_or_else(|| io::Error::other("static SSH backend is not configured"))?;
+        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })?;
+        crate::static_ssh_backend::recover_outputs(
+            config,
+            &GatewayStoreEndpoint::parse_os(&endpoint)?,
+            &build.expected_outputs,
+            std::time::Duration::from_secs(10),
+        )?;
+        Ok(true)
+    }
+
     fn adopt(
         &mut self,
         _build: &crate::persistence::SharedBuild,

@@ -54,6 +54,10 @@ pub enum AdoptedExecution {
 pub trait RecoveryBackend {
     fn capabilities(&self, backend_name: &str) -> Option<(BackendKind, BackendCapabilities)>;
 
+    fn recover_outputs(&mut self, _build: &SharedBuild) -> io::Result<bool> {
+        Ok(false)
+    }
+
     fn adopt(&mut self, build: &SharedBuild) -> io::Result<AdoptedExecution>;
 }
 
@@ -108,8 +112,15 @@ pub fn reconcile_shared_builds(
         }
         match build.capabilities.execution_recovery() {
             ExecutionRecovery::OutputOnly => {
-                complete_recovery_failure(database_url, &build, retention)?;
-                outcome.failed += 1;
+                let recovered = build.backend_kind == BackendKind::StaticSsh
+                    && backends.recover_outputs(&build).unwrap_or(false);
+                if recovered {
+                    complete_recovered_success(database_url, &build, retention)?;
+                    outcome.succeeded += 1;
+                } else {
+                    complete_recovery_failure(database_url, &build, retention)?;
+                    outcome.failed += 1;
+                }
             }
             ExecutionRecovery::Adoptable => {
                 if build.backend_execution_id.is_none() {
