@@ -87,6 +87,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_attempts",
         sql: include_str!("../migrations/0012_shared_build_attempts.sql"),
     },
+    Migration {
+        version: 13,
+        name: "shared_build_authority",
+        sql: include_str!("../migrations/0013_shared_build_authority.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

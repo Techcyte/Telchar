@@ -3860,7 +3860,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 12);
+    assert_eq!(ledger.len(), 13);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -3900,15 +3900,15 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[11].get::<_, i64>(0), 12);
     assert_eq!(ledger[11].get::<_, String>(1), "shared_build_attempts");
     assert_eq!(ledger[11].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[12].get::<_, i64>(0), 13);
+    assert_eq!(ledger[12].get::<_, String>(1), "shared_build_authority");
+    assert_eq!(ledger[12].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
         "build_requests",
         "request_attachments",
         "store_leases",
-        "execution_attempts",
-        "execution_outcomes",
-        "capacity_reservations",
         "local_backend_executions",
         "local_backend_execution_results",
         "shared_builds",
@@ -3920,6 +3920,29 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             .query_one("SELECT to_regclass($1)::text", &[&table])
             .expect("table lookup succeeds");
         assert_eq!(row.get::<_, Option<String>>(0).as_deref(), Some(table));
+    }
+
+    for table in [
+        "execution_attempts",
+        "execution_outcomes",
+        "capacity_reservations",
+    ] {
+        let row = client
+            .query_one("SELECT to_regclass($1)::text", &[&table])
+            .expect("removed table lookup succeeds");
+        assert_eq!(row.get::<_, Option<String>>(0), None);
+    }
+    for column in ["queue_state", "queued_at"] {
+        assert_eq!(
+            client
+                .query_one(
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'build_requests' AND column_name = $1",
+                    &[&column],
+                )
+                .expect("removed column lookup succeeds")
+                .get::<_, i64>(0),
+            0
+        );
     }
 
     assert_eq!(
