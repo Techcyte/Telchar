@@ -281,6 +281,103 @@ impl Drop for BlockingTransportFixture {
 }
 
 #[test]
+fn malformed_worker_protocol_fails_output_recovery_cleanly() {
+    let fixture = RecoveryTransportFixture::new("malformed", "printf 'not-worker-protocol'");
+
+    let error = telchar::static_ssh_backend::recover_outputs(
+        &fixture.config,
+        &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],
+        Duration::from_secs(1),
+    )
+    .expect_err("malformed worker protocol fails");
+
+    assert_ne!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn missing_exact_remote_output_fails_before_gateway_import() {
+    let fixture = RecoveryTransportFixture::new("missing-output", "exec nix-daemon --stdio");
+    let missing = format!(
+        "/nix/store/11111111111111111111111111111111-telchar-missing-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos()
+    );
+
+    let error = telchar::static_ssh_backend::recover_outputs(
+        &fixture.config,
+        &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        &[missing],
+        Duration::from_secs(5),
+    )
+    .expect_err("missing remote output fails");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "remote output is unavailable");
+}
+
+struct RecoveryTransportFixture {
+    root: std::path::PathBuf,
+    config: telchar::config::StaticSshBackendConfig,
+}
+
+impl RecoveryTransportFixture {
+    fn new(name: &str, body: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "telchar-static-ssh-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("fixture root creates");
+        let identity = root.join("identity");
+        let known_hosts = root.join("known-hosts");
+        let ssh = root.join("ssh");
+        let config_path = root.join("telchar.toml");
+        fs::write(&identity, "private-key").expect("identity writes");
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o600))
+            .expect("identity permissions set");
+        fs::write(&known_hosts, "builder ssh-ed25519 AAAA\n").expect("known hosts writes");
+        fs::write(&ssh, format!("#!/bin/sh\n{body}\n")).expect("SSH program writes");
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755))
+            .expect("SSH program permissions set");
+        fs::write(
+            &config_path,
+            format!(
+                "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+                identity.display(),
+                known_hosts.display(),
+                ssh.display()
+            ),
+        )
+        .expect("configuration writes");
+        let saved = std::env::var_os("TELCHAR_CONFIG");
+        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        let config = ServiceConfig::load()
+            .expect("configuration loads")
+            .static_ssh_backends()[0]
+            .clone();
+        unsafe {
+            match saved {
+                Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
+                None => std::env::remove_var("TELCHAR_CONFIG"),
+            }
+        }
+        Self { root, config }
+    }
+}
+
+impl Drop for RecoveryTransportFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
 fn output_recovery_timeout_terminates_the_static_ssh_process_group() {
     let fixture = BlockingTransportFixture::new("recovery-timeout");
 
