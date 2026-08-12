@@ -178,6 +178,53 @@ fn adoptable_execution_resumes_only_with_matching_persisted_capabilities() {
 }
 
 #[test]
+fn attempt_execution_identity_disagreement_fails_closed() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    claim(
+        &fixture,
+        "nomad",
+        BackendKind::Nomad,
+        Some("telchar-recovery-job"),
+    );
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION)
+        .expect("shared build starts");
+    fixture
+        .connect()
+        .execute(
+            "UPDATE shared_build_attempts SET backend_execution_id = 'different-job' WHERE derivation_path = $1",
+            &[&DERIVATION],
+        )
+        .expect("attempt identity diverges");
+    let mut outputs = OutputStore::default();
+    let mut backends = Backends {
+        capabilities: BTreeMap::from([(
+            "nomad".to_owned(),
+            (BackendKind::Nomad, BackendKind::Nomad.capabilities()),
+        )]),
+        ..Backends::default()
+    };
+
+    let outcome = reconcile_active_shared_builds(
+        fixture.url(),
+        Duration::from_secs(3_600),
+        &mut outputs,
+        &mut backends,
+    )
+    .expect("reconciliation succeeds");
+
+    assert_eq!(outcome.failed, 1);
+    assert!(backends.adopted.is_empty());
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
+            .expect("shared build reads")
+            .expect("shared build exists")
+            .state,
+        SharedBuildState::Failed
+    );
+}
+
+#[test]
 fn capability_disagreement_and_missing_adopted_execution_fail_closed() {
     for adoption in [None, Some(AdoptedExecution::Missing)] {
         let fixture = PostgresFixture::start();

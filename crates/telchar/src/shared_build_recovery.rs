@@ -89,6 +89,17 @@ pub fn reconcile_shared_builds(
             outcome.succeeded += 1;
             continue;
         }
+        let attempt = persistence::read_shared_build_attempt(database_url, &build.derivation_path)
+            .map_err(|_| io::Error::other("shared build recovery failed"))?;
+        if attempt.as_ref().is_none_or(|attempt| {
+            attempt.backend_name != build.backend_name
+                || attempt.backend_kind != build.backend_kind
+                || attempt.backend_execution_id != build.backend_execution_id
+        }) {
+            complete_recovery_failure(database_url, &build, retention)?;
+            outcome.failed += 1;
+            continue;
+        }
         let configured = backends.capabilities(&build.backend_name);
         if configured != Some((build.backend_kind, build.capabilities)) {
             complete_recovery_failure(database_url, &build, retention)?;
