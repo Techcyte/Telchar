@@ -1470,18 +1470,24 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 - [ ] T136 Submit and monitor one durable Nomad build
   - Depends on: T122, T127, T130, T135
-  - Outcome: the shared-build leader renders one deterministic batch job, submits it once, records its identity, polls until terminal state independently of client attachment, and resumes monitoring the same job after Telchar restart without blind resubmission.
-  - Verify: real submission, client disconnect, daemon restart, adoption, and completion tests.
+  - Outcome: the shared-build leader renders one deterministic batch job, submits it once over the configured HTTP or HTTPS Nomad API endpoint, records its identity before submission, polls until terminal state independently of client attachment, and resumes monitoring the same exact job on the original configured backend after Telchar restart without blind resubmission.
+  - Verify: real submission, client disconnect, daemon restart, exact-backend adoption, foreign-job rejection, and completion tests.
+
+- [x] T136A Define the Nomad allocation transfer architecture
+  - Depends on: T134, T135
+  - Outcome: `docs/adr/nomad-allocation-transfer.md` defines allocation-initiated HTTP or HTTPS transfer, default Nomad workload-identity authentication with explicit issuer/audience/JWKS trust, built-in HMAC authentication, one optional same-job lifecycle prestart task, operator-selected allocation-side Nix daemon access including a host socket, local-store and substituter resolution before Telchar fallback, bounded live logs, exact output return, gateway validation, and restart-safe transfer identity.
+  - Verify: architecture review against backend identity, gateway-store authority, retained-input accounting, client-independent execution, autoscaling, cache non-goals, and HTTP trusted-network deployments.
+  - Evidence: the complete admitted closure travels as a bounded authorization manifest while NAR bodies travel only for unresolved paths; common dependencies normally come from a warm host store or operator-configured substituters; allocation completion alone cannot produce success; authentication remains mandatory without requiring TLS; the prestart extension is a task in the deterministic job rather than another job or execution identity.
 
 - [ ] T137 Transfer inputs, logs, and outputs for Nomad
-  - Depends on: T136
-  - Outcome: the allocation receives only the admitted input closure, emits bounded live logs to currently attached clients, and returns the exact declared outputs for gateway import and validation; historical log replay is not promised.
-  - Verify: real private-input, bounded-log, follower-attachment, and output-collection tests.
+  - Depends on: T136, T136A
+  - Outcome: a packaged allocation worker authenticates its exact job/allocation callback using the backend's configured workload-identity or HMAC mode; receives the complete bounded admitted closure manifest; reuses already-valid paths and operator-configured substituters through its configured Nix daemon, including an optional host daemon socket; requests only unresolved admitted NARs from Telchar; emits bounded live logs to currently attached clients; and streams every exact declared output for gateway validation and import. Historical log replay is not promised, and a binary cache is never required for correctness.
+  - Verify: real warm-store, cold autoscaled-node, public-cache dependency, private-input fallback, out-of-manifest denial, HTTP and HTTPS callback, both authentication modes, optional prestart task, bounded-log, follower-attachment, exact output collection, and gateway validation tests.
 
 - [ ] T138 Handle Nomad timeout and failure
   - Depends on: T137
-  - Outcome: pending, allocation, task, transfer, collection, missing-job, and timeout failures produce one clean terminal shared-build failure; Telchar performs no automatic retry and leaves placement, pending work, and autoscaling interaction to Nomad.
-  - Verify: focused controlled Nomad failures.
+  - Outcome: prestart, authentication, manifest, local-store, substitution, input transfer, pending, allocation, task, log, output transfer, collection, missing-job, and timeout failures produce one clean terminal shared-build failure; explicit cancellation targets only the persisted exact job; Telchar performs no automatic retry and leaves placement, pending work, and autoscaling interaction to Nomad.
+  - Verify: focused controlled Nomad failures, cancellation, replay rejection, transport interruption, and restart-safe idempotent transfer recovery.
 
 - [ ] T139 Verify the Nomad gateway
   - Depends on: T128, T129, T138
@@ -1491,8 +1497,8 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 ### MVP operations and release
 
 - [ ] T140 Complete strict MVP service configuration
-  - Depends on: T123, T134
-  - Outcome: one TOML schema configures the public system/features, PostgreSQL, IPC/OpenSSH ingress, shared-build retention, backend permits, and local/static-SSH/Nomad backends; secrets use protected file references and unknown fields fail startup.
+  - Depends on: T123, T134, T136A
+  - Outcome: one TOML schema configures the public system/features, PostgreSQL, IPC/OpenSSH ingress, shared-build retention, backend permits, and local/static-SSH/Nomad backends; Nomad configuration includes explicit HTTP or HTTPS API and callback endpoints, transfer-authentication mode and trust files, optional same-job prestart task, allocation-side Nix daemon endpoint, and separate bounded transfer policies; secrets use protected file references and unknown fields fail startup.
   - Verify: configuration suite.
 
 - [ ] T141 Bound shutdown, runtime, coordination, and logs
@@ -1507,7 +1513,7 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 - [ ] T143 Document external cache and optional log-archive integration
   - Depends on: T142
-  - Outcome: operator docs show ordinary Nix substituters and existing Attic, post-build-hook, or `nix copy` publication beside Telchar; they also define the post-MVP extension seam for a bounded local zstd log spool mounted on durable storage or uploaded by external tooling. Telchar implements no cache service, Redis log store, or object-storage client in the MVP.
+  - Outcome: operator docs show allocation-side host Nix daemon reuse, ordinary Nix substituters, optional prestart configuration, and existing Attic, post-build-hook, or `nix copy` publication beside Telchar; they explain that Telchar sends the complete admitted closure manifest but streams only paths unresolved by the allocation store and substituters. They also define the post-MVP extension seam for a bounded local zstd log spool mounted on durable storage or uploaded by external tooling. Telchar implements no cache service, Redis log store, or object-storage client in the MVP.
   - Verify: tested configuration examples and explicit log-loss behavior after late attachment or restart.
 
 - [ ] T144 Document deployment, security assumptions, and limitations

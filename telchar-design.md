@@ -196,7 +196,7 @@ For example, a Nomad backend may create one pending batch job per derivation. No
 
 ### Optional caching
 
-A shared binary cache such as Attic should improve cache hits, staging, and output distribution when configured. Telchar must still function when no shared cache exists or when an optional cache is unavailable.
+A shared binary cache such as Attic should improve cache hits, staging, and output distribution when configured. Nomad allocations first use their operator-configured Nix daemon and substituters, then request only unresolved admitted closure paths from Telchar. Warm host stores may serve as persistent best-effort caches across allocations, including when the worker reaches a mounted host Nix daemon socket. Telchar must still function when no shared cache exists or when an optional cache is unavailable.
 
 ### Useful for individuals and organizations
 
@@ -510,7 +510,7 @@ SSH must remain restricted to Nix build service behavior. The backend must not p
 
 ### Nomad batch backend
 
-The Nomad backend creates one batch execution per derivation.
+The Nomad backend creates one deterministic batch execution per shared derivation. Its transfer and authentication contract is defined by `docs/adr/nomad-allocation-transfer.md`.
 
 ```text
 Telchar request
@@ -520,12 +520,22 @@ Nomad batch job
       │
       ├── architecture and feature constraints
       ├── explicit CPU, memory, and disk resources where known
-      ├── request-scoped credentials
-      ├── input staging
+      ├── optional same-job lifecycle prestart task
+      ├── authenticated allocation callback to Telchar
+      ├── operator-selected Nix daemon, optionally the host socket
+      ├── local-store and substituter resolution
+      ├── Telchar fallback for unresolved admitted inputs
       ├── one derivation realization
-      ├── output collection
+      ├── bounded live logs
+      ├── exact output return and gateway validation
       └── terminal report
 ```
+
+Nomad API and allocation callback URLs explicitly support HTTP or HTTPS. Authentication is always required. Workload identity is the default callback authentication mode and uses operator-configured issuer, audience, and JWKS trust. A protected-key HMAC mode is also supported. TLS is operator-selected rather than assumed on trusted networks.
+
+Telchar sends the complete admitted input closure as a bounded authorization manifest, not as an unconditional bulk copy. The allocation first reuses already-valid paths from its configured Nix daemon and invokes operator-configured substituters. It requests only unresolved manifest paths from Telchar. A persistent host Nix daemon store therefore acts as a best-effort local cache, while newly autoscaled cold nodes can use ordinary binary caches before falling back to Telchar for private or unpublished inputs.
+
+Nomad allocation completion is not build success. Every declared output must return to Telchar and pass the gateway's exact-set, NAR, metadata, and store-registration validation.
 
 Nomad owns:
 
@@ -1114,19 +1124,24 @@ stock Nix client -> Telchar -> local backend -> output returned
 
 ### Phase 6: Nomad batch backend
 
-- One batch job per derivation.
+- One deterministic batch job per shared derivation.
 - System and feature constraints.
-- Request-scoped executor credentials.
+- Explicit HTTP or HTTPS Nomad API and allocation callback endpoints.
+- Default workload-identity authentication with explicit JWKS trust and an HMAC alternative.
+- Optional same-job lifecycle prestart task.
+- Operator-selected allocation-side Nix daemon, including host socket access.
+- Complete admitted closure manifest, local-store and substituter resolution, and direct Telchar fallback for unresolved private inputs.
 - Pending/running/completed reconciliation.
-- Allocation log integration.
+- Bounded allocation log integration.
+- Exact output return and gateway validation.
 - Cancellation.
 - End-to-end test against a local Nomad development cluster or isolated test environment.
 
 ### Optional post-MVP cache integration
 
-- Read-through substituters.
-- Executor substitution.
-- Direct Telchar fallback for missing private inputs.
+- Additional read-through substituters beyond the ordinary allocation-side Nix configuration.
+- Direct cache-aware publication optimizations.
+- Direct Telchar fallback remains correctness-critical Nomad transfer behavior rather than optional cache integration.
 - Bounded best-effort publication of verified outputs without durable jobs or retries.
 - Cache outage and publisher-failure tests proving builds remain functional.
 - A separate measured-need decision before durable publication state, leases, retry, or restart recovery.
