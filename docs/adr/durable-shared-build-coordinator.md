@@ -8,7 +8,7 @@ Accepted for the MVP roadmap.
 
 Telchar exposes one stock-Nix `ssh-ng` endpoint and executes admitted normal-mode derivations through local, static SSH, or Nomad backends. Multiple clients may request the same derivation concurrently. Starting one backend execution per client wastes Nix's stable derivation identity and can create duplicate work on different builders.
 
-The earlier control-plane design included durable queues, execution attempts, capacity reservations, generic backend submission reconciliation, fairness, quotas, and retry policy. Those mechanisms solve a larger shared scheduling service than the MVP requires.
+The earlier control-plane design combined durable queues, execution attempts, capacity reservations, generic backend submission reconciliation, fairness, quotas, and retry policy into a parallel scheduler lifecycle. Telchar needs a narrower subset integrated directly with shared builds: durable waiting, subject fairness, bounded execution allocation, attempt history, and exact backend recovery identity. Generic reservations, automatic retries, priorities, billing, and active/active ownership remain outside the MVP.
 
 ## Decision
 
@@ -26,11 +26,15 @@ succeeded
 failed
 ```
 
-The durable record contains only the identity and state needed to coalesce requests, select and identify one backend execution, reconcile after restart, validate expected outputs, and publish one terminal result. It does not contain queue position, retry attempts, fairness state, priority, quota allocation, or capacity reservations.
+The durable shared-build record contains the identity and state needed to coalesce requests, attribute one trusted quota owner, wait in a subject-fair queue, select and identify one backend execution, reconcile after restart, validate expected outputs, and publish one terminal result. Queue position and the last-admitted subject are durable. Priority, billing, generic capacity reservations, and retry policy are not.
 
-Connected requesters are process-local followers of the durable shared build. One requester becomes the execution leader. Matching requesters receive a bounded already-in-progress diagnostic and wait synchronously for the shared terminal result. Client disconnect never owns or cancels backend work. A later normal Nix retry either attaches to the active shared build or receives an already-valid result from the gateway store.
+The first admitted requester supplies the trusted `quota_subject` that owns the shared execution allocation through terminal completion. Matching requesters cannot replace that owner. One process-local requester becomes the execution leader; matching requesters receive a bounded already-in-progress diagnostic and wait synchronously for the durable shared terminal result. Followers consume transfer limits but no additional queued allocation, active execution allocation, attempt, or backend permit.
 
-Backend selection uses exact system compatibility, required-feature subset compatibility, declaration order, and a bounded per-backend permit. Different derivations may fan out concurrently. Nomad owns cluster placement, pending allocations, resource scheduling, and interaction with infrastructure autoscaling.
+Queued leaders are selected round-robin across eligible quota subjects and FIFO within each subject. Per-subject queued and active execution limits are transactional. Client disconnect does not release queue ownership or cancel admitted backend work under the default detach-and-finish policy.
+
+Each admitted execution creates one durable attempt tied to the shared-build identity. The attempt records its ordinal, exact selected backend name and kind, optional external execution ID, running and collecting progress, and one terminal outcome. Attempts provide history and recovery substrate; Telchar does not automatically create another attempt after failure.
+
+Backend selection uses exact system compatibility, required-feature subset compatibility, declaration order, and a bounded per-backend permit. Quota admission occurs before backend permit acquisition, so an admitted build may durably remain `running` while waiting for backend capacity. Different derivations may fan out concurrently when permits allow. Nomad owns cluster placement, pending allocations, resource scheduling, and interaction with infrastructure autoscaling.
 
 Each backend advertises a small typed capability set consumed by the coordinator. Capabilities describe observable control-plane guarantees, not implementation details:
 
@@ -54,7 +58,7 @@ Telchar performs no automatic retry. A failed shared build is terminal for its c
 
 ## Restart behavior
 
-Startup first verifies the exact expected output set in the gateway store. Valid outputs complete the shared build regardless of its previous nonterminal state.
+Startup first verifies the exact expected output set in the gateway store. Valid outputs complete the shared build and its active attempt regardless of the previous nonterminal state. Active rows created before attempt tracking are backfilled during migration.
 
 Recovery follows the persisted backend identity and advertised execution-recovery capability:
 
@@ -73,13 +77,12 @@ Optional historical log archival is deferred. The preferred first extension is a
 
 ## Consequences
 
-The MVP gains duplicate suppression, compatible-backend fan-out, client-independent execution ownership, durable Nomad adoption, and ordinary Nix retry behavior without implementing a general scheduler.
+The MVP gains duplicate suppression, durable subject-fair waiting, bounded per-subject execution allocation, attempt history, compatible-backend fan-out, client-independent execution ownership, durable Nomad adoption, and ordinary Nix retry behavior without implementing a general scheduler.
 
 The coordinator preserves clear extension seams:
 
-- A future queue can select unclaimed or waiting shared builds before backend execution.
-- Fairness, priorities, and per-subject quotas can rank or admit shared-build claims without changing backend contracts.
-- Automatic retries can add explicit attempt records linked to a shared build without redefining request equivalence or terminal outputs.
+- Priorities can rank eligible shared builds without changing request equivalence or backend contracts.
+- Automatic retries can create later explicit attempt ordinals under a separately approved retry policy without redefining terminal outputs.
 - Administrative status and cancellation APIs can address stable shared-build and backend execution identities, gated by advertised cancellation capability.
 - Durable log archives or backend cursors can add replayable log recovery without changing live coordinator fan-out.
 - Additional backend kinds can join by declaring the same bounded capabilities rather than adding backend-kind conditionals throughout the coordinator.
