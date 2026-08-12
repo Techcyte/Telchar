@@ -208,6 +208,7 @@ impl StoreRetentionBackend for UnavailableStoreRetentionBackend {
 
 pub struct NixStoreRetentionBackend {
     socket_path: PathBuf,
+    store_directory: Vec<u8>,
     root_directory: PathBuf,
 }
 
@@ -216,15 +217,29 @@ impl NixStoreRetentionBackend {
         store_uri: impl Into<String>,
         root_directory: impl Into<PathBuf>,
     ) -> io::Result<Self> {
+        Self::new_with_store_directory(store_uri, "/nix/store", root_directory)
+    }
+
+    pub fn new_with_store_directory(
+        store_uri: impl Into<String>,
+        store_directory: impl AsRef<Path>,
+        root_directory: impl Into<PathBuf>,
+    ) -> io::Result<Self> {
         let store_uri = store_uri.into();
         let socket_path = store_uri
             .strip_prefix("unix://")
             .filter(|path| path.starts_with('/') && !path.as_bytes().contains(&0))
             .map(PathBuf::from)
             .ok_or_else(retention_error)?;
+        let store_directory = store_directory
+            .as_ref()
+            .as_os_str()
+            .as_encoded_bytes()
+            .to_vec();
         let root_directory = validate_root_directory(root_directory.into())?;
         Ok(Self {
             socket_path,
+            store_directory,
             root_directory,
         })
     }
@@ -238,8 +253,11 @@ impl NixStoreRetentionBackend {
         stream
             .set_write_timeout(Some(OPERATION_TIMEOUT))
             .map_err(|_| retention_error())?;
-        let mut client =
-            nix_worker_protocol::WorkerClient::connect(stream).map_err(|_| retention_error())?;
+        let mut client = nix_worker_protocol::WorkerClient::connect_with_store_directory(
+            stream,
+            &self.store_directory,
+        )
+        .map_err(|_| retention_error())?;
         let mut retained = Vec::with_capacity(entries.len());
         for entry in entries {
             client

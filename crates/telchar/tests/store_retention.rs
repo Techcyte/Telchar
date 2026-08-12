@@ -40,8 +40,12 @@ fn release_removes_only_matching_durable_root() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
-        .expect("retention backend configures");
+    let mut backend = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root_directory,
+    )
+    .expect("retention backend configures");
     backend
         .retain(&[RetentionEntry::new(
             "released-root",
@@ -80,8 +84,12 @@ fn released_root_is_collectable_while_active_root_survives_private_gc() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
-        .expect("retention backend configures");
+    let mut backend = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root_directory,
+    )
+    .expect("retention backend configures");
     backend
         .retain(&[RetentionEntry::new(
             "collectable-root",
@@ -383,8 +391,12 @@ fn release_rejects_conflicts_without_removing_any_root() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
-        .expect("retention backend configures");
+    let mut backend = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root_directory,
+    )
+    .expect("retention backend configures");
     backend
         .retain(&[RetentionEntry::new(
             "release-conflict",
@@ -533,8 +545,12 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
         .is_valid_path(&control)
         .expect("control path valid before GC"));
 
-    let mut backend = NixStoreRetentionBackend::new(daemon.store_url(), &root_directory)
-        .expect("retention backend configures");
+    let mut backend = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root_directory,
+    )
+    .expect("retention backend configures");
     let retained = backend
         .retain(&[RetentionEntry::new(
             "lease-retained-fixture",
@@ -570,7 +586,16 @@ fn retain_fixture_path(
     lease_id: &str,
     store_path: &std::path::Path,
 ) -> std::io::Result<()> {
-    let mut backend = NixStoreRetentionBackend::new(store_uri, root_directory)?;
+    let mut backend = NixStoreRetentionBackend::new_with_store_directory(
+        store_uri,
+        store_path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "store path has no directory",
+            )
+        })?,
+        root_directory,
+    )?;
     backend
         .retain(&[RetentionEntry::new(lease_id, store_path.to_string_lossy())])
         .map(|_| ())

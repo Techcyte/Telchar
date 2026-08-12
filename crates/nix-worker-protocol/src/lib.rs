@@ -2315,10 +2315,16 @@ impl WorkerBuildResult {
 pub struct WorkerClient<S> {
     stream: S,
     profile: WorkerClientProfile,
+    store_directory: Vec<u8>,
 }
 
 impl<S: Read + Write> WorkerClient<S> {
-    pub fn connect(mut stream: S) -> io::Result<Self> {
+    pub fn connect(stream: S) -> io::Result<Self> {
+        Self::connect_with_store_directory(stream, b"/nix/store")
+    }
+
+    pub fn connect_with_store_directory(mut stream: S, store_directory: &[u8]) -> io::Result<Self> {
+        validate_store_directory(store_directory)?;
         write_worker_integer_to(&mut stream, CLIENT_WORKER_MAGIC)?;
         write_worker_integer_to(&mut stream, LATEST_WORKER_VERSION.to_wire())?;
         stream.flush()?;
@@ -2369,6 +2375,7 @@ impl<S: Read + Write> WorkerClient<S> {
                     path_queries: true,
                 },
             },
+            store_directory: store_directory.to_vec(),
         })
     }
 
@@ -2484,7 +2491,8 @@ impl<S: Read + Write> WorkerClient<S> {
     }
 
     pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
-        validate_store_path(store_path).map_err(|_| protocol_client_error())?;
+        validate_store_path_in_directory(store_path, &self.store_directory)
+            .map_err(|_| protocol_client_error())?;
         self.execute_path_operation(WorkerOperation::AddTempRoot, store_path)
     }
 
@@ -2991,10 +2999,29 @@ fn protocol_client_error() -> io::Error {
 }
 
 fn validate_store_path(path: &[u8]) -> io::Result<()> {
+    validate_store_path_in_directory(path, NIX_STORE_DIRECTORY.strip_suffix(b"/").unwrap())
+}
+
+fn validate_store_directory(directory: &[u8]) -> io::Result<()> {
+    if directory.is_empty()
+        || directory.len() >= MAXIMUM_WORKER_STORE_PATH_BYTES
+        || !directory.starts_with(b"/")
+        || directory.ends_with(b"/")
+        || directory.contains(&0)
+    {
+        return Err(protocol_client_error());
+    }
+    Ok(())
+}
+
+fn validate_store_path_in_directory(path: &[u8], directory: &[u8]) -> io::Result<()> {
+    validate_store_directory(directory)?;
+    let prefix_length = directory.len() + 1;
     if path.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
-        || !path.starts_with(NIX_STORE_DIRECTORY)
-        || path[NIX_STORE_DIRECTORY.len()..].contains(&b'/')
-        || path.len() <= NIX_STORE_DIRECTORY.len() + NIX_STORE_HASH_LENGTH + 1
+        || !path.starts_with(directory)
+        || path.get(directory.len()) != Some(&b'/')
+        || path[prefix_length..].contains(&b'/')
+        || path.len() <= prefix_length + NIX_STORE_HASH_LENGTH + 1
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
