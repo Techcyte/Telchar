@@ -70,6 +70,19 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
+[backends.nomad.prestart]
+driver = "raw_exec"
+timeout_seconds = 120
+
+[backends.nomad.prestart.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 256
+
+[backends.nomad.prestart.driver_config]
+command = "/opt/operator/bin/configure-nix"
+args = ["/alloc/data/nix"]
+
 [backends.nomad.resources]
 cpu_mhz = 2000
 memory_mb = 4096
@@ -99,19 +112,58 @@ args = ["--stdio"]
     assert_eq!(job["Job"]["ID"], first);
     assert_eq!(job["Job"]["Namespace"], "telchar");
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][0]["Driver"],
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Driver"],
         "raw_exec"
     );
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][0]["Config"]["command"],
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Config"]["command"],
         "/opt/telchar/bin/worker"
     );
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][0]["Resources"]["CPU"],
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"]["CPU"],
         2000
     );
     assert_eq!(job["Job"]["Meta"]["telchar_backend"], "nomad-arm");
     assert_eq!(job["Job"]["Meta"]["telchar_system"], "aarch64-linux");
+    assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Name"], "prestart");
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][0]["Lifecycle"]["Hook"],
+        "prestart"
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][0]["Lifecycle"]["Sidecar"],
+        false
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][0]["Config"]["command"],
+        "/opt/operator/bin/configure-nix"
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][0]["KillTimeout"],
+        120_000_000_000_u64
+    );
+    assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Name"], "build");
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_ENDPOINT"],
+        "http://telchar.example:7443"
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_NIX_STORE_URI"],
+        "unix:///nix/var/nix/daemon-socket/socket"
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Env"],
+        true
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["File"],
+        false
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audiences"][0],
+        "telchar-transfer"
+    );
+    assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["TTL"].is_null());
 
     unsafe {
         match saved {

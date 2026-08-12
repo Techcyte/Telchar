@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
-use crate::config::NomadBackendConfig;
+use crate::config::{NomadBackendConfig, NomadTransferAuthentication};
 
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 
@@ -267,7 +267,7 @@ pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u
 }
 
 pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value {
-    let task = json!({
+    let mut task = json!({
         "Name": "build",
         "Driver": config.driver(),
         "Config": Value::Object(config.driver_config().clone()),
@@ -276,11 +276,44 @@ pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value
             "MemoryMB": config.resources().memory_mb(),
             "DiskMB": config.resources().disk_mb(),
         },
+        "Env": {
+            "TELCHAR_TRANSFER_ENDPOINT": config.transfer_endpoint(),
+            "TELCHAR_NIX_STORE_URI": config.store().uri(),
+        },
     });
+    if let NomadTransferAuthentication::WorkloadIdentity { .. } = config.transfer_authentication() {
+        task["Identity"] = json!({
+            "Env": true,
+            "File": false,
+            "Audiences": [config
+                .transfer_authentication()
+                .audience()
+                .expect("workload identity audience is configured")],
+        });
+    }
+    let mut tasks = Vec::with_capacity(2);
+    if let Some(prestart) = config.prestart() {
+        tasks.push(json!({
+            "Name": "prestart",
+            "Driver": prestart.driver(),
+            "Config": Value::Object(prestart.driver_config().clone()),
+            "Resources": {
+                "CPU": prestart.resources().cpu_mhz(),
+                "MemoryMB": prestart.resources().memory_mb(),
+                "DiskMB": prestart.resources().disk_mb(),
+            },
+            "Lifecycle": {
+                "Hook": "prestart",
+                "Sidecar": false,
+            },
+            "KillTimeout": duration_nanoseconds(prestart.timeout()),
+        }));
+    }
+    tasks.push(task);
     let mut group = Map::new();
     group.insert("Name".to_owned(), Value::String("build".to_owned()));
     group.insert("Count".to_owned(), Value::from(1));
-    group.insert("Tasks".to_owned(), Value::Array(vec![task]));
+    group.insert("Tasks".to_owned(), Value::Array(tasks));
     json!({
         "Job": {
             "ID": deterministic_job_name(config, shared_build_key),
@@ -295,4 +328,11 @@ pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value
             },
         }
     })
+}
+
+fn duration_nanoseconds(duration: std::time::Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::from(duration.subsec_nanos()))
 }
