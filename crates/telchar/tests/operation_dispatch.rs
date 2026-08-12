@@ -1987,13 +1987,13 @@ fn disconnected_follower_does_not_cancel_shared_build() {
         "unix:///fixed-gateway.sock",
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
+    let mut leader_input = fixture.frontend.stdin.take().expect("leader input");
+    let mut leader_output = fixture.frontend.stdout.take().expect("leader output");
+    complete_handshake(&mut leader_input, &mut leader_output);
+
     let mut follower = fixture.spawn_frontend();
-    let leader = &mut fixture.frontend;
-    let mut leader_input = leader.stdin.take().expect("leader input");
-    let mut leader_output = leader.stdout.take().expect("leader output");
     let mut follower_input = follower.stdin.take().expect("follower input");
     let mut follower_output = follower.stdout.take().expect("follower output");
-    complete_handshake(&mut leader_input, &mut leader_output);
     complete_handshake(&mut follower_input, &mut follower_output);
 
     write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
@@ -2019,8 +2019,8 @@ fn disconnected_follower_does_not_cancel_shared_build() {
     drop(follower_input);
     drop(follower_output);
     fs::write(&complete, b"complete").expect("helper completion releases");
-    leader.kill().expect("leader terminates");
-    leader.wait().expect("leader reaps");
+    fixture.frontend.kill().expect("leader terminates");
+    fixture.frontend.wait().expect("leader reaps");
     drop(leader_input);
     drop(leader_output);
     assert_eq!(
@@ -2058,13 +2058,13 @@ fn disconnected_leader_does_not_cancel_shared_build() {
         "unix:///fixed-gateway.sock",
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
+    let mut leader_input = fixture.frontend.stdin.take().expect("leader input");
+    let mut leader_output = fixture.frontend.stdout.take().expect("leader output");
+    complete_handshake(&mut leader_input, &mut leader_output);
+
     let mut follower = fixture.spawn_frontend();
-    let leader = &mut fixture.frontend;
-    let mut leader_input = leader.stdin.take().expect("leader input");
-    let mut leader_output = leader.stdout.take().expect("leader output");
     let mut follower_input = follower.stdin.take().expect("follower input");
     let mut follower_output = follower.stdout.take().expect("follower output");
-    complete_handshake(&mut leader_input, &mut leader_output);
     complete_handshake(&mut follower_input, &mut follower_output);
 
     write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
@@ -2085,8 +2085,8 @@ fn disconnected_leader_does_not_cancel_shared_build() {
         "identical build already in progress\n"
     );
 
-    leader.kill().expect("leader terminates");
-    leader.wait().expect("leader reaps");
+    fixture.frontend.kill().expect("leader terminates");
+    fixture.frontend.wait().expect("leader reaps");
     drop(leader_input);
     drop(leader_output);
     fs::write(&complete, b"complete").expect("helper completion releases");
