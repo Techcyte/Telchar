@@ -1,16 +1,11 @@
 use std::io::Cursor;
 
-use serde::{Deserialize, Serialize};
 use telchar::nomad_transfer_protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, Direction, Frame, FrameKind,
-    ProtocolLimits, ProtocolSession, PROTOCOL_VERSION,
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
+    LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
+    ProtocolSession, PROTOCOL_VERSION,
 };
-
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct AuthenticationMetadata {
-    backend: String,
-    allocation_id: String,
-}
 
 #[test]
 fn round_trips_every_version_one_frame_kind() {
@@ -44,13 +39,20 @@ fn round_trips_every_version_one_frame_kind() {
 
 #[test]
 fn round_trips_typed_metadata_with_explicit_bounds() {
-    let expected = AuthenticationMetadata {
+    let expected = Authentication {
         backend: "nomad-primary".to_owned(),
+        namespace: "telchar".to_owned(),
+        job_id: "job-1".to_owned(),
         allocation_id: "allocation-1".to_owned(),
+        task: "build".to_owned(),
+        shared_build_digest: "digest-1".to_owned(),
+        proof: AuthenticationProof::WorkloadIdentity {
+            token: "jwt".to_owned(),
+        },
     };
     let encoded = encode_metadata(&expected, 1024).expect("metadata encodes");
     assert_eq!(
-        decode_metadata::<AuthenticationMetadata>(&encoded, 1024).expect("metadata decodes"),
+        decode_metadata::<Authentication>(&encoded, 1024).expect("metadata decodes"),
         expected
     );
     assert_eq!(
@@ -60,8 +62,63 @@ fn round_trips_typed_metadata_with_explicit_bounds() {
         std::io::ErrorKind::InvalidInput
     );
     assert_eq!(
-        decode_metadata::<AuthenticationMetadata>(&encoded, 4)
+        decode_metadata::<Authentication>(&encoded, 4)
             .expect_err("oversized received metadata rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn round_trips_exact_transfer_metadata_contracts() {
+    let manifest = InputManifest {
+        derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+        paths: vec![PathManifestEntry {
+            path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned(),
+            nar_hash: "sha256:fixture".to_owned(),
+            nar_size: 42,
+            references: vec![],
+            deriver: None,
+        }],
+        outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+    };
+    let valid_paths = PathSet {
+        paths: vec![manifest.paths[0].path.clone()],
+    };
+    let nar = NarMetadata {
+        path: manifest.paths[0].path.clone(),
+        nar_hash: "sha256:fixture".to_owned(),
+        nar_size: 42,
+    };
+    let started = BuildStarted {
+        derivation_path: manifest.derivation_path.clone(),
+    };
+    let log = LogChunk { sequence: 1 };
+    let receipt = OutputReceipt {
+        path: manifest.outputs[0].clone(),
+        accepted: true,
+    };
+    let result = BuildResultMetadata {
+        outcome: BuildOutcome::Built,
+        diagnostic: None,
+    };
+
+    for metadata in [
+        encode_metadata(&manifest, 4096).expect("manifest encodes"),
+        encode_metadata(&valid_paths, 4096).expect("valid paths encode"),
+        encode_metadata(&nar, 4096).expect("NAR metadata encodes"),
+        encode_metadata(&started, 4096).expect("build start encodes"),
+        encode_metadata(&log, 4096).expect("log metadata encodes"),
+        encode_metadata(&receipt, 4096).expect("receipt encodes"),
+        encode_metadata(&result, 4096).expect("result encodes"),
+    ] {
+        assert!(!metadata.is_empty());
+    }
+
+    let unknown = br#"{"backend":"nomad-primary","namespace":"telchar","job_id":"job-1","allocation_id":"allocation-1","task":"build","shared_build_digest":"digest-1","proof":{"mode":"workload-identity","token":"jwt"},"unexpected":true}"#;
+    assert_eq!(
+        decode_metadata::<Authentication>(unknown, 4096)
+            .expect_err("unknown authentication field rejects")
             .kind(),
         std::io::ErrorKind::InvalidData
     );

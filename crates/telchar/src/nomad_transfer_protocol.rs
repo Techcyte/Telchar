@@ -1,12 +1,104 @@
 use std::io::{self, Read, Write};
 
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8; 4] = b"TLNW";
 const HEADER_BYTES: usize = 16;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Authentication {
+    pub backend: String,
+    pub namespace: String,
+    pub job_id: String,
+    pub allocation_id: String,
+    pub task: String,
+    pub shared_build_digest: String,
+    pub proof: AuthenticationProof,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum AuthenticationProof {
+    WorkloadIdentity {
+        token: String,
+    },
+    Hmac {
+        capability: String,
+        expiry: u64,
+        nonce: String,
+        body_digest: String,
+        signature: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputManifest {
+    pub derivation_path: String,
+    pub paths: Vec<PathManifestEntry>,
+    pub outputs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathManifestEntry {
+    pub path: String,
+    pub nar_hash: String,
+    pub nar_size: u64,
+    pub references: Vec<String>,
+    pub deriver: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathSet {
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NarMetadata {
+    pub path: String,
+    pub nar_hash: String,
+    pub nar_size: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildStarted {
+    pub derivation_path: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogChunk {
+    pub sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputReceipt {
+    pub path: String,
+    pub accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildOutcome {
+    Built,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildResultMetadata {
+    pub outcome: BuildOutcome,
+    pub diagnostic: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
