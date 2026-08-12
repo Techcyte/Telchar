@@ -1499,6 +1499,138 @@ fn root_release_failure_reports_retention_error_after_durable_release() {
 }
 
 #[test]
+fn saturated_subject_waits_while_another_subject_builds() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-subject-dispatch-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("build-helper");
+    let alice_started = root.join("alice-started");
+    let alice_complete = root.join("alice-complete");
+    let bob_started = root.join("bob-started");
+    let bob_complete = root.join("bob-complete");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nset -eu\nrequest=$(cat)\ncase \"$request\" in\n  *00000000000000000000000000000000-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *) exit 1 ;;\nesac\nprintf started > \"$started\"\nwhile [ ! -e \"$complete\" ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            alice_started.display(),
+            alice_complete.display(),
+            bob_started.display(),
+            bob_complete.display(),
+        ),
+    )
+    .expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let mut fixture = FrontendFixture::spawn_multi_with_store_capacity(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        1,
+    );
+    let retained_derivation_path =
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv";
+    for index in 0..4 {
+        let derivation_path = format!("/nix/store/{index:032x}-alice-active-{index}.drv");
+        telchar::persistence::claim_shared_build(
+            fixture.database.url(),
+            &derivation_path,
+            &[index as u8; 32],
+            "local",
+            telchar::backend::BackendKind::Local,
+            telchar::backend::BackendKind::Local.capabilities(),
+            None,
+            &["/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"],
+        )
+        .expect("active Alice build claims");
+        telchar::persistence::enqueue_shared_build(
+            fixture.database.url(),
+            &derivation_path,
+            "ssh-pubkey:SHA256:fixture",
+            64,
+        )
+        .expect("active Alice build enqueues");
+        telchar::persistence::start_queued_shared_build(
+            fixture.database.url(),
+            &derivation_path,
+            4,
+        )
+        .expect("active Alice build starts");
+    }
+
+    let mut alice_input = fixture.frontend.stdin.take().expect("Alice input");
+    let mut alice_output = fixture.frontend.stdout.take().expect("Alice output");
+    complete_handshake(&mut alice_input, &mut alice_output);
+    let mut bob = fixture.spawn_frontend_with_key("SHA256:bob");
+    let mut bob_input = bob.stdin.take().expect("Bob input");
+    let mut bob_output = bob.stdout.take().expect("Bob output");
+    complete_handshake(&mut bob_input, &mut bob_output);
+
+    write_build_derivation(
+        &mut alice_input,
+        retained_derivation_path.as_bytes(),
+        "x86_64-linux",
+        0,
+    );
+    alice_input.flush().expect("Alice request flushes");
+    wait_for_path_state(
+        fixture.database.url(),
+        retained_derivation_path,
+        telchar::persistence::SharedBuildState::Claimed,
+    );
+    assert_eq!(
+        shared_build_quota_subject(&fixture.database, retained_derivation_path),
+        "ssh-pubkey:SHA256:fixture"
+    );
+    assert!(!alice_started.exists(), "saturated Alice build started");
+
+    write_build_derivation(
+        &mut bob_input,
+        b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv",
+        "x86_64-linux",
+        0,
+    );
+    bob_input.flush().expect("Bob request flushes");
+    wait_for_file_for(
+        &bob_started,
+        Duration::from_secs(10),
+        "Bob helper did not start",
+    );
+    assert_eq!(
+        shared_build_quota_subject(
+            &fixture.database,
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv",
+        ),
+        "ssh-pubkey:SHA256:bob"
+    );
+    assert!(!alice_started.exists(), "Alice bypassed subject capacity");
+    fs::write(&bob_complete, b"complete").expect("Bob completion releases");
+    read_build_success(&mut bob_output).expect("Bob build succeeds");
+    drop(bob_input);
+    assert!(bob.wait().expect("Bob exits").success());
+
+    telchar::persistence::complete_shared_build_failure(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-alice-active-0.drv",
+        "fixture-complete",
+        &serde_json::json!({"stage": "test"}),
+        Duration::from_secs(60),
+    )
+    .expect("Alice capacity releases");
+    wait_for_file_for(
+        &alice_started,
+        Duration::from_secs(10),
+        "Alice helper did not start after capacity release",
+    );
+    fs::write(&alice_complete, b"complete").expect("Alice completion releases");
+    read_build_success(&mut alice_output).expect("Alice build succeeds");
+    drop(alice_input);
+    assert!(fixture.frontend.wait().expect("Alice exits").success());
+    fixture.finish();
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn concurrent_identical_frontends_share_one_build_execution() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-shared-build-{}-{}",
@@ -2899,6 +3031,28 @@ impl FrontendFixture {
         Self::spawn_with_store_policy_and_mode(None, store_uri, environment, None, false)
     }
 
+    fn spawn_multi_with_store_capacity(
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+        maximum_concurrent_builds: usize,
+    ) -> Self {
+        let mut environment = environment.into_iter().collect::<Vec<_>>();
+        let config_path = std::env::temp_dir().join(format!(
+            "telchar-operation-config-{}-{}",
+            std::process::id(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &config_path,
+            format!(
+                "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nsupported_features = []\nmaximum_concurrent_builds = {maximum_concurrent_builds}\n\n[identity.credentials.\"ssh-pubkey:SHA256:bob\"]\naudit_subject = \"ssh-pubkey:SHA256:bob\"\nquota_subject = \"ssh-pubkey:SHA256:bob\"\n"
+            ),
+        )
+        .expect("service configuration writes");
+        environment.push(("TELCHAR_CONFIG", config_path.display().to_string()));
+        Self::spawn_with_store_policy_and_mode(None, store_uri, environment, None, false)
+    }
+
     fn spawn_with_store(
         worker_timeout_ms: Option<u64>,
         store_uri: &str,
@@ -2981,7 +3135,7 @@ impl FrontendFixture {
             let nix = root.join("nix");
             fs::write(
                 &nix,
-                "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+                "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
             )
             .expect("Nix query helper writes");
             fs::set_permissions(&nix, fs::Permissions::from_mode(0o700))
@@ -3121,10 +3275,14 @@ impl FrontendFixture {
     }
 
     fn spawn_frontend(&self) -> Child {
+        self.spawn_frontend_with_key("SHA256:fixture")
+    }
+
+    fn spawn_frontend_with_key(&self, key: &str) -> Child {
         Command::new(env!("CARGO_BIN_EXE_telchar"))
             .arg("serve-stdio")
             .env("TELCHAR_IPC_SOCKET", self.root.join("daemon.sock"))
-            .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+            .env("TELCHAR_AUTHENTICATED_KEY", key)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3162,6 +3320,17 @@ impl FrontendFixture {
             String::from_utf8_lossy(&daemon_output.stderr)
         )
     }
+}
+
+fn shared_build_quota_subject(database: &PostgresFixture, derivation_path: &str) -> String {
+    database
+        .connect()
+        .query_one(
+            "SELECT quota_subject FROM shared_builds WHERE derivation_path = $1",
+            &[&derivation_path],
+        )
+        .expect("shared build quota subject reads")
+        .get(0)
 }
 
 fn request_id(database: &mut postgres::Client) -> String {
@@ -3377,6 +3546,35 @@ fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
     assert_eq!(read_integer(output), STDERR_LAST);
 }
 
+fn wait_for_file_for(path: &std::path::Path, timeout: Duration, failure: &str) {
+    let deadline = Instant::now() + timeout;
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "{failure}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_path_state(
+    database_url: &str,
+    derivation_path: &str,
+    expected: telchar::persistence::SharedBuildState,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let last_state = telchar::persistence::read_shared_build(database_url, derivation_path)
+            .expect("shared build reads")
+            .map(|build| build.state);
+        if last_state == Some(expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "shared build did not reach expected state: {last_state:?}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn read_build_success(mut output: impl Read) -> Result<(), String> {
     loop {
         let frame = try_read_integer(&mut output)?;
@@ -3487,12 +3685,23 @@ fn write_input_build_derivation(output: &mut impl Write, system: &str, mode: u64
 }
 
 fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
-    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
-    write_integer(output, 36);
-    write_string(
+    write_build_derivation(
         output,
         b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        system,
+        mode,
     );
+}
+
+fn write_build_derivation(
+    output: &mut impl Write,
+    derivation_path: &[u8],
+    system: &str,
+    mode: u64,
+) {
+    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
+    write_integer(output, 36);
+    write_string(output, derivation_path);
     write_integer(output, 1);
     write_string(output, b"out");
     write_string(output, store_output);
@@ -3507,7 +3716,7 @@ fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u6
     write_integer(output, 4);
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
-        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (b"name".as_slice(), derivation_name(derivation_path)),
         (b"out".as_slice(), store_output.as_slice()),
         (b"system".as_slice(), system.as_bytes()),
     ] {
@@ -3515,6 +3724,14 @@ fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u6
         write_string(output, value);
     }
     write_integer(output, mode);
+}
+
+fn derivation_name(path: &[u8]) -> &[u8] {
+    path.rsplit(|byte| *byte == b'/')
+        .next()
+        .and_then(|name| name.strip_suffix(b".drv"))
+        .and_then(|name| name.get(33..))
+        .expect("derivation path has a valid name")
 }
 
 fn write_string(output: &mut impl Write, value: &[u8]) {
