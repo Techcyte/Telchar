@@ -142,6 +142,49 @@
                 nomad_server.wait_until_fails("nomad job status telchar-fixture-smoke", timeout=30)
               '';
             };
+          nixos-nomad-gateway =
+            let
+              harness = import ./tests/nixos/lib.nix {
+                inherit pkgs;
+                telchar = self.packages.${system}.telchar;
+              };
+              nomadDerivation = pkgs.writeText "telchar-nomad-gateway.nix" ''
+                derivation {
+                  name = "telchar-nomad-gateway";
+                  system = builtins.currentSystem;
+                  builder = builtins.storePath "${pkgs.runtimeShell}";
+                  args = [ "-c" "printf nomad > $out" ];
+                }
+              '';
+            in
+            harness.mkNomadGatewayTest {
+              name = "telchar-nixos-nomad-gateway";
+              testScript = ''
+                stock_client.succeed("cp ${nomadDerivation} /tmp/telchar-nomad-gateway.nix")
+                derivation_path = stock_client.succeed("nix-instantiate /tmp/telchar-nomad-gateway.nix").strip()
+                stock_client.succeed("ln -s '" + derivation_path + "' /tmp/nomad-drv-root")
+                derivation_export = stock_client.succeed("nix-store --export '" + derivation_path + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
+                gateway.succeed("printf '%s' '" + derivation_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
+                build = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' '" + derivation_path + "^*'"
+                stock_client.succeed("(" + build + " > /tmp/nomad-build.out 2>&1) & echo $! > /tmp/nomad-build.pid")
+                nomad_server.wait_until_succeeds("nomad job status -namespace telchar -json | ${pkgs.jq}/bin/jq -e 'length == 1'", timeout=60)
+                job_id = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select backend_execution_id from shared_builds where derivation_path = '" + derivation_path + "'\"").strip()
+                assert job_id.startswith("telchar-gateway-")
+                nomad_server.succeed("nomad job status -namespace telchar '" + job_id + "'")
+                nomad_server.succeed("nomad job inspect -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e '.Namespace == \"telchar\" and .Type == \"batch\" and .Meta.telchar_backend == \"nomad-primary\" and .Meta.telchar_system == \"${pkgs.stdenv.hostPlatform.system}\"'")
+                stock_client.succeed("kill $(cat /tmp/nomad-build.pid) || true")
+                gateway.succeed("systemctl restart telchar-daemon.service")
+                gateway.wait_for_unit("telchar-daemon.service")
+                gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --since '-1 minute' | grep -q 'monitoring_count=1'", timeout=60)
+                nomad_server.succeed("test $(nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq 'length') -eq 1")
+                nomad_client.succeed("touch /tmp/telchar-nomad-release")
+                nomad_server.wait_until_succeeds("nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].ClientStatus == \"complete\"'", timeout=60)
+                gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"select state || ':' || failure_classification from shared_builds where derivation_path = '" + derivation_path + "'\" | grep -qx 'failed:restart-recovery-failed'", timeout=60)
+                nomad_server.succeed("test $(nomad job status -namespace telchar -json | ${pkgs.jq}/bin/jq 'length') -eq 1")
+                nomad_server.succeed("nomad job stop -namespace telchar -purge '" + job_id + "'")
+                nomad_server.wait_until_fails("nomad job status -namespace telchar '" + job_id + "'", timeout=30)
+              '';
+            };
           nixos-static-ssh-fixture =
             let
               harness = import ./tests/nixos/lib.nix {
