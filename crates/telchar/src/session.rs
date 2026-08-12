@@ -647,7 +647,7 @@ pub fn run_worker_session(
                             },
                         )?;
                         output.flush()?;
-                        follower.wait().map_err(|failure| match failure {
+                        let result = follower.wait().map_err(|failure| match failure {
                             crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable => {
                                 io::Error::new(
                                     io::ErrorKind::Unsupported,
@@ -658,7 +658,9 @@ pub fn run_worker_session(
                             | crate::shared_build::SharedBuildTerminalFailure::Internal => {
                                 io::Error::other("shared BuildDerivation execution failed")
                             }
-                        })
+                        })?;
+                        wait_for_shared_build_terminal(database_url, derivation_path)?;
+                        Ok(result)
                     }
                 };
                 let result = match shared_result {
@@ -706,25 +708,7 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                let output_paths = result
-                    .outputs()
-                    .iter()
-                    .map(|(_, path)| {
-                        std::str::from_utf8(path).map(str::to_owned).map_err(|_| {
-                            io::Error::new(io::ErrorKind::InvalidData, "invalid output path")
-                        })
-                    })
-                    .collect::<io::Result<Vec<_>>>()
-                    .and_then(|paths| {
-                        paths.iter().try_for_each(|path| {
-                            crate::store_export::validate_store_output(
-                                Path::new(path),
-                                store_export,
-                            )
-                            .map(|_| ())
-                        })?;
-                        Ok(paths)
-                    });
+                let output_paths = validate_build_outputs(&result, store_export);
                 let output_paths = match output_paths {
                     Ok(paths) => {
                         if durable_execution_owned.get()
@@ -1380,6 +1364,50 @@ fn release_committed_request_roots(
         );
         io::Error::other("gateway store retention failed")
     })
+}
+
+fn wait_for_shared_build_terminal(database_url: &str, derivation_path: &str) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let build = crate::persistence::read_shared_build(database_url, derivation_path)
+            .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
+            .ok_or_else(|| io::Error::other("shared build is missing"))?;
+        match build.state {
+            crate::persistence::SharedBuildState::Succeeded => return Ok(()),
+            crate::persistence::SharedBuildState::Failed => {
+                return Err(io::Error::other("shared BuildDerivation execution failed"));
+            }
+            crate::persistence::SharedBuildState::Claimed
+            | crate::persistence::SharedBuildState::Running
+            | crate::persistence::SharedBuildState::Collecting => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "shared build completion timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn validate_build_outputs(
+    result: &crate::backend::BuildResult,
+    store_export: &mut dyn crate::store_export::StoreExportBackend,
+) -> io::Result<Vec<String>> {
+    let paths = result
+        .outputs()
+        .iter()
+        .map(|(_, path)| {
+            std::str::from_utf8(path)
+                .map(str::to_owned)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid output path"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    paths.iter().try_for_each(|path| {
+        crate::store_export::validate_store_output(Path::new(path), store_export).map(|_| ())
+    })?;
+    Ok(paths)
 }
 
 fn durable_shared_build_result(

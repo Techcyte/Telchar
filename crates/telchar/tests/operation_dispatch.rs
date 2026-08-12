@@ -1525,13 +1525,12 @@ fn concurrent_identical_frontends_share_one_build_execution() {
         "unix:///fixed-gateway.sock",
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
+    let mut leader_input = fixture.frontend.stdin.take().expect("leader input");
+    let mut leader_output = fixture.frontend.stdout.take().expect("leader output");
+    complete_handshake(&mut leader_input, &mut leader_output);
     let mut follower = fixture.spawn_frontend();
-    let leader = &mut fixture.frontend;
-    let mut leader_input = leader.stdin.take().expect("leader input");
-    let mut leader_output = leader.stdout.take().expect("leader output");
     let mut follower_input = follower.stdin.take().expect("follower input");
     let mut follower_output = follower.stdout.take().expect("follower output");
-    complete_handshake(&mut leader_input, &mut leader_output);
     complete_handshake(&mut follower_input, &mut follower_output);
 
     write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
@@ -1558,19 +1557,34 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     );
 
     fs::write(&complete, b"complete").expect("helper completion releases");
-    assert_build_success(&mut leader_output);
-    assert_build_success(&mut follower_output);
+    let leader_response = thread::spawn(move || read_build_success(leader_output));
+    let follower_response = thread::spawn(move || read_build_success(follower_output));
+    leader_response
+        .join()
+        .expect("leader response reader joins")
+        .expect("leader build succeeds");
+    follower_response
+        .join()
+        .expect("follower response reader joins")
+        .expect("follower build succeeds");
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x",
         "duplicate helper invocation detected"
     );
     drop(leader_input);
-    drop(leader_output);
     drop(follower_input);
-    drop(follower_output);
-    assert!(follower.wait().expect("follower exits").success());
-    assert!(leader.wait().expect("leader exits").success());
+    let follower_status = follower.wait().expect("follower exits");
+    let leader_status = fixture.frontend.wait().expect("leader exits");
+    let mut follower_stderr = String::new();
+    follower
+        .stderr
+        .take()
+        .expect("follower stderr")
+        .read_to_string(&mut follower_stderr)
+        .expect("follower stderr reads");
+    assert!(follower_status.success(), "{follower_stderr}");
+    assert!(leader_status.success());
     let shared_build = telchar::persistence::read_shared_build(
         fixture.database.url(),
         "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
@@ -3363,20 +3377,51 @@ fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
     assert_eq!(read_integer(output), STDERR_LAST);
 }
 
-fn assert_build_success(output: &mut impl Read) {
+fn read_build_success(mut output: impl Read) -> Result<(), String> {
     loop {
-        let frame = read_integer(output);
+        let frame = try_read_integer(&mut output)?;
         if frame == STDERR_LAST {
             break;
         }
-        assert_eq!(frame, nix_worker_protocol::STDERR_NEXT);
-        let _message = read_string(output);
+        if frame != nix_worker_protocol::STDERR_NEXT {
+            return Err(format!("unexpected stderr frame {frame}"));
+        }
+        try_read_string(&mut output)?;
     }
-    assert_eq!(read_integer(output), 0, "Built status");
-    assert_eq!(read_string(output), "", "empty build error message");
+    let status = try_read_integer(&mut output)?;
+    if status != 0 {
+        return Err(format!("unexpected build status {status}"));
+    }
+    let error_message = try_read_string(&mut output)?;
+    if !error_message.is_empty() {
+        return Err(format!("unexpected build error {error_message:?}"));
+    }
     for _ in 0..7 {
-        read_integer(output);
+        try_read_integer(&mut output)?;
     }
+    Ok(())
+}
+
+fn try_read_integer(input: &mut impl Read) -> Result<u64, String> {
+    let mut bytes = [0; 8];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|error| format!("worker integer read failed: {error}"))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn try_read_string(input: &mut impl Read) -> Result<String, String> {
+    let length = try_read_integer(input)? as usize;
+    let mut bytes = vec![0; length];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|error| format!("worker string read failed: {error}"))?;
+    let padding = (8 - length % 8) % 8;
+    let mut padding_bytes = vec![0; padding];
+    input
+        .read_exact(&mut padding_bytes)
+        .map_err(|error| format!("worker string padding read failed: {error}"))?;
+    String::from_utf8(bytes).map_err(|error| format!("worker string is invalid UTF-8: {error}"))
 }
 
 fn write_integer(output: &mut impl Write, value: u64) {
