@@ -61,6 +61,14 @@ quota_subject = "engineering"
 audit_subject = "automation"
 quota_subject = "engineering"
 
+[scheduling.default]
+maximum_queued_builds = 20
+maximum_active_builds = 4
+
+[scheduling.subjects.release-engineering]
+maximum_queued_builds = 100
+maximum_active_builds = 16
+
 [backends]
 permit_wait_seconds = 30
 
@@ -102,6 +110,14 @@ maximum_concurrent_builds = 2
     );
     assert_eq!(config.maximum_ipc_sessions(), 32);
     assert_eq!(config.backend_permit_wait().as_secs(), 30);
+    assert_eq!(
+        config.scheduling_limits("unknown-subject"),
+        telchar::config::SchedulingLimits::new(20, 4).expect("limits are valid")
+    );
+    assert_eq!(
+        config.scheduling_limits("release-engineering"),
+        telchar::config::SchedulingLimits::new(100, 16).expect("limits are valid")
+    );
     let local = config.local_backend().expect("local backend exists");
     assert_eq!(local.target().name(), "local");
     assert_eq!(local.maximum_concurrent_builds(), 2);
@@ -425,6 +441,33 @@ quota_subject = "replacement-team"
             .as_deref(),
         Some("replacement-owner")
     );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn invalid_scheduling_limits_fail_closed() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-scheduling");
+    let config_path = root.join("telchar.toml");
+
+    for scheduling in [
+        "[scheduling.default]\nmaximum_queued_builds = 0\nmaximum_active_builds = 1\n",
+        "[scheduling.default]\nmaximum_queued_builds = 1\nmaximum_active_builds = 0\n",
+        "[scheduling.subjects.alice]\nmaximum_queued_builds = 65537\nmaximum_active_builds = 1\n",
+        "[scheduling.subjects.alice]\nmaximum_queued_builds = 1\nmaximum_active_builds = 65537\n",
+    ] {
+        fs::write(&config_path, scheduling).expect("configuration writes");
+        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        assert_eq!(
+            ServiceConfig::load()
+                .expect_err("invalid scheduling limit rejects")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");

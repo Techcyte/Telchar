@@ -18,6 +18,10 @@ const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
 const MAXIMUM_STATIC_SSH_BACKENDS: usize = 256;
 const MAXIMUM_BACKEND_CONCURRENT_BUILDS: usize = 65_536;
+const DEFAULT_MAXIMUM_QUEUED_BUILDS: usize = 64;
+const DEFAULT_MAXIMUM_ACTIVE_BUILDS: usize = 4;
+const MAXIMUM_SCHEDULING_BUILDS: usize = 65_536;
+const MAXIMUM_QUOTA_SUBJECTS: usize = 4_096;
 const DEFAULT_BACKEND_PERMIT_WAIT_SECONDS: u64 = 30;
 const MAXIMUM_BACKEND_PERMIT_WAIT_SECONDS: u64 = 3_600;
 const MAXIMUM_SSH_DESTINATION_BYTES: usize = 512;
@@ -28,6 +32,36 @@ const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROG
 pub struct CredentialMapping {
     pub audit_subject: Option<String>,
     pub quota_subject: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulingLimits {
+    maximum_queued_builds: usize,
+    maximum_active_builds: usize,
+}
+
+impl SchedulingLimits {
+    pub fn new(maximum_queued_builds: usize, maximum_active_builds: usize) -> io::Result<Self> {
+        if maximum_queued_builds == 0
+            || maximum_queued_builds > MAXIMUM_SCHEDULING_BUILDS
+            || maximum_active_builds == 0
+            || maximum_active_builds > MAXIMUM_SCHEDULING_BUILDS
+        {
+            return Err(invalid("scheduling limits are invalid"));
+        }
+        Ok(Self {
+            maximum_queued_builds,
+            maximum_active_builds,
+        })
+    }
+
+    pub fn maximum_queued_builds(self) -> usize {
+        self.maximum_queued_builds
+    }
+
+    pub fn maximum_active_builds(self) -> usize {
+        self.maximum_active_builds
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +124,8 @@ pub struct ServiceConfig {
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
     credential_mappings: BTreeMap<String, CredentialMapping>,
+    default_scheduling_limits: SchedulingLimits,
+    subject_scheduling_limits: BTreeMap<String, SchedulingLimits>,
     backend_permit_wait: Duration,
     local_backend: Option<LocalBackendConfig>,
     static_ssh_backends: Vec<StaticSshBackendConfig>,
@@ -153,6 +189,13 @@ impl ServiceConfig {
 
     pub fn credential_mapping(&self, credential_id: &str) -> Option<&CredentialMapping> {
         self.credential_mappings.get(credential_id)
+    }
+
+    pub fn scheduling_limits(&self, quota_subject: &str) -> SchedulingLimits {
+        self.subject_scheduling_limits
+            .get(quota_subject)
+            .copied()
+            .unwrap_or(self.default_scheduling_limits)
     }
 
     pub fn backend_permit_wait(&self) -> Duration {
@@ -285,6 +328,23 @@ impl ServiceConfig {
                 .map(|identity| identity.credentials)
                 .unwrap_or_default(),
         )?;
+        let scheduling = raw.scheduling.unwrap_or_default();
+        if scheduling.subjects.len() > MAXIMUM_QUOTA_SUBJECTS {
+            return Err(invalid("scheduling subject count exceeds limit"));
+        }
+        let default_scheduling_limits =
+            validate_scheduling_limits(scheduling.default.unwrap_or(RawSchedulingLimits {
+                maximum_queued_builds: DEFAULT_MAXIMUM_QUEUED_BUILDS,
+                maximum_active_builds: DEFAULT_MAXIMUM_ACTIVE_BUILDS,
+            }))?;
+        let subject_scheduling_limits = scheduling
+            .subjects
+            .into_iter()
+            .map(|(subject, limits)| {
+                let subject = validate_subject(subject, "quota subject is invalid")?;
+                Ok((subject, validate_scheduling_limits(limits)?))
+            })
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
         let mut backends = raw.backends.unwrap_or_default();
         if backends.local.is_none()
             && backends.static_ssh.is_empty()
@@ -314,6 +374,8 @@ impl ServiceConfig {
             ipc_socket,
             maximum_ipc_sessions,
             credential_mappings,
+            default_scheduling_limits,
+            subject_scheduling_limits,
             backend_permit_wait: Duration::from_secs(backend_permit_wait_seconds),
             local_backend,
             static_ssh_backends,
@@ -328,6 +390,7 @@ struct RawServiceConfig {
     database: Option<DatabaseSection>,
     ipc: Option<IpcSection>,
     identity: Option<IdentityConfig>,
+    scheduling: Option<SchedulingConfig>,
     backends: Option<BackendConfig>,
 }
 
@@ -378,6 +441,21 @@ impl RawIdentityConfig {
     fn parse(raw: &str) -> io::Result<Self> {
         toml::from_str(raw).map_err(|_| invalid("identity mapping file is invalid"))
     }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SchedulingConfig {
+    default: Option<RawSchedulingLimits>,
+    #[serde(default)]
+    subjects: BTreeMap<String, RawSchedulingLimits>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSchedulingLimits {
+    maximum_queued_builds: usize,
+    maximum_active_builds: usize,
 }
 
 #[derive(Default, Deserialize)]
@@ -458,6 +536,10 @@ fn validate_mappings(
             ))
         })
         .collect()
+}
+
+fn validate_scheduling_limits(raw: RawSchedulingLimits) -> io::Result<SchedulingLimits> {
+    SchedulingLimits::new(raw.maximum_queued_builds, raw.maximum_active_builds)
 }
 
 fn validate_local_backend(raw: RawLocalBackendConfig) -> io::Result<LocalBackendConfig> {
