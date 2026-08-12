@@ -1308,6 +1308,14 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
         0,
         "output lease failure left a request root"
     );
+    let shared_build_state: String = database
+        .query_one(
+            "SELECT state FROM shared_builds WHERE derivation_path = $1",
+            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+        )
+        .expect("shared build state reads")
+        .get(0);
+    assert_eq!(shared_build_state, "failed");
     let stderr = fixture.finish();
     assert!(
         stderr.contains("operation=\"create-output-retention\""),

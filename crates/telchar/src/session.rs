@@ -833,6 +833,15 @@ pub fn run_worker_session(
                 )
                 .is_err()
                 {
+                    if !durable_result_reused.get() {
+                        let _ = crate::persistence::complete_shared_build_failure(
+                            database_url,
+                            derivation_path,
+                            "output-retention-failure",
+                            &serde_json::json!({"stage": "lease"}),
+                            deployment.output_retention().duration(),
+                        );
+                    }
                     if store_retention.rollback(&retained_outputs).is_err() {
                         retention_batch_event(
                             "rollback",
