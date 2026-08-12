@@ -296,6 +296,71 @@ pub fn enqueue_shared_build(
     Ok(entry)
 }
 
+pub fn start_queued_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+    maximum_active_builds: usize,
+) -> Result<SharedBuild, SharedBuildError> {
+    validate_shared_build_identity(database_url, derivation_path)?;
+    if maximum_active_builds == 0 || maximum_active_builds > 65_536 {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let maximum_active_builds = i64::try_from(maximum_active_builds)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let quota_subject: String = transaction
+        .query_opt(
+            "SELECT quota_subject FROM shared_builds
+             WHERE derivation_path = $1 AND state = 'claimed' AND quota_subject IS NOT NULL
+             FOR UPDATE",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
+        .try_get(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&quota_subject],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let active_count: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM shared_builds
+             WHERE quota_subject = $1 AND state IN ('running', 'collecting')",
+            &[&quota_subject],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .try_get(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if active_count >= maximum_active_builds {
+        return Err(SharedBuildError(SharedBuildFailure::Quota));
+    }
+    let row = transaction
+        .query_one(
+            "UPDATE shared_builds
+             SET state = 'running', started_at = transaction_timestamp()
+             WHERE derivation_path = $1 AND state = 'claimed'
+             RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                       execution_recovery, cancellation, log_recovery,
+                       backend_execution_id, expected_outputs, result_metadata::text,
+                       failure_classification, created_at, started_at, collecting_at,
+                       completed_at, expires_at",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(build)
+}
+
 pub fn read_queued_shared_builds(
     database_url: &str,
     limit: usize,

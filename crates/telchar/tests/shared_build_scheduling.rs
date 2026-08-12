@@ -65,6 +65,43 @@ fn shared_build_queue_enforces_subject_bound() {
 }
 
 #[test]
+fn active_execution_limit_is_atomic_and_releases_on_terminal_failure() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let first = "/nix/store/66666666666666666666666666666666-first.drv";
+    let second = "/nix/store/77777777777777777777777777777777-second.drv";
+    claim(&fixture, first, 6);
+    claim(&fixture, second, 7);
+    telchar::persistence::enqueue_shared_build(fixture.url(), first, "alice", 2)
+        .expect("first build enqueues");
+    telchar::persistence::enqueue_shared_build(fixture.url(), second, "alice", 2)
+        .expect("second build enqueues");
+
+    telchar::persistence::start_queued_shared_build(fixture.url(), first, 1)
+        .expect("first build starts");
+    assert_eq!(
+        telchar::persistence::start_queued_shared_build(fixture.url(), second, 1)
+            .expect_err("active subject limit rejects")
+            .failure(),
+        telchar::persistence::SharedBuildFailure::Quota
+    );
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        first,
+        "build-failure",
+        &serde_json::json!({"stage": "execute"}),
+        std::time::Duration::from_secs(3_600),
+    )
+    .expect("first build fails terminally");
+    assert_eq!(
+        telchar::persistence::start_queued_shared_build(fixture.url(), second, 1)
+            .expect("released allocation permits second build")
+            .state,
+        telchar::persistence::SharedBuildState::Running
+    );
+}
+
+#[test]
 fn coalesced_follower_cannot_replace_the_quota_owner() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
