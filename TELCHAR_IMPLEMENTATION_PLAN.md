@@ -1468,10 +1468,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: `NIXPKGS_ALLOW_UNFREE=1 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-fixture`; Nix syntax and diagnostics.
   - Evidence: one real Nomad 1.11.3 server and one client form over explicit non-loopback addresses; the client enables operator-selected `raw_exec`; a batch allocation writes verified client output; the server restarts; `nomad job inspect -json` finds the same job afterward; purge removes it. All readiness and lifecycle assertions are bounded to 30–60 seconds, and the cached fixture completes in 27.5 seconds. Changeset `f9f19c96`.
 
-- [ ] T136 Submit and monitor one durable Nomad build
+- [x] T136 Submit and monitor one durable Nomad build
   - Depends on: T122, T127, T130, T135
   - Outcome: the shared-build leader renders one deterministic batch job, submits it once over the configured HTTP or HTTPS Nomad API endpoint, records its identity before submission, polls until terminal state independently of client attachment, and resumes monitoring the same exact job on the original configured backend after Telchar restart without blind resubmission.
-  - Verify: real submission, client disconnect, daemon restart, exact-backend adoption, foreign-job rejection, and completion tests.
+  - Red: startup reconciliation previously counted an adopted running job but discarded the identity afterward, so no daemon-owned monitor observed its terminal state; the first authoritative fixture also exposed protected configuration ownership, namespace-sensitive Nomad CLI inspection, and list-response field assumptions.
+  - Verify: focused deterministic submission, exact status, foreign-job rejection, configured execution, and configured adoption tests; restart recovery 8/8; all-target compilation; clippy with warnings denied; `NIXPKGS_ALLOW_UNFREE=1 timeout -s TERM -k 30 240 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-gateway`.
+  - Evidence: Telchar submits the real plain-HTTP Nomad 1.11.3 job through the stock-Nix gateway path, persists the deterministic execution ID before submission, verifies namespace/backend/system metadata, survives requester termination, restarts while the allocation is running, adopts the exact original job, starts one durable monitor, observes terminal allocation completion without another submission, fails closed because T137 output return is not yet implemented, proves one allocation and one job, and purges the exact namespace-bound job. The cached authoritative fixture completes in 30.6 seconds. Changesets `44fc49ee` and `400d1d22`.
 
 - [x] T136A Define the Nomad allocation transfer architecture
   - Depends on: T134, T135
