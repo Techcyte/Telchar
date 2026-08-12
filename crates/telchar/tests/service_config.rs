@@ -195,6 +195,253 @@ ssh_program = "{}"
 }
 
 #[test]
+fn loads_fungible_nomad_backends_with_operator_controlled_drivers() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("nomad");
+    let token_file = root.join("nomad-token");
+    let ca_certificate_file = root.join("nomad-ca.pem");
+    fs::write(&token_file, "secret-token\n").expect("token writes");
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600))
+        .expect("token permissions set");
+    fs::write(&ca_certificate_file, "certificate\n").expect("CA certificate writes");
+    fs::set_permissions(&ca_certificate_file, fs::Permissions::from_mode(0o644))
+        .expect("CA certificate permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.nomad]]
+name = "nomad-docker"
+system = "x86_64-linux"
+supported_features = ["docker"]
+maximum_concurrent_builds = 8
+endpoint = "https://nomad-a.example:4646"
+namespace = "telchar-a"
+token_file = "{}"
+ca_certificate_file = "{}"
+driver = "docker"
+job_name_scope = "prod-a"
+poll_interval_seconds = 2
+runtime_limit_seconds = 3600
+
+[backends.nomad.resources]
+cpu_mhz = 2000
+memory_mb = 4096
+disk_mb = 16384
+
+[backends.nomad.driver_config]
+image = "registry.example/telchar-builder:1"
+privileged = false
+
+[[backends.nomad]]
+name = "nomad-raw"
+system = "x86_64-linux"
+supported_features = ["raw-exec"]
+maximum_concurrent_builds = 2
+endpoint = "http://nomad-b.example:4646"
+namespace = "telchar-b"
+driver = "raw_exec"
+job_name_scope = "prod-b"
+poll_interval_seconds = 5
+runtime_limit_seconds = 1800
+
+[backends.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 2048
+disk_mb = 8192
+
+[backends.nomad.driver_config]
+command = "/opt/telchar/bin/nomad-worker"
+args = ["--stdio"]
+"#,
+            token_file.display(),
+            ca_certificate_file.display()
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    let backends = config.nomad_backends();
+    assert_eq!(backends.len(), 2);
+    assert_eq!(backends[0].target().name(), "nomad-docker");
+    assert_eq!(backends[0].target().kind(), BackendKind::Nomad);
+    assert_eq!(backends[0].endpoint(), "https://nomad-a.example:4646");
+    assert_eq!(backends[0].namespace(), "telchar-a");
+    assert_eq!(backends[0].token_file(), Some(token_file.as_path()));
+    assert_eq!(
+        backends[0].ca_certificate_file(),
+        Some(ca_certificate_file.as_path())
+    );
+    assert_eq!(backends[0].driver(), "docker");
+    assert_eq!(backends[0].job_name_scope(), "prod-a");
+    assert_eq!(backends[0].poll_interval().as_secs(), 2);
+    assert_eq!(backends[0].runtime_limit().as_secs(), 3600);
+    assert_eq!(backends[0].resources().cpu_mhz(), 2000);
+    assert_eq!(backends[0].resources().memory_mb(), 4096);
+    assert_eq!(backends[0].resources().disk_mb(), 16384);
+    assert_eq!(
+        backends[0].driver_config()["image"],
+        "registry.example/telchar-builder:1"
+    );
+    assert_eq!(backends[0].driver_config()["privileged"], false);
+    assert_eq!(backends[1].target().name(), "nomad-raw");
+    assert_eq!(backends[1].driver(), "raw_exec");
+    assert_eq!(
+        backends[1].driver_config()["command"],
+        "/opt/telchar/bin/nomad-worker"
+    );
+    assert_eq!(backends[1].driver_config()["args"][0], "--stdio");
+    assert_eq!(
+        config
+            .backend_targets()
+            .map(|target| target.name())
+            .collect::<Vec<_>>(),
+        ["nomad-docker", "nomad-raw"]
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn nomad_backend_rejects_unsafe_credentials_and_unbounded_driver_config() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-nomad");
+    let token_file = root.join("nomad-token");
+    fs::write(&token_file, "secret-token\n").expect("token writes");
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o644))
+        .expect("token permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.nomad]]
+name = "nomad"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "https://nomad.example:4646"
+namespace = "telchar"
+token_file = "{}"
+driver = "docker"
+job_name_scope = "prod"
+poll_interval_seconds = 2
+runtime_limit_seconds = 60
+
+[backends.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 1024
+disk_mb = 4096
+
+[backends.nomad.driver_config]
+image = "builder"
+"#,
+            token_file.display()
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("unsafe token rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600))
+        .expect("token permissions corrected");
+    let oversized = "x".repeat(16_385);
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.nomad]]
+name = "nomad"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "https://nomad.example:4646"
+namespace = "telchar"
+driver = "docker"
+job_name_scope = "prod"
+poll_interval_seconds = 2
+runtime_limit_seconds = 60
+
+[backends.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 1024
+disk_mb = 4096
+
+[backends.nomad.driver_config]
+image = "{}"
+"#,
+            oversized
+        ),
+    )
+    .expect("configuration rewrites");
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("oversized driver configuration rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn backend_names_are_unique_across_backend_kinds() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("duplicate-backend-name");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[backends.local]
+name = "builder"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+
+[[backends.nomad]]
+name = "builder"
+system = "aarch64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.example:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "prod"
+poll_interval_seconds = 2
+runtime_limit_seconds = 60
+
+[backends.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 1024
+disk_mb = 4096
+
+[backends.nomad.driver_config]
+command = "/opt/telchar/bin/nomad-worker"
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("duplicate backend name rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn static_ssh_backend_rejects_unpinned_or_unsafe_credentials() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

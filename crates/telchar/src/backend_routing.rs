@@ -30,6 +30,10 @@ impl ConfiguredBackends {
             targets.push(backend.target().clone());
             maximums.push(backend.maximum_concurrent_builds());
         }
+        for backend in config.nomad_backends() {
+            targets.push(backend.target().clone());
+            maximums.push(backend.maximum_concurrent_builds());
+        }
         Ok(Self {
             inner: Arc::new(ConfiguredBackendsInner {
                 pool: BackendPool::new(targets, maximums)?,

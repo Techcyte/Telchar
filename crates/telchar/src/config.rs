@@ -17,7 +17,15 @@ const MAXIMUM_CREDENTIAL_MAPPINGS: usize = 4_096;
 const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
 const MAXIMUM_STATIC_SSH_BACKENDS: usize = 256;
+const MAXIMUM_NOMAD_BACKENDS: usize = 256;
 const MAXIMUM_BACKEND_CONCURRENT_BUILDS: usize = 65_536;
+const MAXIMUM_NOMAD_ENDPOINT_BYTES: usize = 2_048;
+const MAXIMUM_NOMAD_DRIVER_CONFIG_BYTES: usize = 16 * 1024;
+const MAXIMUM_NOMAD_DRIVER_CONFIG_ENTRIES: usize = 256;
+const MAXIMUM_NOMAD_DRIVER_CONFIG_DEPTH: usize = 4;
+const MAXIMUM_NOMAD_RESOURCE: u64 = 16 * 1024 * 1024;
+const MAXIMUM_NOMAD_POLL_INTERVAL_SECONDS: u64 = 300;
+const MAXIMUM_NOMAD_RUNTIME_LIMIT_SECONDS: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_MAXIMUM_QUEUED_BUILDS: usize = 64;
 const DEFAULT_MAXIMUM_ACTIVE_BUILDS: usize = 4;
 const MAXIMUM_SCHEDULING_BUILDS: usize = 65_536;
@@ -116,6 +124,103 @@ impl StaticSshBackendConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NomadResources {
+    cpu_mhz: u64,
+    memory_mb: u64,
+    disk_mb: u64,
+}
+
+impl NomadResources {
+    pub fn cpu_mhz(self) -> u64 {
+        self.cpu_mhz
+    }
+
+    pub fn memory_mb(self) -> u64 {
+        self.memory_mb
+    }
+
+    pub fn disk_mb(self) -> u64 {
+        self.disk_mb
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NomadBackendConfig {
+    target: BackendTarget,
+    maximum_concurrent_builds: usize,
+    endpoint: String,
+    namespace: String,
+    token_file: Option<PathBuf>,
+    ca_certificate_file: Option<PathBuf>,
+    client_certificate_file: Option<PathBuf>,
+    client_key_file: Option<PathBuf>,
+    driver: String,
+    driver_config: serde_json::Map<String, serde_json::Value>,
+    resources: NomadResources,
+    job_name_scope: String,
+    poll_interval: Duration,
+    runtime_limit: Duration,
+}
+
+impl NomadBackendConfig {
+    pub fn target(&self) -> &BackendTarget {
+        &self.target
+    }
+
+    pub fn maximum_concurrent_builds(&self) -> usize {
+        self.maximum_concurrent_builds
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub fn token_file(&self) -> Option<&Path> {
+        self.token_file.as_deref()
+    }
+
+    pub fn ca_certificate_file(&self) -> Option<&Path> {
+        self.ca_certificate_file.as_deref()
+    }
+
+    pub fn client_certificate_file(&self) -> Option<&Path> {
+        self.client_certificate_file.as_deref()
+    }
+
+    pub fn client_key_file(&self) -> Option<&Path> {
+        self.client_key_file.as_deref()
+    }
+
+    pub fn driver(&self) -> &str {
+        &self.driver
+    }
+
+    pub fn driver_config(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.driver_config
+    }
+
+    pub fn resources(&self) -> NomadResources {
+        self.resources
+    }
+
+    pub fn job_name_scope(&self) -> &str {
+        &self.job_name_scope
+    }
+
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    pub fn runtime_limit(&self) -> Duration {
+        self.runtime_limit
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
     deployment: Option<DeploymentConfig>,
@@ -129,6 +234,7 @@ pub struct ServiceConfig {
     backend_permit_wait: Duration,
     local_backend: Option<LocalBackendConfig>,
     static_ssh_backends: Vec<StaticSshBackendConfig>,
+    nomad_backends: Vec<NomadBackendConfig>,
 }
 
 impl ServiceConfig {
@@ -210,6 +316,10 @@ impl ServiceConfig {
         &self.static_ssh_backends
     }
 
+    pub fn nomad_backends(&self) -> &[NomadBackendConfig] {
+        &self.nomad_backends
+    }
+
     pub fn backend_targets(&self) -> impl Iterator<Item = &BackendTarget> {
         self.local_backend
             .iter()
@@ -219,6 +329,7 @@ impl ServiceConfig {
                     .iter()
                     .map(StaticSshBackendConfig::target),
             )
+            .chain(self.nomad_backends.iter().map(NomadBackendConfig::target))
     }
 
     fn load_path(path: &Path, required: bool) -> io::Result<Self> {
@@ -348,6 +459,7 @@ impl ServiceConfig {
         let mut backends = raw.backends.unwrap_or_default();
         if backends.local.is_none()
             && backends.static_ssh.is_empty()
+            && backends.nomad.is_empty()
             && let Some(deployment) = &deployment
         {
             backends.local = Some(RawLocalBackendConfig {
@@ -367,6 +479,12 @@ impl ServiceConfig {
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
         let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
+        let nomad_backends = validate_nomad_backends(backends.nomad)?;
+        validate_unique_backend_names(
+            local_backend.as_ref(),
+            &static_ssh_backends,
+            &nomad_backends,
+        )?;
         Ok(Self {
             deployment,
             running_disconnect_policy,
@@ -379,6 +497,7 @@ impl ServiceConfig {
             backend_permit_wait: Duration::from_secs(backend_permit_wait_seconds),
             local_backend,
             static_ssh_backends,
+            nomad_backends,
         })
     }
 }
@@ -465,6 +584,8 @@ struct BackendConfig {
     local: Option<RawLocalBackendConfig>,
     #[serde(default)]
     static_ssh: Vec<RawStaticSshBackendConfig>,
+    #[serde(default)]
+    nomad: Vec<RawNomadBackendConfig>,
 }
 
 #[derive(Deserialize)]
@@ -489,6 +610,37 @@ struct RawStaticSshBackendConfig {
     identity_file: PathBuf,
     known_hosts_file: PathBuf,
     ssh_program: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNomadBackendConfig {
+    name: String,
+    system: String,
+    #[serde(default)]
+    supported_features: Vec<String>,
+    maximum_concurrent_builds: usize,
+    endpoint: String,
+    namespace: String,
+    token_file: Option<PathBuf>,
+    ca_certificate_file: Option<PathBuf>,
+    client_certificate_file: Option<PathBuf>,
+    client_key_file: Option<PathBuf>,
+    driver: String,
+    #[serde(default)]
+    driver_config: toml::Table,
+    resources: RawNomadResources,
+    job_name_scope: String,
+    poll_interval_seconds: u64,
+    runtime_limit_seconds: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNomadResources {
+    cpu_mhz: u64,
+    memory_mb: u64,
+    disk_mb: u64,
 }
 
 #[derive(Deserialize)]
@@ -594,6 +746,189 @@ fn validate_static_ssh_backends(
         });
     }
     Ok(backends)
+}
+
+fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<NomadBackendConfig>> {
+    if raw.len() > MAXIMUM_NOMAD_BACKENDS {
+        return Err(invalid("Nomad backend count exceeds limit"));
+    }
+    let mut backends = Vec::with_capacity(raw.len());
+    for backend in raw {
+        if backends
+            .iter()
+            .any(|existing: &NomadBackendConfig| existing.target.name() == backend.name)
+        {
+            return Err(invalid("Nomad backend name is ambiguous"));
+        }
+        validate_backend_capacity(backend.maximum_concurrent_builds)?;
+        if !valid_nomad_endpoint(&backend.endpoint) {
+            return Err(invalid("Nomad endpoint is invalid"));
+        }
+        let namespace = validate_subject(backend.namespace, "Nomad namespace is invalid")?;
+        let driver = validate_subject(backend.driver, "Nomad task driver is invalid")?;
+        let job_name_scope =
+            validate_subject(backend.job_name_scope, "Nomad job-name scope is invalid")?;
+        if backend.poll_interval_seconds == 0
+            || backend.poll_interval_seconds > MAXIMUM_NOMAD_POLL_INTERVAL_SECONDS
+            || backend.runtime_limit_seconds == 0
+            || backend.runtime_limit_seconds > MAXIMUM_NOMAD_RUNTIME_LIMIT_SECONDS
+            || backend.poll_interval_seconds > backend.runtime_limit_seconds
+        {
+            return Err(invalid("Nomad timing bounds are invalid"));
+        }
+        let resources = validate_nomad_resources(backend.resources)?;
+        let token_file = backend
+            .token_file
+            .map(|path| validate_protected_file(path, "Nomad token file is invalid"))
+            .transpose()?;
+        let ca_certificate_file = backend
+            .ca_certificate_file
+            .map(|path| validate_public_file(path, "Nomad CA certificate file is invalid"))
+            .transpose()?;
+        let client_certificate_file = backend
+            .client_certificate_file
+            .map(|path| validate_public_file(path, "Nomad client certificate file is invalid"))
+            .transpose()?;
+        let client_key_file = backend
+            .client_key_file
+            .map(|path| validate_protected_file(path, "Nomad client key file is invalid"))
+            .transpose()?;
+        if client_certificate_file.is_some() != client_key_file.is_some() {
+            return Err(invalid(
+                "Nomad client certificate and key must be configured together",
+            ));
+        }
+        let driver_config = validate_driver_config(backend.driver_config)?;
+        backends.push(NomadBackendConfig {
+            target: BackendTarget::new(
+                &backend.name,
+                BackendKind::Nomad,
+                &backend.system,
+                &backend.supported_features,
+            )?,
+            maximum_concurrent_builds: backend.maximum_concurrent_builds,
+            endpoint: backend.endpoint,
+            namespace,
+            token_file,
+            ca_certificate_file,
+            client_certificate_file,
+            client_key_file,
+            driver,
+            driver_config,
+            resources,
+            job_name_scope,
+            poll_interval: Duration::from_secs(backend.poll_interval_seconds),
+            runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
+        });
+    }
+    Ok(backends)
+}
+
+fn validate_unique_backend_names(
+    local: Option<&LocalBackendConfig>,
+    static_ssh: &[StaticSshBackendConfig],
+    nomad: &[NomadBackendConfig],
+) -> io::Result<()> {
+    let mut names = std::collections::HashSet::new();
+    for name in local
+        .map(|backend| backend.target().name())
+        .into_iter()
+        .chain(static_ssh.iter().map(|backend| backend.target().name()))
+        .chain(nomad.iter().map(|backend| backend.target().name()))
+    {
+        if !names.insert(name) {
+            return Err(invalid("backend name is ambiguous"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_nomad_resources(raw: RawNomadResources) -> io::Result<NomadResources> {
+    if raw.cpu_mhz == 0
+        || raw.cpu_mhz > MAXIMUM_NOMAD_RESOURCE
+        || raw.memory_mb == 0
+        || raw.memory_mb > MAXIMUM_NOMAD_RESOURCE
+        || raw.disk_mb == 0
+        || raw.disk_mb > MAXIMUM_NOMAD_RESOURCE
+    {
+        return Err(invalid("Nomad resources are invalid"));
+    }
+    Ok(NomadResources {
+        cpu_mhz: raw.cpu_mhz,
+        memory_mb: raw.memory_mb,
+        disk_mb: raw.disk_mb,
+    })
+}
+
+fn validate_driver_config(
+    raw: toml::Table,
+) -> io::Result<serde_json::Map<String, serde_json::Value>> {
+    if raw.is_empty() || raw.len() > MAXIMUM_NOMAD_DRIVER_CONFIG_ENTRIES {
+        return Err(invalid("Nomad driver configuration is invalid"));
+    }
+    let value = toml_to_json(toml::Value::Table(raw), 0)?;
+    if serde_json::to_vec(&value)
+        .map_err(|_| invalid("Nomad driver configuration is invalid"))?
+        .len()
+        > MAXIMUM_NOMAD_DRIVER_CONFIG_BYTES
+    {
+        return Err(invalid("Nomad driver configuration exceeds limit"));
+    }
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| invalid("Nomad driver configuration is invalid"))
+}
+
+fn toml_to_json(value: toml::Value, depth: usize) -> io::Result<serde_json::Value> {
+    if depth > MAXIMUM_NOMAD_DRIVER_CONFIG_DEPTH {
+        return Err(invalid("Nomad driver configuration is invalid"));
+    }
+    match value {
+        toml::Value::String(value) => Ok(value.into()),
+        toml::Value::Integer(value) => Ok(value.into()),
+        toml::Value::Float(value) if value.is_finite() => serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| invalid("Nomad driver configuration is invalid")),
+        toml::Value::Boolean(value) => Ok(value.into()),
+        toml::Value::Array(values) => values
+            .into_iter()
+            .map(|value| toml_to_json(value, depth + 1))
+            .collect::<io::Result<Vec<_>>>()
+            .map(serde_json::Value::Array),
+        toml::Value::Table(values) => values
+            .into_iter()
+            .map(|(key, value)| Ok((key, toml_to_json(value, depth + 1)?)))
+            .collect::<io::Result<serde_json::Map<_, _>>>()
+            .map(serde_json::Value::Object),
+        toml::Value::Datetime(_) | toml::Value::Float(_) => {
+            Err(invalid("Nomad driver configuration is invalid"))
+        }
+    }
+}
+
+fn valid_nomad_endpoint(value: &str) -> bool {
+    value.len() <= MAXIMUM_NOMAD_ENDPOINT_BYTES
+        && (value.starts_with("http://") || value.starts_with("https://"))
+        && value
+            .bytes()
+            .all(|byte| !byte.is_ascii_control() && !byte.is_ascii_whitespace())
+}
+
+fn validate_protected_file(path: PathBuf, message: &'static str) -> io::Result<PathBuf> {
+    let metadata = validate_regular_file(&path, message)?;
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(invalid(message));
+    }
+    Ok(path)
+}
+
+fn validate_public_file(path: PathBuf, message: &'static str) -> io::Result<PathBuf> {
+    let metadata = validate_regular_file(&path, message)?;
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(invalid(message));
+    }
+    Ok(path)
 }
 
 fn validate_backend_capacity(maximum: usize) -> io::Result<()> {

@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod local_executor;
 pub mod nar;
 pub mod nix_fixture;
+pub mod nomad_backend;
 pub mod persistence;
 pub mod session;
 pub mod shared_build;
