@@ -1461,10 +1461,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: `nix develop -c cargo test --locked -p telchar --test service_config --test build_backend --test nomad_backend`; all-target compilation; clippy with warnings denied; canonical formatting.
   - Evidence: repeated `[[backends.nomad]]` entries support distinct clusters and drivers; validation bounds credentials, endpoints, resources, polling, runtime, driver configuration depth/count/size, and global backend names; `render_job` binds deterministic SHA-256-derived job identity to the exact backend name, namespace, system, driver, resources, and operator configuration. Changeset `033d6e74` plus backend-derived multi-system routing in `d30327f0`.
 
-- [ ] T135 Provision a real Nomad development fixture
+- [x] T135 Provision a real Nomad development fixture
   - Depends on: T134
-  - Outcome: reproducible Nomad server/client nodes can run, query, and clean up one isolated batch job whose deterministic identity survives a Telchar process restart.
-  - Verify: fixture smoke and job-adoption tests.
+  - Outcome: reproducible Nomad server/client nodes run, query, restart, and clean up one isolated `raw_exec` batch job while preserving its deterministic identity and durable Nomad state across a server restart.
+  - Red: the first evaluation incorrectly configured unfree-package policy on nodes using an externally supplied package set; runtime then exposed loopback advertise addresses shared across separate VMs and an object assertion against `nomad job status -json`, which returns an array.
+  - Verify: `NIXPKGS_ALLOW_UNFREE=1 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-fixture`; Nix syntax and diagnostics.
+  - Evidence: one real Nomad 1.11.3 server and one client form over explicit non-loopback addresses; the client enables operator-selected `raw_exec`; a batch allocation writes verified client output; the server restarts; `nomad job inspect -json` finds the same job afterward; purge removes it. All readiness and lifecycle assertions are bounded to 30–60 seconds, and the cached fixture completes in 27.5 seconds. Changeset `f9f19c96`.
 
 - [ ] T136 Submit and monitor one durable Nomad build
   - Depends on: T122, T127, T130, T135
