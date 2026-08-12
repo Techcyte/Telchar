@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::backend::{
     BackendCapabilities, BackendKind, BackendPool, BuildBackend, BuildExecution, BuildResult,
 };
-use crate::config::{ServiceConfig, StaticSshBackendConfig};
+use crate::config::{NomadBackendConfig, ServiceConfig, StaticSshBackendConfig};
 use crate::store_daemon::GatewayStoreEndpoint;
 
 #[derive(Clone)]
@@ -16,6 +16,7 @@ struct ConfiguredBackendsInner {
     pool: BackendPool,
     permit_wait: std::time::Duration,
     static_ssh: Vec<StaticSshBackendConfig>,
+    nomad: Vec<NomadBackendConfig>,
 }
 
 impl ConfiguredBackends {
@@ -39,6 +40,7 @@ impl ConfiguredBackends {
                 pool: BackendPool::new(targets, maximums)?,
                 permit_wait: config.backend_permit_wait(),
                 static_ssh: config.static_ssh_backends().to_vec(),
+                nomad: config.nomad_backends().to_vec(),
             }),
         })
     }
@@ -83,12 +85,32 @@ impl crate::shared_build_recovery::RecoveryBackend for ConfiguredBackends {
 
     fn adopt(
         &mut self,
-        _build: &crate::persistence::SharedBuild,
+        build: &crate::persistence::SharedBuild,
     ) -> io::Result<crate::shared_build_recovery::AdoptedExecution> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "backend execution adoption is unavailable",
-        ))
+        let config = self
+            .inner
+            .nomad
+            .iter()
+            .find(|config| config.target().name() == build.backend_name)
+            .ok_or_else(|| io::Error::other("Nomad backend is not configured"))?;
+        let execution_id = build
+            .backend_execution_id
+            .as_deref()
+            .ok_or_else(|| io::Error::other("Nomad execution identity is unavailable"))?;
+        match crate::nomad_backend::NomadClient::new(config.clone())?.status(execution_id)? {
+            crate::nomad_backend::NomadExecutionState::Monitoring => {
+                Ok(crate::shared_build_recovery::AdoptedExecution::Monitoring)
+            }
+            crate::nomad_backend::NomadExecutionState::Succeeded => {
+                Ok(crate::shared_build_recovery::AdoptedExecution::Succeeded)
+            }
+            crate::nomad_backend::NomadExecutionState::Failed => {
+                Ok(crate::shared_build_recovery::AdoptedExecution::Failed)
+            }
+            crate::nomad_backend::NomadExecutionState::Missing => {
+                Ok(crate::shared_build_recovery::AdoptedExecution::Missing)
+            }
+        }
     }
 }
 
