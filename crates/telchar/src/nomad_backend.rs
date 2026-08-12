@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, Read};
+use std::time::Instant;
 
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -8,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
 use crate::config::NomadBackendConfig;
 
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
@@ -173,6 +175,44 @@ impl NomadClient {
             return Ok(NomadExecutionState::Succeeded);
         }
         Ok(NomadExecutionState::Monitoring)
+    }
+
+    pub fn execute(
+        &self,
+        execution: &BuildExecution<'_>,
+        shared_build_key: &[u8],
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
+        let submission = self.submit(shared_build_key)?;
+        let started = Instant::now();
+        loop {
+            if cancelled()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Nomad job execution cancelled",
+                ));
+            }
+            match self.status(submission.job_id())? {
+                NomadExecutionState::Monitoring => {}
+                NomadExecutionState::Succeeded => {
+                    return BuildResult::new(
+                        BuildStatus::Built,
+                        execution.build().expected_outputs().to_vec(),
+                        OutputTrust::TrustedExecutor,
+                    );
+                }
+                NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                    return Err(io::Error::other("Nomad job execution failed"));
+                }
+            }
+            if started.elapsed() >= execution.timeout() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Nomad job execution timed out",
+                ));
+            }
+            std::thread::sleep(self.config.poll_interval());
+        }
     }
 
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {

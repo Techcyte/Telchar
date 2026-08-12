@@ -119,6 +119,29 @@ pub struct BackendExecutor {
 }
 
 impl BuildBackend for BackendExecutor {
+    fn execution_id(
+        &self,
+        target: &crate::backend::BackendTarget,
+        shared_build_key: &[u8],
+    ) -> io::Result<Option<String>> {
+        match target.kind() {
+            BackendKind::Nomad => {
+                let config = self
+                    .backends
+                    .inner
+                    .nomad
+                    .iter()
+                    .find(|config| config.target().name() == target.name())
+                    .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
+                Ok(Some(crate::nomad_backend::deterministic_job_name(
+                    config,
+                    shared_build_key,
+                )))
+            }
+            BackendKind::Local | BackendKind::StaticSsh => Ok(None),
+        }
+    }
+
     fn selected_target(
         &self,
         system: &str,
@@ -177,10 +200,19 @@ impl BuildBackend for BackendExecutor {
                 ))
             }
             BackendKind::Nomad => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "BuildDerivation execution is unavailable",
-                ));
+                let config = self
+                    .backends
+                    .inner
+                    .nomad
+                    .iter()
+                    .find(|config| config.target().name() == permit.target().name())
+                    .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
+                let shared_build_key = execution.build().shared_build_key();
+                return crate::nomad_backend::NomadClient::new(config.clone())?.execute(
+                    execution,
+                    shared_build_key.as_bytes(),
+                    cancelled,
+                );
             }
         };
         backend.execute_with_logs(execution, logs, cancelled)

@@ -5,7 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use telchar::backend::BackendKind;
+use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
+use telchar::backend::{
+    BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildStatus, OutputTrust,
+};
 use telchar::backend_routing::ConfiguredBackends;
 use telchar::config::ServiceConfig;
 use telchar::nomad_backend::{
@@ -358,6 +361,80 @@ fn rejects_foreign_job_at_deterministic_identity() {
 }
 
 #[test]
+fn configured_backend_exposes_deterministic_execution_identity_before_submission() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let config = load_service_config(&root, "http://127.0.0.1:4646", None);
+    let backend = config.nomad_backends()[0].clone();
+    let configured = ConfiguredBackends::new(&config).expect("backends configure");
+    let executor = configured.executor();
+    assert_eq!(
+        executor
+            .execution_id(backend.target(), b"shared-build-key")
+            .expect("execution identity derives")
+            .as_deref(),
+        Some(deterministic_job_name(&backend, b"shared-build-key").as_str())
+    );
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn configured_backend_submits_and_monitors_nomad_execution() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_service_config(&root, &endpoint, None);
+    let server = thread::spawn(move || {
+        let (mut submit_request, _) = listener.accept().expect("submit request accepts");
+        let request = read_http_request_with_body(&mut submit_request);
+        assert!(request.starts_with("POST /v1/jobs?namespace=telchar HTTP/1.1\r\n"));
+        write_json_response(&mut submit_request, 200, r#"{"EvalID":"evaluation-1"}"#);
+
+        let (mut job_request, _) = listener.accept().expect("job request accepts");
+        let request = read_http_request(&mut job_request);
+        let job_id = request
+            .strip_prefix("GET /v1/job/")
+            .and_then(|request| request.split('?').next())
+            .expect("job identity reads");
+        write_json_response(
+            &mut job_request,
+            200,
+            &format!(
+                r#"{{"ID":"{job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+        let (mut allocations_request, _) = listener.accept().expect("allocations request accepts");
+        let _ = read_http_request(&mut allocations_request);
+        write_json_response(
+            &mut allocations_request,
+            200,
+            r#"[{"ID":"allocation-1","ClientStatus":"complete"}]"#,
+        );
+    });
+    let admitted = admitted_request();
+    let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
+        .expect("execution creates");
+    let mut executor = ConfiguredBackends::new(&config)
+        .expect("backends configure")
+        .executor();
+    let result = executor
+        .execute(&execution)
+        .expect("Nomad execution completes");
+    assert_eq!(result.status(), BuildStatus::Built);
+    assert_eq!(result.output_trust(), OutputTrust::TrustedExecutor);
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn configured_backend_adopts_exact_nomad_execution() {
     use telchar::shared_build_recovery::{AdoptedExecution, RecoveryBackend};
 
@@ -416,6 +493,35 @@ fn configured_backend_adopts_exact_nomad_execution() {
     );
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
+}
+
+fn read_http_request_with_body(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout sets");
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = stream.read(&mut buffer).expect("request reads");
+        assert!(count > 0, "request ended before body");
+        request.extend_from_slice(&buffer[..count]);
+        if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            let headers = std::str::from_utf8(&request[..header_end]).expect("headers are UTF-8");
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default()
+                .parse::<usize>()
+                .expect("content length parses");
+            if request.len() >= header_end + 4 + length {
+                return String::from_utf8(request).expect("request is UTF-8");
+            }
+        }
+    }
 }
 
 fn read_http_request(stream: &mut std::net::TcpStream) -> String {
@@ -498,6 +604,60 @@ fn load_nomad_config(
     token_file: Option<&std::path::Path>,
 ) -> telchar::config::NomadBackendConfig {
     load_service_config(root, endpoint, token_file).nomad_backends()[0].clone()
+}
+
+fn admitted_request() -> telchar::build_request::BuildRequest {
+    let output = b"/nix/store/11111111111111111111111111111111-output";
+    let mut wire = Vec::new();
+    write_worker_string(
+        &mut wire,
+        b"/nix/store/00000000000000000000000000000000-build.drv",
+    );
+    write_worker_integer(&mut wire, 1);
+    write_worker_string(&mut wire, b"out");
+    write_worker_string(&mut wire, output);
+    write_worker_string(&mut wire, b"");
+    write_worker_string(&mut wire, b"");
+    write_worker_integer(&mut wire, 0);
+    write_worker_string(&mut wire, b"x86_64-linux");
+    write_worker_string(&mut wire, b"/bin/sh");
+    write_worker_integer(&mut wire, 2);
+    write_worker_string(&mut wire, b"-c");
+    write_worker_string(&mut wire, b"printf nomad > $out");
+    write_worker_integer(&mut wire, 4);
+    for (key, value) in [
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"build".as_slice()),
+        (b"out".as_slice(), output.as_slice()),
+        (b"system".as_slice(), b"x86_64-linux".as_slice()),
+    ] {
+        write_worker_string(&mut wire, key);
+        write_worker_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    let mut reader = WorkerReader::new(wire.as_slice(), ProtocolSessionLimits::DEFAULT);
+    let request = reader
+        .complete_build_derivation()
+        .expect("worker request parses");
+    let backend = BackendTarget::new(
+        "nomad-test",
+        BackendKind::Nomad,
+        "x86_64-linux",
+        std::iter::empty::<&str>(),
+    )
+    .expect("target creates");
+    telchar::build_request::BuildRequest::from_worker_request(&request, &[backend])
+        .expect("request admits")
+}
+
+fn write_worker_integer(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_worker_string(output: &mut Vec<u8>, value: &[u8]) {
+    write_worker_integer(output, value.len() as u64);
+    output.extend_from_slice(value);
+    output.resize(output.len().next_multiple_of(8), 0);
 }
 
 fn fixture_root() -> std::path::PathBuf {

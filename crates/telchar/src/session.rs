@@ -500,6 +500,8 @@ pub fn run_worker_session(
                     .collect::<Vec<_>>();
                 let selected_target =
                     build_executor.selected_target(admitted.system(), &required_features)?;
+                let backend_execution_id =
+                    build_executor.execution_id(&selected_target, shared_build_key.as_bytes())?;
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
                         let durable_claim = crate::persistence::claim_shared_build(
@@ -509,7 +511,7 @@ pub fn run_worker_session(
                             selected_target.name(),
                             selected_target.kind(),
                             selected_target.capabilities(),
-                            None,
+                            backend_execution_id.as_deref(),
                             &expected_outputs,
                         );
                         let durable_claim = match durable_claim {

@@ -397,6 +397,14 @@ impl BuildResult {
 }
 
 pub trait BuildBackend: Send {
+    fn execution_id(
+        &self,
+        _target: &BackendTarget,
+        _shared_build_key: &[u8],
+    ) -> io::Result<Option<String>> {
+        Ok(None)
+    }
+
     fn selected_target(
         &self,
         _system: &str,
