@@ -1727,6 +1727,24 @@ fn concurrent_identical_frontends_share_one_build_execution() {
         shared_build.state,
         telchar::persistence::SharedBuildState::Succeeded
     );
+    let attempt = telchar::persistence::read_shared_build_attempt(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+    )
+    .expect("shared build attempt reads")
+    .expect("shared build attempt exists");
+    assert_eq!(attempt.ordinal, 1);
+    assert_eq!(
+        attempt.state,
+        telchar::persistence::SharedBuildAttemptState::Succeeded
+    );
+    let outcome = telchar::persistence::read_shared_build_attempt_outcome(
+        fixture.database.url(),
+        &attempt.attempt_id,
+    )
+    .expect("shared build attempt outcome reads")
+    .expect("shared build attempt outcome exists");
+    assert_eq!(outcome.classification, "succeeded");
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"

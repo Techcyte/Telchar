@@ -82,6 +82,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_scheduler",
         sql: include_str!("../migrations/0011_shared_build_scheduler.sql"),
     },
+    Migration {
+        version: 12,
+        name: "shared_build_attempts",
+        sql: include_str!("../migrations/0012_shared_build_attempts.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -240,6 +245,37 @@ pub struct SharedBuildQueueEntry {
     pub queued_at: SystemTime,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SharedBuildAttemptState {
+    Running,
+    Collecting,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedBuildAttempt {
+    pub attempt_id: i64,
+    pub derivation_path: String,
+    pub ordinal: i32,
+    pub backend_name: String,
+    pub backend_kind: BackendKind,
+    pub backend_execution_id: Option<String>,
+    pub state: SharedBuildAttemptState,
+    pub created_at: SystemTime,
+    pub started_at: Option<SystemTime>,
+    pub collecting_at: Option<SystemTime>,
+    pub completed_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedBuildAttemptOutcome {
+    pub attempt_id: i64,
+    pub classification: String,
+    pub result_metadata: serde_json::Value,
+    pub created_at: SystemTime,
+}
+
 pub fn enqueue_shared_build(
     database_url: &str,
     derivation_path: &str,
@@ -360,6 +396,7 @@ pub fn start_queued_shared_build(
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    create_shared_build_attempt(&mut transaction, &build)?;
     transaction
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
@@ -664,38 +701,74 @@ pub fn start_shared_build(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
-    transition_shared_build(
-        database_url,
-        derivation_path,
-        "claimed",
-        "UPDATE shared_builds
-         SET state = 'running', started_at = transaction_timestamp()
-         WHERE derivation_path = $1 AND state = 'claimed'
-         RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
-                   execution_recovery, cancellation, log_recovery,
-                   backend_execution_id, expected_outputs, result_metadata::text,
-                   failure_classification, created_at, started_at, collecting_at,
-                   completed_at, expires_at",
-    )
+    validate_shared_build_identity(database_url, derivation_path)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let row = transaction
+        .query_opt(
+            "UPDATE shared_builds
+             SET state = 'running', started_at = transaction_timestamp()
+             WHERE derivation_path = $1 AND state = 'claimed'
+             RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                       execution_recovery, cancellation, log_recovery,
+                       backend_execution_id, expected_outputs, result_metadata::text,
+                       failure_classification, created_at, started_at, collecting_at,
+                       completed_at, expires_at",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    create_shared_build_attempt(&mut transaction, &build)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(build)
 }
 
 pub fn collect_shared_build(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
-    transition_shared_build(
-        database_url,
-        derivation_path,
-        "running",
-        "UPDATE shared_builds
-         SET state = 'collecting', collecting_at = transaction_timestamp()
-         WHERE derivation_path = $1 AND state = 'running'
-         RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
-                   execution_recovery, cancellation, log_recovery,
-                   backend_execution_id, expected_outputs, result_metadata::text,
-                   failure_classification, created_at, started_at, collecting_at,
-                   completed_at, expires_at",
-    )
+    validate_shared_build_identity(database_url, derivation_path)?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let row = transaction
+        .query_opt(
+            "UPDATE shared_builds
+             SET state = 'collecting', collecting_at = transaction_timestamp()
+             WHERE derivation_path = $1 AND state = 'running'
+             RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                       execution_recovery, cancellation, log_recovery,
+                       backend_execution_id, expected_outputs, result_metadata::text,
+                       failure_classification, created_at, started_at, collecting_at,
+                       completed_at, expires_at",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    transaction
+        .execute(
+            "UPDATE shared_build_attempts
+             SET state = 'collecting', collecting_at = transaction_timestamp()
+             WHERE derivation_path = $1 AND state = 'running'",
+            &[&derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .eq(&1)
+        .then_some(())
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(build)
 }
 
 pub fn complete_shared_build_success(
@@ -731,38 +804,122 @@ pub fn complete_shared_build_failure(
     )
 }
 
-fn transition_shared_build(
+fn create_shared_build_attempt(
+    transaction: &mut postgres::Transaction<'_>,
+    build: &SharedBuild,
+) -> Result<SharedBuildAttempt, SharedBuildError> {
+    let ordinal: i32 = transaction
+        .query_one(
+            "SELECT COALESCE(max(ordinal), 0) + 1 FROM shared_build_attempts WHERE derivation_path = $1",
+            &[&build.derivation_path],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .try_get(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let row = transaction
+        .query_one(
+            "INSERT INTO shared_build_attempts (
+                 derivation_path, ordinal, backend_name, backend_kind,
+                 backend_execution_id, state, started_at
+             )
+             VALUES ($1, $2, $3, $4, $5, 'running', transaction_timestamp())
+             RETURNING attempt_id, derivation_path, ordinal, backend_name, backend_kind,
+                       backend_execution_id, state, created_at, started_at, collecting_at,
+                       completed_at",
+            &[
+                &build.derivation_path,
+                &ordinal,
+                &build.backend_name,
+                &backend_kind_name(build.backend_kind),
+                &build.backend_execution_id,
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    decode_shared_build_attempt(&row).map_err(SharedBuildError)
+}
+
+pub fn read_shared_build_attempt(
     database_url: &str,
     derivation_path: &str,
-    expected_state: &str,
-    statement: &str,
-) -> Result<SharedBuild, SharedBuildError> {
+) -> Result<Option<SharedBuildAttempt>, SharedBuildError> {
     validate_shared_build_identity(database_url, derivation_path)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
-    let mut transaction = client
-        .transaction()
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
-    let current_state = transaction
+    client
         .query_opt(
-            "SELECT state FROM shared_builds WHERE derivation_path = $1 FOR UPDATE",
+            "SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind,
+                    backend_execution_id, state, created_at, started_at, collecting_at,
+                    completed_at
+             FROM shared_build_attempts
+             WHERE derivation_path = $1
+             ORDER BY ordinal DESC
+             LIMIT 1",
             &[&derivation_path],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
-        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
-        .try_get::<_, String>(0)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
-    if current_state != expected_state {
-        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+        .map(|row| decode_shared_build_attempt(&row).map_err(SharedBuildError))
+        .transpose()
+}
+
+pub fn read_shared_build_attempt_outcome(
+    database_url: &str,
+    attempt_id: &i64,
+) -> Result<Option<SharedBuildAttemptOutcome>, SharedBuildError> {
+    if database_url.trim().is_empty() || *attempt_id <= 0 {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let row = transaction
-        .query_one(statement, &[&derivation_path])
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
-    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
-    transaction
-        .commit()
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
-    Ok(build)
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT attempt_id, classification, result_metadata::text, created_at
+             FROM shared_build_attempt_outcomes WHERE attempt_id = $1",
+            &[attempt_id],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .map(|row| decode_shared_build_attempt_outcome(&row).map_err(SharedBuildError))
+        .transpose()
+}
+
+fn decode_shared_build_attempt(row: &Row) -> Result<SharedBuildAttempt, SharedBuildFailure> {
+    let backend_kind: String = row.try_get(4).map_err(|_| SharedBuildFailure::Query)?;
+    let state: String = row.try_get(6).map_err(|_| SharedBuildFailure::Query)?;
+    Ok(SharedBuildAttempt {
+        attempt_id: row.try_get(0).map_err(|_| SharedBuildFailure::Query)?,
+        derivation_path: row.try_get(1).map_err(|_| SharedBuildFailure::Query)?,
+        ordinal: row.try_get(2).map_err(|_| SharedBuildFailure::Query)?,
+        backend_name: row.try_get(3).map_err(|_| SharedBuildFailure::Query)?,
+        backend_kind: parse_backend_kind(&backend_kind).ok_or(SharedBuildFailure::Query)?,
+        backend_execution_id: row.try_get(5).map_err(|_| SharedBuildFailure::Query)?,
+        state: match state.as_str() {
+            "running" => SharedBuildAttemptState::Running,
+            "collecting" => SharedBuildAttemptState::Collecting,
+            "succeeded" => SharedBuildAttemptState::Succeeded,
+            "failed" => SharedBuildAttemptState::Failed,
+            _ => return Err(SharedBuildFailure::Query),
+        },
+        created_at: row.try_get(7).map_err(|_| SharedBuildFailure::Query)?,
+        started_at: row.try_get(8).map_err(|_| SharedBuildFailure::Query)?,
+        collecting_at: row.try_get(9).map_err(|_| SharedBuildFailure::Query)?,
+        completed_at: row.try_get(10).map_err(|_| SharedBuildFailure::Query)?,
+    })
+}
+
+fn decode_shared_build_attempt_outcome(
+    row: &Row,
+) -> Result<SharedBuildAttemptOutcome, SharedBuildFailure> {
+    let result_metadata: String = row.try_get(2).map_err(|_| SharedBuildFailure::Query)?;
+    let result_metadata: serde_json::Value =
+        serde_json::from_str(&result_metadata).map_err(|_| SharedBuildFailure::Query)?;
+    if !result_metadata.is_object() {
+        return Err(SharedBuildFailure::Query);
+    }
+    Ok(SharedBuildAttemptOutcome {
+        attempt_id: row.try_get(0).map_err(|_| SharedBuildFailure::Query)?,
+        classification: row.try_get(1).map_err(|_| SharedBuildFailure::Query)?,
+        result_metadata,
+        created_at: row.try_get(3).map_err(|_| SharedBuildFailure::Query)?,
+    })
 }
 
 fn complete_shared_build(
@@ -842,6 +999,29 @@ fn complete_shared_build(
             ],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if current_state != "claimed" {
+        let classification = failure_classification.unwrap_or("succeeded");
+        let attempt_id: i64 = transaction
+            .query_opt(
+                "UPDATE shared_build_attempts
+                 SET state = $2, completed_at = transaction_timestamp()
+                 WHERE derivation_path = $1 AND state IN ('running', 'collecting')
+                 RETURNING attempt_id",
+                &[&derivation_path, &state],
+            )
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+            .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
+            .try_get(0)
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+        transaction
+            .execute(
+                "INSERT INTO shared_build_attempt_outcomes (
+                     attempt_id, classification, result_metadata
+                 ) VALUES ($1, $2, $3::text::jsonb)",
+                &[&attempt_id, &classification, &result_metadata_text],
+            )
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    }
     let build = decode_shared_build(&row).map_err(SharedBuildError)?;
     transaction
         .commit()

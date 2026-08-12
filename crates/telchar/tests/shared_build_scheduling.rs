@@ -142,6 +142,104 @@ fn next_eligible_build_round_robins_subjects_and_preserves_subject_fifo() {
 }
 
 #[test]
+fn shared_build_attempt_records_backend_progress_and_terminal_outcome() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation = "/nix/store/cccccccccccccccccccccccccccccccc-attempt.drv";
+    claim(&fixture, derivation, 12);
+    telchar::persistence::enqueue_shared_build(fixture.url(), derivation, "alice", 1)
+        .expect("shared build enqueues");
+
+    let running = telchar::persistence::start_queued_shared_build(fixture.url(), derivation, 1)
+        .expect("shared build starts");
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .expect("attempt reads")
+        .expect("attempt exists");
+    assert_eq!(attempt.derivation_path, derivation);
+    assert_eq!(attempt.ordinal, 1);
+    assert_eq!(attempt.backend_name, running.backend_name);
+    assert_eq!(attempt.backend_kind, running.backend_kind);
+    assert_eq!(
+        attempt.state,
+        telchar::persistence::SharedBuildAttemptState::Running
+    );
+    assert!(attempt.started_at.is_some());
+    assert!(attempt.completed_at.is_none());
+
+    telchar::persistence::collect_shared_build(fixture.url(), derivation)
+        .expect("shared build collects");
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation,
+        &serde_json::json!({"status": "built", "outputs": []}),
+        std::time::Duration::from_secs(3_600),
+    )
+    .expect("shared build succeeds");
+
+    let outcome =
+        telchar::persistence::read_shared_build_attempt_outcome(fixture.url(), &attempt.attempt_id)
+            .expect("outcome reads")
+            .expect("outcome exists");
+    assert_eq!(outcome.classification, "succeeded");
+    assert_eq!(outcome.result_metadata["status"], "built");
+    fixture.restart();
+    assert_eq!(
+        telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+            .expect("attempt reads after restart")
+            .expect("attempt exists after restart")
+            .state,
+        telchar::persistence::SharedBuildAttemptState::Succeeded
+    );
+}
+
+#[test]
+fn shared_build_failure_records_one_terminal_attempt_outcome() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation = "/nix/store/dddddddddddddddddddddddddddddddd-attempt-failure.drv";
+    claim(&fixture, derivation, 13);
+    telchar::persistence::enqueue_shared_build(fixture.url(), derivation, "alice", 1)
+        .expect("shared build enqueues");
+    telchar::persistence::start_queued_shared_build(fixture.url(), derivation, 1)
+        .expect("shared build starts");
+
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        derivation,
+        "backend-failure",
+        &serde_json::json!({"reason": "fixture"}),
+        std::time::Duration::from_secs(3_600),
+    )
+    .expect("shared build fails");
+
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .expect("attempt reads")
+        .expect("attempt exists");
+    assert_eq!(
+        attempt.state,
+        telchar::persistence::SharedBuildAttemptState::Failed
+    );
+    let outcome =
+        telchar::persistence::read_shared_build_attempt_outcome(fixture.url(), &attempt.attempt_id)
+            .expect("outcome reads")
+            .expect("outcome exists");
+    assert_eq!(outcome.classification, "backend-failure");
+    assert_eq!(outcome.result_metadata["reason"], "fixture");
+    assert_eq!(
+        telchar::persistence::complete_shared_build_failure(
+            fixture.url(),
+            derivation,
+            "backend-failure",
+            &serde_json::json!({"reason": "fixture"}),
+            std::time::Duration::from_secs(3_600),
+        )
+        .expect_err("terminal completion cannot repeat")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::InvalidState
+    );
+}
+
+#[test]
 fn coalesced_follower_cannot_replace_the_quota_owner() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
