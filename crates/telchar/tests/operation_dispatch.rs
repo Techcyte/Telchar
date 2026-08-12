@@ -1558,20 +1558,29 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     );
 
     fs::write(&complete, b"complete").expect("helper completion releases");
-    thread::sleep(Duration::from_millis(100));
+    assert_build_success(&mut leader_output);
+    assert_build_success(&mut follower_output);
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x",
         "duplicate helper invocation detected"
     );
-    follower.kill().expect("follower terminates");
-    follower.wait().expect("follower reaps");
-    leader.kill().expect("leader terminates");
-    leader.wait().expect("leader reaps");
     drop(leader_input);
     drop(leader_output);
     drop(follower_input);
     drop(follower_output);
+    assert!(follower.wait().expect("follower exits").success());
+    assert!(leader.wait().expect("leader exits").success());
+    let shared_build = telchar::persistence::read_shared_build(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+    )
+    .expect("shared build reads")
+    .expect("shared build exists");
+    assert_eq!(
+        shared_build.state,
+        telchar::persistence::SharedBuildState::Succeeded
+    );
     assert_eq!(
         fs::read_to_string(&invocation_count).expect("invocation count reads"),
         "x"
@@ -3352,6 +3361,22 @@ fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
     assert_eq!(read_string(output), "telchar");
     assert_eq!(read_integer(output), 0);
     assert_eq!(read_integer(output), STDERR_LAST);
+}
+
+fn assert_build_success(output: &mut impl Read) {
+    loop {
+        let frame = read_integer(output);
+        if frame == STDERR_LAST {
+            break;
+        }
+        assert_eq!(frame, nix_worker_protocol::STDERR_NEXT);
+        let _message = read_string(output);
+    }
+    assert_eq!(read_integer(output), 0, "Built status");
+    assert_eq!(read_string(output), "", "empty build error message");
+    for _ in 0..7 {
+        read_integer(output);
+    }
 }
 
 fn write_integer(output: &mut impl Write, value: u64) {

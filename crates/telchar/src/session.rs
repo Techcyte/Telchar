@@ -478,6 +478,7 @@ pub fn run_worker_session(
                     };
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_result_reused = std::cell::Cell::new(false);
+                let durable_execution_owned = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();
                 let derivation_path =
                     std::str::from_utf8(admitted.derivation_path()).map_err(|_| {
@@ -546,6 +547,7 @@ pub fn run_worker_session(
                                 }
                             }
                         } else {
+                            durable_execution_owned.set(true);
                             if let Err(error) = crate::persistence::enqueue_shared_build(
                                 database_url,
                                 derivation_path,
@@ -725,7 +727,7 @@ pub fn run_worker_session(
                     });
                 let output_paths = match output_paths {
                     Ok(paths) => {
-                        if !durable_result_reused.get()
+                        if durable_execution_owned.get()
                             && let Err(error) = crate::persistence::collect_shared_build(
                                 database_url,
                                 derivation_path,
@@ -740,13 +742,15 @@ pub fn run_worker_session(
                         paths
                     }
                     Err(error) => {
-                        let _ = crate::persistence::complete_shared_build_failure(
-                            database_url,
-                            derivation_path,
-                            "output-validation-failure",
-                            &serde_json::json!({"reason": execution_error_reason(&error)}),
-                            deployment.output_retention().duration(),
-                        );
+                        if durable_execution_owned.get() {
+                            let _ = crate::persistence::complete_shared_build_failure(
+                                database_url,
+                                derivation_path,
+                                "output-validation-failure",
+                                &serde_json::json!({"reason": execution_error_reason(&error)}),
+                                deployment.output_retention().duration(),
+                            );
+                        }
                         tracing::error!(
                             event = "worker.build_derivation.output_validation_failed",
                             reason = execution_error_reason(&error),
@@ -830,7 +834,7 @@ pub fn run_worker_session(
                 )
                 .is_err()
                 {
-                    if !durable_result_reused.get() {
+                    if durable_execution_owned.get() {
                         let _ = crate::persistence::complete_shared_build_failure(
                             database_url,
                             derivation_path,
@@ -890,7 +894,7 @@ pub fn run_worker_session(
                         release_error_message(&error),
                     );
                 }
-                if !durable_result_reused.get()
+                if durable_execution_owned.get()
                     && let Err(error) = crate::persistence::complete_shared_build_success(
                         database_url,
                         derivation_path,
