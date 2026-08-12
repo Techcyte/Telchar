@@ -2,12 +2,11 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
+use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
-use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
 };
@@ -15,14 +14,15 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
 };
+use opentelemetry_sdk::Resource;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::writer::MakeWriter;
+use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: &str = "telchar";
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -216,6 +216,9 @@ impl Telemetry {
         let _ = result.recv_timeout(SHUTDOWN_TIMEOUT);
     }
 }
+
+#[cfg(test)]
+static TELEMETRY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -486,10 +489,11 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::{SERVICE_NAME, start_collector};
+    use super::{start_collector, SERVICE_NAME, TELEMETRY_TESTS};
 
     #[test]
     fn exports_set_options_event_to_otlp() {
+        let _guard = TELEMETRY_TESTS.lock().expect("telemetry test lock");
         let collector = start_collector();
         let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args([
@@ -521,6 +525,7 @@ mod tests {
 
     #[test]
     fn exports_otlp_signals_before_application_work() {
+        let _guard = TELEMETRY_TESTS.lock().expect("telemetry test lock");
         let collector = start_collector();
         let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args(["run", "--quiet", "--bin", "telchar", "--locked"])

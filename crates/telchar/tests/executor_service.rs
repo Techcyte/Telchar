@@ -9,8 +9,8 @@ mod support;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use support::postgres::PostgresFixture;
+use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
 use telchar::executor_service::{
     send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
     EXECUTOR_PROTOCOL_VERSION,
@@ -173,7 +173,13 @@ fn execution_specification(builder_command: &[u8]) -> ExecutorSpecification {
         timeout_seconds: 30,
         build: BuildRequest::from_worker_request(
             &worker,
-            &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+            &[BackendTarget::new(
+                "fixture",
+                BackendKind::Local,
+                "x86_64-linux",
+                [] as [&str; 0],
+            )
+            .expect("backend parses")],
         )
         .expect("request admits"),
     }
@@ -208,8 +214,6 @@ fn executor_command(socket: &Path, database_url: &str) -> Command {
             "TELCHAR_EXECUTOR_UID",
             rustix::process::getuid().as_raw().to_string(),
         )
-        .env("TELCHAR_SYSTEM", "x86_64-linux")
-        .env("TELCHAR_SUPPORTED_FEATURES", "")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

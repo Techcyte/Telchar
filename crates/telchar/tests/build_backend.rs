@@ -10,7 +10,6 @@ use telchar::backend::{
     LogRecovery, OutputTrust,
 };
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
 
 #[test]
 fn routing_selects_first_backend_with_matching_system_and_features() {
@@ -234,11 +233,14 @@ fn admitted_request() -> BuildRequest {
     let worker = reader
         .complete_build_derivation()
         .expect("worker request parses");
-    BuildRequest::from_worker_request(
-        &worker,
-        &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+    let backends = [BackendTarget::new(
+        "fixture",
+        BackendKind::Local,
+        "x86_64-linux",
+        [] as [&str; 0],
     )
-    .expect("request admits")
+    .expect("backend parses")];
+    BuildRequest::from_worker_request(&worker, &backends).expect("request admits")
 }
 
 fn write_integer(output: &mut Vec<u8>, value: u64) {

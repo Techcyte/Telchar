@@ -1,10 +1,6 @@
-use std::collections::BTreeSet;
 use std::io;
 use std::time::Duration;
 
-const MAXIMUM_SUPPORTED_FEATURES: usize = 64;
-const MAXIMUM_SYSTEM_BYTES: usize = 64;
-const MAXIMUM_FEATURE_BYTES: usize = 256;
 pub const DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES: u64 = i64::MAX as u64;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -92,85 +88,6 @@ impl Default for OutputRetention {
             duration: Duration::from_secs(Self::DEFAULT_SECONDS),
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeploymentConfig {
-    system: String,
-    supported_features: Vec<String>,
-    output_retention: OutputRetention,
-    maximum_retained_input_bytes: u64,
-}
-
-impl DeploymentConfig {
-    pub fn parse(system: &str, supported_features: &str) -> io::Result<Self> {
-        if !valid_name(system, MAXIMUM_SYSTEM_BYTES) || system.contains(',') {
-            return Err(invalid("deployment requires exactly one valid Nix system"));
-        }
-
-        let mut features = BTreeSet::new();
-        if !supported_features.is_empty() {
-            for feature in supported_features.split(',') {
-                if features.len() >= MAXIMUM_SUPPORTED_FEATURES {
-                    return Err(invalid("deployment supported feature count exceeds limit"));
-                }
-                if !valid_name(feature, MAXIMUM_FEATURE_BYTES)
-                    || !features.insert(feature.to_owned())
-                {
-                    return Err(invalid("deployment supported feature is invalid"));
-                }
-            }
-        }
-
-        Ok(Self {
-            system: system.to_owned(),
-            supported_features: features.into_iter().collect(),
-            output_retention: OutputRetention::default(),
-            maximum_retained_input_bytes: DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES,
-        })
-    }
-
-    pub fn from_environment() -> io::Result<Self> {
-        let system = std::env::var("TELCHAR_SYSTEM")
-            .map_err(|_| invalid("TELCHAR_SYSTEM is not configured"))?;
-        let features = std::env::var("TELCHAR_SUPPORTED_FEATURES").unwrap_or_default();
-        let output_retention = OutputRetention::from_environment()?;
-        let mut config = Self::parse(&system, &features)?;
-        config.output_retention = output_retention;
-        Ok(config)
-    }
-
-    pub fn system(&self) -> &str {
-        &self.system
-    }
-
-    pub fn supported_features(&self) -> &[String] {
-        &self.supported_features
-    }
-
-    pub fn output_retention(&self) -> OutputRetention {
-        self.output_retention
-    }
-
-    pub(crate) fn set_output_retention(&mut self, output_retention: OutputRetention) {
-        self.output_retention = output_retention;
-    }
-
-    pub fn maximum_retained_input_bytes(&self) -> u64 {
-        self.maximum_retained_input_bytes
-    }
-
-    pub(crate) fn set_maximum_retained_input_bytes(&mut self, maximum: u64) {
-        self.maximum_retained_input_bytes = maximum;
-    }
-}
-
-fn valid_name(value: &str, maximum_bytes: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= maximum_bytes
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+'))
 }
 
 fn invalid(message: &'static str) -> io::Error {

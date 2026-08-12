@@ -5,9 +5,10 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
-use telchar::backend::{BuildBackend, BuildExecution, BuildStatus, OutputTrust};
+use telchar::backend::{
+    BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildStatus, OutputTrust,
+};
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
 use telchar::local_executor::{GatewayStoreExecutor, NixStoreExecutor, UnavailableBuildExecutor};
 use telchar::nix_fixture::NixFixture;
 use telchar::store_daemon::GatewayStoreEndpoint;
@@ -479,7 +480,13 @@ fn admitted_request_with_builder(builder_command: &[u8]) -> BuildRequest {
         .expect("worker request parses");
     BuildRequest::from_worker_request(
         &worker,
-        &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+        &[BackendTarget::new(
+            "fixture",
+            BackendKind::Local,
+            "x86_64-linux",
+            [] as [&str; 0],
+        )
+        .expect("backend parses")],
     )
     .expect("request admits")
 }

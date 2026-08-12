@@ -4,53 +4,9 @@ use std::os::unix::ffi::OsStringExt;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use telchar::deployment::{DeploymentConfig, OutputRetention, RunningDisconnectPolicy};
+use telchar::deployment::{OutputRetention, RunningDisconnectPolicy};
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
-
-#[test]
-fn parses_one_system_and_bounded_unique_features() {
-    let config = DeploymentConfig::parse("x86_64-linux", "kvm,big-parallel")
-        .expect("one-system deployment parses");
-
-    assert_eq!(config.system(), "x86_64-linux");
-    assert_eq!(config.supported_features(), ["big-parallel", "kvm"]);
-}
-
-#[test]
-fn rejects_empty_multiple_or_malformed_systems() {
-    for system in [
-        "",
-        "x86_64-linux,aarch64-linux",
-        "x86_64 linux",
-        "../x86_64-linux",
-    ] {
-        let error = DeploymentConfig::parse(system, "")
-            .expect_err("deployment must configure exactly one valid Nix system");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{system:?}");
-    }
-}
-
-#[test]
-fn rejects_duplicate_or_excess_features() {
-    assert_eq!(
-        DeploymentConfig::parse("x86_64-linux", "kvm,kvm")
-            .expect_err("duplicate feature must fail")
-            .kind(),
-        io::ErrorKind::InvalidInput
-    );
-
-    let excess = (0..65)
-        .map(|index| format!("feature-{index}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    assert_eq!(
-        DeploymentConfig::parse("x86_64-linux", &excess)
-            .expect_err("feature count is bounded")
-            .kind(),
-        io::ErrorKind::InvalidInput
-    );
-}
 
 #[test]
 fn parses_running_disconnect_policy() {
@@ -69,17 +25,6 @@ fn rejects_unknown_running_disconnect_policy() {
     let error = RunningDisconnectPolicy::parse("requester-choice")
         .expect_err("unknown policy must fail closed");
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-}
-
-#[test]
-fn rejects_oversized_feature_before_retaining_it() {
-    let feature = "x".repeat(257);
-    assert_eq!(
-        DeploymentConfig::parse("x86_64-linux", &feature)
-            .expect_err("feature length is bounded")
-            .kind(),
-        io::ErrorKind::InvalidInput
-    );
 }
 
 #[test]
@@ -152,26 +97,6 @@ fn output_retention_rejects_non_unicode_value() {
 
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     restore("TELCHAR_OUTPUT_RETENTION_SECONDS", saved);
-}
-
-#[test]
-fn deployment_config_exposes_output_retention_duration() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_system = std::env::var_os("TELCHAR_SYSTEM");
-    let saved_retention = std::env::var_os("TELCHAR_OUTPUT_RETENTION_SECONDS");
-    unsafe {
-        std::env::set_var("TELCHAR_SYSTEM", "x86_64-linux");
-        std::env::set_var("TELCHAR_OUTPUT_RETENTION_SECONDS", "60");
-    }
-
-    let config = DeploymentConfig::from_environment().expect("deployment parses");
-
-    assert_eq!(
-        config.output_retention().duration(),
-        Duration::from_secs(OutputRetention::MINIMUM_SECONDS)
-    );
-    restore("TELCHAR_SYSTEM", saved_system);
-    restore("TELCHAR_OUTPUT_RETENTION_SECONDS", saved_retention);
 }
 
 fn restore(name: &str, value: Option<OsString>) {

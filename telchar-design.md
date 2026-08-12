@@ -171,7 +171,7 @@ builders = ssh-ng://nix-builder@telchar-x86.example.org x86_64-linux
            ssh-ng://nix-builder@telchar-arm.example.org aarch64-linux
 ```
 
-Each URI identifies an independent one-system Telchar deployment. The exact URI, system, and supported features are deployment-specific. Telchar must not require an experimental client-side protocol, patched Nix package, wrapper command, or custom evaluator.
+A Telchar endpoint may be declared once for each system represented by its configured backend targets. Supported features are the per-system union of those targets, while each derivation is routed only to one target supporting its exact system and every required feature. Telchar must not require an experimental client-side protocol, patched Nix package, wrapper command, or custom evaluator.
 
 ### Central scheduling
 

@@ -147,7 +147,7 @@
       "admission": "required",
       "production_packet": "classic-op-build-derivation-admission",
       "decoder": "bounded derivation path, BasicDerivation collections, strings, output metadata, and BuildMode decoder",
-      "dispatcher": "normalize operation 36 into a backend-neutral BuildRequest under one-system deployment policy",
+      "dispatcher": "normalize operation 36 into a backend-neutral BuildRequest admitted against one configured backend target supporting the exact system and all required features",
       "store_behavior": "admission packet performs no store mutation or execution; later local-executor packet realizes the admitted request in the gateway store",
       "response_framing": "admission packet returns typed execution-unavailable error; parent integration later frames bounded BuildResult",
       "compatibility_test": "stock-Nix Gate 3 request admission, hostile metadata rejection, and later client-visible result golden",

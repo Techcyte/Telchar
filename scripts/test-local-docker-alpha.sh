@@ -25,6 +25,7 @@ trap cleanup EXIT INT TERM
 
 socket_dir="$root/nix-daemon"
 ipc_socket="$root/telchar.sock"
+config="$root/telchar.toml"
 mkdir -p "$socket_dir"
 chmod 0777 "$socket_dir"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -48,12 +49,13 @@ done
 [[ -S "$socket_dir/socket" ]]
 
 telchar="$(nix build --no-link --print-out-paths .#telchar | tail -n 1)"
+system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+printf '[backends.local]\nname = "local"\nsystem = "%s"\nmaximum_concurrent_builds = 1\n' "$system" >"$config"
+export TELCHAR_CONFIG="$config"
+export TELCHAR_TEST_SYSTEM="$system"
 export TELCHAR_GATEWAY_STORE_URI="unix://$socket_dir/socket?root=/"
 TELCHAR_NIX="$(command -v nix)"
 export TELCHAR_NIX
-TELCHAR_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)"
-export TELCHAR_SYSTEM
-export TELCHAR_SUPPORTED_FEATURES=""
 export NIX_CONFIG=$'post-build-hook =\nsubstituters ='
 export TELCHAR_IPC_SOCKET="$ipc_socket"
 export TELCHAR_AUTHENTICATED_KEY="SHA256:local-docker-alpha"
@@ -98,13 +100,13 @@ request = b''.join([
     integer(1), string('out'),
     string('/nix/store/11111111111111111111111111111111-telchar-local-docker'),
     string(''), string(''), integer(0),
-    string(os.environ['TELCHAR_SYSTEM']), string('/bin/sh'),
+    string(os.environ['TELCHAR_TEST_SYSTEM']), string('/bin/sh'),
     integer(2), string('-c'), string('printf telchar-local-docker > $out'),
     integer(4),
     string('builder'), string('/bin/sh'),
     string('name'), string('telchar-local-docker'),
     string('out'), string('/nix/store/11111111111111111111111111111111-telchar-local-docker'),
-    string('system'), string(os.environ['TELCHAR_SYSTEM']),
+    string('system'), string(os.environ['TELCHAR_TEST_SYSTEM']),
     integer(0),
 ])
 sys.stdout.buffer.write(request)

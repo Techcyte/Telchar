@@ -6,7 +6,7 @@ use nix_worker_protocol::BuildDerivationRequest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::deployment::DeploymentConfig;
+use crate::backend::BackendTarget;
 
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
@@ -26,16 +26,22 @@ pub struct BuildRequest {
 impl BuildRequest {
     pub fn from_worker_request(
         request: &BuildDerivationRequest,
-        deployment: &DeploymentConfig,
+        backends: &[BackendTarget],
     ) -> io::Result<Self> {
-        if request.platform().is_empty() || request.platform() != deployment.system().as_bytes() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported BuildDerivation request",
-            ));
-        }
         let environment = request.environment();
-        let required_system_features = required_system_features(environment, deployment)?;
+        let required_system_features = required_system_features(environment)?;
+        let required_features = required_system_features
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let system = std::str::from_utf8(request.platform()).map_err(|_| unsupported_request())?;
+        if request.platform().is_empty()
+            || !backends
+                .iter()
+                .any(|backend| backend.supports(system, &required_features))
+        {
+            return Err(unsupported_request());
+        }
         let expected_name = derivation_name(request.drv_path()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -65,7 +71,7 @@ impl BuildRequest {
             derivation_path: request.drv_path().to_vec(),
             expected_outputs,
             input_sources: request.input_sources().to_vec(),
-            system: deployment.system().to_owned(),
+            system: system.to_owned(),
             required_system_features,
             builder: request.builder().to_vec(),
             arguments: request.arguments().to_vec(),
@@ -73,9 +79,8 @@ impl BuildRequest {
         })
     }
 
-    pub fn validate_for_execution(&self, deployment: &DeploymentConfig) -> io::Result<()> {
-        if self.system != deployment.system()
-            || self.derivation_path.is_empty()
+    pub fn validate_for_execution(&self) -> io::Result<()> {
+        if self.derivation_path.is_empty()
             || self.builder.is_empty()
             || derivation_name(&self.derivation_path).is_none()
             || environment_value(&self.environment, b"system") != Some(self.system.as_bytes())
@@ -199,10 +204,7 @@ impl fmt::Debug for BuildRequest {
     }
 }
 
-fn required_system_features(
-    environment: &[(Vec<u8>, Vec<u8>)],
-    deployment: &DeploymentConfig,
-) -> io::Result<Vec<String>> {
+fn required_system_features(environment: &[(Vec<u8>, Vec<u8>)]) -> io::Result<Vec<String>> {
     let Some(value) = environment_value(environment, b"requiredSystemFeatures") else {
         return Ok(Vec::new());
     };
@@ -216,10 +218,6 @@ fn required_system_features(
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+')
             })
             || !features.insert(feature.to_owned())
-            || !deployment
-                .supported_features()
-                .iter()
-                .any(|supported| supported == feature)
         {
             return Err(unsupported_request());
         }

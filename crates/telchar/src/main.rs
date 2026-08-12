@@ -52,7 +52,6 @@ fn run_executor() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
-    let deployment = config.require_deployment()?.clone();
     let executor = Arc::new(Mutex::new(
         telchar::local_executor::executor_from_environment()?,
     ));
@@ -65,7 +64,7 @@ fn run_executor() -> io::Result<()> {
             |backend_execution_id: &str,
              specification: &telchar::executor_service::ExecutorSpecification,
              execution: &telchar::persistence::LocalBackendExecution| {
-                specification.build.validate_for_execution(&deployment)?;
+                specification.build.validate_for_execution()?;
                 if execution.state != telchar::persistence::LocalBackendExecutionState::Accepted {
                     return Ok(());
                 }
@@ -253,24 +252,9 @@ fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn run_daemon() -> io::Result<()> {
     let config =
         telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
-    let deployment = config.require_deployment()?.clone();
-    let aggregate_features = config
-        .backend_targets()
-        .filter(|target| target.system() == deployment.system())
-        .flat_map(|target| target.features().iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>();
-    if aggregate_features
-        != deployment
-            .supported_features()
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>()
-    {
-        return Err(invalid(
-            "deployment supported features do not match configured backends",
-        ));
-    }
     let running_disconnect_policy = config.running_disconnect_policy();
+    let output_retention = config.output_retention();
+    let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
     let database_url = config
@@ -352,7 +336,7 @@ fn run_daemon() -> io::Result<()> {
             telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment()?;
         telchar::shared_build_recovery::reconcile_shared_builds(
             &database_url,
-            deployment.output_retention().duration(),
+            output_retention.duration(),
             active_shared_builds,
             &mut shared_build_outputs,
             &mut configured_backends,
@@ -378,12 +362,12 @@ fn run_daemon() -> io::Result<()> {
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
-        event = "deployment.configured",
-        system = deployment.system(),
-        supported_feature_count = deployment.supported_features().len(),
+        event = "backend.fleet.configured",
+        backend_count = config.backend_targets().count(),
+        system_count = config.system_features().len(),
         running_disconnect_policy = running_disconnect_policy.as_str(),
-        output_retention_seconds = deployment.output_retention().seconds(),
-        "one-system deployment configured"
+        output_retention_seconds = output_retention.seconds(),
+        "multi-system backend fleet configured"
     );
     let socket = daemon_socket_argument()?;
     let expected_uid = daemon_uid_argument()?;
@@ -399,9 +383,10 @@ fn run_daemon() -> io::Result<()> {
             &listener,
             envelope_timeout,
             &database_url,
-            &deployment,
             &config,
             running_disconnect_policy,
+            output_retention,
+            maximum_retained_input_bytes,
             &transfer_limits,
             &object_admission,
             &rate_admission,
@@ -474,7 +459,6 @@ fn run_daemon() -> io::Result<()> {
             }
         };
         let database_url = database_url.clone();
-        let deployment = deployment.clone();
         let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
@@ -489,9 +473,10 @@ fn run_daemon() -> io::Result<()> {
                     serve_accepted_connection(
                         connection,
                         &database_url,
-                        &deployment,
                         &service_config,
                         running_disconnect_policy,
+                        output_retention,
+                        maximum_retained_input_bytes,
                         &transfer_limits,
                         &object_admission,
                         &rate_admission,
@@ -519,9 +504,10 @@ fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
     database_url: &str,
-    deployment: &telchar::deployment::DeploymentConfig,
     service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
+    output_retention: telchar::deployment::OutputRetention,
+    maximum_retained_input_bytes: u64,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
@@ -534,9 +520,10 @@ fn serve_connection(
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
         database_url,
-        deployment,
         service_config,
         running_disconnect_policy,
+        output_retention,
+        maximum_retained_input_bytes,
         transfer_limits,
         object_admission,
         rate_admission,
@@ -552,9 +539,10 @@ fn serve_connection(
 fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
     database_url: &str,
-    deployment: &telchar::deployment::DeploymentConfig,
     service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
+    output_retention: telchar::deployment::OutputRetention,
+    maximum_retained_input_bytes: u64,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
     rate_admission: &telchar::transfer_limits::RateAdmissionState,
@@ -612,12 +600,18 @@ fn serve_accepted_connection(
         let mut store_import = telchar::store_import::importer_from_environment()?;
         let mut store_closure = telchar::store_closure::backend_from_environment()?;
         let mut store_retention = telchar::store_retention::backend_from_environment()?;
+        let backend_targets = service_config
+            .backend_targets()
+            .cloned()
+            .collect::<Vec<_>>();
         telchar::session::run_worker_session(
             input,
             connection.stream_mut().try_clone()?,
             protocol_session_limits(),
-            deployment,
+            &backend_targets,
             running_disconnect_policy,
+            output_retention,
+            maximum_retained_input_bytes,
             &mut store_query,
             &mut build_executor,
             store_export.as_mut(),

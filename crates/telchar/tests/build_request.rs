@@ -4,16 +4,68 @@ use std::time::Duration;
 use nix_worker_protocol::{
     write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
 };
+use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
+
+#[test]
+fn admits_each_system_from_the_individual_backend_fleet() {
+    let backends = [
+        BackendTarget::new("ssh-amd64", BackendKind::StaticSsh, "x86_64-linux", ["kvm"])
+            .expect("amd64 backend parses"),
+        BackendTarget::new(
+            "ssh-arm64",
+            BackendKind::StaticSsh,
+            "aarch64-linux",
+            ["big-parallel"],
+        )
+        .expect("arm64 backend parses"),
+    ];
+
+    let amd64 = BuildRequest::from_worker_request(
+        &decode_request_with_system_and_features("x86_64-linux", "kvm"),
+        &backends,
+    )
+    .expect("amd64 request admits");
+    let arm64 = BuildRequest::from_worker_request(
+        &decode_request_with_system_and_features("aarch64-linux", "big-parallel"),
+        &backends,
+    )
+    .expect("arm64 request admits");
+
+    assert_eq!(amd64.system(), "x86_64-linux");
+    assert_eq!(arm64.system(), "aarch64-linux");
+}
+
+#[test]
+fn rejects_features_that_exist_only_as_a_cross_backend_union() {
+    let backends = [
+        BackendTarget::new("first", BackendKind::StaticSsh, "x86_64-linux", ["kvm"])
+            .expect("first backend parses"),
+        BackendTarget::new(
+            "second",
+            BackendKind::Nomad,
+            "x86_64-linux",
+            ["big-parallel"],
+        )
+        .expect("second backend parses"),
+    ];
+    let worker = decode_request_with_system_and_features("x86_64-linux", "kvm big-parallel");
+
+    assert_eq!(
+        BuildRequest::from_worker_request(&worker, &backends)
+            .expect_err("cross-backend feature union rejects")
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+}
 
 #[test]
 fn normalizes_gate_3_request_without_backend_objects() {
     let worker = decode_gate_3_request("x86_64-linux", 0);
-    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment config parses");
+    let backends = backends("x86_64-linux", &[]);
 
-    let request = BuildRequest::from_worker_request(&worker, &deployment)
-        .expect("Gate 3 request is admitted");
+    let request =
+        BuildRequest::from_worker_request(&worker, &backends).expect("Gate 3 request is admitted");
 
     assert!(request
         .derivation_path()
@@ -31,10 +83,9 @@ fn normalizes_gate_3_request_without_backend_objects() {
 #[test]
 fn preserves_bounded_required_system_features() {
     let worker = decode_request_with_features("kvm big-parallel");
-    let deployment = DeploymentConfig::parse("x86_64-linux", "kvm,big-parallel")
-        .expect("deployment config parses");
+    let backends = backends("x86_64-linux", &["kvm", "big-parallel"]);
 
-    let request = BuildRequest::from_worker_request(&worker, &deployment)
+    let request = BuildRequest::from_worker_request(&worker, &backends)
         .expect("required features are admitted");
 
     assert_eq!(request.required_system_features(), ["big-parallel", "kvm"]);
@@ -42,13 +93,12 @@ fn preserves_bounded_required_system_features() {
 
 #[test]
 fn rejects_unsupported_or_malformed_required_system_features() {
-    let deployment =
-        DeploymentConfig::parse("x86_64-linux", "kvm").expect("deployment config parses");
+    let backends = backends("x86_64-linux", &["kvm"]);
 
     for features in ["benchmark", "kvm kvm", "kvm feature/unsafe"] {
         let worker = decode_request_with_features(features);
         assert_eq!(
-            BuildRequest::from_worker_request(&worker, &deployment)
+            BuildRequest::from_worker_request(&worker, &backends)
                 .expect_err("invalid required features must fail")
                 .kind(),
             io::ErrorKind::InvalidInput
@@ -58,12 +108,12 @@ fn rejects_unsupported_or_malformed_required_system_features() {
 
 #[test]
 fn equivalent_requests_have_the_same_shared_build_key() {
-    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses");
+    let backends = backends("x86_64-linux", &[]);
     let first =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
             .expect("first request admits");
     let second =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
             .expect("second request admits");
 
     assert_eq!(first.shared_build_key(), second.shared_build_key());
@@ -72,13 +122,13 @@ fn equivalent_requests_have_the_same_shared_build_key() {
 
 #[test]
 fn admitted_semantic_difference_changes_shared_build_key() {
-    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses");
+    let backends = backends("x86_64-linux", &[]);
     let first =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &deployment)
+        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
             .expect("first request admits");
     let second = BuildRequest::from_worker_request(
         &decode_request_with_command("printf different > $out"),
-        &deployment,
+        &backends,
     )
     .expect("second request admits");
 
@@ -88,9 +138,9 @@ fn admitted_semantic_difference_changes_shared_build_key() {
 #[test]
 fn rejects_system_mismatch_before_execution() {
     let worker = decode_gate_3_request("aarch64-linux", 0);
-    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment config parses");
+    let backends = backends("x86_64-linux", &[]);
 
-    let error = BuildRequest::from_worker_request(&worker, &deployment)
+    let error = BuildRequest::from_worker_request(&worker, &backends)
         .expect_err("mismatched system must fail admission");
 
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -103,10 +153,10 @@ fn rejects_output_environment_mismatch() {
         b"/nix/store/22222222222222222222222222222222-different-output",
         0,
     );
-    let deployment = DeploymentConfig::parse("x86_64-linux", "").expect("deployment config parses");
+    let backends = backends("x86_64-linux", &[]);
 
     assert_eq!(
-        BuildRequest::from_worker_request(&worker, &deployment)
+        BuildRequest::from_worker_request(&worker, &backends)
             .expect_err("output environment mismatch must fail")
             .kind(),
         io::ErrorKind::InvalidData
@@ -136,6 +186,27 @@ fn rejects_non_normal_build_modes() {
 
 fn decode_gate_3_request(system: &str, mode: u64) -> nix_worker_protocol::BuildDerivationRequest {
     decode_request(system, output_path(), mode)
+}
+
+fn backends(system: &str, features: &[&str]) -> Vec<BackendTarget> {
+    vec![
+        BackendTarget::new("fixture", BackendKind::Local, system, features)
+            .expect("backend parses"),
+    ]
+}
+
+fn decode_request_with_system_and_features(
+    system: &str,
+    features: &str,
+) -> nix_worker_protocol::BuildDerivationRequest {
+    let wire = build_request_wire_with_environment(
+        system,
+        output_path(),
+        0,
+        "printf telchar-remote-build > $out",
+        Some(features),
+    );
+    decode_wire(wire)
 }
 
 fn decode_request(

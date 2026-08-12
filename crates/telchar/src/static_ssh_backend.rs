@@ -159,30 +159,6 @@ fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration) -> io::Res
     result.map_err(|_| io::Error::other("static SSH worker protocol failed"))
 }
 
-pub fn executor_from_config(
-    config: &crate::config::ServiceConfig,
-) -> io::Result<Option<Box<dyn BuildBackend>>> {
-    let system = config.require_deployment()?.system();
-    let Some(backend) = config
-        .static_ssh_backends()
-        .iter()
-        .find(|backend| backend.target().system() == system)
-    else {
-        return Ok(None);
-    };
-    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "gateway store endpoint is not configured",
-        )
-    })?;
-    let endpoint = GatewayStoreEndpoint::parse_os(&endpoint)?;
-    Ok(Some(Box::new(StaticSshBackend::new(
-        backend.clone(),
-        endpoint,
-    ))))
-}
-
 pub struct StaticSshBackend {
     config: StaticSshBackendConfig,
     gateway: GatewayStoreEndpoint,

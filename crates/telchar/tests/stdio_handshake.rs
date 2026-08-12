@@ -110,12 +110,17 @@ impl Fixture {
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700))
             .expect("SSH shim is executable");
         let socket = root.join("daemon.sock");
+        let config = root.join("telchar.toml");
+        fs::write(
+            &config,
+            "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
+        )
+        .expect("daemon configuration writes");
         let database = PostgresFixture::start();
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env("TELCHAR_CONFIG", config)
             .env("TELCHAR_DATABASE_URL", database.url())
             .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
-            .env("TELCHAR_SYSTEM", "x86_64-linux")
-            .env("TELCHAR_SUPPORTED_FEATURES", "")
             .args([
                 "daemon",
                 "--socket",

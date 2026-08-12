@@ -130,8 +130,7 @@ let
           TMPDIR = "/var/lib/telchar-import";
           TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-gc-roots";
-          TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
-          TELCHAR_SUPPORTED_FEATURES = "";
+          TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
           NIX_CONFIG = ''
             post-build-hook =
             substituters =
@@ -151,6 +150,12 @@ let
           ExecStart = "${telchar}/bin/telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995";
         };
       };
+      environment.etc."telchar/telchar.toml".text = ''
+        [backends.local]
+        name = "local"
+        system = "${pkgs.stdenv.hostPlatform.system}"
+        maximum_concurrent_builds = 1
+      '';
       environment.etc."telchar/forced-command" = {
         mode = "0555";
         text = ''
@@ -316,6 +321,12 @@ let
       inherit role;
       extraConfig = {
         environment.systemPackages = [ telchar ];
+        environment.etc."telchar/telchar.toml".text = ''
+          [backends.local]
+          name = "local"
+          system = "${pkgs.stdenv.hostPlatform.system}"
+          maximum_concurrent_builds = 1
+        '';
         systemd.services.telchar-recovery-daemon = {
           description = "Telchar restart recovery daemon";
           after = [ "network-online.target" ];
@@ -325,8 +336,7 @@ let
             TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
             TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
             TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-recovery-roots";
-            TELCHAR_SYSTEM = pkgs.stdenv.hostPlatform.system;
-            TELCHAR_SUPPORTED_FEATURES = "";
+            TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
             TELCHAR_SINGLETON_CHECK_INTERVAL_MS = "50";
             NIX_CONFIG = ''
               post-build-hook =
@@ -479,10 +489,7 @@ rec {
           {
             imports = [ restrictedIngressGatewayModule ];
             systemd.services.telchar-daemon.wantedBy = pkgs.lib.mkForce [ ];
-            systemd.services.telchar-daemon.environment = {
-              TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
-              TELCHAR_SUPPORTED_FEATURES = pkgs.lib.mkForce "primary,secondary";
-            };
+            systemd.services.telchar-daemon.environment.TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
             systemd.tmpfiles.rules = [
               "d /var/lib/telchar-static-ssh 0700 telchar-ingress telchar -"
             ];

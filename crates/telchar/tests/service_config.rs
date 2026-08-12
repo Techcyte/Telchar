@@ -13,8 +13,6 @@ static ENVIRONMENT: Mutex<()> = Mutex::new(());
 const VARIABLES: &[&str] = &[
     "TELCHAR_CONFIG",
     "TELCHAR_DATABASE_URL",
-    "TELCHAR_SYSTEM",
-    "TELCHAR_SUPPORTED_FEATURES",
     "TELCHAR_RUNNING_DISCONNECT_POLICY",
     "TELCHAR_OUTPUT_RETENTION_SECONDS",
     "TELCHAR_MAX_RETAINED_INPUT_BYTES",
@@ -39,9 +37,6 @@ fn loads_strict_toml_and_identity_mappings() {
         &config_path,
         format!(
             r#"
-[deployment]
-system = "x86_64-linux"
-supported_features = ["kvm", "big-parallel"]
 running_disconnect_policy = "cancel-running"
 output_retention_seconds = 7200
 maximum_retained_input_bytes = 1048576
@@ -86,20 +81,13 @@ maximum_concurrent_builds = 2
 
     let config = ServiceConfig::load().expect("configuration loads");
 
-    assert_eq!(config.deployment().system(), "x86_64-linux");
-    assert_eq!(
-        config.deployment().supported_features(),
-        ["big-parallel", "kvm"]
-    );
+    assert_eq!(config.backend_targets().count(), 1);
     assert_eq!(
         config.running_disconnect_policy(),
         telchar::deployment::RunningDisconnectPolicy::CancelRunning
     );
-    assert_eq!(config.deployment().output_retention().seconds(), 7200);
-    assert_eq!(
-        config.deployment().maximum_retained_input_bytes(),
-        1_048_576
-    );
+    assert_eq!(config.output_retention().seconds(), 7200);
+    assert_eq!(config.maximum_retained_input_bytes(), 1_048_576);
     assert_eq!(
         config.database_url().expect("database configured"),
         "postgresql://telchar@localhost/telchar"
@@ -237,8 +225,8 @@ privileged = false
 
 [[backends.nomad]]
 name = "nomad-raw"
-system = "x86_64-linux"
-supported_features = ["raw-exec"]
+system = "aarch64-linux"
+supported_features = ["raw-exec", "big-parallel"]
 maximum_concurrent_builds = 2
 endpoint = "http://nomad-b.example:4646"
 namespace = "telchar-b"
@@ -300,6 +288,17 @@ args = ["--stdio"]
             .map(|target| target.name())
             .collect::<Vec<_>>(),
         ["nomad-docker", "nomad-raw"]
+    );
+    assert_eq!(
+        config
+            .system_features()
+            .into_iter()
+            .map(|(system, features)| (system, features.into_iter().collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+        [
+            ("aarch64-linux", vec!["big-parallel", "raw-exec"]),
+            ("x86_64-linux", vec!["docker"]),
+        ]
     );
 
     restore_environment(saved);
@@ -548,9 +547,6 @@ fn environment_overrides_toml_scalars() {
         &config_path,
         format!(
             r#"
-[deployment]
-system = "aarch64-linux"
-supported_features = ["kvm"]
 running_disconnect_policy = "detach-and-finish"
 output_retention_seconds = 3600
 [database]
@@ -558,6 +554,11 @@ url_file = "{}"
 [ipc]
 socket = "/run/from-file.sock"
 maximum_sessions = 8
+[backends.local]
+name = "local"
+system = "aarch64-linux"
+supported_features = ["kvm"]
+maximum_concurrent_builds = 1
 "#,
             database_url_file.display()
         ),
@@ -566,8 +567,6 @@ maximum_sessions = 8
     unsafe {
         std::env::set_var("TELCHAR_CONFIG", &config_path);
         std::env::set_var("TELCHAR_DATABASE_URL", "postgresql://environment/db");
-        std::env::set_var("TELCHAR_SYSTEM", "x86_64-linux");
-        std::env::set_var("TELCHAR_SUPPORTED_FEATURES", "big-parallel,kvm");
         std::env::set_var("TELCHAR_RUNNING_DISCONNECT_POLICY", "cancel-running");
         std::env::set_var("TELCHAR_OUTPUT_RETENTION_SECONDS", "60");
         std::env::set_var("TELCHAR_MAX_RETAINED_INPUT_BYTES", "2048");
@@ -577,23 +576,26 @@ maximum_sessions = 8
 
     let config = ServiceConfig::load().expect("configuration loads");
 
-    assert_eq!(config.deployment().system(), "x86_64-linux");
     assert_eq!(
-        config.deployment().supported_features(),
-        ["big-parallel", "kvm"]
+        config
+            .local_backend()
+            .expect("local backend")
+            .target()
+            .system(),
+        "aarch64-linux"
     );
     assert_eq!(
         config.running_disconnect_policy(),
         telchar::deployment::RunningDisconnectPolicy::CancelRunning
     );
-    assert_eq!(config.deployment().output_retention().seconds(), 60);
+    assert_eq!(config.output_retention().seconds(), 60);
     assert_eq!(config.database_url(), Some("postgresql://environment/db"));
     assert_eq!(
         config.ipc_socket(),
         Some(Path::new("/run/from-environment.sock"))
     );
     assert_eq!(config.maximum_ipc_sessions(), 64);
-    assert_eq!(config.deployment().maximum_retained_input_bytes(), 2_048);
+    assert_eq!(config.maximum_retained_input_bytes(), 2_048);
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
@@ -613,11 +615,7 @@ fn explicit_config_is_required_and_unknown_fields_fail_closed() {
     );
 
     let config_path = root.join("unknown.toml");
-    fs::write(
-        &config_path,
-        "[deployment]\nsystem = \"x86_64-linux\"\nunknown = true\n",
-    )
-    .expect("configuration writes");
+    fs::write(&config_path, "unknown = true\n").expect("configuration writes");
     unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
     assert_eq!(
         ServiceConfig::load()
@@ -631,17 +629,14 @@ fn explicit_config_is_required_and_unknown_fields_fail_closed() {
 }
 
 #[test]
-fn optional_default_file_can_be_absent_and_required_values_remain_explicit() {
+fn absent_default_file_uses_policy_defaults_without_routing_targets() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
 
     let config = ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))
-        .expect("absent default configuration uses defaults");
-
-    assert!(config.database_url().is_none());
-    assert!(config.ipc_socket().is_none());
-    assert_eq!(config.maximum_ipc_sessions(), 64);
-    assert!(config.deployment_option().is_none());
+        .expect("absent default uses policy defaults");
+    assert_eq!(config.backend_targets().count(), 0);
+    assert_eq!(config.output_retention().seconds(), 3600);
 
     restore_environment(saved);
 }
@@ -752,7 +747,10 @@ fn invalid_environment_and_mapping_values_fail_closed() {
 
     unsafe {
         std::env::remove_var("TELCHAR_IPC_MAX_SESSIONS");
-        std::env::set_var("TELCHAR_SYSTEM", OsString::from_vec(vec![b'x', 0x80]));
+        std::env::set_var(
+            "TELCHAR_RUNNING_DISCONNECT_POLICY",
+            OsString::from_vec(vec![b'x', 0x80]),
+        );
     }
     assert_eq!(
         ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))

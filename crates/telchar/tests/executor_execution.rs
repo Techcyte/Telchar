@@ -11,8 +11,8 @@ use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 mod support;
 
 use support::postgres::PostgresFixture;
+use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
 use telchar::executor_service::{
     send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
     EXECUTOR_PROTOCOL_VERSION,
@@ -141,8 +141,6 @@ fn executor_command(socket: &Path, database_url: &str, helper: &Path) -> Command
         )
         .env("TELCHAR_TEST_BUILD_HELPER", helper)
         .env("TELCHAR_GATEWAY_STORE_URI", "unix:///fixed-gateway.sock")
-        .env("TELCHAR_SYSTEM", "x86_64-linux")
-        .env("TELCHAR_SUPPORTED_FEATURES", "")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -185,7 +183,13 @@ fn execution_specification() -> ExecutorSpecification {
         timeout_seconds: 30,
         build: BuildRequest::from_worker_request(
             &worker,
-            &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+            &[BackendTarget::new(
+                "fixture",
+                BackendKind::Local,
+                "x86_64-linux",
+                [] as [&str; 0],
+            )
+            .expect("backend parses")],
         )
         .expect("request admits"),
     }

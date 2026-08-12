@@ -3423,6 +3423,12 @@ impl FrontendFixture {
                 .expect("GC root directory permissions set");
         }
         let configured_store_uri = store_uri.map(str::to_owned);
+        let config_path = root.join("telchar.toml");
+        fs::write(
+            &config_path,
+            "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
+        )
+        .expect("daemon configuration writes");
         let database = PostgresFixture::start();
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command.args([
@@ -3440,10 +3446,9 @@ impl FrontendFixture {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         daemon_command
+            .env("TELCHAR_CONFIG", &config_path)
             .env("TELCHAR_DATABASE_URL", database.url())
-            .env("TELCHAR_SYSTEM", "x86_64-linux")
             .env_remove("TELCHAR_RUNNING_DISCONNECT_POLICY")
-            .env("TELCHAR_SUPPORTED_FEATURES", "")
             .env_remove("TELCHAR_TEST_BUILD_HELPER")
             .env_remove("TELCHAR_TEST_EXPORT_HELPER")
             .env_remove("TELCHAR_TEST_PROMOTE_HELPER")

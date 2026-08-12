@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::backend::{BackendKind, BackendTarget};
-use crate::deployment::{DeploymentConfig, OutputRetention, RunningDisconnectPolicy};
+use crate::deployment::{OutputRetention, RunningDisconnectPolicy};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/telchar/telchar.toml";
 const DEFAULT_MAXIMUM_IPC_SESSIONS: usize = 64;
@@ -223,8 +223,9 @@ impl NomadBackendConfig {
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
-    deployment: Option<DeploymentConfig>,
     running_disconnect_policy: RunningDisconnectPolicy,
+    output_retention: OutputRetention,
+    maximum_retained_input_bytes: u64,
     database_url: Option<String>,
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
@@ -249,24 +250,16 @@ impl ServiceConfig {
         Self::load_path(path, false)
     }
 
-    pub fn deployment(&self) -> &DeploymentConfig {
-        self.deployment
-            .as_ref()
-            .expect("deployment configuration is required")
-    }
-
-    pub fn require_deployment(&self) -> io::Result<&DeploymentConfig> {
-        self.deployment
-            .as_ref()
-            .ok_or_else(|| invalid("deployment system is not configured"))
-    }
-
-    pub fn deployment_option(&self) -> Option<&DeploymentConfig> {
-        self.deployment.as_ref()
-    }
-
     pub fn running_disconnect_policy(&self) -> RunningDisconnectPolicy {
         self.running_disconnect_policy
+    }
+
+    pub fn output_retention(&self) -> OutputRetention {
+        self.output_retention
+    }
+
+    pub fn maximum_retained_input_bytes(&self) -> u64 {
+        self.maximum_retained_input_bytes
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -332,6 +325,15 @@ impl ServiceConfig {
             .chain(self.nomad_backends.iter().map(NomadBackendConfig::target))
     }
 
+    pub fn system_features(&self) -> BTreeMap<&str, std::collections::BTreeSet<&str>> {
+        let mut systems: BTreeMap<&str, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for target in self.backend_targets() {
+            let features = systems.entry(target.system()).or_default();
+            features.extend(target.features().iter().map(String::as_str));
+        }
+        systems
+    }
+
     fn load_path(path: &Path, required: bool) -> io::Result<Self> {
         let raw = match fs::read_to_string(path) {
             Ok(raw) => RawServiceConfig::parse(&raw)?,
@@ -353,59 +355,27 @@ impl ServiceConfig {
             });
         }
 
-        let system = environment_string("TELCHAR_SYSTEM")?.or_else(|| {
-            raw.deployment
-                .as_ref()
-                .and_then(|value| value.system.clone())
-        });
-        let features_override = environment_string("TELCHAR_SUPPORTED_FEATURES")?;
-        let features = match features_override {
-            Some(value) => value,
+        let output_retention = match environment_string("TELCHAR_OUTPUT_RETENTION_SECONDS")? {
+            Some(value) => parse_retention(&value)?,
             None => raw
-                .deployment
-                .as_ref()
-                .and_then(|value| value.supported_features.as_ref())
-                .map(|values| values.join(","))
-                .unwrap_or_default(),
-        };
-        let retention = match environment_string("TELCHAR_OUTPUT_RETENTION_SECONDS")? {
-            Some(value) => Some(parse_retention(&value)?),
-            None => raw
-                .deployment
-                .as_ref()
-                .and_then(|value| value.output_retention_seconds)
+                .output_retention_seconds
                 .map(|seconds| parse_retention(&seconds.to_string()))
-                .transpose()?,
+                .transpose()?
+                .unwrap_or_default(),
         };
         let maximum_retained_input_bytes =
             match environment_string("TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
                 Some(value) => parse_positive_u64(&value, "retained input byte limit is invalid")?,
                 None => raw
-                    .deployment
-                    .as_ref()
-                    .and_then(|value| value.maximum_retained_input_bytes)
+                    .maximum_retained_input_bytes
                     .unwrap_or(crate::deployment::DEFAULT_MAXIMUM_RETAINED_INPUT_BYTES),
             };
         if maximum_retained_input_bytes > i64::MAX as u64 {
             return Err(invalid("retained input byte limit is invalid"));
         }
-        let deployment: Option<DeploymentConfig> = system
-            .map(|system| {
-                let mut deployment = DeploymentConfig::parse(&system, &features)?;
-                if let Some(retention) = retention {
-                    deployment.set_output_retention(retention);
-                }
-                deployment.set_maximum_retained_input_bytes(maximum_retained_input_bytes);
-                Ok::<DeploymentConfig, io::Error>(deployment)
-            })
-            .transpose()?;
 
         let running_disconnect_policy = environment_string("TELCHAR_RUNNING_DISCONNECT_POLICY")?
-            .or_else(|| {
-                raw.deployment
-                    .as_ref()
-                    .and_then(|value| value.running_disconnect_policy.clone())
-            })
+            .or(raw.running_disconnect_policy)
             .map(|value| RunningDisconnectPolicy::parse(&value))
             .transpose()?
             .unwrap_or_default();
@@ -456,19 +426,7 @@ impl ServiceConfig {
                 Ok((subject, validate_scheduling_limits(limits)?))
             })
             .collect::<io::Result<BTreeMap<_, _>>>()?;
-        let mut backends = raw.backends.unwrap_or_default();
-        if backends.local.is_none()
-            && backends.static_ssh.is_empty()
-            && backends.nomad.is_empty()
-            && let Some(deployment) = &deployment
-        {
-            backends.local = Some(RawLocalBackendConfig {
-                name: "local".to_owned(),
-                system: deployment.system().to_owned(),
-                supported_features: deployment.supported_features().to_vec(),
-                maximum_concurrent_builds: 1,
-            });
-        }
+        let backends = raw.backends.unwrap_or_default();
         let backend_permit_wait_seconds = backends
             .permit_wait_seconds
             .unwrap_or(DEFAULT_BACKEND_PERMIT_WAIT_SECONDS);
@@ -486,8 +444,9 @@ impl ServiceConfig {
             &nomad_backends,
         )?;
         Ok(Self {
-            deployment,
             running_disconnect_policy,
+            output_retention,
+            maximum_retained_input_bytes,
             database_url,
             ipc_socket,
             maximum_ipc_sessions,
@@ -505,7 +464,9 @@ impl ServiceConfig {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServiceConfig {
-    deployment: Option<DeploymentSection>,
+    running_disconnect_policy: Option<String>,
+    output_retention_seconds: Option<u64>,
+    maximum_retained_input_bytes: Option<u64>,
     database: Option<DatabaseSection>,
     ipc: Option<IpcSection>,
     identity: Option<IdentityConfig>,
@@ -517,16 +478,6 @@ impl RawServiceConfig {
     fn parse(raw: &str) -> io::Result<Self> {
         toml::from_str(raw).map_err(|_| invalid("service configuration is invalid"))
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentSection {
-    system: Option<String>,
-    supported_features: Option<Vec<String>>,
-    running_disconnect_policy: Option<String>,
-    output_retention_seconds: Option<u64>,
-    maximum_retained_input_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]

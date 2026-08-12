@@ -10,7 +10,6 @@ use nix_worker_protocol::{
 
 use crate::backend::{BuildBackend, BuildExecution, BuildStatus};
 use crate::build_request::BuildRequest;
-use crate::deployment::DeploymentConfig;
 use crate::store_query::QueryValidPathsStore;
 
 static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -98,8 +97,10 @@ pub fn run_worker_session(
     input: std::os::unix::net::UnixStream,
     mut output: std::os::unix::net::UnixStream,
     limits: ProtocolSessionLimits,
-    deployment: &DeploymentConfig,
+    backend_targets: &[crate::backend::BackendTarget],
     running_disconnect_policy: crate::deployment::RunningDisconnectPolicy,
+    output_retention: crate::deployment::OutputRetention,
+    maximum_retained_input_bytes: u64,
     store_query: &mut dyn QueryValidPathsStore,
     build_executor: &mut dyn BuildBackend,
     store_export: &mut dyn crate::store_export::StoreExportBackend,
@@ -168,7 +169,7 @@ pub fn run_worker_session(
                         );
                     }
                 };
-                let admitted = match BuildRequest::from_worker_request(&request, deployment) {
+                let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
                     Ok(admitted) => admitted,
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
                         return reject(
@@ -269,7 +270,7 @@ pub fn run_worker_session(
                     derivation_path,
                     crate::persistence::StoreLeasePurpose::Derivation,
                     derivation_info.nar_size,
-                    deployment.maximum_retained_input_bytes(),
+                    maximum_retained_input_bytes,
                 ) {
                     if store_retention.rollback(&retained_derivation).is_err() {
                         retention_batch_event(
@@ -370,7 +371,7 @@ pub fn run_worker_session(
                 if crate::persistence::create_request_input_leases_with_limit(
                     database_url,
                     &request_id,
-                    deployment.maximum_retained_input_bytes(),
+                    maximum_retained_input_bytes,
                     &input_leases,
                 )
                 .is_err()
@@ -451,7 +452,6 @@ pub fn run_worker_session(
                     input_count = admitted.input_sources().len(),
                     argument_count = admitted.arguments().len(),
                     environment_count = admitted.environment().len(),
-                    configured_system = deployment.system(),
                     requested_system = request.platform(),
                     build_mode = request.build_mode(),
                     "BuildDerivation request admitted"
@@ -563,7 +563,7 @@ pub fn run_worker_session(
                                     derivation_path,
                                     "scheduling-failure",
                                     &serde_json::json!({"failure": execution_error_reason(&error)}),
-                                    deployment.output_retention().duration(),
+                                    output_retention.duration(),
                                 );
                                 let _ = leader.complete(Err(
                                     crate::shared_build::SharedBuildTerminalFailure::Internal,
@@ -626,7 +626,7 @@ pub fn run_worker_session(
                                         derivation_path,
                                         "backend-failure",
                                         &serde_json::json!({"reason": execution_error_reason(&error)}),
-                                        deployment.output_retention().duration(),
+                                        output_retention.duration(),
                                     );
                                     let failure = if error.kind() == io::ErrorKind::Unsupported {
                                         crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable
@@ -732,7 +732,7 @@ pub fn run_worker_session(
                                 derivation_path,
                                 "output-validation-failure",
                                 &serde_json::json!({"reason": execution_error_reason(&error)}),
-                                deployment.output_retention().duration(),
+                                output_retention.duration(),
                             );
                         }
                         tracing::error!(
@@ -813,7 +813,7 @@ pub fn run_worker_session(
                 if crate::persistence::create_request_output_leases(
                     database_url,
                     &request_id,
-                    deployment.output_retention().duration(),
+                    output_retention.duration(),
                     &output_leases,
                 )
                 .is_err()
@@ -824,7 +824,7 @@ pub fn run_worker_session(
                             derivation_path,
                             "output-retention-failure",
                             &serde_json::json!({"stage": "lease"}),
-                            deployment.output_retention().duration(),
+                            output_retention.duration(),
                         );
                     }
                     if store_retention.rollback(&retained_outputs).is_err() {
@@ -894,7 +894,7 @@ pub fn run_worker_session(
                             })
                         }).collect::<Vec<_>>(),
                         }),
-                        deployment.output_retention().duration(),
+                        output_retention.duration(),
                     )
                 {
                     return reject(

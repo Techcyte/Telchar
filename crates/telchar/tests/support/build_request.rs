@@ -1,6 +1,6 @@
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
+use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
-use telchar::deployment::DeploymentConfig;
 
 pub fn admitted_request() -> BuildRequest {
     let output = b"/nix/store/11111111111111111111111111111111-static-ssh-output";
@@ -33,11 +33,14 @@ pub fn admitted_request() -> BuildRequest {
     let worker = reader
         .complete_build_derivation()
         .expect("worker request parses");
-    BuildRequest::from_worker_request(
-        &worker,
-        &DeploymentConfig::parse("x86_64-linux", "").expect("deployment parses"),
+    let backends = [BackendTarget::new(
+        "fixture",
+        BackendKind::Local,
+        "x86_64-linux",
+        [] as [&str; 0],
     )
-    .expect("request admits")
+    .expect("backend parses")];
+    BuildRequest::from_worker_request(&worker, &backends).expect("request admits")
 }
 
 fn write_integer(output: &mut Vec<u8>, value: u64) {

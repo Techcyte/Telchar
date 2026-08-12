@@ -1059,10 +1059,15 @@ fn wait_for_socket(path: &Path, daemon: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !path.exists() {
         assert!(Instant::now() < deadline, "daemon socket was not created");
-        assert!(
-            daemon.try_wait().expect("daemon status").is_none(),
-            "daemon exited before binding"
-        );
+        if let Some(status) = daemon.try_wait().expect("daemon status") {
+            let mut stderr = String::new();
+            std::io::Read::read_to_string(
+                daemon.stderr.as_mut().expect("daemon stderr"),
+                &mut stderr,
+            )
+            .expect("daemon stderr reads");
+            panic!("daemon exited before binding: {status}: {stderr}");
+        }
         thread::sleep(Duration::from_millis(5));
     }
 }
@@ -1171,6 +1176,18 @@ fn daemon_command(
 }
 
 fn daemon_command_without_database(socket: &Path, envelope_timeout_ms: u64, once: bool) -> Command {
+    let socket_parent = socket.parent().expect("socket has parent");
+    if !socket_parent.exists() {
+        fs::create_dir_all(socket_parent).expect("socket parent creates");
+        fs::set_permissions(socket_parent, fs::Permissions::from_mode(0o700))
+            .expect("socket parent permissions set");
+    }
+    let config = socket.with_extension("toml");
+    fs::write(
+        &config,
+        "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
+    )
+    .expect("daemon configuration writes");
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
     command.args([
         "daemon",
@@ -1183,8 +1200,7 @@ fn daemon_command_without_database(socket: &Path, envelope_timeout_ms: u64, once
         command.arg("--once");
     }
     command
-        .env("TELCHAR_SYSTEM", "x86_64-linux")
-        .env("TELCHAR_SUPPORTED_FEATURES", "")
+        .env("TELCHAR_CONFIG", config)
         .env(
             "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
             envelope_timeout_ms.to_string(),
@@ -1202,6 +1218,18 @@ fn daemon_command_with_uid(
     frontend_uid: u32,
     database_url: &str,
 ) -> Command {
+    let socket_parent = socket.parent().expect("socket has parent");
+    if !socket_parent.exists() {
+        fs::create_dir_all(socket_parent).expect("socket parent creates");
+        fs::set_permissions(socket_parent, fs::Permissions::from_mode(0o700))
+            .expect("socket parent permissions set");
+    }
+    let config = socket.with_extension("toml");
+    fs::write(
+        &config,
+        "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
+    )
+    .expect("daemon configuration writes");
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
     command.args([
         "daemon",
@@ -1214,10 +1242,9 @@ fn daemon_command_with_uid(
         command.arg("--once");
     }
     command
+        .env("TELCHAR_CONFIG", config)
         .env("TELCHAR_DATABASE_URL", database_url)
         .env("TELCHAR_GATEWAY_STORE_URI", "unix:///run/nix-daemon.sock")
-        .env("TELCHAR_SYSTEM", "x86_64-linux")
-        .env("TELCHAR_SUPPORTED_FEATURES", "")
         .env(
             "TELCHAR_IPC_ENVELOPE_TIMEOUT_MS",
             envelope_timeout_ms.to_string(),

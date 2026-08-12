@@ -115,8 +115,13 @@ fn admitted_request() -> telchar::build_request::BuildRequest {
         .expect("worker request parses");
     telchar::build_request::BuildRequest::from_worker_request(
         &request,
-        &telchar::deployment::DeploymentConfig::parse("x86_64-linux", "")
-            .expect("deployment parses"),
+        &[telchar::backend::BackendTarget::new(
+            "fixture",
+            telchar::backend::BackendKind::Local,
+            "x86_64-linux",
+            [] as [&str; 0],
+        )
+        .expect("backend parses")],
     )
     .expect("request admits")
 }
