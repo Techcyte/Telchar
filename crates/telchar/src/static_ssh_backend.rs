@@ -480,8 +480,11 @@ fn spawn_log_reader(
         loop {
             match source.read(&mut buffer) {
                 Ok(0) => return Ok(()),
-                Ok(read) => {
-                    if sender.send(buffer[..read].to_vec()).is_err() {
+                Ok(_) => {
+                    if sender
+                        .send(b"static SSH transport diagnostic\n".to_vec())
+                        .is_err()
+                    {
                         return Ok(());
                     }
                 }
