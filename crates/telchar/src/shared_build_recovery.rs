@@ -61,11 +61,12 @@ pub trait RecoveryBackend {
     fn adopt(&mut self, build: &SharedBuild) -> io::Result<AdoptedExecution>;
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReconciliationOutcome {
     pub succeeded: usize,
     pub failed: usize,
     pub monitoring: usize,
+    pub monitoring_derivations: Vec<String>,
 }
 
 pub fn reconcile_active_shared_builds(
@@ -76,6 +77,28 @@ pub fn reconcile_active_shared_builds(
 ) -> io::Result<ReconciliationOutcome> {
     let active = persistence::read_active_shared_builds(database_url, MAXIMUM_ACTIVE_SHARED_BUILDS)
         .map_err(|_| io::Error::other("shared build recovery failed"))?;
+    reconcile_shared_builds(database_url, retention, active, outputs, backends)
+}
+
+pub fn reconcile_adopted_shared_builds(
+    database_url: &str,
+    retention: Duration,
+    derivation_paths: &[String],
+    outputs: &mut dyn SharedBuildOutputStore,
+    backends: &mut dyn RecoveryBackend,
+) -> io::Result<ReconciliationOutcome> {
+    let mut active = Vec::with_capacity(derivation_paths.len());
+    for derivation_path in derivation_paths {
+        let build = persistence::read_shared_build(database_url, derivation_path)
+            .map_err(|_| io::Error::other("shared build recovery failed"))?
+            .ok_or_else(|| io::Error::other("shared build recovery failed"))?;
+        if matches!(
+            build.state,
+            SharedBuildState::Claimed | SharedBuildState::Running | SharedBuildState::Collecting
+        ) {
+            active.push(build);
+        }
+    }
     reconcile_shared_builds(database_url, retention, active, outputs, backends)
 }
 
@@ -129,7 +152,12 @@ pub fn reconcile_shared_builds(
                     continue;
                 }
                 match backends.adopt(&build) {
-                    Ok(AdoptedExecution::Monitoring) => outcome.monitoring += 1,
+                    Ok(AdoptedExecution::Monitoring) => {
+                        outcome.monitoring += 1;
+                        outcome
+                            .monitoring_derivations
+                            .push(build.derivation_path.clone());
+                    }
                     Ok(AdoptedExecution::Succeeded) => {
                         if outputs.contains_all(&build.expected_outputs)? {
                             complete_recovered_success(database_url, &build, retention)?;

@@ -254,6 +254,7 @@ fn adoptable_execution_resumes_only_with_matching_persisted_capabilities() {
     .expect("reconciliation succeeds");
 
     assert_eq!(outcome.monitoring, 1);
+    assert_eq!(outcome.monitoring_derivations, [DERIVATION]);
     assert_eq!(backends.adopted, ["telchar-recovery-job"]);
     assert_eq!(
         telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
@@ -261,6 +262,50 @@ fn adoptable_execution_resumes_only_with_matching_persisted_capabilities() {
             .expect("shared build exists")
             .state,
         SharedBuildState::Running
+    );
+}
+
+#[test]
+fn adopted_execution_can_be_reconciled_to_terminal_state() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    claim(
+        &fixture,
+        "nomad",
+        BackendKind::Nomad,
+        Some("telchar-recovery-job"),
+    );
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION)
+        .expect("shared build starts");
+    let mut outputs = OutputStore::default();
+    let mut backends = Backends {
+        capabilities: BTreeMap::from([(
+            "nomad".to_owned(),
+            (BackendKind::Nomad, BackendKind::Nomad.capabilities()),
+        )]),
+        adoption: Some(AdoptedExecution::Succeeded),
+        ..Backends::default()
+    };
+
+    let outcome = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
+        fixture.url(),
+        Duration::from_secs(3_600),
+        &[DERIVATION.to_owned()],
+        &mut outputs,
+        &mut backends,
+    )
+    .expect("adopted execution reconciliation succeeds");
+
+    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.monitoring, 0);
+    assert!(outcome.monitoring_derivations.is_empty());
+    assert_eq!(backends.adopted, ["telchar-recovery-job"]);
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
+            .expect("shared build reads")
+            .expect("shared build exists")
+            .state,
+        SharedBuildState::Failed
     );
 }
 

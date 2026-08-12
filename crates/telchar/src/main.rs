@@ -349,6 +349,7 @@ fn run_daemon() -> io::Result<()> {
         monitoring_count = reconciliation.monitoring,
         "active shared builds reconciled"
     );
+    let monitoring_derivations = reconciliation.monitoring_derivations;
     let backends = Arc::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let scheduling_config = config.clone();
@@ -359,6 +360,33 @@ fn run_daemon() -> io::Result<()> {
         )
         .map_err(|_| invalid("shared build scheduler initialization failed"))?,
     );
+    for derivation_path in monitoring_derivations {
+        let database_url = database_url.clone();
+        let backends = Arc::clone(&backends);
+        let retention = output_retention.duration();
+        std::thread::spawn(move || {
+            let poll_interval = Duration::from_millis(100);
+            loop {
+                std::thread::sleep(poll_interval);
+                let mut configured_backends = (*backends).clone();
+                let mut outputs = match telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment() {
+                    Ok(outputs) => outputs,
+                    Err(_) => return,
+                };
+                let result = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
+                    &database_url,
+                    retention,
+                    std::slice::from_ref(&derivation_path),
+                    &mut outputs,
+                    &mut configured_backends,
+                );
+                match result {
+                    Ok(outcome) if outcome.monitoring == 1 => {}
+                    Ok(_) | Err(_) => return,
+                }
+            }
+        });
+    }
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
