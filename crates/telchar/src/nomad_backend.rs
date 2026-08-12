@@ -17,6 +17,14 @@ pub struct NomadClient {
     client: Client,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NomadExecutionState {
+    Monitoring,
+    Succeeded,
+    Failed,
+    Missing,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NomadSubmission {
     job_id: String,
@@ -37,6 +45,24 @@ impl NomadSubmission {
 struct SubmissionResponse {
     #[serde(rename = "EvalID")]
     eval_id: String,
+}
+
+#[derive(Deserialize)]
+struct JobResponse {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "Namespace")]
+    namespace: String,
+    #[serde(rename = "Type")]
+    job_type: String,
+    #[serde(rename = "Meta")]
+    meta: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct AllocationResponse {
+    #[serde(rename = "ClientStatus")]
+    client_status: String,
 }
 
 impl NomadClient {
@@ -90,6 +116,65 @@ impl NomadClient {
         Ok(Self { config, client })
     }
 
+    pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
+        if job_id.is_empty() || job_id.len() > 256 {
+            return Err(io::Error::other("Nomad job monitoring failed"));
+        }
+        let response = self
+            .client
+            .get(format!("{}/v1/job/{job_id}", self.config.endpoint()))
+            .query(&[("namespace", self.config.namespace())])
+            .send()
+            .map_err(|_| io::Error::other("Nomad job monitoring failed"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(NomadExecutionState::Missing);
+        }
+        let job: JobResponse = bounded_json(
+            response
+                .error_for_status()
+                .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
+            "Nomad job monitoring failed",
+        )?;
+        if job.id != job_id
+            || job.namespace != self.config.namespace()
+            || job.job_type != "batch"
+            || job.meta.get("telchar_backend").map(String::as_str)
+                != Some(self.config.target().name())
+            || job.meta.get("telchar_system").map(String::as_str)
+                != Some(self.config.target().system())
+        {
+            return Err(io::Error::other("Nomad job monitoring failed"));
+        }
+        let allocations: Vec<AllocationResponse> = bounded_json(
+            self.client
+                .get(format!(
+                    "{}/v1/job/{job_id}/allocations",
+                    self.config.endpoint()
+                ))
+                .query(&[("namespace", self.config.namespace())])
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
+            "Nomad job monitoring failed",
+        )?;
+        if allocations.is_empty() {
+            return Ok(NomadExecutionState::Monitoring);
+        }
+        if allocations
+            .iter()
+            .any(|allocation| allocation.client_status == "failed")
+        {
+            return Ok(NomadExecutionState::Failed);
+        }
+        if allocations
+            .iter()
+            .all(|allocation| allocation.client_status == "complete")
+        {
+            return Ok(NomadExecutionState::Succeeded);
+        }
+        Ok(NomadExecutionState::Monitoring)
+    }
+
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {
         let job_id = deterministic_job_name(&self.config, shared_build_key);
         let response = self
@@ -100,15 +185,7 @@ impl NomadClient {
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|_| io::Error::other("Nomad job submission failed"))?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAXIMUM_NOMAD_RESPONSE_BYTES)
-        {
-            return Err(io::Error::other("Nomad job submission failed"));
-        }
-        let parsed: SubmissionResponse =
-            serde_json::from_reader(response.take(MAXIMUM_NOMAD_RESPONSE_BYTES + 1))
-                .map_err(|_| io::Error::other("Nomad job submission failed"))?;
+        let parsed: SubmissionResponse = bounded_json(response, "Nomad job submission failed")?;
         if parsed.eval_id.is_empty() || parsed.eval_id.len() > 256 {
             return Err(io::Error::other("Nomad job submission failed"));
         }
@@ -117,6 +194,27 @@ impl NomadClient {
             evaluation_id: parsed.eval_id,
         })
     }
+}
+
+fn bounded_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    failure: &'static str,
+) -> io::Result<T> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAXIMUM_NOMAD_RESPONSE_BYTES)
+    {
+        return Err(io::Error::other(failure));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAXIMUM_NOMAD_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| io::Error::other(failure))?;
+    if bytes.len() as u64 > MAXIMUM_NOMAD_RESPONSE_BYTES {
+        return Err(io::Error::other(failure));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| io::Error::other(failure))
 }
 
 pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u8]) -> String {

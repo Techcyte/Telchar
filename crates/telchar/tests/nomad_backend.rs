@@ -6,10 +6,17 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use telchar::config::ServiceConfig;
-use telchar::nomad_backend::{deterministic_job_name, render_job, NomadClient};
+use telchar::nomad_backend::{
+    deterministic_job_name, render_job, NomadClient, NomadExecutionState,
+};
+
+static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn renders_operator_selected_driver_and_stable_backend_bound_job() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
     let root = fixture_root();
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -81,6 +88,9 @@ args = ["--stdio"]
 
 #[test]
 fn submits_one_deterministic_job_with_operator_authentication() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
     let token_root = fixture_root();
     let token_path = token_root.join("nomad.token");
     fs::write(&token_path, "fixture-token\n").expect("token writes");
@@ -145,6 +155,9 @@ fn submits_one_deterministic_job_with_operator_authentication() {
 
 #[test]
 fn rejects_invalid_configured_tls_material() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
     let root = fixture_root();
     let ca_path = root.join("ca.pem");
     fs::write(&ca_path, "not a certificate\n").expect("CA writes");
@@ -195,6 +208,176 @@ command = "/bin/true"
     let error = NomadClient::new(config).err().expect("invalid CA rejects");
     assert_eq!(error.to_string(), "Nomad client configuration failed");
     fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn monitors_only_the_exact_backend_bound_job() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let job_id = deterministic_job_name(&config, b"shared-build-key");
+    let expected_job_id = job_id.clone();
+    let server = thread::spawn(move || {
+        let (mut job_request, _) = listener.accept().expect("job request accepts");
+        let request = read_http_request(&mut job_request);
+        assert!(request.starts_with(&format!(
+            "GET /v1/job/{expected_job_id}?namespace=telchar HTTP/1.1\r\n"
+        )));
+        write_json_response(
+            &mut job_request,
+            200,
+            &format!(
+                r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+
+        let (mut allocations_request, _) = listener.accept().expect("allocations request accepts");
+        let request = read_http_request(&mut allocations_request);
+        assert!(request.starts_with(&format!(
+            "GET /v1/job/{expected_job_id}/allocations?namespace=telchar HTTP/1.1\r\n"
+        )));
+        write_json_response(
+            &mut allocations_request,
+            200,
+            r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#,
+        );
+    });
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    assert_eq!(
+        client.status(&job_id).expect("Nomad job status reads"),
+        NomadExecutionState::Monitoring
+    );
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn maps_allocation_terminal_states_and_missing_jobs() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    for (status, expected) in [
+        ("complete", NomadExecutionState::Succeeded),
+        ("failed", NomadExecutionState::Failed),
+    ] {
+        let root = fixture_root();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("fixture address reads")
+        );
+        let config = load_nomad_config(&root, &endpoint, None);
+        let job_id = deterministic_job_name(&config, b"shared-build-key");
+        let expected_job_id = job_id.clone();
+        let server = thread::spawn(move || {
+            let (mut job_request, _) = listener.accept().expect("job request accepts");
+            let _ = read_http_request(&mut job_request);
+            write_json_response(
+                &mut job_request,
+                200,
+                &format!(
+                    r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                ),
+            );
+            let (mut allocations_request, _) =
+                listener.accept().expect("allocations request accepts");
+            let _ = read_http_request(&mut allocations_request);
+            write_json_response(
+                &mut allocations_request,
+                200,
+                &format!(r#"[{{"ID":"allocation-1","ClientStatus":"{status}"}}]"#),
+            );
+        });
+        let client = NomadClient::new(config).expect("Nomad client constructs");
+        assert_eq!(client.status(&job_id).expect("status reads"), expected);
+        server.join().expect("HTTP fixture joins");
+        fs::remove_dir_all(root).expect("fixture removes");
+    }
+
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let job_id = deterministic_job_name(&config, b"shared-build-key");
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().expect("job request accepts");
+        let _ = read_http_request(&mut request);
+        write_json_response(&mut request, 404, r#"{"error":"job not found"}"#);
+    });
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    assert_eq!(
+        client.status(&job_id).expect("missing status reads"),
+        NomadExecutionState::Missing
+    );
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn rejects_foreign_job_at_deterministic_identity() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let job_id = deterministic_job_name(&config, b"shared-build-key");
+    let expected_job_id = job_id.clone();
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().expect("job request accepts");
+        let _ = read_http_request(&mut request);
+        write_json_response(
+            &mut request,
+            200,
+            &format!(
+                r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"other","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+    });
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    let error = client.status(&job_id).expect_err("foreign job rejects");
+    assert_eq!(error.to_string(), "Nomad job monitoring failed");
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout sets");
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = stream.read(&mut buffer).expect("request reads");
+        assert!(count > 0, "request ended before headers");
+        request.extend_from_slice(&buffer[..count]);
+        if request.windows(4).any(|part| part == b"\r\n\r\n") {
+            return String::from_utf8(request).expect("request is UTF-8");
+        }
+    }
+}
+
+fn write_json_response(stream: &mut std::net::TcpStream, status: u16, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("response writes");
 }
 
 fn load_nomad_config(
