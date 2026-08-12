@@ -1454,10 +1454,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 ### Nomad backend
 
-- [ ] T134 Define and parse the minimum Nomad backend configuration
+- [x] T134 Define and parse the minimum Nomad backend configuration
   - Depends on: T121, T126
-  - Outcome: operator configuration supplies the Nomad endpoint, namespace, protected credential files, system/features, task driver, resources, deterministic job-name scope, polling bound, and runtime bound.
-  - Verify: strict configuration and rendered-job tests.
+  - Outcome: operator configuration supplies independently named Nomad targets with endpoint, namespace, protected credential files, system/features, generic operator-controlled task driver configuration, bounded resources, deterministic job-name scope, polling bound, runtime bound, and permits.
+  - Red: strict configuration tests initially lacked Nomad targets, cross-kind backend-name validation, protected Nomad credentials, bounded generic driver configuration, and deterministic rendered jobs.
+  - Verify: `nix develop -c cargo test --locked -p telchar --test service_config --test build_backend --test nomad_backend`; all-target compilation; clippy with warnings denied; canonical formatting.
+  - Evidence: repeated `[[backends.nomad]]` entries support distinct clusters and drivers; validation bounds credentials, endpoints, resources, polling, runtime, driver configuration depth/count/size, and global backend names; `render_job` binds deterministic SHA-256-derived job identity to the exact backend name, namespace, system, driver, resources, and operator configuration. Changeset `033d6e74` plus backend-derived multi-system routing in `d30327f0`.
 
 - [ ] T135 Provision a real Nomad development fixture
   - Depends on: T134
