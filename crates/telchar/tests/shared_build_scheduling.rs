@@ -102,6 +102,46 @@ fn active_execution_limit_is_atomic_and_releases_on_terminal_failure() {
 }
 
 #[test]
+fn next_eligible_build_round_robins_subjects_and_preserves_subject_fifo() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let alice_first = "/nix/store/88888888888888888888888888888888-alice-first.drv";
+    let alice_second = "/nix/store/99999999999999999999999999999999-alice-second.drv";
+    let bob_first = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bob-first.drv";
+    claim(&fixture, alice_first, 8);
+    claim(&fixture, alice_second, 9);
+    claim(&fixture, bob_first, 10);
+    telchar::persistence::enqueue_shared_build(fixture.url(), alice_first, "alice", 3)
+        .expect("Alice first enqueues");
+    telchar::persistence::enqueue_shared_build(fixture.url(), alice_second, "alice", 3)
+        .expect("Alice second enqueues");
+    telchar::persistence::enqueue_shared_build(fixture.url(), bob_first, "bob", 3)
+        .expect("Bob first enqueues");
+
+    assert_eq!(
+        telchar::persistence::read_next_queued_shared_build(fixture.url(), None, 16)
+            .expect("next build reads")
+            .expect("next build exists")
+            .derivation_path,
+        alice_first
+    );
+    assert_eq!(
+        telchar::persistence::read_next_queued_shared_build(fixture.url(), Some("alice"), 16)
+            .expect("next build reads")
+            .expect("next build exists")
+            .derivation_path,
+        bob_first
+    );
+    assert_eq!(
+        telchar::persistence::read_next_queued_shared_build(fixture.url(), Some("bob"), 16)
+            .expect("next build reads")
+            .expect("next build exists")
+            .derivation_path,
+        alice_first
+    );
+}
+
+#[test]
 fn coalesced_follower_cannot_replace_the_quota_owner() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

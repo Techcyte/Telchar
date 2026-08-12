@@ -387,6 +387,52 @@ pub fn read_queued_shared_builds(
         .collect()
 }
 
+pub fn read_next_queued_shared_build(
+    database_url: &str,
+    after_quota_subject: Option<&str>,
+    maximum_subjects: usize,
+) -> Result<Option<SharedBuildQueueEntry>, SharedBuildError> {
+    if database_url.trim().is_empty()
+        || maximum_subjects == 0
+        || maximum_subjects > 256
+        || after_quota_subject.is_some_and(|subject| {
+            subject.is_empty()
+                || subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+                || subject.contains('\0')
+        })
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let maximum_subjects = i64::try_from(maximum_subjects)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let rows = client
+        .query(
+            "SELECT DISTINCT ON (quota_subject)
+                    derivation_path, quota_subject, queue_position, queued_at
+             FROM shared_builds
+             WHERE state = 'claimed' AND quota_subject IS NOT NULL
+             ORDER BY quota_subject, queue_position
+             LIMIT $1",
+            &[&maximum_subjects],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let mut entries = rows
+        .into_iter()
+        .map(|row| decode_shared_build_queue_entry(&row).map_err(SharedBuildError))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|left, right| left.quota_subject.cmp(&right.quota_subject));
+    let selected = after_quota_subject
+        .and_then(|subject| {
+            entries
+                .iter()
+                .position(|entry| entry.quota_subject.as_str() > subject)
+        })
+        .or_else(|| (!entries.is_empty()).then_some(0));
+    Ok(selected.map(|index| entries.swap_remove(index)))
+}
+
 fn decode_shared_build_queue_entry(row: &Row) -> Result<SharedBuildQueueEntry, SharedBuildFailure> {
     let derivation_path: String = row.try_get(0).map_err(|_| SharedBuildFailure::Query)?;
     let quota_subject: String = row.try_get(1).map_err(|_| SharedBuildFailure::Query)?;
