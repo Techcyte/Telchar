@@ -7,8 +7,10 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use telchar::nomad_callback::{AllocationVerifier, CallbackAdmission};
-use telchar::nomad_transfer_authentication::{HmacCallbackVerifier, HmacVerificationPolicy};
+use telchar::nomad_callback::{AllocationVerifier, CallbackAdmission, ReplayAuthority};
+use telchar::nomad_transfer_authentication::{
+    HmacCallbackVerifier, HmacVerificationPolicy, VerifiedHmacRequest,
+};
 use telchar::nomad_transfer_protocol::{
     encode_metadata, write_frame, Authentication, AuthenticationProof, Direction, Frame, FrameKind,
     ProtocolLimits,
@@ -36,6 +38,26 @@ impl AllocationVerifier for RecordingAllocationVerifier {
         } else {
             Ok(())
         }
+    }
+}
+
+#[derive(Default)]
+struct RecordingReplayAuthority {
+    calls: RefCell<Vec<(String, String)>>,
+    accept: bool,
+}
+
+impl ReplayAuthority for RecordingReplayAuthority {
+    fn reserve(
+        &self,
+        authentication: &Authentication,
+        verified: &VerifiedHmacRequest,
+    ) -> io::Result<bool> {
+        self.calls.borrow_mut().push((
+            authentication.allocation_id.clone(),
+            verified.nonce().to_owned(),
+        ));
+        Ok(self.accept)
     }
 }
 
@@ -153,6 +175,23 @@ fn admits_one_authenticated_exact_allocation_session() {
             "build".to_owned()
         )]
     );
+}
+
+#[test]
+fn requires_replay_reservation_before_allocation_lookup() {
+    let allocation = RecordingAllocationVerifier::default();
+    let replay = RecordingReplayAuthority::default();
+    let mut admission = CallbackAdmission::with_replay(hmac_verifier(), allocation, replay, 4096);
+
+    assert!(admission
+        .admit(
+            &frame(&authentication("request-durable")),
+            "POST",
+            "/callback",
+            UNIX_EPOCH + Duration::from_secs(NOW),
+        )
+        .is_err());
+    assert!(admission.allocation_verifier().calls.borrow().is_empty());
 }
 
 #[test]

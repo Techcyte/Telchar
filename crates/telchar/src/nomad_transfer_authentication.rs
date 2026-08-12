@@ -63,7 +63,7 @@ impl HmacCallbackVerifier {
         method: &str,
         path: &str,
         now: SystemTime,
-    ) -> io::Result<()> {
+    ) -> io::Result<VerifiedHmacRequest> {
         let AuthenticationProof::Hmac {
             capability,
             expiry,
@@ -132,12 +132,31 @@ impl HmacCallbackVerifier {
             .checked_add(self.policy.nonce_retention.as_secs())
             .ok_or_else(|| invalid("Nomad callback nonce retention is invalid"))?;
         self.nonces.insert(nonce.clone(), retained_until);
-        Ok(())
+        Ok(VerifiedHmacRequest {
+            nonce: nonce.clone(),
+            expires_at: UNIX_EPOCH + Duration::from_secs(retained_until),
+        })
     }
 
     fn remove_expired_nonces(&mut self, now: u64) {
         self.nonces
             .retain(|_, retained_until| *retained_until > now);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedHmacRequest {
+    nonce: String,
+    expires_at: SystemTime,
+}
+
+impl VerifiedHmacRequest {
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    pub fn expires_at(&self) -> SystemTime {
+        self.expires_at
     }
 }
 
