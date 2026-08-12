@@ -116,6 +116,7 @@ pub fn run_worker_session(
     disk_reserve: crate::disk_reserve::DiskReserve,
     disk_probe: &dyn crate::disk_reserve::DiskReserveProbe,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
+    shared_build_scheduler: &crate::shared_build_scheduler::SharedBuildScheduler,
     scheduling_limits: crate::config::SchedulingLimits,
 ) -> io::Result<()> {
     let mut inbound_budget =
@@ -551,19 +552,15 @@ pub fn run_worker_session(
                                 quota_subject,
                                 scheduling_limits.maximum_queued_builds(),
                             )
+                            .map_err(|error| io::Error::other(shared_build_error_message(&error)))
                             .and_then(|_| {
-                                crate::persistence::start_queued_shared_build(
-                                    database_url,
-                                    derivation_path,
-                                    scheduling_limits.maximum_active_builds(),
-                                )
-                                .map(|_| ())
+                                shared_build_scheduler.wait_for_admission(derivation_path)
                             }) {
                                 let _ = crate::persistence::complete_shared_build_failure(
                                     database_url,
                                     derivation_path,
                                     "scheduling-failure",
-                                    &serde_json::json!({"failure": error.failure().as_str()}),
+                                    &serde_json::json!({"failure": execution_error_reason(&error)}),
                                     deployment.output_retention().duration(),
                                 );
                                 let _ = leader.complete(Err(
@@ -572,7 +569,7 @@ pub fn run_worker_session(
                                 return reject(
                                     &mut output,
                                     "shared-build-scheduling",
-                                    shared_build_error_message(&error),
+                                    "shared build scheduling failed",
                                 );
                             }
                             let result = build_executor.execute_with_logs(

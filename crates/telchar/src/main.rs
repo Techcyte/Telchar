@@ -450,6 +450,12 @@ fn run_daemon() -> io::Result<()> {
     );
     let backends = Arc::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
+    let scheduling_config = config.clone();
+    let shared_build_scheduler =
+        Arc::new(telchar::shared_build_scheduler::SharedBuildScheduler::new(
+            database_url.clone(),
+            move |quota_subject| scheduling_config.scheduling_limits(quota_subject),
+        ));
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
@@ -484,6 +490,7 @@ fn run_daemon() -> io::Result<()> {
             &disk_probe,
             &backends,
             &shared_builds,
+            &shared_build_scheduler,
         );
     }
     let maintenance_database_url = database_url.clone();
@@ -554,6 +561,7 @@ fn run_daemon() -> io::Result<()> {
         let rate_admission = rate_admission.clone();
         let backends = Arc::clone(&backends);
         let shared_builds = Arc::clone(&shared_builds);
+        let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
@@ -572,6 +580,7 @@ fn run_daemon() -> io::Result<()> {
                         &telchar::disk_reserve::OsDiskReserveProbe,
                         &backends,
                         &shared_builds,
+                        &shared_build_scheduler,
                     )
                 });
             if let Err(error) = result {
@@ -601,6 +610,7 @@ fn serve_connection(
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
     backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
+    shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
@@ -615,6 +625,7 @@ fn serve_connection(
         disk_probe,
         backends,
         shared_builds,
+        shared_build_scheduler,
     )
 }
 
@@ -632,6 +643,7 @@ fn serve_accepted_connection(
     disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
     backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
+    shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -703,6 +715,7 @@ fn serve_accepted_connection(
             disk_reserve,
             disk_probe,
             shared_builds,
+            shared_build_scheduler,
             service_config.scheduling_limits(&connection.envelope().requester.quota_subject),
         )
     })();
