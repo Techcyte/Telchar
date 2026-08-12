@@ -5,7 +5,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use telchar::backend::{
     BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildStatus, OutputTrust,
 };
@@ -108,7 +113,11 @@ args = ["--stdio"]
     assert_ne!(first, other);
     assert!(first.starts_with("telchar-prod-"));
 
-    let job = render_job(backend, b"shared-build-key");
+    let job = render_job(backend, b"shared-build-key").expect("job renders");
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"],
+        "workload-identity"
+    );
     assert_eq!(job["Job"]["ID"], first);
     assert_eq!(job["Job"]["Namespace"], "telchar");
     assert_eq!(
@@ -164,6 +173,137 @@ args = ["--stdio"]
         "telchar-transfer"
     );
     assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["TTL"].is_null());
+
+    unsafe {
+        match saved {
+            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
+            None => std::env::remove_var("TELCHAR_CONFIG"),
+        }
+    }
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn renders_short_lived_hmac_capability_without_backend_secret() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let secret_path = root.join("transfer.key");
+    fs::write(&secret_path, "backend-signing-secret\n").expect("secret writes");
+    fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600))
+        .expect("secret permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.nomad]]
+name = "nomad-hmac"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.example:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar-test"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+transfer_endpoint = "http://telchar.example:7443"
+
+[backends.nomad.transfer_authentication]
+mode = "hmac"
+key_id = "primary"
+secret_file = {secret_path:?}
+
+[backends.nomad.store]
+mode = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+[backends.nomad.transfer_limits]
+maximum_manifest_paths = 1024
+maximum_manifest_bytes = 1048576
+maximum_input_nar_bytes = 1073741824
+maximum_total_input_bytes = 8589934592
+maximum_output_nar_bytes = 1073741824
+maximum_total_output_bytes = 8589934592
+maximum_frame_metadata_bytes = 65536
+stream_buffer_bytes = 262144
+maximum_live_log_chunk_bytes = 65536
+live_log_queue_bytes = 1048576
+transfer_idle_timeout_seconds = 30
+setup_timeout_seconds = 300
+output_collection_timeout_seconds = 300
+authentication_lifetime_seconds = 300
+clock_skew_seconds = 30
+nonce_retention_seconds = 600
+reconnect_timeout_seconds = 30
+maximum_diagnostic_bytes = 65536
+
+[backends.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 512
+disk_mb = 1024
+
+[backends.nomad.driver_config]
+command = "/opt/telchar/bin/worker"
+"#
+        ),
+    )
+    .expect("configuration writes");
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
+        .expect("configuration permissions set");
+    let saved = std::env::var_os("TELCHAR_CONFIG");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    let config = ServiceConfig::load().expect("configuration loads");
+
+    let job =
+        render_job(&config.nomad_backends()[0], b"shared-build-key").expect("HMAC job renders");
+    let environment = &job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"];
+    assert_eq!(environment["TELCHAR_TRANSFER_AUTHENTICATION"], "hmac");
+    let capability = environment["TELCHAR_TRANSFER_CAPABILITY"]
+        .as_str()
+        .expect("capability is rendered");
+    let (encoded_claims, encoded_signature) = capability
+        .split_once('.')
+        .expect("capability has claims and signature");
+    let claims: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(encoded_claims)
+            .expect("claims decode"),
+    )
+    .expect("claims parse");
+    assert_eq!(claims["version"], 1);
+    assert_eq!(claims["key_id"], "primary");
+    assert_eq!(claims["backend"], "nomad-hmac");
+    assert_eq!(claims["namespace"], "telchar");
+    assert_eq!(
+        claims["job_id"],
+        deterministic_job_name(&config.nomad_backends()[0], b"shared-build-key")
+    );
+    assert_eq!(
+        claims["shared_build_digest"],
+        URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
+    );
+    assert!(claims["allocation_id"].is_null());
+    assert!(claims["request_key"]
+        .as_str()
+        .is_some_and(|key| !key.is_empty()));
+    assert!(
+        claims["expires_at"].as_u64().expect("expiry is numeric")
+            > claims["issued_at"].as_u64().expect("issue time is numeric")
+    );
+    let mut verifier = Hmac::<Sha256>::new_from_slice(b"backend-signing-secret\n")
+        .expect("fixture signing key is valid");
+    verifier.update(encoded_claims.as_bytes());
+    verifier
+        .verify_slice(
+            &URL_SAFE_NO_PAD
+                .decode(encoded_signature)
+                .expect("signature decodes"),
+        )
+        .expect("capability signature verifies");
+    assert!(!capability.contains("backend-signing-secret"));
+    assert!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Identity"].is_null());
 
     unsafe {
         match saved {

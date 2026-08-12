@@ -1,7 +1,10 @@
 use std::fs;
 use std::io::{self, Read};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Certificate, Identity};
@@ -221,7 +224,7 @@ impl NomadClient {
             .client
             .post(format!("{}/v1/jobs", self.config.endpoint()))
             .query(&[("namespace", self.config.namespace())])
-            .json(&render_job(&self.config, shared_build_key))
+            .json(&render_job(&self.config, shared_build_key)?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|_| io::Error::other("Nomad job submission failed"))?;
@@ -266,7 +269,15 @@ pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u
     format!("{}-{suffix}", config.job_name_scope())
 }
 
-pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value {
+pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> io::Result<Value> {
+    render_job_at(config, shared_build_key, SystemTime::now())
+}
+
+fn render_job_at(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    issued_at: SystemTime,
+) -> io::Result<Value> {
     let mut task = json!({
         "Name": "build",
         "Driver": config.driver(),
@@ -281,15 +292,31 @@ pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value
             "TELCHAR_NIX_STORE_URI": config.store().uri(),
         },
     });
-    if let NomadTransferAuthentication::WorkloadIdentity { .. } = config.transfer_authentication() {
-        task["Identity"] = json!({
-            "Env": true,
-            "File": false,
-            "Audiences": [config
-                .transfer_authentication()
-                .audience()
-                .expect("workload identity audience is configured")],
-        });
+    match config.transfer_authentication() {
+        NomadTransferAuthentication::WorkloadIdentity { .. } => {
+            task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");
+            task["Identity"] = json!({
+                "Env": true,
+                "File": false,
+                "Audiences": [config
+                    .transfer_authentication()
+                    .audience()
+                    .expect("workload identity audience is configured")],
+            });
+        }
+        NomadTransferAuthentication::Hmac {
+            key_id,
+            secret_file,
+        } => {
+            task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("hmac");
+            task["Env"]["TELCHAR_TRANSFER_CAPABILITY"] = Value::from(hmac_capability(
+                config,
+                shared_build_key,
+                key_id,
+                secret_file,
+                issued_at,
+            )?);
+        }
     }
     let mut tasks = Vec::with_capacity(2);
     if let Some(prestart) = config.prestart() {
@@ -314,7 +341,7 @@ pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value
     group.insert("Name".to_owned(), Value::String("build".to_owned()));
     group.insert("Count".to_owned(), Value::from(1));
     group.insert("Tasks".to_owned(), Value::Array(tasks));
-    json!({
+    Ok(json!({
         "Job": {
             "ID": deterministic_job_name(config, shared_build_key),
             "Name": deterministic_job_name(config, shared_build_key),
@@ -327,7 +354,60 @@ pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> Value
                 "telchar_system": config.target().system(),
             },
         }
-    })
+    }))
+}
+
+fn hmac_capability(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    key_id: &str,
+    secret_file: &std::path::Path,
+    issued_at: SystemTime,
+) -> io::Result<String> {
+    let secret = fs::read(secret_file)
+        .map_err(|_| io::Error::other("Nomad transfer HMAC secret could not be read"))?;
+    let issued_at = issued_at
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| io::Error::other("Nomad transfer HMAC clock is invalid"))?
+        .as_secs();
+    let expires_at = issued_at
+        .checked_add(config.transfer_limits().authentication_lifetime().as_secs())
+        .ok_or_else(|| io::Error::other("Nomad transfer HMAC lifetime is invalid"))?;
+    let shared_build_digest = Sha256::digest(shared_build_key);
+    let nonce = Sha256::digest(
+        [
+            shared_build_key,
+            config.target().name().as_bytes(),
+            config.namespace().as_bytes(),
+            &issued_at.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    let request_key = Sha256::digest([secret.as_slice(), shared_build_key, &nonce].concat());
+    let claims = json!({
+        "version": 1,
+        "key_id": key_id,
+        "backend": config.target().name(),
+        "namespace": config.namespace(),
+        "job_id": deterministic_job_name(config, shared_build_key),
+        "shared_build_digest": URL_SAFE_NO_PAD.encode(shared_build_digest),
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "nonce": URL_SAFE_NO_PAD.encode(nonce),
+        "request_key": URL_SAFE_NO_PAD.encode(request_key),
+    });
+    let encoded_claims = URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&claims).map_err(|_| {
+            io::Error::other("Nomad transfer HMAC capability could not be encoded")
+        })?);
+    let mut signer = Hmac::<Sha256>::new_from_slice(&secret)
+        .map_err(|_| io::Error::other("Nomad transfer HMAC secret is invalid"))?;
+    signer.update(encoded_claims.as_bytes());
+    let signature = signer.finalize().into_bytes();
+    Ok(format!(
+        "{encoded_claims}.{}",
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
 }
 
 fn duration_nanoseconds(duration: std::time::Duration) -> u64 {

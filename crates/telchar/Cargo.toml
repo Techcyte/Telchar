@@ -23,6 +23,7 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 sha2 = "0.10"
+hmac = "0.12"
 base64 = "0.22"
 postgres = "0.19"
 toml = "0.8"
