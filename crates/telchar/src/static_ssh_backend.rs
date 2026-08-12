@@ -444,6 +444,10 @@ impl ChildGuard {
 
     fn kill_and_reap(&mut self) {
         if let Some(mut child) = self.child.take() {
+            let pid = rustix::process::Pid::from_raw(child.id() as rustix::process::RawPid);
+            if let Some(pid) = pid {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
         }

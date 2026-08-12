@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telchar::backend::{BuildBackend, BuildExecution};
 use telchar::config::ServiceConfig;
@@ -145,6 +146,138 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
         }
     }
     fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn timeout_terminates_the_static_ssh_process_group() {
+    let fixture = BlockingTransportFixture::new("timeout");
+    let mut backend = fixture.backend();
+    let build = admitted_request();
+    let execution = BuildExecution::new("request-timeout", &build, Duration::from_millis(50))
+        .expect("execution is valid");
+
+    let error = backend
+        .execute_with_logs(&execution, &mut |_| Ok(()), &mut || Ok(false))
+        .expect_err("blocked transport times out");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    fixture.assert_descendant_stopped();
+}
+
+#[test]
+fn cancellation_terminates_the_static_ssh_process_group() {
+    let fixture = BlockingTransportFixture::new("cancel");
+    let mut backend = fixture.backend();
+    let build = admitted_request();
+    let execution = BuildExecution::new("request-cancel", &build, Duration::from_secs(1))
+        .expect("execution is valid");
+
+    let error = backend
+        .execute_with_logs(&execution, &mut |_| Ok(()), &mut || {
+            Ok(fixture.pid_path.exists())
+        })
+        .expect_err("cancelled transport stops");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
+    fixture.assert_descendant_stopped();
+}
+
+struct BlockingTransportFixture {
+    root: std::path::PathBuf,
+    config: telchar::config::StaticSshBackendConfig,
+    pid_path: std::path::PathBuf,
+}
+
+impl BlockingTransportFixture {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "telchar-static-ssh-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("fixture root creates");
+        let identity = root.join("identity");
+        let known_hosts = root.join("known-hosts");
+        let ssh = root.join("ssh");
+        let pid_path = root.join("descendant-pid");
+        let config_path = root.join("telchar.toml");
+        fs::write(&identity, "private-key").expect("identity writes");
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o600))
+            .expect("identity permissions set");
+        fs::write(&known_hosts, "builder ssh-ed25519 AAAA\n").expect("known hosts writes");
+        fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\ntrap 'exit 0' TERM INT\nsh -c 'trap \"exit 0\" TERM INT; printf %s $$ > \"{}\"; while :; do sleep 1; done' &\nwait\n",
+                pid_path.display()
+            ),
+        )
+        .expect("SSH program writes");
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755))
+            .expect("SSH program permissions set");
+        fs::write(
+            &config_path,
+            format!(
+                "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+                identity.display(),
+                known_hosts.display(),
+                ssh.display()
+            ),
+        )
+        .expect("configuration writes");
+        let saved = std::env::var_os("TELCHAR_CONFIG");
+        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        let config = ServiceConfig::load()
+            .expect("configuration loads")
+            .static_ssh_backends()[0]
+            .clone();
+        unsafe {
+            match saved {
+                Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
+                None => std::env::remove_var("TELCHAR_CONFIG"),
+            }
+        }
+        Self {
+            root,
+            config,
+            pid_path,
+        }
+    }
+
+    fn backend(&self) -> StaticSshBackend {
+        StaticSshBackend::new(
+            self.config.clone(),
+            GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        )
+    }
+
+    fn assert_descendant_stopped(&self) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !self.pid_path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "transport descendant did not start"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid = fs::read_to_string(&self.pid_path).expect("descendant PID reads");
+        let status = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("process liveness query runs");
+        assert!(!status.success(), "static SSH descendant remains alive");
+    }
+}
+
+impl Drop for BlockingTransportFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 #[test]
