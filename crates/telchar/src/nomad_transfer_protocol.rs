@@ -1,5 +1,8 @@
 use std::io::{self, Read, Write};
 
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
 const MAGIC: &[u8; 4] = b"TLNW";
 const HEADER_BYTES: usize = 16;
 
@@ -19,6 +22,85 @@ pub enum FrameKind {
     OutputNar = 9,
     OutputReceipt = 10,
     BuildResult = 11,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    WorkerToGateway,
+    GatewayToWorker,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Phase {
+    AwaitingAuthentication,
+    AwaitingManifest,
+    ResolvingInputs,
+    Building,
+    CollectingOutputs,
+    Complete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtocolSession {
+    phase: Phase,
+}
+
+impl ProtocolSession {
+    pub const fn new() -> Self {
+        Self {
+            phase: Phase::AwaitingAuthentication,
+        }
+    }
+
+    pub fn accept(&mut self, direction: Direction, kind: FrameKind) -> io::Result<()> {
+        let next = match (self.phase, direction, kind) {
+            (
+                Phase::AwaitingAuthentication,
+                Direction::WorkerToGateway,
+                FrameKind::Authenticate,
+            ) => Phase::AwaitingManifest,
+            (Phase::AwaitingManifest, Direction::GatewayToWorker, FrameKind::InputManifest) => {
+                Phase::ResolvingInputs
+            }
+            (Phase::ResolvingInputs, Direction::WorkerToGateway, FrameKind::ValidPaths)
+            | (Phase::ResolvingInputs, Direction::WorkerToGateway, FrameKind::InputRequest)
+            | (Phase::ResolvingInputs, Direction::GatewayToWorker, FrameKind::InputNar) => {
+                Phase::ResolvingInputs
+            }
+            (Phase::ResolvingInputs, Direction::WorkerToGateway, FrameKind::BuildStarted) => {
+                Phase::Building
+            }
+            (Phase::Building, Direction::WorkerToGateway, FrameKind::LogChunk) => Phase::Building,
+            (Phase::Building, Direction::WorkerToGateway, FrameKind::OutputMetadata) => {
+                Phase::CollectingOutputs
+            }
+            (Phase::CollectingOutputs, Direction::WorkerToGateway, FrameKind::OutputMetadata)
+            | (Phase::CollectingOutputs, Direction::WorkerToGateway, FrameKind::OutputNar)
+            | (Phase::CollectingOutputs, Direction::GatewayToWorker, FrameKind::OutputReceipt) => {
+                Phase::CollectingOutputs
+            }
+            (Phase::CollectingOutputs, Direction::WorkerToGateway, FrameKind::BuildResult) => {
+                Phase::Complete
+            }
+            _ => {
+                return Err(invalid_data(
+                    "Nomad transfer frame is invalid for protocol phase",
+                ))
+            }
+        };
+        self.phase = next;
+        Ok(())
+    }
+
+    pub fn is_complete(self) -> bool {
+        self.phase == Phase::Complete
+    }
+}
+
+impl Default for ProtocolSession {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TryFrom<u16> for FrameKind {
@@ -84,6 +166,23 @@ impl Frame {
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
+}
+
+pub fn encode_metadata<T: Serialize>(value: &T, maximum_bytes: usize) -> io::Result<Vec<u8>> {
+    let encoded = serde_json::to_vec(value)
+        .map_err(|_| invalid_input("Nomad transfer frame metadata is invalid"))?;
+    if encoded.len() > maximum_bytes {
+        return Err(invalid_input("Nomad transfer frame metadata exceeds limit"));
+    }
+    Ok(encoded)
+}
+
+pub fn decode_metadata<T: DeserializeOwned>(encoded: &[u8], maximum_bytes: usize) -> io::Result<T> {
+    if encoded.len() > maximum_bytes {
+        return Err(invalid_data("Nomad transfer frame metadata exceeds limit"));
+    }
+    serde_json::from_slice(encoded)
+        .map_err(|_| invalid_data("Nomad transfer frame metadata is invalid"))
 }
 
 pub fn write_frame(

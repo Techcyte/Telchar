@@ -1,8 +1,16 @@
 use std::io::Cursor;
 
+use serde::{Deserialize, Serialize};
 use telchar::nomad_transfer_protocol::{
-    read_frame, write_frame, Frame, FrameKind, ProtocolLimits, PROTOCOL_VERSION,
+    decode_metadata, encode_metadata, read_frame, write_frame, Direction, Frame, FrameKind,
+    ProtocolLimits, ProtocolSession, PROTOCOL_VERSION,
 };
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct AuthenticationMetadata {
+    backend: String,
+    allocation_id: String,
+}
 
 #[test]
 fn round_trips_every_version_one_frame_kind() {
@@ -32,6 +40,103 @@ fn round_trips_every_version_one_frame_kind() {
             expected
         );
     }
+}
+
+#[test]
+fn round_trips_typed_metadata_with_explicit_bounds() {
+    let expected = AuthenticationMetadata {
+        backend: "nomad-primary".to_owned(),
+        allocation_id: "allocation-1".to_owned(),
+    };
+    let encoded = encode_metadata(&expected, 1024).expect("metadata encodes");
+    assert_eq!(
+        decode_metadata::<AuthenticationMetadata>(&encoded, 1024).expect("metadata decodes"),
+        expected
+    );
+    assert_eq!(
+        encode_metadata(&expected, 4)
+            .expect_err("oversized encoded metadata rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        decode_metadata::<AuthenticationMetadata>(&encoded, 4)
+            .expect_err("oversized received metadata rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn enforces_direction_and_transfer_phase_order() {
+    let mut session = ProtocolSession::new();
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::ValidPaths)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::InputNar)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildStarted)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::LogChunk)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::OutputMetadata)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::OutputNar)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::OutputReceipt)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildResult)
+        .is_ok());
+    assert!(session.is_complete());
+
+    let mut unauthenticated = ProtocolSession::new();
+    assert_eq!(
+        unauthenticated
+            .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
+            .expect_err("input before authentication rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    let mut wrong_direction = ProtocolSession::new();
+    assert_eq!(
+        wrong_direction
+            .accept(Direction::GatewayToWorker, FrameKind::Authenticate)
+            .expect_err("gateway authentication frame rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    let mut premature_output = ProtocolSession::new();
+    premature_output
+        .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+        .expect("authentication accepts");
+    premature_output
+        .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+        .expect("manifest accepts");
+    assert_eq!(
+        premature_output
+            .accept(Direction::WorkerToGateway, FrameKind::OutputMetadata)
+            .expect_err("output before build rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
 }
 
 #[test]
