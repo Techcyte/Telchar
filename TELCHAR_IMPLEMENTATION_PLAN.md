@@ -1438,10 +1438,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
 
 ### Static SSH completion
 
-- [ ] T132 Handle static SSH timeout, failure, and shared-build recovery
+- [x] T132 Handle static SSH timeout, failure, and shared-build recovery
   - Depends on: T125, T130
   - Outcome: authentication, worker protocol, staging, execution, collection, missing-output, timeout, and cancellation failures terminate cleanly without leaking credentials or unbounded data; restart reconciliation imports exact remote outputs when available and otherwise fails the shared build cleanly.
-  - Verify: focused hostile SSH and restart cases.
+  - Red: hostile transport diagnostics exposed the configured destination and identity-file path; blocking descendants proved direct-child termination could hang timeout and cancellation forever; output-only restart recovery always failed even when exact outputs remained on the configured SSH builder.
+  - Verify: hostile diagnostic redaction, runtime timeout, cancellation, process-group cleanup, malformed worker protocol, exact missing remote output, bounded restart timeout, recovered-output success and failure, static SSH 8/8, shared-build recovery 7/7, operation dispatch 40 passed/2 ignored, persistence 69/69, all-target compilation, clippy with warnings denied, canonical formatting, diff, and diagnostics.
+  - Evidence: SSH stderr is drained concurrently through a bounded channel but replaced with a fixed transport diagnostic; runtime and recovery children use dedicated process groups that are killed and reaped on every terminal path; live backend errors become durable `backend-failure`; restart first trusts exact gateway outputs, then reconnects only to the exact configured static SSH backend, queries and imports every expected remote output through worker protocol, verifies gateway presence, and otherwise records immutable `restart-recovery-failed` without resubmission or retry.
 
 - [ ] T133 Verify the static SSH gateway
   - Depends on: T128, T129, T132
