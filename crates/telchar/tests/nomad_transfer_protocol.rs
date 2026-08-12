@@ -75,7 +75,7 @@ fn round_trips_exact_transfer_metadata_contracts() {
         derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
         paths: vec![PathManifestEntry {
             path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned(),
-            nar_hash: "sha256:fixture".to_owned(),
+            nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             nar_size: 42,
             references: vec![],
             deriver: None,
@@ -87,7 +87,7 @@ fn round_trips_exact_transfer_metadata_contracts() {
     };
     let nar = NarMetadata {
         path: manifest.paths[0].path.clone(),
-        nar_hash: "sha256:fixture".to_owned(),
+        nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         nar_size: 42,
     };
     let started = BuildStarted {
@@ -122,6 +122,79 @@ fn round_trips_exact_transfer_metadata_contracts() {
             .kind(),
         std::io::ErrorKind::InvalidData
     );
+}
+
+#[test]
+fn rejects_invalid_manifest_and_path_metadata() {
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();
+    let mut manifest = InputManifest {
+        derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+        paths: vec![PathManifestEntry {
+            path: input.clone(),
+            nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            nar_size: 42,
+            references: vec![],
+            deriver: None,
+        }],
+        outputs: vec![output.clone()],
+    };
+    manifest.validate(8, 1024).expect("valid manifest accepts");
+
+    manifest.paths.push(manifest.paths[0].clone());
+    assert_eq!(
+        manifest
+            .validate(8, 1024)
+            .expect_err("duplicate manifest path rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    manifest.paths.pop();
+
+    manifest.paths[0].nar_hash = "not-a-hash".to_owned();
+    assert_eq!(
+        manifest
+            .validate(8, 1024)
+            .expect_err("invalid NAR hash rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    manifest.paths[0].nar_hash =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned();
+
+    manifest.paths[0].references =
+        vec!["/nix/store/dddddddddddddddddddddddddddddddd-foreign".to_owned()];
+    assert_eq!(
+        manifest
+            .validate(8, 1024)
+            .expect_err("out-of-manifest reference rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    let requested = PathSet {
+        paths: vec![input.clone()],
+    };
+    requested
+        .validate_against(&[input], 8)
+        .expect("admitted path set accepts");
+    assert_eq!(
+        PathSet {
+            paths: vec!["/nix/store/dddddddddddddddddddddddddddddddd-foreign".to_owned()]
+        }
+        .validate_against(&[], 8)
+        .expect_err("out-of-manifest request rejects")
+        .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    NarMetadata {
+        path: output.clone(),
+        nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        nar_size: 1025,
+    }
+    .validate_against(&[output], 1024)
+    .expect_err("oversized NAR metadata rejects");
 }
 
 #[test]

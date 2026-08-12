@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 
 use serde::de::DeserializeOwned;
@@ -43,6 +44,51 @@ pub struct InputManifest {
     pub outputs: Vec<String>,
 }
 
+impl InputManifest {
+    pub fn validate(&self, maximum_paths: usize, maximum_nar_bytes: u64) -> io::Result<()> {
+        validate_store_path(&self.derivation_path, true)?;
+        if self.paths.is_empty()
+            || self.paths.len() > maximum_paths
+            || self.outputs.is_empty()
+            || self.outputs.len() > maximum_paths
+        {
+            return Err(invalid_data(
+                "Nomad transfer manifest path count is invalid",
+            ));
+        }
+        let mut admitted = BTreeSet::new();
+        for entry in &self.paths {
+            entry.validate(maximum_paths, maximum_nar_bytes)?;
+            if !admitted.insert(entry.path.as_str()) {
+                return Err(invalid_data(
+                    "Nomad transfer manifest contains duplicate path",
+                ));
+            }
+        }
+        for entry in &self.paths {
+            if entry
+                .references
+                .iter()
+                .any(|reference| !admitted.contains(reference.as_str()))
+            {
+                return Err(invalid_data(
+                    "Nomad transfer manifest reference is not admitted",
+                ));
+            }
+        }
+        let mut outputs = BTreeSet::new();
+        for output in &self.outputs {
+            validate_store_path(output, false)?;
+            if !outputs.insert(output.as_str()) {
+                return Err(invalid_data(
+                    "Nomad transfer manifest contains duplicate output",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathManifestEntry {
@@ -53,10 +99,50 @@ pub struct PathManifestEntry {
     pub deriver: Option<String>,
 }
 
+impl PathManifestEntry {
+    fn validate(&self, maximum_references: usize, maximum_nar_bytes: u64) -> io::Result<()> {
+        validate_store_path(&self.path, self.path.ends_with(".drv"))?;
+        validate_nar_hash(&self.nar_hash)?;
+        if self.nar_size > maximum_nar_bytes || self.references.len() > maximum_references {
+            return Err(invalid_data("Nomad transfer path metadata exceeds limit"));
+        }
+        let mut references = BTreeSet::new();
+        for reference in &self.references {
+            validate_store_path(reference, reference.ends_with(".drv"))?;
+            if !references.insert(reference) {
+                return Err(invalid_data(
+                    "Nomad transfer path contains duplicate reference",
+                ));
+            }
+        }
+        if let Some(deriver) = &self.deriver {
+            validate_store_path(deriver, true)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathSet {
     pub paths: Vec<String>,
+}
+
+impl PathSet {
+    pub fn validate_against(&self, admitted: &[String], maximum_paths: usize) -> io::Result<()> {
+        if self.paths.len() > maximum_paths {
+            return Err(invalid_data("Nomad transfer path set exceeds limit"));
+        }
+        let admitted = admitted.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let mut paths = BTreeSet::new();
+        for path in &self.paths {
+            validate_store_path(path, path.ends_with(".drv"))?;
+            if !admitted.contains(path.as_str()) || !paths.insert(path) {
+                return Err(invalid_data("Nomad transfer path is not admitted"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -65,6 +151,17 @@ pub struct NarMetadata {
     pub path: String,
     pub nar_hash: String,
     pub nar_size: u64,
+}
+
+impl NarMetadata {
+    pub fn validate_against(&self, admitted: &[String], maximum_nar_bytes: u64) -> io::Result<()> {
+        validate_store_path(&self.path, self.path.ends_with(".drv"))?;
+        validate_nar_hash(&self.nar_hash)?;
+        if self.nar_size > maximum_nar_bytes || !admitted.iter().any(|path| path == &self.path) {
+            return Err(invalid_data("Nomad transfer NAR metadata is not admitted"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -345,6 +442,46 @@ fn validate_lengths(
     }
     if payload_length > limits.maximum_payload_bytes {
         return Err(error("Nomad transfer frame payload exceeds limit"));
+    }
+    Ok(())
+}
+
+fn validate_nar_hash(hash: &str) -> io::Result<()> {
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_data("Nomad transfer NAR hash is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_store_path(path: &str, deriver: bool) -> io::Result<()> {
+    const STORE_DIRECTORY: &str = "/nix/store/";
+    const HASH_LENGTH: usize = 32;
+    const MAXIMUM_BASE_NAME_LENGTH: usize = 211;
+    const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+    let Some(base) = path.strip_prefix(STORE_DIRECTORY) else {
+        return Err(invalid_data("Nomad transfer store path is invalid"));
+    };
+    if base.len() > MAXIMUM_BASE_NAME_LENGTH
+        || base.as_bytes().get(HASH_LENGTH) != Some(&b'-')
+        || base.contains('/')
+    {
+        return Err(invalid_data("Nomad transfer store path is invalid"));
+    }
+    let Some(hash) = base.get(..HASH_LENGTH) else {
+        return Err(invalid_data("Nomad transfer store path is invalid"));
+    };
+    let Some(name) = base.get(HASH_LENGTH + 1..) else {
+        return Err(invalid_data("Nomad transfer store path is invalid"));
+    };
+    if !hash.bytes().all(|byte| HASH_ALPHABET.contains(&byte))
+        || name.is_empty()
+        || !name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+        })
+        || name.ends_with(".drv") != deriver
+    {
+        return Err(invalid_data("Nomad transfer store path is invalid"));
     }
     Ok(())
 }
