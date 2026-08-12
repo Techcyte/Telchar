@@ -1445,10 +1445,12 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: hostile diagnostic redaction, runtime timeout, cancellation, process-group cleanup, malformed worker protocol, exact missing remote output, bounded restart timeout, recovered-output success and failure, static SSH 8/8, shared-build recovery 7/7, operation dispatch 40 passed/2 ignored, persistence 69/69, all-target compilation, clippy with warnings denied, canonical formatting, diff, and diagnostics.
   - Evidence: SSH stderr is drained concurrently through a bounded channel but replaced with a fixed transport diagnostic; runtime and recovery children use dedicated process groups that are killed and reaped on every terminal path; live backend errors become durable `backend-failure`; restart first trusts exact gateway outputs, then reconnects only to the exact configured static SSH backend, queries and imports every expected remote output through worker protocol, verifies gateway presence, and otherwise records immutable `restart-recovery-failed` without resubmission or retry.
 
-- [ ] T133 Verify the static SSH gateway
+- [x] T133 Verify the static SSH gateway
   - Depends on: T128, T129, T132
   - Outcome: pinned stock Nix clients submit identical and distinct derivations through Telchar without knowing which static SSH machine serviced them; duplicates coalesce and distinct builds fan out according to configured compatibility and permits.
-  - Verify: authoritative multi-machine `nixosTest`.
+  - Red: the first four-machine fixture exposed that stock Nix may send an empty `AddMultipleToStore` when it already considers an installable valid, so the fixture could not assume the derivation was present in the gateway store; distinct feature-routed builds also proved each remote Nix daemon must advertise the exact required system feature.
+  - Verify: authoritative four-machine `nixosTest`, one durable attempt for two concurrent identical requests, exact forced-command connection counts per configured builder, disjoint `primary` and `secondary` feature routing, normal stock-Nix output transfer, output contents, gateway `nix-store --verify-path`, all-target compilation, clippy with warnings denied, canonical formatting, and diagnostics.
+  - Evidence: the stock client connects only to Telchar over `ssh-ng`; fixture setup stages derivations into the gateway store without exercising an unsupported standalone copy path; two identical requests share one static SSH execution on the declaration-order primary backend; two distinct requests run through separate one-permit primary and secondary backends selected by exact required features; all three outputs return to the stock client and remain valid in the gateway store.
 
 ### Nomad backend
 
