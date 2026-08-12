@@ -26,6 +26,13 @@ const MAXIMUM_NOMAD_DRIVER_CONFIG_DEPTH: usize = 4;
 const MAXIMUM_NOMAD_RESOURCE: u64 = 16 * 1024 * 1024;
 const MAXIMUM_NOMAD_POLL_INTERVAL_SECONDS: u64 = 300;
 const MAXIMUM_NOMAD_RUNTIME_LIMIT_SECONDS: u64 = 7 * 24 * 60 * 60;
+const MAXIMUM_NOMAD_TRANSFER_PATHS: usize = 1_000_000;
+const MAXIMUM_NOMAD_TRANSFER_BYTES: u64 = i64::MAX as u64;
+const MAXIMUM_NOMAD_TRANSFER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const MAXIMUM_NOMAD_TRANSFER_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+const MAXIMUM_NOMAD_AUTHENTICATION_SECONDS: u64 = 60 * 60;
+const MAXIMUM_NOMAD_NONCE_RETENTION_SECONDS: u64 = 24 * 60 * 60;
+const MAXIMUM_NOMAD_STORE_URI_BYTES: usize = 2_048;
 const DEFAULT_MAXIMUM_QUEUED_BUILDS: usize = 64;
 const DEFAULT_MAXIMUM_ACTIVE_BUILDS: usize = 4;
 const MAXIMUM_SCHEDULING_BUILDS: usize = 65_536;
@@ -145,6 +152,211 @@ impl NomadResources {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NomadTransferAuthentication {
+    WorkloadIdentity {
+        issuer: String,
+        jwks_url: String,
+        audience: String,
+        ca_certificate_file: Option<PathBuf>,
+    },
+    Hmac {
+        key_id: String,
+        secret_file: PathBuf,
+    },
+}
+
+impl NomadTransferAuthentication {
+    pub fn mode(&self) -> &'static str {
+        match self {
+            Self::WorkloadIdentity { .. } => "workload-identity",
+            Self::Hmac { .. } => "hmac",
+        }
+    }
+
+    pub fn issuer(&self) -> Option<&str> {
+        match self {
+            Self::WorkloadIdentity { issuer, .. } => Some(issuer),
+            Self::Hmac { .. } => None,
+        }
+    }
+
+    pub fn jwks_url(&self) -> Option<&str> {
+        match self {
+            Self::WorkloadIdentity { jwks_url, .. } => Some(jwks_url),
+            Self::Hmac { .. } => None,
+        }
+    }
+
+    pub fn audience(&self) -> Option<&str> {
+        match self {
+            Self::WorkloadIdentity { audience, .. } => Some(audience),
+            Self::Hmac { .. } => None,
+        }
+    }
+
+    pub fn ca_certificate_file(&self) -> Option<&Path> {
+        match self {
+            Self::WorkloadIdentity {
+                ca_certificate_file,
+                ..
+            } => ca_certificate_file.as_deref(),
+            Self::Hmac { .. } => None,
+        }
+    }
+
+    pub fn key_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkloadIdentity { .. } => None,
+            Self::Hmac { key_id, .. } => Some(key_id),
+        }
+    }
+
+    pub fn secret_file(&self) -> Option<&Path> {
+        match self {
+            Self::WorkloadIdentity { .. } => None,
+            Self::Hmac { secret_file, .. } => Some(secret_file),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadStoreConfig {
+    uri: String,
+}
+
+impl NomadStoreConfig {
+    pub fn mode(&self) -> &'static str {
+        "daemon"
+    }
+
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NomadTransferLimits {
+    maximum_manifest_paths: usize,
+    maximum_manifest_bytes: u64,
+    maximum_input_nar_bytes: u64,
+    maximum_total_input_bytes: u64,
+    maximum_output_nar_bytes: u64,
+    maximum_total_output_bytes: u64,
+    maximum_frame_metadata_bytes: usize,
+    stream_buffer_bytes: usize,
+    maximum_live_log_chunk_bytes: usize,
+    live_log_queue_bytes: usize,
+    transfer_idle_timeout: Duration,
+    setup_timeout: Duration,
+    output_collection_timeout: Duration,
+    authentication_lifetime: Duration,
+    clock_skew: Duration,
+    nonce_retention: Duration,
+    reconnect_timeout: Duration,
+    maximum_diagnostic_bytes: usize,
+}
+
+impl NomadTransferLimits {
+    pub fn maximum_manifest_paths(self) -> usize {
+        self.maximum_manifest_paths
+    }
+
+    pub fn maximum_manifest_bytes(self) -> u64 {
+        self.maximum_manifest_bytes
+    }
+
+    pub fn maximum_input_nar_bytes(self) -> u64 {
+        self.maximum_input_nar_bytes
+    }
+
+    pub fn maximum_total_input_bytes(self) -> u64 {
+        self.maximum_total_input_bytes
+    }
+
+    pub fn maximum_output_nar_bytes(self) -> u64 {
+        self.maximum_output_nar_bytes
+    }
+
+    pub fn maximum_total_output_bytes(self) -> u64 {
+        self.maximum_total_output_bytes
+    }
+
+    pub fn maximum_frame_metadata_bytes(self) -> usize {
+        self.maximum_frame_metadata_bytes
+    }
+
+    pub fn stream_buffer_bytes(self) -> usize {
+        self.stream_buffer_bytes
+    }
+
+    pub fn maximum_live_log_chunk_bytes(self) -> usize {
+        self.maximum_live_log_chunk_bytes
+    }
+
+    pub fn live_log_queue_bytes(self) -> usize {
+        self.live_log_queue_bytes
+    }
+
+    pub fn transfer_idle_timeout(self) -> Duration {
+        self.transfer_idle_timeout
+    }
+
+    pub fn setup_timeout(self) -> Duration {
+        self.setup_timeout
+    }
+
+    pub fn output_collection_timeout(self) -> Duration {
+        self.output_collection_timeout
+    }
+
+    pub fn authentication_lifetime(self) -> Duration {
+        self.authentication_lifetime
+    }
+
+    pub fn clock_skew(self) -> Duration {
+        self.clock_skew
+    }
+
+    pub fn nonce_retention(self) -> Duration {
+        self.nonce_retention
+    }
+
+    pub fn reconnect_timeout(self) -> Duration {
+        self.reconnect_timeout
+    }
+
+    pub fn maximum_diagnostic_bytes(self) -> usize {
+        self.maximum_diagnostic_bytes
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NomadPrestartConfig {
+    driver: String,
+    driver_config: serde_json::Map<String, serde_json::Value>,
+    resources: NomadResources,
+    timeout: Duration,
+}
+
+impl NomadPrestartConfig {
+    pub fn driver(&self) -> &str {
+        &self.driver
+    }
+
+    pub fn driver_config(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.driver_config
+    }
+
+    pub fn resources(&self) -> NomadResources {
+        self.resources
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NomadBackendConfig {
     target: BackendTarget,
@@ -161,6 +373,11 @@ pub struct NomadBackendConfig {
     job_name_scope: String,
     poll_interval: Duration,
     runtime_limit: Duration,
+    transfer_endpoint: String,
+    transfer_authentication: NomadTransferAuthentication,
+    store: NomadStoreConfig,
+    transfer_limits: NomadTransferLimits,
+    prestart: Option<NomadPrestartConfig>,
 }
 
 impl NomadBackendConfig {
@@ -218,6 +435,26 @@ impl NomadBackendConfig {
 
     pub fn runtime_limit(&self) -> Duration {
         self.runtime_limit
+    }
+
+    pub fn transfer_endpoint(&self) -> &str {
+        &self.transfer_endpoint
+    }
+
+    pub fn transfer_authentication(&self) -> &NomadTransferAuthentication {
+        &self.transfer_authentication
+    }
+
+    pub fn store(&self) -> &NomadStoreConfig {
+        &self.store
+    }
+
+    pub fn transfer_limits(&self) -> NomadTransferLimits {
+        self.transfer_limits
+    }
+
+    pub fn prestart(&self) -> Option<&NomadPrestartConfig> {
+        self.prestart.as_ref()
     }
 }
 
@@ -584,6 +821,65 @@ struct RawNomadBackendConfig {
     job_name_scope: String,
     poll_interval_seconds: u64,
     runtime_limit_seconds: u64,
+    transfer_endpoint: String,
+    transfer_authentication: RawNomadTransferAuthentication,
+    store: RawNomadStoreConfig,
+    transfer_limits: RawNomadTransferLimits,
+    prestart: Option<RawNomadPrestartConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
+enum RawNomadTransferAuthentication {
+    WorkloadIdentity {
+        issuer: String,
+        jwks_url: String,
+        audience: String,
+        ca_certificate_file: Option<PathBuf>,
+    },
+    Hmac {
+        key_id: String,
+        secret_file: PathBuf,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
+enum RawNomadStoreConfig {
+    Daemon { uri: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNomadTransferLimits {
+    maximum_manifest_paths: usize,
+    maximum_manifest_bytes: u64,
+    maximum_input_nar_bytes: u64,
+    maximum_total_input_bytes: u64,
+    maximum_output_nar_bytes: u64,
+    maximum_total_output_bytes: u64,
+    maximum_frame_metadata_bytes: usize,
+    stream_buffer_bytes: usize,
+    maximum_live_log_chunk_bytes: usize,
+    live_log_queue_bytes: usize,
+    transfer_idle_timeout_seconds: u64,
+    setup_timeout_seconds: u64,
+    output_collection_timeout_seconds: u64,
+    authentication_lifetime_seconds: u64,
+    clock_skew_seconds: u64,
+    nonce_retention_seconds: u64,
+    reconnect_timeout_seconds: u64,
+    maximum_diagnostic_bytes: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNomadPrestartConfig {
+    driver: String,
+    #[serde(default)]
+    driver_config: toml::Table,
+    resources: RawNomadResources,
+    timeout_seconds: u64,
 }
 
 #[derive(Deserialize)]
@@ -750,6 +1046,14 @@ fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<No
             ));
         }
         let driver_config = validate_driver_config(backend.driver_config)?;
+        if !valid_nomad_endpoint(&backend.transfer_endpoint) {
+            return Err(invalid("Nomad transfer endpoint is invalid"));
+        }
+        let transfer_authentication =
+            validate_nomad_transfer_authentication(backend.transfer_authentication)?;
+        let store = validate_nomad_store(backend.store)?;
+        let transfer_limits = validate_nomad_transfer_limits(backend.transfer_limits)?;
+        let prestart = backend.prestart.map(validate_nomad_prestart).transpose()?;
         backends.push(NomadBackendConfig {
             target: BackendTarget::new(
                 &backend.name,
@@ -770,9 +1074,146 @@ fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<No
             job_name_scope,
             poll_interval: Duration::from_secs(backend.poll_interval_seconds),
             runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
+            transfer_endpoint: backend.transfer_endpoint,
+            transfer_authentication,
+            store,
+            transfer_limits,
+            prestart,
         });
     }
     Ok(backends)
+}
+
+fn validate_nomad_transfer_authentication(
+    raw: RawNomadTransferAuthentication,
+) -> io::Result<NomadTransferAuthentication> {
+    match raw {
+        RawNomadTransferAuthentication::WorkloadIdentity {
+            issuer,
+            jwks_url,
+            audience,
+            ca_certificate_file,
+        } => {
+            if !valid_nomad_endpoint(&issuer) || !valid_nomad_endpoint(&jwks_url) {
+                return Err(invalid("Nomad workload identity endpoint is invalid"));
+            }
+            let audience =
+                validate_subject(audience, "Nomad workload identity audience is invalid")?;
+            let ca_certificate_file = ca_certificate_file
+                .map(|path| {
+                    validate_public_file(path, "Nomad workload identity CA file is invalid")
+                })
+                .transpose()?;
+            Ok(NomadTransferAuthentication::WorkloadIdentity {
+                issuer,
+                jwks_url,
+                audience,
+                ca_certificate_file,
+            })
+        }
+        RawNomadTransferAuthentication::Hmac {
+            key_id,
+            secret_file,
+        } => Ok(NomadTransferAuthentication::Hmac {
+            key_id: validate_subject(key_id, "Nomad transfer HMAC key ID is invalid")?,
+            secret_file: validate_protected_file(
+                secret_file,
+                "Nomad transfer HMAC secret file is invalid",
+            )?,
+        }),
+    }
+}
+
+fn validate_nomad_store(raw: RawNomadStoreConfig) -> io::Result<NomadStoreConfig> {
+    match raw {
+        RawNomadStoreConfig::Daemon { uri } => {
+            if uri.is_empty()
+                || uri.len() > MAXIMUM_NOMAD_STORE_URI_BYTES
+                || uri
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+            {
+                return Err(invalid("Nomad store URI is invalid"));
+            }
+            Ok(NomadStoreConfig { uri })
+        }
+    }
+}
+
+fn validate_nomad_transfer_limits(raw: RawNomadTransferLimits) -> io::Result<NomadTransferLimits> {
+    if raw.maximum_manifest_paths == 0
+        || raw.maximum_manifest_paths > MAXIMUM_NOMAD_TRANSFER_PATHS
+        || !valid_transfer_bytes(raw.maximum_manifest_bytes)
+        || !valid_transfer_bytes(raw.maximum_input_nar_bytes)
+        || !valid_transfer_bytes(raw.maximum_total_input_bytes)
+        || !valid_transfer_bytes(raw.maximum_output_nar_bytes)
+        || !valid_transfer_bytes(raw.maximum_total_output_bytes)
+        || raw.maximum_input_nar_bytes > raw.maximum_total_input_bytes
+        || raw.maximum_output_nar_bytes > raw.maximum_total_output_bytes
+        || !valid_transfer_memory(raw.maximum_frame_metadata_bytes)
+        || !valid_transfer_memory(raw.stream_buffer_bytes)
+        || !valid_transfer_memory(raw.maximum_live_log_chunk_bytes)
+        || !valid_transfer_memory(raw.live_log_queue_bytes)
+        || raw.maximum_live_log_chunk_bytes > raw.live_log_queue_bytes
+        || !valid_transfer_timeout(raw.transfer_idle_timeout_seconds)
+        || !valid_transfer_timeout(raw.setup_timeout_seconds)
+        || !valid_transfer_timeout(raw.output_collection_timeout_seconds)
+        || raw.authentication_lifetime_seconds == 0
+        || raw.authentication_lifetime_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
+        || raw.clock_skew_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
+        || raw.nonce_retention_seconds == 0
+        || raw.nonce_retention_seconds > MAXIMUM_NOMAD_NONCE_RETENTION_SECONDS
+        || raw.nonce_retention_seconds
+            < raw.authentication_lifetime_seconds + raw.clock_skew_seconds
+        || !valid_transfer_timeout(raw.reconnect_timeout_seconds)
+        || !valid_transfer_memory(raw.maximum_diagnostic_bytes)
+    {
+        return Err(invalid("Nomad transfer limits are invalid"));
+    }
+    Ok(NomadTransferLimits {
+        maximum_manifest_paths: raw.maximum_manifest_paths,
+        maximum_manifest_bytes: raw.maximum_manifest_bytes,
+        maximum_input_nar_bytes: raw.maximum_input_nar_bytes,
+        maximum_total_input_bytes: raw.maximum_total_input_bytes,
+        maximum_output_nar_bytes: raw.maximum_output_nar_bytes,
+        maximum_total_output_bytes: raw.maximum_total_output_bytes,
+        maximum_frame_metadata_bytes: raw.maximum_frame_metadata_bytes,
+        stream_buffer_bytes: raw.stream_buffer_bytes,
+        maximum_live_log_chunk_bytes: raw.maximum_live_log_chunk_bytes,
+        live_log_queue_bytes: raw.live_log_queue_bytes,
+        transfer_idle_timeout: Duration::from_secs(raw.transfer_idle_timeout_seconds),
+        setup_timeout: Duration::from_secs(raw.setup_timeout_seconds),
+        output_collection_timeout: Duration::from_secs(raw.output_collection_timeout_seconds),
+        authentication_lifetime: Duration::from_secs(raw.authentication_lifetime_seconds),
+        clock_skew: Duration::from_secs(raw.clock_skew_seconds),
+        nonce_retention: Duration::from_secs(raw.nonce_retention_seconds),
+        reconnect_timeout: Duration::from_secs(raw.reconnect_timeout_seconds),
+        maximum_diagnostic_bytes: raw.maximum_diagnostic_bytes,
+    })
+}
+
+fn validate_nomad_prestart(raw: RawNomadPrestartConfig) -> io::Result<NomadPrestartConfig> {
+    if !valid_transfer_timeout(raw.timeout_seconds) {
+        return Err(invalid("Nomad prestart timeout is invalid"));
+    }
+    Ok(NomadPrestartConfig {
+        driver: validate_subject(raw.driver, "Nomad prestart task driver is invalid")?,
+        driver_config: validate_driver_config(raw.driver_config)?,
+        resources: validate_nomad_resources(raw.resources)?,
+        timeout: Duration::from_secs(raw.timeout_seconds),
+    })
+}
+
+fn valid_transfer_bytes(value: u64) -> bool {
+    value > 0 && value <= MAXIMUM_NOMAD_TRANSFER_BYTES
+}
+
+fn valid_transfer_memory(value: usize) -> bool {
+    value > 0 && value <= MAXIMUM_NOMAD_TRANSFER_MEMORY_BYTES
+}
+
+fn valid_transfer_timeout(value: u64) -> bool {
+    value > 0 && value <= MAXIMUM_NOMAD_TRANSFER_TIMEOUT_SECONDS
 }
 
 fn validate_unique_backend_names(

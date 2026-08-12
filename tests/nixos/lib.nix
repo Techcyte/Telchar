@@ -583,6 +583,38 @@ rec {
               poll_interval_seconds = 1
               runtime_limit_seconds = 120
 
+              transfer_endpoint = "http://telchar.example:7443"
+
+              [backends.nomad.transfer_authentication]
+              mode = "workload-identity"
+              issuer = "http://nomad.example:4646"
+              jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
+              audience = "telchar-transfer"
+
+              [backends.nomad.store]
+              mode = "daemon"
+              uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+              [backends.nomad.transfer_limits]
+              maximum_manifest_paths = 1024
+              maximum_manifest_bytes = 1048576
+              maximum_input_nar_bytes = 1073741824
+              maximum_total_input_bytes = 8589934592
+              maximum_output_nar_bytes = 1073741824
+              maximum_total_output_bytes = 8589934592
+              maximum_frame_metadata_bytes = 65536
+              stream_buffer_bytes = 262144
+              maximum_live_log_chunk_bytes = 65536
+              live_log_queue_bytes = 1048576
+              transfer_idle_timeout_seconds = 30
+              setup_timeout_seconds = 300
+              output_collection_timeout_seconds = 300
+              authentication_lifetime_seconds = 300
+              clock_skew_seconds = 30
+              nonce_retention_seconds = 600
+              reconnect_timeout_seconds = 30
+              maximum_diagnostic_bytes = 65536
+
               [backends.nomad.resources]
               cpu_mhz = 100
               memory_mb = 128
