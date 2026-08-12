@@ -72,6 +72,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_builds",
         sql: include_str!("../migrations/0009_shared_builds.sql"),
     },
+    Migration {
+        version: 10,
+        name: "shared_build_scheduling",
+        sql: include_str!("../migrations/0010_shared_build_scheduling.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -218,6 +223,87 @@ pub struct SharedBuild {
 pub struct SharedBuildClaim {
     pub ownership: SharedBuildOwnership,
     pub build: SharedBuild,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedBuildQueueEntry {
+    pub derivation_path: String,
+    pub quota_subject: String,
+    pub queue_position: i64,
+    pub queued_at: SystemTime,
+}
+
+pub fn enqueue_shared_build(
+    database_url: &str,
+    derivation_path: &str,
+    quota_subject: &str,
+) -> Result<SharedBuildQueueEntry, SharedBuildError> {
+    validate_shared_build_identity(database_url, derivation_path)?;
+    if quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.contains('\0')
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let row = client
+        .query_opt(
+            "UPDATE shared_builds
+             SET quota_subject = $2,
+                 queue_position = nextval('shared_build_queue_position_seq'),
+                 queued_at = transaction_timestamp()
+             WHERE derivation_path = $1
+               AND state = 'claimed'
+               AND quota_subject IS NULL
+             RETURNING derivation_path, quota_subject, queue_position, queued_at",
+            &[&derivation_path, &quota_subject],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    decode_shared_build_queue_entry(&row).map_err(SharedBuildError)
+}
+
+pub fn read_queued_shared_builds(
+    database_url: &str,
+    limit: usize,
+) -> Result<Vec<SharedBuildQueueEntry>, SharedBuildError> {
+    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let limit =
+        i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query(
+            "SELECT derivation_path, quota_subject, queue_position, queued_at
+             FROM shared_builds
+             WHERE state = 'claimed' AND quota_subject IS NOT NULL
+             ORDER BY queue_position
+             LIMIT $1",
+            &[&limit],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .into_iter()
+        .map(|row| decode_shared_build_queue_entry(&row).map_err(SharedBuildError))
+        .collect()
+}
+
+fn decode_shared_build_queue_entry(row: &Row) -> Result<SharedBuildQueueEntry, SharedBuildFailure> {
+    let derivation_path: String = row.try_get(0).map_err(|_| SharedBuildFailure::Query)?;
+    let quota_subject: String = row.try_get(1).map_err(|_| SharedBuildFailure::Query)?;
+    let queue_position: i64 = row.try_get(2).map_err(|_| SharedBuildFailure::Query)?;
+    let queued_at: SystemTime = row.try_get(3).map_err(|_| SharedBuildFailure::Query)?;
+    if derivation_path.is_empty() || quota_subject.is_empty() || queue_position <= 0 {
+        return Err(SharedBuildFailure::Query);
+    }
+    Ok(SharedBuildQueueEntry {
+        derivation_path,
+        quota_subject,
+        queue_position,
+        queued_at,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
