@@ -4,7 +4,7 @@ use std::fs::Permissions;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -159,70 +159,6 @@ fn run_executor() -> io::Result<()> {
     Ok(())
 }
 
-fn recover_collecting_build_requests(
-    database_url: &str,
-    deployment: &telchar::deployment::DeploymentConfig,
-    recovered: Vec<telchar::persistence::RecoveredCollectingBuildRequest>,
-) -> io::Result<()> {
-    let mut store_export = telchar::store_export::backend_from_environment()?;
-    let mut store_retention = telchar::store_retention::backend_from_environment()?;
-    for recovered in recovered {
-        if recovered.backend_result.classification != "succeeded" {
-            continue;
-        }
-        let outputs = recovered
-            .backend_result
-            .result_metadata
-            .get("outputs")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
-        if outputs.is_empty()
-            || outputs.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
-        {
-            return Err(invalid("collecting result metadata is invalid"));
-        }
-        let mut leases = Vec::with_capacity(outputs.len());
-        for output in outputs {
-            let name = output
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
-            let path = output
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| invalid("collecting result metadata is invalid"))?;
-            telchar::store_export::validate_store_output(Path::new(path), store_export.as_mut())?;
-            leases.push((
-                format!("output-{}-{name}", recovered.execution.attempt.attempt_id),
-                path.to_owned(),
-            ));
-        }
-        let entries = leases
-            .iter()
-            .map(|(lease_id, path)| telchar::store_retention::RetentionEntry::new(lease_id, path))
-            .collect::<Vec<_>>();
-        let retained = store_retention.retain(&entries)?;
-        if telchar::persistence::ensure_request_output_leases(
-            database_url,
-            &recovered.execution.request.request_id,
-            deployment.output_retention().duration(),
-            &leases,
-        )
-        .is_err()
-        {
-            store_retention.rollback(&retained)?;
-            return Err(invalid("collecting output lease recovery failed"));
-        }
-        telchar::persistence::complete_execution_success(
-            database_url,
-            &recovered.execution.attempt.attempt_id,
-            &recovered.backend_result.result_metadata,
-        )
-        .map_err(|_| invalid("collecting terminal transition failed"))?;
-    }
-    Ok(())
-}
-
 fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let telemetry = telemetry::Telemetry::initialize()?;
 
@@ -343,7 +279,7 @@ fn run_daemon() -> io::Result<()> {
         .to_owned();
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 12_i64,
+        latest_migration_version = 13_i64,
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -359,7 +295,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 12_i64,
+        latest_migration_version = 13_i64,
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
@@ -401,25 +337,6 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
-    let recovered_queued_requests =
-        telchar::persistence::recover_queued_build_requests(&database_url, 256)
-            .map_err(|_| invalid("queued request recovery failed"))?;
-    tracing::info!(
-        event = "database.build_request.recovered",
-        operation = "recover-queued",
-        request_state = "queued",
-        recovered_count = recovered_queued_requests.len(),
-        "queued requests recovered"
-    );
-    telchar::persistence::recover_dispatching_attempts(&database_url, 256)
-        .map_err(|_| invalid("dispatching attempt recovery failed"))?;
-    telchar::persistence::recover_backend_pending_attempts(&database_url, 256)
-        .map_err(|_| invalid("backend-pending attempt recovery failed"))?;
-    telchar::persistence::recover_running_attempts(&database_url, 256)
-        .map_err(|_| invalid("running attempt recovery failed"))?;
-    let collecting = telchar::persistence::recover_collecting_attempts(&database_url, 256)
-        .map_err(|_| invalid("collecting attempt recovery failed"))?;
-    recover_collecting_build_requests(&database_url, &deployment, collecting)?;
     let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
     telchar::static_ssh_backend::verify_configured_backends(
         config.static_ssh_backends(),
