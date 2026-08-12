@@ -41,6 +41,11 @@ tokio = { version = "1", features = [
 ] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.14", features = ["transport"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "json",
+  "rustls-tls",
+] }
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
   "gen-tonic",
   "logs",
