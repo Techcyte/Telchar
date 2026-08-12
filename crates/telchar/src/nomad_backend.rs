@@ -70,6 +70,28 @@ struct AllocationResponse {
     client_status: String,
 }
 
+#[derive(Deserialize)]
+struct ExactAllocationResponse {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "Namespace")]
+    namespace: String,
+    #[serde(rename = "JobID")]
+    job_id: String,
+    #[serde(rename = "TaskGroup")]
+    task_group: String,
+    #[serde(rename = "ClientStatus")]
+    client_status: String,
+    #[serde(rename = "TaskStates")]
+    task_states: std::collections::HashMap<String, AllocationTaskState>,
+}
+
+#[derive(Deserialize)]
+struct AllocationTaskState {
+    #[serde(rename = "State")]
+    state: String,
+}
+
 impl NomadClient {
     pub fn new(config: NomadBackendConfig) -> io::Result<Self> {
         let mut headers = HeaderMap::new();
@@ -119,6 +141,46 @@ impl NomadClient {
             .build()
             .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
         Ok(Self { config, client })
+    }
+
+    pub fn verify_allocation(
+        &self,
+        allocation_id: &str,
+        job_id: &str,
+        task: &str,
+    ) -> io::Result<()> {
+        if !valid_nomad_identity(allocation_id)
+            || !valid_nomad_identity(job_id)
+            || !valid_nomad_identity(task)
+        {
+            return Err(io::Error::other("Nomad allocation verification failed"));
+        }
+        let allocation: ExactAllocationResponse = bounded_json(
+            self.client
+                .get(format!(
+                    "{}/v1/allocation/{allocation_id}",
+                    self.config.endpoint()
+                ))
+                .query(&[("namespace", self.config.namespace())])
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .map_err(|_| io::Error::other("Nomad allocation verification failed"))?,
+            "Nomad allocation verification failed",
+        )?;
+        if allocation.id != allocation_id
+            || allocation.namespace != self.config.namespace()
+            || allocation.job_id != job_id
+            || allocation.task_group != "build"
+            || allocation.client_status != "running"
+            || allocation
+                .task_states
+                .get(task)
+                .map(|state| state.state.as_str())
+                != Some("running")
+        {
+            return Err(io::Error::other("Nomad allocation verification failed"));
+        }
+        Ok(())
     }
 
     pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
@@ -237,6 +299,14 @@ impl NomadClient {
             evaluation_id: parsed.eval_id,
         })
     }
+}
+
+fn valid_nomad_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn bounded_json<T: serde::de::DeserializeOwned>(

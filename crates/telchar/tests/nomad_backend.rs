@@ -532,6 +532,80 @@ fn monitors_only_the_exact_backend_bound_job() {
 }
 
 #[test]
+fn verifies_exact_callback_allocation_identity() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("listener address")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().expect("allocation request accepts");
+        assert!(read_http_request(&mut request)
+            .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n"));
+        write_json_response(
+            &mut request,
+            200,
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","ClientStatus":"running","TaskStates":{"prestart":{"State":"dead"},"build":{"State":"running"}}}"#,
+        );
+    });
+
+    client
+        .verify_allocation("allocation-1", "job-1", "build")
+        .expect("exact allocation verifies");
+    server.join().expect("server joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn rejects_foreign_or_terminal_callback_allocation_identity() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    for (name, body) in [
+        (
+            "foreign-job",
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"foreign","TaskGroup":"build","ClientStatus":"running","TaskStates":{"build":{"State":"running"}}}"#,
+        ),
+        (
+            "foreign-task",
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","ClientStatus":"running","TaskStates":{"foreign":{"State":"running"}}}"#,
+        ),
+        (
+            "terminal",
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","ClientStatus":"complete","TaskStates":{"build":{"State":"dead"}}}"#,
+        ),
+    ] {
+        let root = fixture_root();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let config = load_nomad_config(&root, &endpoint, None);
+        let client = NomadClient::new(config).expect("Nomad client constructs");
+        let server = thread::spawn(move || {
+            let (mut request, _) = listener.accept().expect("allocation request accepts");
+            read_http_request(&mut request);
+            write_json_response(&mut request, 200, body);
+        });
+        assert!(
+            client
+                .verify_allocation("allocation-1", "job-1", "build")
+                .is_err(),
+            "{name} allocation must reject"
+        );
+        server.join().expect("server joins");
+        fs::remove_dir_all(root).expect("fixture removes");
+    }
+}
+
+#[test]
 fn maps_allocation_terminal_states_and_missing_jobs() {
     let _guard = CONFIGURATION_TESTS
         .lock()
