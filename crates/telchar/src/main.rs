@@ -451,11 +451,13 @@ fn run_daemon() -> io::Result<()> {
     let backends = Arc::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let scheduling_config = config.clone();
-    let shared_build_scheduler =
-        Arc::new(telchar::shared_build_scheduler::SharedBuildScheduler::new(
+    let shared_build_scheduler = Arc::new(
+        telchar::shared_build_scheduler::SharedBuildScheduler::new(
             database_url.clone(),
             move |quota_subject| scheduling_config.scheduling_limits(quota_subject),
-        ));
+        )
+        .map_err(|_| invalid("shared build scheduler initialization failed"))?,
+    );
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(

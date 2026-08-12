@@ -25,19 +25,18 @@ impl SharedBuildScheduler {
     pub fn new(
         database_url: impl Into<String>,
         limits_for_subject: impl Fn(&str) -> SchedulingLimits + Send + Sync + 'static,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let database_url = database_url.into();
         let last_admitted_subject = persistence::read_shared_build_scheduler_subject(&database_url)
-            .ok()
-            .flatten();
-        Self {
+            .map_err(shared_build_error)?;
+        Ok(Self {
             database_url,
             limits_for_subject: Box::new(limits_for_subject),
             state: Mutex::new(SchedulerState {
                 last_admitted_subject,
             }),
             changed: Condvar::new(),
-        }
+        })
     }
 
     pub fn wait_for_admission(&self, derivation_path: &str) -> io::Result<SharedBuild> {

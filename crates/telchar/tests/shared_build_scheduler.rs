@@ -23,6 +23,15 @@ fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {
 }
 
 #[test]
+fn scheduler_construction_fails_when_durable_rotation_cannot_be_read() {
+    assert!(telchar::shared_build_scheduler::SharedBuildScheduler::new(
+        "postgresql://127.0.0.1:1/unavailable",
+        |_| SchedulingLimits::new(1, 1).expect("limits are valid"),
+    )
+    .is_err());
+}
+
+#[test]
 fn waiting_build_starts_after_subject_capacity_is_released() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -35,10 +44,12 @@ fn waiting_build_starts_after_subject_capacity_is_released() {
     telchar::persistence::enqueue_shared_build(fixture.url(), second, "alice", 2)
         .expect("second build enqueues");
 
-    let scheduler = Arc::new(telchar::shared_build_scheduler::SharedBuildScheduler::new(
-        fixture.url(),
-        |_| SchedulingLimits::new(2, 1).expect("limits are valid"),
-    ));
+    let scheduler = Arc::new(
+        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+            SchedulingLimits::new(2, 1).expect("limits are valid")
+        })
+        .expect("scheduler creates"),
+    );
     scheduler
         .wait_for_admission(first)
         .expect("first build starts");
@@ -87,7 +98,8 @@ fn subject_rotation_survives_scheduler_restart() {
     let scheduler =
         telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
-        });
+        })
+        .expect("scheduler creates");
     scheduler
         .wait_for_admission(alice_first)
         .expect("Alice first starts");
@@ -108,7 +120,8 @@ fn subject_rotation_survives_scheduler_restart() {
     let restarted =
         telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
-        });
+        })
+        .expect("scheduler restarts");
     let bob = restarted
         .wait_for_admission(bob_first)
         .expect("Bob starts after scheduler restart");
@@ -144,7 +157,8 @@ fn saturated_subject_does_not_block_another_subject() {
     let scheduler =
         telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
-        });
+        })
+        .expect("scheduler creates");
     assert_eq!(
         scheduler
             .wait_for_admission(bob_waiting)
