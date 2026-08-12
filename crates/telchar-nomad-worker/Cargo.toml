@@ -1,0 +1,14 @@
+[package]
+name = "telchar-nomad-worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+telchar = { path = "../telchar" }
+base64 = "0.22"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+hmac = "0.12"
+url = "2"

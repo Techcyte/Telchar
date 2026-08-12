@@ -473,6 +473,12 @@
           nativeBuildInputs = [ pkgs.postgresql ];
           cargoTestExtraArgs = "--lib";
         };
+        telchar-nomad-worker = craneLib.buildPackage {
+          src = source;
+          pname = "telchar-nomad-worker";
+          version = "0.1.0";
+          cargoExtraArgs = "-p telchar-nomad-worker";
+        };
         nix-reference = pkgs.nix;
         default = self.packages.${system}.telchar;
       };

@@ -152,8 +152,17 @@ args = ["--stdio"]
         120_000_000_000_u64
     );
     assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Name"], "build");
+    let environment = &job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"];
+    assert_eq!(environment["TELCHAR_BACKEND"], "nomad-arm");
+    assert_eq!(environment["TELCHAR_NAMESPACE"], "telchar");
+    assert_eq!(environment["TELCHAR_JOB_ID"], first);
+    assert_eq!(environment["TELCHAR_TASK"], "build");
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_ENDPOINT"],
+        environment["TELCHAR_SHARED_BUILD_DIGEST"],
+        URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
+    );
+    assert_eq!(
+        environment["TELCHAR_TRANSFER_ENDPOINT"],
         "http://telchar.example:7443"
     );
     assert_eq!(
@@ -260,6 +269,11 @@ command = "/opt/telchar/bin/worker"
         render_job(&config.nomad_backends()[0], b"shared-build-key").expect("HMAC job renders");
     let environment = &job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"];
     assert_eq!(environment["TELCHAR_TRANSFER_AUTHENTICATION"], "hmac");
+    assert!(environment["TELCHAR_BACKEND"].is_null());
+    assert!(environment["TELCHAR_NAMESPACE"].is_null());
+    assert!(environment["TELCHAR_JOB_ID"].is_null());
+    assert!(environment["TELCHAR_SHARED_BUILD_DIGEST"].is_null());
+    assert!(environment["TELCHAR_TASK"].is_null());
     let capability = environment["TELCHAR_TRANSFER_CAPABILITY"]
         .as_str()
         .expect("capability is rendered");

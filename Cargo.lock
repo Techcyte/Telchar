@@ -1714,6 +1714,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "telchar-nomad-worker"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hmac 0.12.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "telchar",
+ "url",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

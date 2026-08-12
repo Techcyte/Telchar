@@ -295,6 +295,13 @@ fn render_job_at(
     match config.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity { .. } => {
             task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");
+            task["Env"]["TELCHAR_BACKEND"] = Value::from(config.target().name());
+            task["Env"]["TELCHAR_NAMESPACE"] = Value::from(config.namespace());
+            task["Env"]["TELCHAR_JOB_ID"] =
+                Value::from(deterministic_job_name(config, shared_build_key));
+            task["Env"]["TELCHAR_SHARED_BUILD_DIGEST"] =
+                Value::from(URL_SAFE_NO_PAD.encode(Sha256::digest(shared_build_key)));
+            task["Env"]["TELCHAR_TASK"] = Value::from("build");
             task["Identity"] = json!({
                 "Env": true,
                 "File": false,

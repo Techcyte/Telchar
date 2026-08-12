@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/nix-worker-protocol", "crates/telchar"]
+members = [
+  "crates/nix-worker-protocol",
+  "crates/telchar",
+  "crates/telchar-nomad-worker",
+]
 resolver = "2"
 
 [workspace.dependencies]
