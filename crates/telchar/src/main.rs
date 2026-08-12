@@ -623,7 +623,7 @@ fn serve_accepted_connection(
     mut connection: telchar::ipc::IpcConnection,
     database_url: &str,
     deployment: &telchar::deployment::DeploymentConfig,
-    _service_config: &telchar::config::ServiceConfig,
+    service_config: &telchar::config::ServiceConfig,
     running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
     transfer_limits: &telchar::transfer_limits::TransferLimits,
     object_admission: &telchar::transfer_limits::ObjectAdmissionState,
@@ -703,6 +703,7 @@ fn serve_accepted_connection(
             disk_reserve,
             disk_probe,
             shared_builds,
+            service_config.scheduling_limits(&connection.envelope().requester.quota_subject),
         )
     })();
     match telchar::persistence::close_protocol_session(database_url, &session_id) {

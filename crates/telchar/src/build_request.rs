@@ -97,7 +97,7 @@ impl BuildRequest {
         Ok(())
     }
 
-    pub fn shared_build_key(&self) -> String {
+    pub fn shared_build_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(b"telchar-shared-build-v1\0");
         update_digest_bytes(&mut digest, &self.derivation_path);
@@ -108,10 +108,18 @@ impl BuildRequest {
         update_digest_bytes(&mut digest, &self.builder);
         update_digest_values(&mut digest, &self.arguments);
         update_digest_pairs(&mut digest, &self.environment);
+        digest.finalize().into()
+    }
+
+    pub fn shared_build_key(&self) -> String {
+        let digest = self
+            .shared_build_digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         format!(
-            "{}:{:x}",
-            String::from_utf8_lossy(&self.derivation_path),
-            digest.finalize()
+            "{}:{digest}",
+            String::from_utf8_lossy(&self.derivation_path)
         )
     }
 

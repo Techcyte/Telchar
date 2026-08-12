@@ -633,6 +633,19 @@ fn derivation_lease_precedes_helper_execution() {
     let helper_request: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&request_path).expect("helper request reads"))
             .expect("helper request is JSON");
+    let shared_build = fixture
+        .database
+        .connect()
+        .query_one(
+            "SELECT state, quota_subject FROM shared_builds WHERE derivation_path = $1",
+            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+        )
+        .expect("running shared build reads");
+    assert_eq!(shared_build.get::<_, String>(0), "running");
+    assert_eq!(
+        shared_build.get::<_, String>(1),
+        "ssh-pubkey:SHA256:fixture"
+    );
     let request_id = helper_request["request_id"]
         .as_str()
         .expect("helper request ID is a string");
@@ -673,6 +686,15 @@ fn derivation_lease_precedes_helper_execution() {
     for _ in 0..7 {
         read_integer(&mut output);
     }
+    let completed_shared_build = fixture
+        .database
+        .connect()
+        .query_one(
+            "SELECT state FROM shared_builds WHERE derivation_path = $1",
+            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+        )
+        .expect("completed shared build reads");
+    assert_eq!(completed_shared_build.get::<_, String>(0), "succeeded");
     drop(input);
     drop(output);
     assert!(child.wait().expect("Telchar exits").success());
@@ -1768,7 +1790,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
 }
 
 #[test]
-fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
+fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-request-identities-{}-{}",
         std::process::id(),
@@ -1811,19 +1833,22 @@ fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
     drop(output);
 
     assert!(child.wait().expect("Telchar exits").success());
-    let mut request_ids = fs::read_dir(&request_directory)
-        .expect("request directory reads")
-        .map(|entry| fs::read_to_string(entry.expect("request entry").path()))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("helper requests read")
+    assert_eq!(
+        fs::read_dir(&request_directory)
+            .expect("request directory reads")
+            .count(),
+        1,
+        "durable success avoids duplicate backend execution"
+    );
+    let mut database = fixture.database.connect();
+    let mut request_ids = database
+        .query(
+            "SELECT request_id FROM build_requests ORDER BY request_id",
+            &[],
+        )
+        .expect("request IDs read")
         .into_iter()
-        .map(|request| {
-            serde_json::from_str::<serde_json::Value>(&request).expect("helper request is JSON")
-                ["request_id"]
-                .as_str()
-                .expect("helper request ID is a string")
-                .to_owned()
-        })
+        .map(|row| row.get::<_, String>(0))
         .collect::<Vec<_>>();
     request_ids.sort();
     assert_eq!(request_ids.len(), 2);
@@ -1839,7 +1864,6 @@ fn accepted_builds_for_same_derivation_get_distinct_persisted_request_ids() {
             *request_id
         );
     }
-    let mut database = fixture.database.connect();
     let mut leases = database
         .query(
             "SELECT lease_id, owner_id FROM store_leases WHERE purpose = 'derivation' ORDER BY owner_id",

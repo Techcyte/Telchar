@@ -71,6 +71,25 @@ pub struct BackendExecutor {
 }
 
 impl BuildBackend for BackendExecutor {
+    fn selected_target(
+        &self,
+        system: &str,
+        required_features: &[&str],
+    ) -> io::Result<crate::backend::BackendTarget> {
+        self.backends
+            .inner
+            .pool
+            .targets()
+            .find(|target| target.supports(system, required_features))
+            .cloned()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "BuildDerivation execution is unavailable",
+                )
+            })
+    }
+
     fn execute_with_logs(
         &mut self,
         execution: &BuildExecution<'_>,

@@ -116,6 +116,7 @@ pub fn run_worker_session(
     disk_reserve: crate::disk_reserve::DiskReserve,
     disk_probe: &dyn crate::disk_reserve::DiskReserveProbe,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
+    scheduling_limits: crate::config::SchedulingLimits,
 ) -> io::Result<()> {
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
@@ -475,10 +476,106 @@ pub fn run_worker_session(
                         }
                     };
                 let requester_detached = std::cell::Cell::new(false);
+                let durable_result_reused = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();
+                let derivation_path =
+                    std::str::from_utf8(admitted.derivation_path()).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid derivation path")
+                    })?;
+                let expected_outputs = admitted
+                    .expected_outputs()
+                    .iter()
+                    .map(|(_, path)| {
+                        std::str::from_utf8(path).map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidData, "invalid output path")
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+                let required_features = admitted
+                    .required_system_features()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let selected_target =
+                    build_executor.selected_target(admitted.system(), &required_features)?;
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
-                        let result = build_executor.execute_with_logs(
+                        let durable_claim = crate::persistence::claim_shared_build(
+                            database_url,
+                            derivation_path,
+                            &admitted.shared_build_digest(),
+                            selected_target.name(),
+                            selected_target.kind(),
+                            selected_target.capabilities(),
+                            None,
+                            &expected_outputs,
+                        );
+                        let durable_claim = match durable_claim {
+                            Ok(claim) => claim,
+                            Err(error) => {
+                                let _ = leader.complete(Err(
+                                    crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                ));
+                                return reject(
+                                    &mut output,
+                                    "shared-build-state",
+                                    shared_build_error_message(&error),
+                                );
+                            }
+                        };
+                        if durable_claim.ownership
+                            == crate::persistence::SharedBuildOwnership::Joined
+                        {
+                            match durable_shared_build_result(&durable_claim.build) {
+                                Ok(result) => {
+                                    durable_result_reused.set(true);
+                                    leader.complete(Ok(result)).map_err(|_| {
+                                        io::Error::other("shared BuildDerivation execution failed")
+                                    })
+                                }
+                                Err(_) => {
+                                    let _ = leader.complete(Err(
+                                        crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                    ));
+                                    return reject(
+                                        &mut output,
+                                        "shared-build-state",
+                                        "shared build state operation failed",
+                                    );
+                                }
+                            }
+                        } else {
+                            if let Err(error) = crate::persistence::enqueue_shared_build(
+                                database_url,
+                                derivation_path,
+                                quota_subject,
+                                scheduling_limits.maximum_queued_builds(),
+                            )
+                            .and_then(|_| {
+                                crate::persistence::start_queued_shared_build(
+                                    database_url,
+                                    derivation_path,
+                                    scheduling_limits.maximum_active_builds(),
+                                )
+                                .map(|_| ())
+                            }) {
+                                let _ = crate::persistence::complete_shared_build_failure(
+                                    database_url,
+                                    derivation_path,
+                                    "scheduling-failure",
+                                    &serde_json::json!({"failure": error.failure().as_str()}),
+                                    deployment.output_retention().duration(),
+                                );
+                                let _ = leader.complete(Err(
+                                    crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                ));
+                                return reject(
+                                    &mut output,
+                                    "shared-build-scheduling",
+                                    shared_build_error_message(&error),
+                                );
+                            }
+                            let result = build_executor.execute_with_logs(
                             &execution,
                             &mut |chunk| {
                                 if requester_detached.get() {
@@ -520,18 +617,26 @@ pub fn run_worker_session(
                                 Ok(disconnected)
                             },
                         );
-                        match result {
-                            Ok(result) => leader.complete(Ok(result)).map_err(|_| {
-                                io::Error::other("shared BuildDerivation execution failed")
-                            }),
-                            Err(error) => {
-                                let failure = if error.kind() == io::ErrorKind::Unsupported {
-                                    crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable
-                                } else {
-                                    crate::shared_build::SharedBuildTerminalFailure::Backend
-                                };
-                                let _ = leader.complete(Err(failure));
-                                Err(error)
+                            match result {
+                                Ok(result) => leader.complete(Ok(result)).map_err(|_| {
+                                    io::Error::other("shared BuildDerivation execution failed")
+                                }),
+                                Err(error) => {
+                                    let _ = crate::persistence::complete_shared_build_failure(
+                                        database_url,
+                                        derivation_path,
+                                        "backend-failure",
+                                        &serde_json::json!({"reason": execution_error_reason(&error)}),
+                                        deployment.output_retention().duration(),
+                                    );
+                                    let failure = if error.kind() == io::ErrorKind::Unsupported {
+                                        crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable
+                                    } else {
+                                        crate::shared_build::SharedBuildTerminalFailure::Backend
+                                    };
+                                    let _ = leader.complete(Err(failure));
+                                    Err(error)
+                                }
                             }
                         }
                     }
@@ -622,8 +727,29 @@ pub fn run_worker_session(
                         Ok(paths)
                     });
                 let output_paths = match output_paths {
-                    Ok(paths) => paths,
+                    Ok(paths) => {
+                        if !durable_result_reused.get()
+                            && let Err(error) = crate::persistence::collect_shared_build(
+                                database_url,
+                                derivation_path,
+                            )
+                        {
+                            return reject(
+                                &mut output,
+                                "shared-build-state",
+                                shared_build_error_message(&error),
+                            );
+                        }
+                        paths
+                    }
                     Err(error) => {
+                        let _ = crate::persistence::complete_shared_build_failure(
+                            database_url,
+                            derivation_path,
+                            "output-validation-failure",
+                            &serde_json::json!({"reason": execution_error_reason(&error)}),
+                            deployment.output_retention().duration(),
+                        );
                         tracing::error!(
                             event = "worker.build_derivation.output_validation_failed",
                             reason = execution_error_reason(&error),
@@ -756,6 +882,31 @@ pub fn run_worker_session(
                         &mut output,
                         "request-lease-release",
                         release_error_message(&error),
+                    );
+                }
+                if !durable_result_reused.get()
+                    && let Err(error) = crate::persistence::complete_shared_build_success(
+                        database_url,
+                        derivation_path,
+                        &serde_json::json!({
+                        "status": match result.status() {
+                            BuildStatus::Built => "built",
+                            BuildStatus::AlreadyValid => "already-valid",
+                        },
+                        "outputs": result.outputs().iter().map(|(name, path)| {
+                            serde_json::json!({
+                                "name": String::from_utf8_lossy(name),
+                                "path": String::from_utf8_lossy(path),
+                            })
+                        }).collect::<Vec<_>>(),
+                        }),
+                        deployment.output_retention().duration(),
+                    )
+                {
+                    return reject(
+                        &mut output,
+                        "shared-build-state",
+                        shared_build_error_message(&error),
                     );
                 }
                 if !requester_detached.get() {
@@ -1219,6 +1370,61 @@ fn release_committed_request_roots(
         );
         io::Error::other("gateway store retention failed")
     })
+}
+
+fn durable_shared_build_result(
+    build: &crate::persistence::SharedBuild,
+) -> io::Result<crate::backend::BuildResult> {
+    if build.state != crate::persistence::SharedBuildState::Succeeded {
+        return Err(io::Error::other("shared build is not complete"));
+    }
+    let metadata = build
+        .result_metadata
+        .as_ref()
+        .ok_or_else(|| io::Error::other("shared build result is unavailable"))?;
+    let status = match metadata.get("status").and_then(serde_json::Value::as_str) {
+        Some("built") => BuildStatus::Built,
+        Some("already-valid") => BuildStatus::AlreadyValid,
+        _ => return Err(io::Error::other("shared build result is invalid")),
+    };
+    let outputs = metadata
+        .get("outputs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| io::Error::other("shared build result is invalid"))?
+        .iter()
+        .map(|output| {
+            let name = output
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| io::Error::other("shared build result is invalid"))?;
+            let path = output
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| io::Error::other("shared build result is invalid"))?;
+            Ok::<(Vec<u8>, Vec<u8>), io::Error>((
+                name.as_bytes().to_vec(),
+                path.as_bytes().to_vec(),
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    crate::backend::BuildResult::new(
+        status,
+        outputs,
+        crate::backend::OutputTrust::TrustedExecutor,
+    )
+    .map_err(|_| io::Error::other("shared build result is invalid"))
+}
+
+fn shared_build_error_message(error: &crate::persistence::SharedBuildError) -> &'static str {
+    match error.failure() {
+        crate::persistence::SharedBuildFailure::Quota => "shared build quota exceeded",
+        crate::persistence::SharedBuildFailure::Conflict => "shared build identity conflicts",
+        crate::persistence::SharedBuildFailure::Configuration
+        | crate::persistence::SharedBuildFailure::Connection
+        | crate::persistence::SharedBuildFailure::InvalidState
+        | crate::persistence::SharedBuildFailure::Query
+        | crate::persistence::SharedBuildFailure::Commit => "shared build state operation failed",
+    }
 }
 
 fn release_error_message(error: &io::Error) -> &'static str {

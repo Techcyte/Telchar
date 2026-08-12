@@ -149,7 +149,7 @@ impl BackendTarget {
         &self.features
     }
 
-    fn supports(&self, system: &str, required_features: &[&str]) -> bool {
+    pub(crate) fn supports(&self, system: &str, required_features: &[&str]) -> bool {
         self.system == system
             && required_features
                 .iter()
@@ -397,6 +397,17 @@ impl BuildResult {
 }
 
 pub trait BuildBackend: Send {
+    fn selected_target(
+        &self,
+        _system: &str,
+        _required_features: &[&str],
+    ) -> io::Result<BackendTarget> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend target selection is unavailable",
+        ))
+    }
+
     fn execute_with_logs(
         &mut self,
         execution: &BuildExecution<'_>,
