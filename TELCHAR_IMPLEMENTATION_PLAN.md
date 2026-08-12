@@ -1428,10 +1428,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: completed-output precedence, output-only failure, exact adoptable monitoring, missing execution, capability disagreement, persistence 85/85, shared-build recovery 4/4, operation dispatch 37 passed/2 ignored, all-target compilation, clippy, canonical formatting, diff, and diagnostics.
   - Evidence: recovery uses persisted capability values rather than backend-kind guesses; exact output metadata can move any active state through collecting to immutable success; local/static-SSH rows without complete outputs fail; adoptable rows require an exact durable execution ID and a matching configured backend; adoption results distinguish monitoring, succeeded, failed, and missing; startup performs reconciliation after singleton ownership and static-SSH verification but before socket readiness.
 
-- [ ] T131 Remove dormant scheduler lifecycle machinery
+- [ ] T131 Consolidate durable scheduling around shared builds
   - Depends on: T127, T128, T130
-  - Outcome: queue states, execution attempts, outcomes, capacity reservations, generic submission reconciliation, automatic-retry scaffolding, and the unused local executor registry are removed from production startup, persistence, migrations, tests, and terminology while protocol sessions, shared builds, store leases, output retention, and singleton ownership remain.
-  - Verify: schema inspection, dead-symbol search, persistence suite, startup fixtures, migration ledger, all-target compilation, and diagnostics.
+  - Outcome: the live shared-build path owns one durable subject-fair queue, trusted `quota_subject` attribution, one quota allocation per coalesced leader, bounded per-subject queued and active execution limits, durable execution attempts and terminal outcomes, and backend permits; followers consume transfer limits but no additional execution allocation. Parallel dormant request/attempt/reservation lifecycles are either integrated into this path or removed.
+  - Policy: the first admitted requester owns the shared build's quota allocation until terminal completion even after disconnect; matching followers receive the existing shared execution without another build charge; queue selection is round-robin across eligible quota subjects and FIFO within each subject; quota admission and backend capacity remain separate gates; no automatic retry, priority, billing, or active/active scheduler is added in this task.
+  - Verify: subject mapping, per-subject queue bounds, active execution limits, one charge per coalesced build, owner-disconnect retention, follower non-charging, subject round-robin/FIFO ordering, durable restart recovery, allocation release on every terminal path, backend permit interaction, schema inspection, persistence and operation suites, all-target compilation, and diagnostics.
 
 ### Static SSH completion
 
