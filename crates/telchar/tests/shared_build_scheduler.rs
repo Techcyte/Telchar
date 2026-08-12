@@ -72,6 +72,57 @@ fn waiting_build_starts_after_subject_capacity_is_released() {
 }
 
 #[test]
+fn subject_rotation_survives_scheduler_restart() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let alice_first = "/nix/store/66666666666666666666666666666666-alice-first.drv";
+    let alice_second = "/nix/store/77777777777777777777777777777777-alice-second.drv";
+    let bob_first = "/nix/store/88888888888888888888888888888888-bob-first.drv";
+    claim(&fixture, alice_first, 6);
+    claim(&fixture, alice_second, 7);
+    claim(&fixture, bob_first, 8);
+    telchar::persistence::enqueue_shared_build(fixture.url(), alice_first, "alice", 2)
+        .expect("Alice first enqueues");
+
+    let scheduler =
+        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+            SchedulingLimits::new(2, 1).expect("limits are valid")
+        });
+    scheduler
+        .wait_for_admission(alice_first)
+        .expect("Alice first starts");
+    drop(scheduler);
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        alice_first,
+        "fixture-complete",
+        &serde_json::json!({"stage": "test"}),
+        Duration::from_secs(60),
+    )
+    .expect("Alice first completes");
+    telchar::persistence::enqueue_shared_build(fixture.url(), alice_second, "alice", 2)
+        .expect("Alice second enqueues");
+    telchar::persistence::enqueue_shared_build(fixture.url(), bob_first, "bob", 1)
+        .expect("Bob first enqueues");
+
+    let restarted =
+        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+            SchedulingLimits::new(2, 1).expect("limits are valid")
+        });
+    let bob = restarted
+        .wait_for_admission(bob_first)
+        .expect("Bob starts after scheduler restart");
+    let alice = telchar::persistence::read_shared_build(fixture.url(), alice_second)
+        .expect("Alice second reads")
+        .expect("Alice second exists");
+    assert!(
+        bob.started_at.expect("Bob start time exists")
+            <= alice.started_at.expect("Alice start time exists"),
+        "persisted rotation must admit Bob before returning to Alice"
+    );
+}
+
+#[test]
 fn saturated_subject_does_not_block_another_subject() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

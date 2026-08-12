@@ -77,6 +77,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_scheduling",
         sql: include_str!("../migrations/0010_shared_build_scheduling.sql"),
     },
+    Migration {
+        version: 11,
+        name: "shared_build_scheduler",
+        sql: include_str!("../migrations/0011_shared_build_scheduler.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -385,6 +390,48 @@ pub fn read_queued_shared_builds(
         .into_iter()
         .map(|row| decode_shared_build_queue_entry(&row).map_err(SharedBuildError))
         .collect()
+}
+
+pub fn read_shared_build_scheduler_subject(
+    database_url: &str,
+) -> Result<Option<String>, SharedBuildError> {
+    if database_url.trim().is_empty() {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query_one(
+            "SELECT last_admitted_subject FROM shared_build_scheduler_state WHERE singleton",
+            &[],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .try_get(0)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))
+}
+
+pub fn record_shared_build_scheduler_subject(
+    database_url: &str,
+    quota_subject: &str,
+) -> Result<(), SharedBuildError> {
+    if database_url.trim().is_empty()
+        || quota_subject.is_empty()
+        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.contains('\0')
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .execute(
+            "UPDATE shared_build_scheduler_state
+             SET last_admitted_subject = $1, updated_at = transaction_timestamp()
+             WHERE singleton",
+            &[&quota_subject],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    Ok(())
 }
 
 pub fn read_next_queued_shared_build(

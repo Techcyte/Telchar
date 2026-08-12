@@ -17,7 +17,6 @@ pub struct SharedBuildScheduler {
     changed: Condvar,
 }
 
-#[derive(Default)]
 struct SchedulerState {
     last_admitted_subject: Option<String>,
 }
@@ -27,10 +26,16 @@ impl SharedBuildScheduler {
         database_url: impl Into<String>,
         limits_for_subject: impl Fn(&str) -> SchedulingLimits + Send + Sync + 'static,
     ) -> Self {
+        let database_url = database_url.into();
+        let last_admitted_subject = persistence::read_shared_build_scheduler_subject(&database_url)
+            .ok()
+            .flatten();
         Self {
-            database_url: database_url.into(),
+            database_url,
             limits_for_subject: Box::new(limits_for_subject),
-            state: Mutex::new(SchedulerState::default()),
+            state: Mutex::new(SchedulerState {
+                last_admitted_subject,
+            }),
             changed: Condvar::new(),
         }
     }
@@ -93,6 +98,11 @@ impl SharedBuildScheduler {
                 limits.maximum_active_builds(),
             ) {
                 Ok(_) => {
+                    persistence::record_shared_build_scheduler_subject(
+                        &self.database_url,
+                        &entry.quota_subject,
+                    )
+                    .map_err(shared_build_error)?;
                     state.last_admitted_subject = Some(entry.quota_subject);
                     self.changed.notify_all();
                 }
