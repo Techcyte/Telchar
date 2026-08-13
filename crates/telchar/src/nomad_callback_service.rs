@@ -12,6 +12,11 @@ use crate::nomad_callback_http::{accept_connection, CallbackHttpLimits};
 use crate::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
+use crate::nomad_transfer_protocol::{
+    encode_metadata, write_frame, BuildSpecification, Frame, FrameKind, InputManifest,
+    PathManifestEntry, ProtocolLimits, TransferSession,
+};
+use crate::store_closure::{backend_from_environment, StoreClosureBackend};
 
 pub fn serve(
     listener: TcpListener,
@@ -166,7 +171,84 @@ pub fn serve_connection(
             "Nomad callback execution identity is inconsistent",
         ));
     }
-    Ok(())
+    let build_request = execution
+        .build_request()
+        .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
+    let limits = backend.transfer_limits();
+    let mut closure = backend_from_environment()?;
+    let manifest = input_manifest(build_request, closure.as_mut())?;
+    let _session = TransferSession::new(
+        manifest.clone(),
+        limits.maximum_manifest_paths(),
+        limits.maximum_input_nar_bytes(),
+        limits.maximum_total_input_bytes(),
+        limits.maximum_output_nar_bytes(),
+        limits.maximum_total_output_bytes(),
+        limits.maximum_live_log_chunk_bytes(),
+        limits.maximum_frame_metadata_bytes(),
+    )?;
+    let frame = Frame::new(
+        FrameKind::InputManifest,
+        encode_metadata(&manifest, limits.maximum_frame_metadata_bytes())?,
+        Vec::new(),
+    );
+    let mut message = Vec::new();
+    write_frame(
+        &mut message,
+        &frame,
+        ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
+    )?;
+    socket.write_binary(message)
+}
+
+fn input_manifest(
+    build_request: &crate::build_request::BuildRequest,
+    closure: &mut dyn StoreClosureBackend,
+) -> io::Result<InputManifest> {
+    build_request.validate_for_execution()?;
+    let mut roots = build_request.input_sources().to_vec();
+    roots.push(build_request.derivation_path().to_vec());
+    let closure_paths = closure.input_closure(&roots)?;
+    let closure_identities = closure_paths
+        .iter()
+        .map(|path| path.store_path.as_bytes())
+        .collect::<std::collections::BTreeSet<_>>();
+    if !roots
+        .iter()
+        .all(|root| closure_identities.contains(root.as_slice()))
+    {
+        return Err(io::Error::other(
+            "Nomad callback input closure is incomplete",
+        ));
+    }
+    let paths = closure_paths
+        .into_iter()
+        .map(|path| PathManifestEntry {
+            path: path.store_path,
+            nar_hash: path.nar_hash,
+            nar_size: path.nar_size,
+            references: path.references,
+            deriver: path.deriver,
+        })
+        .collect();
+    let derivation_path = std::str::from_utf8(build_request.derivation_path())
+        .map_err(|_| io::Error::other("Nomad callback derivation path is invalid"))?
+        .to_owned();
+    let outputs = build_request
+        .expected_outputs()
+        .iter()
+        .map(|(_, path)| {
+            std::str::from_utf8(path)
+                .map(str::to_owned)
+                .map_err(|_| io::Error::other("Nomad callback output path is invalid"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(InputManifest {
+        derivation_path,
+        build: BuildSpecification::from(build_request),
+        paths,
+        outputs,
+    })
 }
 
 fn callback_path(public_url: &str) -> io::Result<&str> {

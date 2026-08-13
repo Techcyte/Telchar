@@ -22,6 +22,7 @@ pub struct CallbackExecution {
     job_id: String,
     shared_build_digest: String,
     task: String,
+    build_request: Option<crate::build_request::BuildRequest>,
 }
 
 impl CallbackExecution {
@@ -32,15 +33,11 @@ impl CallbackExecution {
         shared_build_digest: String,
         task: String,
     ) -> io::Result<Self> {
-        if [
-            &backend,
-            &namespace,
-            &job_id,
-            &shared_build_digest,
-            &task,
-        ]
-        .into_iter()
-        .any(|value| value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control))
+        if [&backend, &namespace, &job_id, &shared_build_digest, &task]
+            .into_iter()
+            .any(|value| {
+                value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control)
+            })
         {
             return Err(invalid("Nomad callback execution identity is invalid"));
         }
@@ -50,7 +47,12 @@ impl CallbackExecution {
             job_id,
             shared_build_digest,
             task,
+            build_request: None,
         })
+    }
+
+    pub fn build_request(&self) -> Option<&crate::build_request::BuildRequest> {
+        self.build_request.as_ref()
     }
 
     pub fn matches(&self, authentication: &Authentication) -> bool {
@@ -154,14 +156,15 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
         if authentication.shared_build_digest != shared_build_digest {
             return Ok(None);
         }
-        CallbackExecution::new(
+        let mut execution = CallbackExecution::new(
             build.backend_name,
             namespace.clone(),
             authentication.job_id.clone(),
             shared_build_digest,
             "build".to_owned(),
-        )
-        .map(Some)
+        )?;
+        execution.build_request = build.build_request;
+        Ok(Some(execution))
     }
 }
 
@@ -320,9 +323,9 @@ impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
         let authentication = decode_authentication(body, self.maximum_metadata_bytes)?;
         let mut protocol = ProtocolSession::new();
         protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
-        let verified = self
-            .authentication
-            .verify_authentication(&authentication, method, path, now)?;
+        let verified =
+            self.authentication
+                .verify_authentication(&authentication, method, path, now)?;
         if let AuthenticationVerification::Hmac(verified) = &verified
             && !self.replay.reserve(&authentication, verified)?
         {
@@ -364,10 +367,7 @@ pub fn decode_authentication(
     maximum_metadata_bytes: usize,
 ) -> io::Result<Authentication> {
     let mut input = Cursor::new(body);
-    let frame = read_frame(
-        &mut input,
-        ProtocolLimits::new(maximum_metadata_bytes, 0),
-    )?;
+    let frame = read_frame(&mut input, ProtocolLimits::new(maximum_metadata_bytes, 0))?;
     if input.read(&mut [0_u8; 1])? != 0 {
         return Err(invalid("Nomad callback contains trailing bytes"));
     }
