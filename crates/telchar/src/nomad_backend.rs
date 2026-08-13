@@ -287,6 +287,7 @@ impl NomadClient {
         let started = Instant::now();
         loop {
             if cancelled()? {
+                self.stop(submission.job_id())?;
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "Nomad job execution cancelled",
@@ -327,6 +328,22 @@ impl NomadClient {
             }
             std::thread::sleep(self.config.poll_interval());
         }
+    }
+
+    fn stop(&self, job_id: &str) -> io::Result<()> {
+        if !valid_nomad_identity(job_id) {
+            return Err(io::Error::other("Nomad job cancellation failed"));
+        }
+        bounded_json::<serde_json::Value>(
+            self.client
+                .delete(format!("{}/v1/job/{job_id}", self.config.endpoint()))
+                .query(&[("namespace", self.config.namespace()), ("purge", "true")])
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .map_err(|_| io::Error::other("Nomad job cancellation failed"))?,
+            "Nomad job cancellation failed",
+        )?;
+        Ok(())
     }
 
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {

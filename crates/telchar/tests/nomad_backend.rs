@@ -773,6 +773,51 @@ fn configured_backend_exposes_deterministic_execution_identity_before_submission
 }
 
 #[test]
+fn cancellation_stops_only_the_exact_submitted_nomad_job() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_service_config(&root, &endpoint, None);
+    let backend = config.nomad_backends()[0].clone();
+    let shared_build_key = b"cancelled-shared-build";
+    let expected_job_id = deterministic_job_name(&backend, shared_build_key);
+    let server = thread::spawn(move || {
+        let (mut submit_request, _) = listener.accept().expect("submit request accepts");
+        let request = read_http_request_with_body(&mut submit_request);
+        assert!(request.starts_with("POST /v1/jobs?namespace=telchar HTTP/1.1\r\n"));
+        write_json_response(&mut submit_request, 200, r#"{"EvalID":"evaluation-1"}"#);
+
+        let (mut stop_request, _) = listener.accept().expect("stop request accepts");
+        let request = read_http_request(&mut stop_request);
+        assert!(request.starts_with(&format!(
+            "DELETE /v1/job/{expected_job_id}?namespace=telchar&purge=true HTTP/1.1\r\n"
+        )));
+        write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
+    });
+    let admitted = admitted_request();
+    let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
+        .expect("execution creates");
+    let client = NomadClient::new(backend).expect("Nomad client constructs");
+    let error = client
+        .execute(
+            "postgresql://unused",
+            &execution,
+            shared_build_key,
+            &mut || Ok(true),
+        )
+        .expect_err("cancelled execution rejects");
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn configured_backend_submits_and_monitors_nomad_execution() {
     let _guard = CONFIGURATION_TESTS
         .lock()
