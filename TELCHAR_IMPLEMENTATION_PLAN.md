@@ -1542,10 +1542,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: immutable release report with exact commands and versions.
   - Evidence: `docs/mvp-release-report.md` records candidate revision `c4e5c91442f435d3970c5ba12284389abe06f767`, Nix 2.34.7, Nomad 1.11.3, PostgreSQL 17.10, OpenSSH 10.4p1, Rust 1.95.0, schema 15, the passing `./scripts/check-release.sh` command, the demonstrated gateway contract, and explicit residual limitations.
 
-- [ ] T147 Supervise daemon background services
+- [x] T147 Supervise daemon background services
   - Depends on: T146
   - Outcome: detached retention-maintenance and recovery-monitor threads become owned lifecycle components with coordinated cancellation, joining, error reporting, and bounded shutdown alongside the Nomad callback service. This follows completion of the Nomad transfer and MVP release checklist rather than expanding the callback-drain change into a general daemon supervisor now.
   - Verify: shutdown tests prove maintenance and recovery workers stop and join without leaking work or masking service failures.
+  - Evidence: `daemon_services::{MaintenanceService, RecoveryMonitorService}` own cancellation channels and worker handles, interrupt interval waits, join on shutdown and drop, surface bounded failure classes to the daemon, and remove completed recovery monitors. `tests/daemon_services.rs` verifies prompt maintenance shutdown, terminal recovery joining, and failure propagation without diagnostic leakage.
 
 ## Explicitly deferred work
 

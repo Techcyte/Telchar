@@ -2,6 +2,7 @@ pub mod backend;
 pub mod backend_routing;
 pub mod build_request;
 pub mod config;
+pub mod daemon_services;
 pub mod deployment;
 pub mod disk_reserve;
 pub mod executor_service;

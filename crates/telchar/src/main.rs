@@ -360,32 +360,30 @@ fn run_daemon() -> io::Result<()> {
         )
         .map_err(|_| invalid("shared build scheduler initialization failed"))?,
     );
+    let mut recovery_services = Vec::with_capacity(monitoring_derivations.len());
     for derivation_path in monitoring_derivations {
         let database_url = database_url.clone();
         let backends = Arc::clone(&backends);
         let retention = output_retention.duration();
-        std::thread::spawn(move || {
-            let poll_interval = Duration::from_millis(100);
-            loop {
-                std::thread::sleep(poll_interval);
-                let mut configured_backends = (*backends).clone();
-                let mut outputs = match telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment() {
-                    Ok(outputs) => outputs,
-                    Err(_) => return,
-                };
-                let result = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
-                    &database_url,
-                    retention,
-                    std::slice::from_ref(&derivation_path),
-                    &mut outputs,
-                    &mut configured_backends,
-                );
-                match result {
-                    Ok(outcome) if outcome.monitoring == 1 => {}
-                    Ok(_) | Err(_) => return,
-                }
-            }
-        });
+        recovery_services.push(
+            telchar::daemon_services::RecoveryMonitorService::start(
+                Duration::from_millis(100),
+                move || {
+                    let mut configured_backends = (*backends).clone();
+                    let mut outputs = telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment()
+                        .map_err(|_| io::Error::other("shared build recovery monitor failed"))?;
+                    let outcome = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
+                        &database_url,
+                        retention,
+                        std::slice::from_ref(&derivation_path),
+                        &mut outputs,
+                        &mut configured_backends,
+                    )?;
+                    Ok(outcome.monitoring == 1)
+                },
+            )
+            .map_err(|_| invalid("shared build recovery monitor failed"))?,
+        );
     }
     let mut callback_service = if config.nomad_backends().is_empty() {
         None
@@ -441,33 +439,64 @@ fn run_daemon() -> io::Result<()> {
         if let Some(service) = callback_service.as_mut() {
             service.shutdown()?;
         }
+        for service in &mut recovery_services {
+            service.shutdown()?;
+        }
         return result;
     }
     let maintenance_database_url = database_url.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(60));
-        let result =
-            telchar::store_retention::backend_from_environment().and_then(|mut backend| {
-                telchar::store_retention::reconcile_output_retention(
-                    &maintenance_database_url,
-                    backend.as_mut(),
-                    SystemTime::now(),
-                )
-            });
-        if result.is_err() {
-            tracing::warn!(
-                event = "gateway.output_retention.maintenance_failed",
-                operation = "expire-output-retention",
-                result = "failed",
-            );
-        }
-    });
+    let mut maintenance_service =
+        telchar::daemon_services::MaintenanceService::start(Duration::from_secs(60), move || {
+            let mut backend = telchar::store_retention::backend_from_environment()?;
+            telchar::store_retention::reconcile_output_retention(
+                &maintenance_database_url,
+                backend.as_mut(),
+                SystemTime::now(),
+            )
+        })?;
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
     let active_sessions = Arc::new(Mutex::new(0_usize));
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
+        if let Err(error) = maintenance_service.check() {
+            tracing::error!(
+                event = "gateway.output_retention.maintenance_failed",
+                operation = "expire-output-retention",
+                result = "failed",
+                "output retention maintenance failed"
+            );
+            shutdown_daemon_services(
+                &mut callback_service,
+                &mut maintenance_service,
+                &mut recovery_services,
+            )?;
+            return Err(error);
+        }
+        let mut recovery_index = 0;
+        while recovery_index < recovery_services.len() {
+            match recovery_services[recovery_index].check() {
+                Ok(true) => recovery_index += 1,
+                Ok(false) => {
+                    let mut service = recovery_services.remove(recovery_index);
+                    service.shutdown()?;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        event = "database.shared_build.recovery_monitor_failed",
+                        result = "failed",
+                        "shared build recovery monitor failed"
+                    );
+                    shutdown_daemon_services(
+                        &mut callback_service,
+                        &mut maintenance_service,
+                        &mut recovery_services,
+                    )?;
+                    return Err(error);
+                }
+            }
+        }
         if std::time::Instant::now() >= next_ownership_check {
             if let Err(error) = singleton_ownership.check() {
                 tracing::error!(
@@ -477,9 +506,11 @@ fn run_daemon() -> io::Result<()> {
                     failure_class = error.failure().as_str(),
                     "singleton daemon ownership lost"
                 );
-                if let Some(service) = callback_service.as_mut() {
-                    service.shutdown()?;
-                }
+                shutdown_daemon_services(
+                    &mut callback_service,
+                    &mut maintenance_service,
+                    &mut recovery_services,
+                )?;
                 return Err(invalid("singleton daemon ownership lost"));
             }
             next_ownership_check = std::time::Instant::now() + ownership_check_interval;
@@ -546,6 +577,21 @@ fn run_daemon() -> io::Result<()> {
         });
         let _ = &socket_guard;
     }
+}
+
+fn shutdown_daemon_services(
+    callback: &mut Option<telchar::nomad_callback_service::NomadCallbackService>,
+    maintenance: &mut telchar::daemon_services::MaintenanceService,
+    recovery: &mut [telchar::daemon_services::RecoveryMonitorService],
+) -> io::Result<()> {
+    if let Some(service) = callback.as_mut() {
+        service.shutdown()?;
+    }
+    maintenance.shutdown()?;
+    for service in recovery {
+        service.shutdown()?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
