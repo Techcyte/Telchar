@@ -1518,10 +1518,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: package build and NixOS module VM test.
   - Evidence: `nixosModules.telchar` and `nixosModules.default` expose an opinionated module with independently disableable local PostgreSQL, restricted OpenSSH ingress, gateway Nix-daemon trust, protected systemd credentials, generated strict TOML configuration, backend helper packages, private runtime/state directories, and owned daemon restart policy. `.#checks.x86_64-linux.nixos-module` boots the module, verifies PostgreSQL ownership, OpenSSH restrictions, service identity, private runtime directory, and daemon socket. `.#telchar` and `.#telchar-nomad-worker` build reproducibly.
 
-- [ ] T143 Document external cache and optional log-archive integration
+- [x] T143 Document external cache and optional log-archive integration
   - Depends on: T142
   - Outcome: operator docs show allocation-side host Nix daemon reuse, ordinary Nix substituters, optional prestart configuration, and existing Attic, post-build-hook, or `nix copy` publication beside Telchar; they explain that Telchar sends the complete admitted closure manifest but streams only paths unresolved by the allocation store and substituters. They also define the post-MVP extension seam for a bounded local zstd log spool mounted on durable storage or uploaded by external tooling. Telchar implements no cache service, Redis log store, or object-storage client in the MVP.
   - Verify: tested configuration examples and explicit log-loss behavior after late attachment or restart.
+  - Evidence: `docs/nomad-cache-and-logs.md` documents manifest-authorized selective transfer, host-daemon and local-store composition, ordinary substituters and public keys, bounded same-group prestart setup, Attic/post-build-hook/`nix copy` publication, systemd credential ownership, connection-scoped log loss, and the bounded post-MVP zstd spool seam.
 
 - [ ] T144 Document deployment, security assumptions, and limitations
   - Depends on: T142
