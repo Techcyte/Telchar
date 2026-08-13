@@ -8,8 +8,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad_transfer_protocol::{
     decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    Direction, Frame, FrameKind, InputManifest, InputTransferSession, NarMetadata, PathSet,
-    ProtocolLimits, ProtocolSession,
+    BuildStarted, Direction, Frame, FrameKind, InputManifest, InputTransferSession, LogChunk,
+    NarMetadata, PathSet, ProtocolLimits, ProtocolSession,
 };
 use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
@@ -76,6 +76,59 @@ impl WorkerSession {
         }
         self.send_metadata(FrameKind::InputRequest, &requested)?;
         Ok(requested)
+    }
+
+    pub fn build(&mut self, store_uri: &str) -> io::Result<nix_worker_protocol::WorkerBuildResult> {
+        let endpoint = GatewayStoreEndpoint::parse(store_uri)
+            .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        let mut store = GatewayStoreConnection::connect(&endpoint)
+            .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        let specification = self.manifest.build.clone();
+        let derivation_path = self.manifest.derivation_path.clone();
+        self.send_metadata(FrameKind::BuildStarted, &BuildStarted { derivation_path })?;
+        let outputs = specification
+            .outputs
+            .iter()
+            .map(|output| nix_worker_protocol::BuildDerivationOutputRequest {
+                name: &output.name,
+                path: &output.path,
+            })
+            .collect::<Vec<_>>();
+        let request = nix_worker_protocol::BuildDerivationClientRequest {
+            drv_path: &specification.derivation_path,
+            outputs: &outputs,
+            input_sources: &specification.input_sources,
+            platform: specification.system.as_bytes(),
+            builder: &specification.builder,
+            arguments: &specification.arguments,
+            environment: &specification.environment,
+        };
+        let socket = &mut self.socket;
+        let protocol = &mut self.protocol;
+        let mut sequence = 0_u64;
+        store.build_derivation(&request, &mut |message| {
+            for chunk in message.chunks(MAXIMUM_AUTHENTICATION_METADATA_BYTES) {
+                let frame = Frame::new(
+                    FrameKind::LogChunk,
+                    encode_metadata(&LogChunk { sequence }, MAXIMUM_MANIFEST_METADATA_BYTES)?,
+                    chunk.to_vec(),
+                );
+                protocol.accept(Direction::WorkerToGateway, FrameKind::LogChunk)?;
+                let mut body = Vec::new();
+                write_frame(
+                    &mut body,
+                    &frame,
+                    ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, chunk.len()),
+                )?;
+                socket
+                    .send(tungstenite::Message::Binary(body.into()))
+                    .map_err(|_| io::Error::other("worker build log send failed"))?;
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("worker build log sequence overflow"))?;
+            }
+            Ok(())
+        })
     }
 
     pub fn import_requested_inputs(
