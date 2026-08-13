@@ -105,6 +105,15 @@ maximum_concurrent_builds = 2
     assert_eq!(config.nomad_callback().maximum_connections(), 64);
     assert_eq!(config.nomad_callback().maximum_header_bytes(), 16 * 1024);
     assert_eq!(config.nomad_callback().maximum_body_bytes(), 64 * 1024);
+    assert_eq!(
+        config
+            .nomad_callback()
+            .authentication_request_timeout()
+            .as_secs(),
+        10
+    );
+    assert_eq!(config.nomad_callback().maximum_jwks_bytes(), 1024 * 1024);
+    assert_eq!(config.nomad_callback().maximum_retained_nonces(), 65_536);
     assert_eq!(config.backend_permit_wait().as_secs(), 30);
     assert_eq!(
         config.scheduling_limits("unknown-subject"),
@@ -147,6 +156,9 @@ public_url = "http://gateway.internal:17443/build-callback"
 maximum_connections = 12
 maximum_header_bytes = 8192
 maximum_body_bytes = 32768
+authentication_request_timeout_seconds = 7
+maximum_jwks_bytes = 131072
+maximum_retained_nonces = 4096
 "#,
     )
     .expect("configuration writes");
@@ -162,6 +174,9 @@ maximum_body_bytes = 32768
     assert_eq!(callback.maximum_connections(), 12);
     assert_eq!(callback.maximum_header_bytes(), 8192);
     assert_eq!(callback.maximum_body_bytes(), 32768);
+    assert_eq!(callback.authentication_request_timeout().as_secs(), 7);
+    assert_eq!(callback.maximum_jwks_bytes(), 131072);
+    assert_eq!(callback.maximum_retained_nonces(), 4096);
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
@@ -256,6 +271,9 @@ fn rejects_invalid_nomad_callback_service_configuration() {
         "maximum_connections = 0",
         "maximum_header_bytes = 0",
         "maximum_body_bytes = 0",
+        "authentication_request_timeout_seconds = 0",
+        "maximum_jwks_bytes = 0",
+        "maximum_retained_nonces = 0",
     ] {
         fs::write(&config_path, format!("[nomad_callback]\n{callback}\n"))
             .expect("configuration writes");
