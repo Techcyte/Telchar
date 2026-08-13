@@ -3020,6 +3020,12 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
         0,
         "detached completion retained request leases"
     );
+    wait_for_path_state_for(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        telchar::persistence::SharedBuildState::Succeeded,
+        Duration::from_secs(2),
+    );
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.build_derivation.completed"),
@@ -3575,14 +3581,25 @@ impl FrontendFixture {
 }
 
 fn shared_build_quota_subject(database: &PostgresFixture, derivation_path: &str) -> String {
-    database
-        .connect()
-        .query_one(
-            "SELECT quota_subject FROM shared_builds WHERE derivation_path = $1",
-            &[&derivation_path],
-        )
-        .expect("shared build quota subject reads")
-        .get(0)
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let quota_subject = database
+            .connect()
+            .query_one(
+                "SELECT quota_subject FROM shared_builds WHERE derivation_path = $1",
+                &[&derivation_path],
+            )
+            .expect("shared build quota subject reads")
+            .get::<_, Option<String>>(0);
+        if let Some(quota_subject) = quota_subject {
+            return quota_subject;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "shared build did not acquire quota ownership"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn request_id(database: &mut postgres::Client) -> String {
