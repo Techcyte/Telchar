@@ -14,6 +14,7 @@ pub enum TrustMode {
 
 pub struct NixDaemon {
     child: Child,
+    stderr_reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
     diagnostic_operations: Option<Vec<u64>>,
     environment: BTreeMap<&'static str, String>,
     socket_path: PathBuf,
@@ -187,11 +188,16 @@ impl NixFixture {
         command
             .envs(&environment)
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if diagnostics_enabled {
             command.arg("--debug");
         }
         let mut child = command.spawn()?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("fixture daemon stderr is unavailable"))?;
+        let stderr_reader = thread::spawn(move || drain_bounded(stderr));
         fs::write(self.root.join("daemon.pid"), child.id().to_string())?;
 
         for _ in 0..100 {
@@ -200,9 +206,11 @@ impl NixFixture {
                     Ok(_) => {}
                     Err(_) => {
                         if let Some(status) = child.try_wait()? {
-                            return Err(io::Error::other(format!(
-                                "fixture daemon exited before accepting connections: {status}"
-                            )));
+                            return Err(daemon_startup_error(
+                                "accepting connections",
+                                status,
+                                stderr_reader,
+                            ));
                         }
                         thread::sleep(Duration::from_millis(10));
                         continue;
@@ -215,6 +223,7 @@ impl NixFixture {
                 );
                 return Ok(NixDaemon {
                     child,
+                    stderr_reader: Some(stderr_reader),
                     diagnostic_operations: diagnostics_enabled.then(Vec::new),
                     environment,
                     socket_path: self.socket_path.clone(),
@@ -223,14 +232,17 @@ impl NixFixture {
                 });
             }
             if let Some(status) = child.try_wait()? {
-                return Err(io::Error::other(format!(
-                    "fixture daemon exited before binding socket: {status}"
-                )));
+                return Err(daemon_startup_error(
+                    "binding socket",
+                    status,
+                    stderr_reader,
+                ));
             }
             thread::sleep(Duration::from_millis(10));
         }
         let _ = child.kill();
         let _ = child.wait();
+        let _ = stderr_reader.join();
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "fixture daemon did not bind socket",
@@ -586,6 +598,9 @@ impl NixDaemon {
             self.child.kill()?;
         }
         let _ = self.child.wait()?;
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
         tracing::info!(
             event = "nix.fixture.daemon.stopped",
             "Fixture daemon stopped"
@@ -604,6 +619,25 @@ impl Drop for NixDaemon {
             );
         }
     }
+}
+
+fn daemon_startup_error(
+    stage: &str,
+    status: std::process::ExitStatus,
+    stderr_reader: thread::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Error {
+    let stderr = stderr_reader
+        .join()
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let diagnostic = String::from_utf8_lossy(&stderr);
+    let diagnostic = diagnostic.trim();
+    io::Error::other(if diagnostic.is_empty() {
+        format!("fixture daemon exited before {stage}: {status}")
+    } else {
+        format!("fixture daemon exited before {stage}: {status}: {diagnostic}")
+    })
 }
 
 fn drain_bounded(mut reader: impl Read) -> io::Result<Vec<u8>> {
@@ -625,7 +659,7 @@ fn start_cleanup_guard(root: &Path) -> io::Result<Child> {
     let script = r#"
 parent=$1
 root=$2
-while kill -0 "$parent" 2>/dev/null; do sleep 0.05; done
+while test -d "/proc/$parent"; do sleep 0.05; done
 if test -f "$root/daemon.pid"; then
     daemon=$(cat "$root/daemon.pid")
     kill "$daemon" 2>/dev/null || true
