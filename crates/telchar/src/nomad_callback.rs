@@ -308,19 +308,7 @@ impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
         path: &str,
         now: SystemTime,
     ) -> io::Result<AdmittedCallback> {
-        let mut input = Cursor::new(body);
-        let frame = read_frame(
-            &mut input,
-            ProtocolLimits::new(self.maximum_metadata_bytes, 0),
-        )?;
-        if input.read(&mut [0_u8; 1])? != 0 {
-            return Err(invalid("Nomad callback contains trailing bytes"));
-        }
-        if frame.kind() != FrameKind::Authenticate || !frame.payload().is_empty() {
-            return Err(invalid("Nomad callback authentication frame is invalid"));
-        }
-        let authentication =
-            decode_metadata::<Authentication>(frame.metadata(), self.maximum_metadata_bytes)?;
+        let authentication = decode_authentication(body, self.maximum_metadata_bytes)?;
         let mut protocol = ProtocolSession::new();
         protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
         let verified = self
@@ -360,6 +348,24 @@ impl AdmittedCallback {
     pub fn protocol_mut(&mut self) -> &mut ProtocolSession {
         &mut self.protocol
     }
+}
+
+pub fn decode_authentication(
+    body: &[u8],
+    maximum_metadata_bytes: usize,
+) -> io::Result<Authentication> {
+    let mut input = Cursor::new(body);
+    let frame = read_frame(
+        &mut input,
+        ProtocolLimits::new(maximum_metadata_bytes, 0),
+    )?;
+    if input.read(&mut [0_u8; 1])? != 0 {
+        return Err(invalid("Nomad callback contains trailing bytes"));
+    }
+    if frame.kind() != FrameKind::Authenticate || !frame.payload().is_empty() {
+        return Err(invalid("Nomad callback authentication frame is invalid"));
+    }
+    decode_metadata::<Authentication>(frame.metadata(), maximum_metadata_bytes)
 }
 
 fn invalid(message: &'static str) -> io::Error {

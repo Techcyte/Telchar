@@ -387,6 +387,26 @@ fn run_daemon() -> io::Result<()> {
             }
         });
     }
+    if !config.nomad_backends().is_empty() {
+        let callback_listener = std::net::TcpListener::bind(config.nomad_callback().bind())?;
+        let callback_config = config.nomad_callback().clone();
+        let callback_database_url = database_url.clone();
+        let callback_backends = config.nomad_backends().to_vec();
+        std::thread::spawn(move || {
+            if let Err(error) = telchar::nomad_callback_service::serve(
+                callback_listener,
+                callback_config,
+                callback_database_url,
+                callback_backends,
+            ) {
+                tracing::error!(
+                    event = "nomad.callback.service_failed",
+                    reason = error_reason(&error),
+                    "Nomad callback service failed"
+                );
+            }
+        });
+    }
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(

@@ -13,6 +13,7 @@ pub mod nix_fixture;
 pub mod nomad_backend;
 pub mod nomad_callback;
 pub mod nomad_callback_http;
+pub mod nomad_callback_service;
 pub mod nomad_transfer_authentication;
 pub mod nomad_transfer_protocol;
 pub mod persistence;
