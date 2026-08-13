@@ -15,4 +15,4 @@ nix build --no-link .#checks.x86_64-linux.nixos-module
 nix build --no-link .#checks.x86_64-linux.nixos-gate-3-contract
 nix build --no-link .#checks.x86_64-linux.nixos-static-ssh-gateway
 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-gateway
-nix build --no-link .#checks.x86_64-linux.nixos-restart-reconciliation
+nix develop -c cargo test --locked -p telchar --test shared_build_recovery
