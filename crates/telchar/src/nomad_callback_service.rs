@@ -225,7 +225,14 @@ pub fn serve_connection(
     )?;
     session.accept(Direction::WorkerToGateway, request_frame)?;
     stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)?;
-    if let Err(error) = receive_build_outputs(&mut socket, &mut session, build_request, limits) {
+    if let Err(error) = receive_build_outputs(
+        &mut socket,
+        &mut session,
+        database_url,
+        derivation_path,
+        build_request,
+        limits,
+    ) {
         let _ = crate::persistence::complete_shared_build_failure(
             database_url,
             derivation_path,
@@ -274,11 +281,14 @@ fn read_transfer_frame<S: io::Read + io::Write>(
 fn receive_build_outputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
     session: &mut TransferSession,
+    database_url: &str,
+    derivation_path: &str,
     build_request: &crate::build_request::BuildRequest,
     limits: crate::config::NomadTransferLimits,
 ) -> io::Result<()> {
     let endpoint = gateway_store_endpoint()?;
     let mut current: Option<OutputImport> = None;
+    let mut collecting = false;
     loop {
         let frame = read_transfer_frame(
             socket,
@@ -297,6 +307,13 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                         io::ErrorKind::InvalidData,
                         "Nomad output NAR transfer is interleaved",
                     ));
+                }
+                if !collecting {
+                    crate::persistence::collect_shared_build(database_url, derivation_path)
+                        .map_err(|_| {
+                            io::Error::other("Nomad output collection transition failed")
+                        })?;
+                    collecting = true;
                 }
                 let metadata: PathManifestEntry =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
