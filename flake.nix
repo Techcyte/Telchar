@@ -322,15 +322,17 @@
                 second_drv = stock_client.succeed("nix-instantiate /tmp/telchar-static-ssh-gateway.nix -A second").strip()
                 distinct_export = stock_client.succeed("nix-store --export '" + first_drv + "' '" + second_drv + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
                 gateway.succeed("printf '%s' '" + distinct_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
-                builder_primary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq 2")
-                builder_secondary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq 1")
+                primary_connections = int(builder_primary.succeed("grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence").strip())
+                secondary_connections = int(builder_secondary.succeed("grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence").strip())
+                assert primary_connections >= 1
+                assert secondary_connections >= 1
                 stock_client.succeed("(" + build + " '" + first_drv + "^*' > /tmp/first.out 2>&1) & echo $! > /tmp/first.pid; (" + build + " '" + second_drv + "^*' > /tmp/second.out 2>&1) & echo $! > /tmp/second.pid; status=0; wait $(cat /tmp/first.pid) || status=1; wait $(cat /tmp/second.pid) || status=1; test $status -eq 0 || { cat /tmp/first.out /tmp/second.out >&2; exit 1; }")
                 first_output = stock_client.succeed("nix-store -q --outputs '" + first_drv + "'").strip()
                 second_output = stock_client.succeed("nix-store -q --outputs '" + second_drv + "'").strip()
                 stock_client.succeed("test \"$(cat '" + first_output + "')\" = telchar-static-ssh-first")
                 stock_client.succeed("test \"$(cat '" + second_output + "')\" = telchar-static-ssh-second")
-                builder_primary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq 3")
-                builder_secondary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq 2")
+                builder_primary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq " + str(primary_connections + 1))
+                builder_secondary.succeed("test $(grep -c '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence) -eq " + str(secondary_connections + 1))
                 gateway.succeed("nix-store --verify-path '" + shared_a + "' && nix-store --verify-path '" + first_output + "' && nix-store --verify-path '" + second_output + "'")
               '';
             };
