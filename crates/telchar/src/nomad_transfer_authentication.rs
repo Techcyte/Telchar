@@ -5,6 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use reqwest::Certificate;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -12,6 +14,204 @@ use crate::nomad_transfer_protocol::{Authentication, AuthenticationProof};
 
 const MAXIMUM_CAPABILITY_BYTES: usize = 4096;
 const MAXIMUM_IDENTITY_BYTES: usize = 256;
+
+#[derive(Clone, Debug)]
+pub struct WorkloadIdentityPolicy {
+    pub issuer: String,
+    pub jwks_url: String,
+    pub audience: String,
+    pub namespace: String,
+    pub job_id: String,
+    pub task: String,
+    pub ca_certificate_file: Option<std::path::PathBuf>,
+    pub request_timeout: Duration,
+    pub maximum_jwks_bytes: usize,
+    pub clock_skew: Duration,
+}
+
+pub struct WorkloadIdentityVerifier {
+    policy: WorkloadIdentityPolicy,
+    client: reqwest::blocking::Client,
+}
+
+impl WorkloadIdentityVerifier {
+    pub fn new(policy: WorkloadIdentityPolicy) -> io::Result<Self> {
+        if policy.request_timeout.is_zero() || policy.maximum_jwks_bytes == 0 {
+            return Err(invalid("Nomad workload identity policy is invalid"));
+        }
+        for value in [
+            &policy.issuer,
+            &policy.jwks_url,
+            &policy.audience,
+            &policy.namespace,
+            &policy.job_id,
+            &policy.task,
+        ] {
+            validate_identity(value)?;
+        }
+        let mut builder = reqwest::blocking::Client::builder().timeout(policy.request_timeout);
+        if let Some(path) = &policy.ca_certificate_file {
+            let pem = std::fs::read(path)
+                .map_err(|_| invalid("Nomad workload identity CA could not be read"))?;
+            let certificates = Certificate::from_pem_bundle(&pem)
+                .map_err(|_| invalid("Nomad workload identity CA is invalid"))?;
+            if certificates.is_empty() {
+                return Err(invalid("Nomad workload identity CA is invalid"));
+            }
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+        let client = builder
+            .build()
+            .map_err(|_| invalid("Nomad workload identity client could not be created"))?;
+        Ok(Self { policy, client })
+    }
+
+    pub fn verify(&self, authentication: &Authentication, now: SystemTime) -> io::Result<()> {
+        let AuthenticationProof::WorkloadIdentity { token } = &authentication.proof else {
+            return Err(invalid("Nomad workload identity mode is invalid"));
+        };
+        validate_authentication_identity_for_workload(authentication, &self.policy)?;
+        if token.is_empty() || token.len() > 16 * 1024 {
+            return Err(invalid("Nomad workload identity token is invalid"));
+        }
+        let header = decode_header(token)
+            .map_err(|_| invalid("Nomad workload identity token is invalid"))?;
+        if header.alg != Algorithm::RS256 {
+            return Err(invalid("Nomad workload identity algorithm is unsupported"));
+        }
+        let kid = header
+            .kid
+            .ok_or_else(|| invalid("Nomad workload identity key ID is missing"))?;
+        validate_identity(&kid)?;
+        let jwks = self.fetch_jwks()?;
+        let key = jwks
+            .keys
+            .into_iter()
+            .find(|key| {
+                key.kid == kid && key.kty == "RSA" && key.use_ == "sig" && key.alg == "RS256"
+            })
+            .ok_or_else(|| invalid("Nomad workload identity key is unknown"))?;
+        let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e)
+            .map_err(|_| invalid("Nomad workload identity key is invalid"))?;
+        let now = now
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| invalid("Nomad workload identity clock is invalid"))?
+            .as_secs();
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[self.policy.issuer.as_str()]);
+        validation.set_audience(&[self.policy.audience.as_str()]);
+        validation.leeway = self.policy.clock_skew.as_secs();
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.required_spec_claims = ["exp", "iss", "aud", "nbf"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let token = decode::<WorkloadClaims>(token, &decoding_key, &validation)
+            .map_err(|_| invalid("Nomad workload identity token is invalid"))?;
+        let claims = token.claims;
+        let latest_expiry = claims
+            .exp
+            .checked_add(self.policy.clock_skew.as_secs())
+            .ok_or_else(|| invalid("Nomad workload identity expiry is invalid"))?;
+        let latest_not_before = now
+            .checked_add(self.policy.clock_skew.as_secs())
+            .ok_or_else(|| invalid("Nomad workload identity clock is invalid"))?;
+        if now > latest_expiry
+            || claims.nbf > latest_not_before
+            || claims.nomad_namespace != authentication.namespace
+            || claims.nomad_job_id != authentication.job_id
+            || claims.nomad_allocation_id != authentication.allocation_id
+            || claims.nomad_task != authentication.task
+        {
+            return Err(invalid("Nomad workload identity claims are invalid"));
+        }
+        Ok(())
+    }
+
+    fn fetch_jwks(&self) -> io::Result<Jwks> {
+        let response = self
+            .client
+            .get(&self.policy.jwks_url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|_| invalid("Nomad workload identity JWKS request failed"))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.policy.maximum_jwks_bytes as u64)
+        {
+            return Err(invalid("Nomad workload identity JWKS exceeds limit"));
+        }
+        let bytes = response
+            .bytes()
+            .map_err(|_| invalid("Nomad workload identity JWKS request failed"))?;
+        if bytes.len() > self.policy.maximum_jwks_bytes {
+            return Err(invalid("Nomad workload identity JWKS exceeds limit"));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|_| invalid("Nomad workload identity JWKS is invalid"))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Jwks {
+    keys: Vec<Jwk>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Jwk {
+    kty: String,
+    kid: String,
+    #[serde(rename = "use")]
+    use_: String,
+    alg: String,
+    n: String,
+    e: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkloadClaims {
+    #[serde(rename = "iss")]
+    _issuer: String,
+    #[serde(rename = "aud")]
+    _audience: String,
+    exp: u64,
+    nbf: u64,
+    nomad_namespace: String,
+    nomad_job_id: String,
+    nomad_allocation_id: String,
+    nomad_task: String,
+}
+
+fn validate_authentication_identity_for_workload(
+    authentication: &Authentication,
+    policy: &WorkloadIdentityPolicy,
+) -> io::Result<()> {
+    if authentication.namespace != policy.namespace
+        || authentication.job_id != policy.job_id
+        || authentication.task != policy.task
+    {
+        return Err(invalid(
+            "Nomad workload identity does not match expected execution",
+        ));
+    }
+    for value in [
+        &authentication.backend,
+        &authentication.namespace,
+        &authentication.job_id,
+        &authentication.allocation_id,
+        &authentication.task,
+        &authentication.shared_build_digest,
+    ] {
+        validate_identity(value)?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct HmacVerificationPolicy {
