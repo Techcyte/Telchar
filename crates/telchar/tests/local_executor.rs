@@ -136,15 +136,14 @@ fn classic_output_trust_documentation_states_store_consistency_not_provenance_pr
         .and_then(|path| path.parent())
         .expect("workspace root resolves")
         .to_path_buf();
-    for document in ["README.md", "telchar-design.md"] {
-        let text = fs::read_to_string(repository.join(document)).expect("documentation reads");
-        assert!(text.contains("store consistency"), "{document}");
-        assert!(text.contains("trusted executor"), "{document}");
-        assert!(text.contains("not provenance proof"), "{document}");
-        assert!(!text.contains("cryptographically proven"), "{document}");
-        assert!(!text.contains("reproducibly verified"), "{document}");
-        assert!(!text.contains("builder-independent"), "{document}");
-    }
+    let document = "docs/design.md";
+    let text = fs::read_to_string(repository.join(document)).expect("documentation reads");
+    assert!(text.contains("store consistency"), "{document}");
+    assert!(text.contains("trusted executor"), "{document}");
+    assert!(text.contains("not cryptographic proof"), "{document}");
+    assert!(!text.contains("cryptographically proven"), "{document}");
+    assert!(!text.contains("reproducibly verified"), "{document}");
+    assert!(!text.contains("builder-independent"), "{document}");
 }
 
 #[test]

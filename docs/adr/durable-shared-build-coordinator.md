@@ -2,17 +2,17 @@
 
 ## Status
 
-Accepted for the MVP roadmap.
+Accepted and implemented.
 
 ## Context
 
 Telchar exposes one stock-Nix `ssh-ng` endpoint and executes admitted normal-mode derivations through local, static SSH, or Nomad backends. Multiple clients may request the same derivation concurrently. Starting one backend execution per client wastes Nix's stable derivation identity and can create duplicate work on different builders.
 
-The earlier control-plane design combined durable queues, execution attempts, capacity reservations, generic backend submission reconciliation, fairness, quotas, and retry policy into a parallel scheduler lifecycle. Telchar needs a narrower subset integrated directly with shared builds: durable waiting, subject fairness, bounded execution allocation, attempt history, and exact backend recovery identity. Generic reservations, automatic retries, priorities, billing, and active/active ownership remain outside the MVP.
+The coordinator stays deliberately narrow: durable waiting, subject fairness, bounded execution allocation, attempt history, and exact backend recovery identity. Generic reservations, automatic retries, priorities, billing, and active/active ownership remain outside its scope.
 
 ## Decision
 
-Telchar will implement a small durable shared-build coordinator.
+Telchar uses a small durable shared-build coordinator.
 
 One equivalent normal-mode derivation has at most one active shared execution. The derivation store path is the primary key and a bounded digest of the admitted execution specification detects inconsistent requests for the same path.
 
@@ -44,7 +44,7 @@ Each backend advertises a small typed capability set consumed by the coordinator
 
 System, features, declaration order, and configured permits remain backend target properties rather than capabilities. Multiple connected Telchar clients consuming one live log stream is coordinator fan-out, not a backend capability: the coordinator owns one backend monitor and broadcasts bounded chunks to current local followers. Cross-instance or post-restart log attachment requires `replayable` log recovery and is outside the MVP.
 
-MVP declarations are:
+Current backend declarations are:
 
 ```text
 local:      output-only, connection-bound cancellation, live-only logs
@@ -71,13 +71,13 @@ Startup reconciliation establishes bounded monitors and does not wait indefinite
 
 ## Logs
 
-MVP logs are connection-scoped. The execution leader receives live backend logs. Followers and reconnecting clients receive a bounded already-in-progress message but no historical replay. Losing Telchar's process may lose unarchived log history without losing durable shared-build identity or completed outputs.
+Logs are connection-scoped. The execution leader receives live backend logs. Followers and reconnecting clients receive a bounded already-in-progress message but no historical replay. Losing Telchar's process may lose unarchived log history without losing durable shared-build identity or completed outputs.
 
-Optional historical log archival is deferred. The preferred first extension is a bounded local zstd spool with opaque filenames, restrictive permissions, disk-reserve checks, atomic finalization, and external durable-volume or object-storage upload. Redis, PostgreSQL log bytes, Telchar-native object-storage upload, and mandatory archival are not MVP requirements.
+Historical log archival is not implemented. The preferred extension is a bounded local zstd spool with opaque filenames, restrictive permissions, disk-reserve checks, atomic finalization, and optional external upload. Redis, PostgreSQL log bytes, and a Telchar-owned log service remain out of scope.
 
 ## Consequences
 
-The MVP gains duplicate suppression, durable subject-fair waiting, bounded per-subject execution allocation, attempt history, compatible-backend fan-out, client-independent execution ownership, durable Nomad adoption, and ordinary Nix retry behavior without implementing a general scheduler.
+The coordinator provides duplicate suppression, durable subject-fair waiting, bounded per-subject execution allocation, attempt history, compatible-backend fan-out, client-independent execution ownership, durable Nomad adoption, and ordinary Nix retry behavior without implementing a general scheduler.
 
 The coordinator preserves clear extension seams:
 
@@ -87,4 +87,4 @@ The coordinator preserves clear extension seams:
 - Durable log archives or backend cursors can add replayable log recovery without changing live coordinator fan-out.
 - Additional backend kinds can join by declaring the same bounded capabilities rather than adding backend-kind conditionals throughout the coordinator.
 
-These extensions require new policy and schema when justified. The MVP will not retain dormant scheduler transitions merely to make those additions appear pre-implemented.
+These extensions require new policy and schema when justified. Telchar does not retain dormant scheduler transitions merely to make those additions appear pre-implemented.

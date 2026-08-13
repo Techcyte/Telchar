@@ -1,0 +1,133 @@
+# Architecture
+
+Telchar sits between stock Nix clients and a fleet of Nix executors. It preserves Nix's remote-builder interface while centralizing admission, queueing, backend selection, recovery, and output validation.
+
+```text
+stock Nix client
+  │ ssh-ng / worker protocol
+  ▼
+OpenSSH forced-command frontend
+  │ authenticated Unix socket
+  ▼
+Telchar daemon
+  ├─ PostgreSQL coordination
+  ├─ gateway Nix store
+  └─ backend
+      ├─ local Nix
+      ├─ static SSH
+      └─ Nomad allocation worker
+```
+
+## Responsibilities
+
+Nix still evaluates expressions and decides when a derivation is ready. Telchar sees only the build operations submitted by the client daemon; it does not reconstruct the evaluation graph or act as a CI scheduler.
+
+Telchar owns:
+
+- authenticated requester and quota identity;
+- build validation and resource admission;
+- subject-fair queueing and backend permits;
+- duplicate suppression for equivalent builds;
+- durable execution and recovery state;
+- input and output movement through the gateway store;
+- backend submission, monitoring, and exact-target cancellation;
+- output validation and the final Nix `BuildResult`;
+- bounded telemetry and live log delivery.
+
+The infrastructure scheduler owns machine placement and autoscaling. Nix stores and substituters own content storage. OpenSSH owns network authentication. PostgreSQL owns durable control-plane state.
+
+## Process model
+
+OpenSSH starts `telchar serve-stdio` as a restricted forced command for each client connection. The frontend attaches authenticated identity to the worker-protocol stream and forwards it over a private Unix socket. It has no database access and does not schedule work.
+
+One `telchar daemon` process owns the socket, scheduling, gateway-store access, backends, callback service, recovery monitors, and maintenance work. Before becoming ready it takes a fixed PostgreSQL advisory lock. Lock contention rejects startup. Losing the lock connection fences the daemon and causes a bounded shutdown.
+
+This is single-active process exclusion, not high availability. A standby design would need leadership epochs, callback routing, dispatch fencing, and shared or replicated gateway-store authority.
+
+## Build lifecycle
+
+1. OpenSSH authenticates the client and starts the frontend.
+2. The daemon negotiates the supported worker protocol and validates the request.
+3. Telchar checks system, features, quotas, transfer limits, and disk reserve.
+4. Required inputs are made valid in the gateway store.
+5. Equivalent requests join one durable shared build.
+6. The leader waits in a round-robin queue across quota subjects, FIFO within a subject.
+7. Telchar selects the first configured compatible backend and acquires its permit.
+8. The selected backend executes independently of requester attachment.
+9. Every declared output is returned to the gateway, validated, imported, and confirmed in the store.
+10. Telchar records one terminal result and replies using the normal Nix worker protocol.
+
+The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Requester disconnect does not cancel admitted work under the default policy.
+
+A failed shared build is terminal. Telchar does not automatically retry it. A later independent request may create replacement work after checking the gateway store.
+
+## Durable state and recovery
+
+PostgreSQL stores bounded request identity, attachments, shared-build state, admitted build specifications, attempts, backend identity, transfer progress, and terminal metadata. It does not store NAR bodies, credentials, capabilities, signatures, or build logs.
+
+Recovery first checks the exact expected outputs in the gateway store. If they are valid, they win regardless of the previous transient state. Otherwise recovery follows the persisted backend identity:
+
+- local and static SSH execution are output-only; missing outputs fail closed;
+- Nomad execution is adoptable only through the original backend, namespace, and persisted job identity.
+
+A compatible backend is fungible only before dispatch. In-flight work is never migrated or blindly resubmitted.
+
+## Gateway store
+
+The gateway Nix store is durable authority for admitted inputs, returned outputs, retention, and restart recovery. Telchar accesses it through typed worker-protocol operations rather than the Nix C++ ABI or shell commands.
+
+Transfers are streamed with bounded memory. Store leases and GC roots keep paths alive while requests, active executions, transfers, or configured output retention still require them. Telchar controls eligibility; Nix garbage collection performs deletion.
+
+Classic input-addressed output validation proves transport and store consistency with a trusted executor. It is not cryptographic proof that the executor built honestly.
+
+## Backends
+
+### Local
+
+Runs `BuildDerivation` through the configured gateway-side Nix daemon. It is the reference backend and has connection-bound cancellation.
+
+### Static SSH
+
+Uses a configured SSH destination, identity, and pinned host-key file. Recovery reconnects only to that exact backend and succeeds only when every expected output can be imported and validated.
+
+### Nomad
+
+Submits a deterministic batch job and persists its identity before monitoring. A packaged allocation worker connects back to Telchar, authenticates, resolves the admitted input closure, builds through its configured Nix store, streams live logs, and returns exact outputs.
+
+The callback uses WebSocket transport with the `telchar-nomad-transfer-v1` subprotocol and typed TLNW messages. Authentication is workload identity or an HMAC capability. Public `wss://` endpoints require an operator-managed TLS terminator; Telchar itself listens with plaintext WebSocket.
+
+See [Nomad backend](nomad.md) and the [Nomad transfer ADR](adr/nomad-allocation-transfer.md).
+
+## Security boundary
+
+Telchar assumes authenticated clients, executor hosts, their Nix daemons, PostgreSQL, and the gateway host are trusted members of one organizational store domain. A client that knows a store path may be able to query it. Store-path opacity is not authorization.
+
+Build payloads remain untrusted and must run in Nix sandboxes. Client bytes cannot select backend names, credentials, stores, Nomad clusters, drivers, cache policy, quotas, or deployment settings.
+
+OpenSSH ingress exposes no shell, PTY, forwarding, or arbitrary command execution. Secrets are delivered through protected files or the deployment's secret mechanism, never inline in generated Nix configuration.
+
+Hostile multi-tenancy needs a separate store, cache, log, backend, and recovery isolation design.
+
+## Protocol boundary
+
+The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, and fuzz targets. It contains no Telchar identity, scheduling, persistence, backend, or exporter policy. Dependency checks enforce that direction.
+
+Unknown or unsupported operations fail closed because the worker protocol has no generic envelope that can safely skip arbitrary messages. Compatibility claims require typed coverage and real Nix fixtures, not only a matching protocol number.
+
+## Non-goals
+
+Telchar does not:
+
+- evaluate flakes or expressions;
+- replace client `nix-daemon` processes;
+- run CI pipelines, jobsets, or arbitrary commands;
+- provision compute or implement autoscaling;
+- provide a binary cache or log product;
+- provide interactive builder shells;
+- migrate active builds between backends;
+- perform generic automatic retries;
+- support active/active scheduling;
+- provide hostile multi-tenant isolation;
+- terminate TLS.
+
+Future work is tracked in the [roadmap](roadmap.md). Lasting decisions live under [`docs/adr`](adr/).

@@ -1,0 +1,141 @@
+# Operator guide
+
+Telchar is a trusted Nix gateway, not a tenant boundary. Run it on a dedicated Linux host or VM with a dedicated gateway store and one PostgreSQL database.
+
+The public NixOS module is `nixosModules.default` (also exported as `nixosModules.telchar`). It can manage the daemon, local PostgreSQL, trusted gateway-store access, and restricted OpenSSH ingress.
+
+## Before deployment
+
+- Use a gateway store that is not shared with a local client workload.
+- Give the daemon access only to its PostgreSQL database, gateway Nix daemon, state directories, and configured backend credentials.
+- Keep the daemon Unix socket private to the configured frontend UID.
+- Pin static SSH host keys.
+- Put secrets in `services.telchar.credentials` or another protected file mechanism. Nix-generated configuration is world-readable.
+- Treat all authenticated clients as members of one shared store domain.
+- Configure each backend's name, systems, features, capacity, credentials, and timeouts explicitly.
+
+The default module paths are:
+
+```text
+/run/telchar/daemon.sock
+/var/lib/telchar/.ssh/authorized_keys
+/var/lib/telchar/gc-roots
+```
+
+## NixOS module
+
+Minimal local-backend configuration:
+
+```nix
+{
+  imports = [ inputs.telchar.nixosModules.default ];
+
+  services.telchar = {
+    enable = true;
+    package = inputs.telchar.packages.${pkgs.system}.telchar;
+    settings = {
+      backends.local = {
+        name = "local";
+        system = pkgs.system;
+        supported_features = [ ];
+        maximum_concurrent_builds = 4;
+      };
+    };
+  };
+}
+```
+
+The module enables local PostgreSQL, gateway Nix-daemon access, and OpenSSH ingress unless their `enable` options are disabled. `services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
+
+The module's forced command derives the accepted key fingerprint from the configured `authorized_keys` file. Keep that file operator-owned and restricted to the Telchar account.
+
+## PostgreSQL and recovery
+
+Only one daemon may own a deployment database. A second daemon refuses startup. Loss of the ownership connection fences the running daemon; the service manager may then restart it.
+
+Back up PostgreSQL and preserve:
+
+- shared-build rows and admitted build specifications;
+- attempt and backend execution identity;
+- transfer and terminal metadata.
+
+PostgreSQL must not contain NAR bodies, credentials, capabilities, signatures, or build logs.
+
+Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery remains bound to the original backend, namespace, and job identity. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
+
+## Stores and retention
+
+The gateway Nix daemon is trusted authority. The Telchar account needs the operations required for closure queries, NAR import/export, builds, and GC-root retention.
+
+Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
+
+Nomad allocation stores are separate operator policy. See [Nomad backend](nomad.md).
+
+## Ingress and clients
+
+Expose Nix ingress only through the restricted Telchar OpenSSH account. Disable passwords, PTYs, forwarding, user environment, and arbitrary commands.
+
+Example client configuration:
+
+```bash
+nix build \
+  --max-jobs 0 \
+  --builders 'ssh-ng://telchar@build-host x86_64-linux'
+```
+
+The Nix builder entry describes the requested system and features. It cannot select a Telchar backend, cluster, store, credential, driver, quota, or cache policy.
+
+Requester disconnect normally leaves admitted execution running. Followers share the same execution and do not consume another execution slot or backend permit.
+
+## Logs and telemetry
+
+Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.
+
+Send systemd journals and OTLP signals to operator-owned systems. Telchar telemetry is bounded and omits protocol bodies, NAR contents, secrets, and raw authentication material.
+
+## TLS and callbacks
+
+Telchar does not terminate TLS. For a public Nomad callback URL, place a reverse proxy or load balancer in front of the plaintext callback listener.
+
+The proxy must:
+
+- preserve WebSocket upgrades;
+- preserve `telchar-nomad-transfer-v1`;
+- disable automatic request retries;
+- allow one connection for the configured maximum lifetime;
+- keep the proxy-to-Telchar hop local or on a trusted network.
+
+TLS keys belong to the proxy. Workload identity or HMAC authentication is still required. HMAC over plaintext authenticates messages but does not make their contents confidential.
+
+## Upgrades and release checks
+
+Before upgrading:
+
+1. back up PostgreSQL;
+2. preserve the gateway store and GC roots;
+3. confirm backend credentials and exact Nomad namespaces remain available;
+4. run the release suite for the candidate revision;
+5. stop the active daemon cleanly before replacing it.
+
+Verification commands:
+
+```bash
+nix flake check
+nix develop -c cargo test --locked --workspace
+./scripts/check-release.sh
+```
+
+The release script covers formatting, tests, clippy, packages, the public NixOS module, stock-Nix local builds, static SSH, Nomad, duplicate coalescing, requester disconnect, output reuse, and restart recovery.
+
+## Unsupported expectations
+
+Do not rely on Telchar for:
+
+- hostile tenant isolation;
+- automatic build retries;
+- log replay;
+- cache publication;
+- fixed-output or content-addressed derivations;
+- active/active scheduling;
+- client-selected infrastructure;
+- native TLS termination.

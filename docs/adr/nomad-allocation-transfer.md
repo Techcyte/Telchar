@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for the MVP roadmap.
+Accepted and implemented.
 
 ## Context
 

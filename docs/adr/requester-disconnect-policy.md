@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Gate 3 implementation.
+Accepted and implemented.
 
 ## Decision
 
@@ -27,13 +27,13 @@ Unknown values fail daemon startup.
 | Output collection and validation | Follow the configured running-work policy because the request still owns active execution lifecycle resources. |
 | Result delivery after durable success | Preserve committed output roots and leases. Failure to deliver terminal bytes does not roll back successful durable completion. |
 
-## First-release reattachment
+## Reattachment
 
-Gate 3 does not support reconnecting a requester to an existing detached request. Detached completion exists for output reuse and later cache publication, not live protocol reattachment.
+A requester cannot reconnect to its original detached protocol session. A later equivalent request may join active work or reuse completed outputs, but it does not receive earlier live logs or resume the original byte stream.
 
 ## Security boundary
 
-Only trusted deployment configuration selects the policy. Request fields, SSH commands, environment forwarded by clients, helper responses, and worker-protocol extensions cannot change it.
+Only trusted deployment configuration selects the policy. Request fields, SSH commands, client environment, backend responses, and worker-protocol extensions cannot change it.
 
 Telemetry records only the bounded policy value and lifecycle action. It does not record request, session, lease, owner, or store-path identifiers.
 

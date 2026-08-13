@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for the first Telchar release.
+Accepted and implemented.
 
 ## Decision
 
