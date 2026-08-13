@@ -107,6 +107,9 @@
             ];
             TELCHAR_NIX = "${pkgs.nix}/bin/nix";
             TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
+            preCheck = ''
+              export PATH=${pkgs.nix}/bin:${pkgs.openssh}/bin:${pkgs.postgresql}/bin:$PATH
+            '';
             cargoTestExtraArgs = "--workspace";
           };
           protocol-dependency-boundary = pkgs.runCommand "telchar-protocol-dependency-boundary" { } ''
