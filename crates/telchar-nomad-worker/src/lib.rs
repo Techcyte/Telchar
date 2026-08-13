@@ -8,8 +8,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad_transfer_protocol::{
     decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    BuildStarted, Direction, Frame, FrameKind, InputManifest, InputTransferSession, LogChunk,
-    NarMetadata, PathSet, ProtocolLimits, ProtocolSession,
+    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
+    InputTransferSession, LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet,
+    ProtocolLimits, ProtocolSession,
 };
 use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
@@ -20,6 +21,7 @@ const MAXIMUM_AUTHENTICATION_METADATA_BYTES: usize = 16 * 1024;
 const MAXIMUM_MANIFEST_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_MANIFEST_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
 const MAXIMUM_INPUT_NAR_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAXIMUM_NAR_CHUNK_BYTES: usize = 1024 * 1024;
 
 type WorkerSocket =
     tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
@@ -131,6 +133,75 @@ impl WorkerSession {
         })
     }
 
+    pub fn return_outputs(
+        &mut self,
+        store_uri: &str,
+        result: &nix_worker_protocol::WorkerBuildResult,
+    ) -> io::Result<()> {
+        let mut actual_outputs = result.outputs().to_vec();
+        actual_outputs.sort();
+        let mut expected_outputs = self
+            .manifest
+            .build
+            .outputs
+            .iter()
+            .map(|output| (output.name.clone(), output.path.clone()))
+            .collect::<Vec<_>>();
+        expected_outputs.sort();
+        if actual_outputs != expected_outputs {
+            return Err(invalid("worker build output set is inconsistent"));
+        }
+        let endpoint = GatewayStoreEndpoint::parse(store_uri)
+            .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        let mut store = GatewayStoreConnection::connect(&endpoint)
+            .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        for (_, path) in expected_outputs {
+            let info = store
+                .query_path_info(&path)
+                .map_err(|_| io::Error::other("worker output metadata query failed"))?
+                .ok_or_else(|| invalid("worker build output is unavailable"))?;
+            let metadata = PathManifestEntry {
+                path: String::from_utf8(path.clone())
+                    .map_err(|_| invalid("worker build output path is invalid"))?,
+                nar_hash: info.nar_hash_hex().to_owned(),
+                nar_size: info.nar_size(),
+                references: info
+                    .references()
+                    .iter()
+                    .map(|reference| {
+                        String::from_utf8(reference.clone())
+                            .map_err(|_| invalid("worker output reference is invalid"))
+                    })
+                    .collect::<io::Result<Vec<_>>>()?,
+                deriver: info
+                    .deriver()
+                    .map(|deriver| {
+                        String::from_utf8(deriver.to_vec())
+                            .map_err(|_| invalid("worker output deriver is invalid"))
+                    })
+                    .transpose()?,
+            };
+            self.send_metadata(FrameKind::OutputMetadata, &metadata)?;
+            let mut sink =
+                OutputNarWriter::new(&mut self.socket, &mut self.protocol, metadata.clone());
+            store
+                .nar_from_path(&path, metadata.nar_size, &mut sink)
+                .map_err(|_| io::Error::other("worker output export failed"))?;
+            sink.finish()?;
+            let receipt = self.read_metadata::<OutputReceipt>(FrameKind::OutputReceipt)?;
+            if receipt.path != metadata.path || !receipt.accepted {
+                return Err(invalid("gateway rejected worker output"));
+            }
+        }
+        self.send_metadata(
+            FrameKind::BuildResult,
+            &BuildResultMetadata {
+                outcome: BuildOutcome::Built,
+                diagnostic: None,
+            },
+        )
+    }
+
     pub fn import_requested_inputs(
         &mut self,
         store_uri: &str,
@@ -177,6 +248,20 @@ impl WorkerSession {
         self.inputs.ready_to_build()
     }
 
+    fn read_metadata<T: serde::de::DeserializeOwned>(&mut self, kind: FrameKind) -> io::Result<T> {
+        let body = read_binary_message(&mut self.socket)?;
+        let mut input = body.as_slice();
+        let frame = read_frame(
+            &mut input,
+            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
+        )?;
+        if !input.is_empty() || frame.kind() != kind || !frame.payload().is_empty() {
+            return Err(invalid("worker received invalid transfer metadata"));
+        }
+        self.protocol.accept(Direction::GatewayToWorker, kind)?;
+        decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)
+    }
+
     fn send_metadata<T: serde::Serialize>(&mut self, kind: FrameKind, value: &T) -> io::Result<()> {
         let metadata = encode_metadata(value, MAXIMUM_MANIFEST_METADATA_BYTES)?;
         let frame = Frame::new(kind, metadata, Vec::new());
@@ -190,6 +275,95 @@ impl WorkerSession {
         self.socket
             .send(tungstenite::Message::Binary(body.into()))
             .map_err(|_| io::Error::other("worker input resolution send failed"))
+    }
+}
+
+struct OutputNarWriter<'a> {
+    socket: &'a mut WorkerSocket,
+    protocol: &'a mut ProtocolSession,
+    metadata: PathManifestEntry,
+    offset: u64,
+    buffered: Vec<u8>,
+}
+
+impl<'a> OutputNarWriter<'a> {
+    fn new(
+        socket: &'a mut WorkerSocket,
+        protocol: &'a mut ProtocolSession,
+        metadata: PathManifestEntry,
+    ) -> Self {
+        Self {
+            socket,
+            protocol,
+            metadata,
+            offset: 0,
+            buffered: Vec::with_capacity(MAXIMUM_NAR_CHUNK_BYTES),
+        }
+    }
+
+    fn send_chunk(&mut self, final_chunk: bool) -> io::Result<()> {
+        if self.buffered.is_empty() {
+            return Err(invalid("worker output NAR chunk is empty"));
+        }
+        let metadata = NarMetadata {
+            path: self.metadata.path.clone(),
+            nar_hash: self.metadata.nar_hash.clone(),
+            nar_size: self.metadata.nar_size,
+            offset: self.offset,
+            final_chunk,
+        };
+        let payload = std::mem::take(&mut self.buffered);
+        let frame = Frame::new(
+            FrameKind::OutputNar,
+            encode_metadata(&metadata, MAXIMUM_MANIFEST_METADATA_BYTES)?,
+            payload,
+        );
+        self.protocol
+            .accept(Direction::WorkerToGateway, FrameKind::OutputNar)?;
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &frame,
+            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, MAXIMUM_NAR_CHUNK_BYTES),
+        )?;
+        self.socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .map_err(|_| io::Error::other("worker output NAR send failed"))?;
+        self.offset = self
+            .offset
+            .checked_add(frame.payload().len() as u64)
+            .ok_or_else(|| invalid("worker output NAR offset overflow"))?;
+        self.buffered = Vec::with_capacity(MAXIMUM_NAR_CHUNK_BYTES);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        if self.offset + self.buffered.len() as u64 != self.metadata.nar_size {
+            return Err(invalid("worker output NAR length is inconsistent"));
+        }
+        self.send_chunk(true)
+    }
+}
+
+impl io::Write for OutputNarWriter<'_> {
+    fn write(&mut self, mut input: &[u8]) -> io::Result<usize> {
+        let received = input.len();
+        while !input.is_empty() {
+            let available = MAXIMUM_NAR_CHUNK_BYTES - self.buffered.len();
+            let copied = available.min(input.len());
+            self.buffered.extend_from_slice(&input[..copied]);
+            input = &input[copied..];
+            if self.buffered.len() == MAXIMUM_NAR_CHUNK_BYTES
+                && self.offset + (self.buffered.len() as u64) < self.metadata.nar_size
+            {
+                self.send_chunk(false)?;
+            }
+        }
+        Ok(received)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -358,31 +532,35 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     Ok(socket)
 }
 
-pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
-    let mut socket = connect(config)?;
-    let message = loop {
+fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
+    loop {
         match socket
             .read()
-            .map_err(|_| io::Error::other("worker manifest receive failed"))?
+            .map_err(|_| io::Error::other("worker transfer receive failed"))?
         {
-            tungstenite::Message::Binary(body) => break body,
+            tungstenite::Message::Binary(body) => return Ok(body.to_vec()),
             tungstenite::Message::Ping(payload) => socket
                 .send(tungstenite::Message::Pong(payload))
-                .map_err(|_| io::Error::other("worker manifest receive failed"))?,
+                .map_err(|_| io::Error::other("worker transfer receive failed"))?,
             tungstenite::Message::Close(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "worker callback closed before manifest",
+                    "worker callback closed during transfer",
                 ));
             }
             tungstenite::Message::Text(_)
             | tungstenite::Message::Pong(_)
             | tungstenite::Message::Frame(_) => {
-                return Err(invalid("worker manifest message is invalid"));
+                return Err(invalid("worker transfer message is invalid"));
             }
         }
-    };
-    let mut input = message.as_ref();
+    }
+}
+
+pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
+    let mut socket = connect(config)?;
+    let message = read_binary_message(&mut socket)?;
+    let mut input = message.as_slice();
     let frame = read_frame(
         &mut input,
         ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),

@@ -13,9 +13,9 @@ use crate::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad_transfer_protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, BuildSpecification, Direction,
-    Frame, FrameKind, InputManifest, NarMetadata, PathManifestEntry, PathSet, ProtocolLimits,
-    TransferSession,
+    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
+    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
+    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
 };
 use crate::store_closure::{backend_from_environment, StoreClosureBackend};
 use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
@@ -215,7 +215,8 @@ pub fn serve_connection(
         limits.maximum_frame_metadata_bytes(),
     )?;
     session.accept(Direction::WorkerToGateway, request_frame)?;
-    stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)
+    stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)?;
+    receive_build_outputs(&mut socket, &mut session, build_request, limits)
 }
 
 fn read_transfer_frame<S: io::Read + io::Write>(
@@ -234,6 +235,110 @@ fn read_transfer_frame<S: io::Read + io::Write>(
     Ok(frame)
 }
 
+fn receive_build_outputs<S: io::Read + io::Write>(
+    socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
+    session: &mut TransferSession,
+    build_request: &crate::build_request::BuildRequest,
+    limits: crate::config::NomadTransferLimits,
+) -> io::Result<()> {
+    let endpoint = gateway_store_endpoint()?;
+    let mut current: Option<OutputImport> = None;
+    loop {
+        let frame = read_transfer_frame(
+            socket,
+            ProtocolLimits::new(
+                limits.maximum_frame_metadata_bytes(),
+                limits.stream_buffer_bytes(),
+            ),
+        )?;
+        match frame.kind() {
+            FrameKind::BuildStarted | FrameKind::LogChunk => {
+                session.accept(Direction::WorkerToGateway, frame)?;
+            }
+            FrameKind::OutputMetadata => {
+                if current.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Nomad output NAR transfer is interleaved",
+                    ));
+                }
+                let metadata: PathManifestEntry =
+                    decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
+                session.accept(Direction::WorkerToGateway, frame)?;
+                current = Some(OutputImport::new(&endpoint, metadata)?);
+            }
+            FrameKind::OutputNar => {
+                let metadata: NarMetadata =
+                    decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
+                let import = current.as_mut().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Nomad output NAR has no metadata",
+                    )
+                })?;
+                import.receive(&metadata, frame.payload())?;
+                session.accept(Direction::WorkerToGateway, frame)?;
+                if metadata.final_chunk {
+                    let receipt = import.finish()?;
+                    let receipt_frame = Frame::new(
+                        FrameKind::OutputReceipt,
+                        encode_metadata(&receipt, limits.maximum_frame_metadata_bytes())?,
+                        Vec::new(),
+                    );
+                    session.accept(Direction::GatewayToWorker, receipt_frame.clone())?;
+                    write_transfer_frame(socket, &receipt_frame, limits, 0)?;
+                    current = None;
+                }
+            }
+            FrameKind::BuildResult => {
+                if current.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Nomad build completed during output transfer",
+                    ));
+                }
+                let result: BuildResultMetadata =
+                    decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
+                session.accept(Direction::WorkerToGateway, frame)?;
+                if result.outcome != BuildOutcome::Built {
+                    return Err(io::Error::other("Nomad allocation build failed"));
+                }
+                for (_, path) in build_request.expected_outputs() {
+                    let mut store = GatewayStoreConnection::connect(&endpoint)?;
+                    if !store.is_valid_path(path)? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Nomad output is unavailable in gateway store",
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Nomad transfer frame is invalid during build output collection",
+                ));
+            }
+        }
+    }
+}
+
+fn write_transfer_frame<S: io::Read + io::Write>(
+    socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
+    frame: &Frame,
+    limits: crate::config::NomadTransferLimits,
+    maximum_payload_bytes: usize,
+) -> io::Result<()> {
+    let mut message = Vec::new();
+    write_frame(
+        &mut message,
+        frame,
+        ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), maximum_payload_bytes),
+    )?;
+    socket.write_binary(message)
+}
+
 fn stream_requested_inputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
     session: &mut TransferSession,
@@ -241,9 +346,7 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     requested: &PathSet,
     limits: crate::config::NomadTransferLimits,
 ) -> io::Result<()> {
-    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
-        .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))
-        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))?;
+    let endpoint = gateway_store_endpoint()?;
     let mut store = GatewayStoreConnection::connect(&endpoint)?;
     for requested_path in &requested.paths {
         let entry = manifest
@@ -340,6 +443,89 @@ impl<S: io::Read + io::Write> io::Write for InputNarSink<'_, S> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+fn gateway_store_endpoint() -> io::Result<GatewayStoreEndpoint> {
+    std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+        .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))
+        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))
+}
+
+struct OutputImport {
+    metadata: PathManifestEntry,
+    store: GatewayStoreConnection,
+    temporary: tempfile::SpooledTempFile,
+    received: u64,
+}
+
+impl OutputImport {
+    fn new(endpoint: &GatewayStoreEndpoint, metadata: PathManifestEntry) -> io::Result<Self> {
+        Ok(Self {
+            metadata,
+            store: GatewayStoreConnection::connect(endpoint)?,
+            temporary: tempfile::SpooledTempFile::new(8 * 1024 * 1024),
+            received: 0,
+        })
+    }
+
+    fn receive(&mut self, metadata: &NarMetadata, payload: &[u8]) -> io::Result<()> {
+        if metadata.path != self.metadata.path
+            || metadata.nar_hash != self.metadata.nar_hash
+            || metadata.nar_size != self.metadata.nar_size
+            || metadata.offset != self.received
+            || payload.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad output NAR chunk is inconsistent",
+            ));
+        }
+        io::Write::write_all(&mut self.temporary, payload)?;
+        self.received = self
+            .received
+            .checked_add(payload.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Nomad output too large"))?;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> io::Result<OutputReceipt> {
+        if self.received != self.metadata.nar_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad output NAR length is inconsistent",
+            ));
+        }
+        io::Seek::rewind(&mut self.temporary)?;
+        let references = self
+            .metadata
+            .references
+            .iter()
+            .map(|reference| reference.as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let info = nix_worker_protocol::AddToStoreNarInfo {
+            path: self.metadata.path.as_bytes(),
+            deriver: self.metadata.deriver.as_deref().map(str::as_bytes),
+            nar_hash_hex: &self.metadata.nar_hash,
+            references: &references,
+            registration_time: 0,
+            nar_size: self.metadata.nar_size,
+            ultimate: false,
+            signatures: &[],
+            content_address: None,
+        };
+        self.store
+            .add_to_store_nar(&info, &mut self.temporary, false, true)?;
+        if !self.store.is_valid_path(self.metadata.path.as_bytes())? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad output import verification failed",
+            ));
+        }
+        Ok(OutputReceipt {
+            path: self.metadata.path.clone(),
+            accepted: true,
+        })
     }
 }
 

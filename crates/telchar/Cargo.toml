@@ -30,6 +30,7 @@ toml = "0.8"
 reqwest.workspace = true
 tungstenite.workspace = true
 jsonwebtoken = "9.3.1"
+tempfile = "3.27.0"
 
 [dev-dependencies]
 opentelemetry-proto.workspace = true
