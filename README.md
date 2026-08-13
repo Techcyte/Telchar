@@ -2,7 +2,7 @@
 
 ## AI Usage Disclosure
 
-The original implementation for Telchar was planned out by a human with AI assistance for all the features and issues. Actual coding took place almost entirely with an AI agent for the initial implementation. I was curious if I could actually make something useful by planning something out before-hand and then giving that to an LLM to completely implement, time will tell if that was a horrible idea or not.
+The original implementation for Telchar was planned out by a human with AI assistance for all the features and issues. Actual coding took place almost entirely with an AI agent for the initial implementation. I was curious if I could actually make something useful by planning something out before-hand and then giving that to an LLM to completely implement (with guidance when ambiguity came up), time will tell if that was a horrible idea or not. 
 
 ## Description
 
