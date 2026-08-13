@@ -197,6 +197,155 @@ pub struct BuildResultMetadata {
     pub diagnostic: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct TransferSession {
+    protocol: ProtocolSession,
+    inputs: InputTransferSession,
+    outputs: OutputTransferSession,
+    derivation_path: String,
+    maximum_log_chunk_bytes: usize,
+    maximum_metadata_bytes: usize,
+    next_log_sequence: u64,
+}
+
+impl TransferSession {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        manifest: InputManifest,
+        maximum_paths: usize,
+        maximum_input_nar_bytes: u64,
+        maximum_total_input_bytes: u64,
+        maximum_output_nar_bytes: u64,
+        maximum_total_output_bytes: u64,
+        maximum_log_chunk_bytes: usize,
+        maximum_metadata_bytes: usize,
+    ) -> io::Result<Self> {
+        if maximum_log_chunk_bytes == 0 || maximum_metadata_bytes == 0 {
+            return Err(invalid_data(
+                "Nomad transfer session configuration is invalid",
+            ));
+        }
+        let derivation_path = manifest.derivation_path.clone();
+        let outputs = OutputTransferSession::new(
+            manifest.outputs.clone(),
+            maximum_output_nar_bytes,
+            maximum_total_output_bytes,
+            maximum_metadata_bytes,
+        )?;
+        let inputs = InputTransferSession::new(
+            manifest,
+            maximum_paths,
+            maximum_input_nar_bytes,
+            maximum_total_input_bytes,
+        )?;
+        Ok(Self {
+            protocol: ProtocolSession::resolving_inputs(),
+            inputs,
+            outputs,
+            derivation_path,
+            maximum_log_chunk_bytes,
+            maximum_metadata_bytes,
+            next_log_sequence: 0,
+        })
+    }
+
+    pub fn accept(&mut self, direction: Direction, frame: Frame) -> io::Result<()> {
+        match frame.kind() {
+            FrameKind::ValidPaths => {
+                require_empty_payload(&frame)?;
+                self.inputs.record_valid_paths(decode_metadata(
+                    frame.metadata(),
+                    self.maximum_metadata_bytes,
+                )?)?;
+            }
+            FrameKind::InputRequest => {
+                require_empty_payload(&frame)?;
+                let requested: PathSet =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                if requested != self.inputs.request_unresolved()? {
+                    return Err(invalid_data(
+                        "Nomad input request does not match unresolved paths",
+                    ));
+                }
+            }
+            FrameKind::InputNar => {
+                let metadata: NarMetadata =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                self.inputs
+                    .receive_nar(metadata, frame.payload().len() as u64)?;
+            }
+            FrameKind::BuildStarted => {
+                require_empty_payload(&frame)?;
+                let started: BuildStarted =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                if started.derivation_path != self.derivation_path {
+                    return Err(invalid_data("Nomad build start derivation is invalid"));
+                }
+                self.inputs.ready_to_build()?;
+            }
+            FrameKind::LogChunk => {
+                let metadata: LogChunk =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                if metadata.sequence != self.next_log_sequence
+                    || frame.payload().len() > self.maximum_log_chunk_bytes
+                {
+                    return Err(invalid_data("Nomad live log chunk is invalid"));
+                }
+                self.next_log_sequence = self
+                    .next_log_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_data("Nomad live log sequence is invalid"))?;
+            }
+            FrameKind::OutputMetadata => {
+                require_empty_payload(&frame)?;
+                self.outputs.declare(decode_metadata(
+                    frame.metadata(),
+                    self.maximum_metadata_bytes,
+                )?)?;
+            }
+            FrameKind::OutputNar => {
+                let paths: PathSet =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                if paths.paths.len() != 1 {
+                    return Err(invalid_data("Nomad output NAR identity is invalid"));
+                }
+                self.outputs
+                    .receive_nar(&paths.paths[0], frame.payload().len() as u64)?;
+            }
+            FrameKind::OutputReceipt => {
+                require_empty_payload(&frame)?;
+                self.outputs.record_receipt(decode_metadata(
+                    frame.metadata(),
+                    self.maximum_metadata_bytes,
+                )?)?;
+            }
+            FrameKind::BuildResult => {
+                require_empty_payload(&frame)?;
+                let result: BuildResultMetadata =
+                    decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
+                self.outputs.finish(&result)?;
+            }
+            FrameKind::Authenticate | FrameKind::InputManifest => {
+                return Err(invalid_data(
+                    "Nomad transfer frame is invalid for active session",
+                ));
+            }
+        }
+        self.protocol.accept(direction, frame.kind())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.protocol.is_complete() && self.outputs.is_complete()
+    }
+}
+
+fn require_empty_payload(frame: &Frame) -> io::Result<()> {
+    if !frame.payload().is_empty() {
+        return Err(invalid_data("Nomad transfer frame payload is invalid"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InputState {
     AwaitingResolution,
@@ -511,6 +660,12 @@ impl ProtocolSession {
     pub const fn new() -> Self {
         Self {
             phase: Phase::AwaitingAuthentication,
+        }
+    }
+
+    const fn resolving_inputs() -> Self {
+        Self {
+            phase: Phase::ResolvingInputs,
         }
     }
 
