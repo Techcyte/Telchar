@@ -218,7 +218,26 @@ impl Telemetry {
 }
 
 #[cfg(test)]
-static TELEMETRY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TELEMETRY_TESTS: std::sync::OnceLock<(std::fs::File, std::sync::Mutex<()>)> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn telemetry_tests() -> &'static std::sync::Mutex<()> {
+    &TELEMETRY_TESTS
+        .get_or_init(|| {
+            let lock_path = std::env::temp_dir().join("telchar-telemetry-tests.lock");
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(lock_path)
+                .expect("telemetry test lock file opens");
+            rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+                .expect("telemetry test process lock");
+            (lock, std::sync::Mutex::new(()))
+        })
+        .1
+}
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -489,11 +508,11 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::{start_collector, SERVICE_NAME, TELEMETRY_TESTS};
+    use super::{start_collector, telemetry_tests, SERVICE_NAME};
 
     #[test]
     fn exports_set_options_event_to_otlp() {
-        let _guard = TELEMETRY_TESTS.lock().expect("telemetry test lock");
+        let _guard = telemetry_tests().lock().expect("telemetry test lock");
         let collector = start_collector();
         let current_executable = std::env::current_exe().expect("current test executable");
         let test_directory = current_executable
@@ -552,7 +571,7 @@ mod tests {
 
     #[test]
     fn exports_otlp_signals_before_application_work() {
-        let _guard = TELEMETRY_TESTS.lock().expect("telemetry test lock");
+        let _guard = telemetry_tests().lock().expect("telemetry test lock");
         let collector = start_collector();
         let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args(["run", "--quiet", "--bin", "telchar", "--locked"])
