@@ -477,7 +477,6 @@ pub fn run_worker_session(
                         }
                     };
                 let requester_detached = std::cell::Cell::new(false);
-                let durable_result_reused = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();
                 let derivation_path =
@@ -524,29 +523,86 @@ pub fn run_worker_session(
                                 return reject(
                                     &mut output,
                                     "shared-build-state",
-                                    shared_build_error_message(&error),
+                                    &format!("shared build claim failed: {:?}", error.failure()),
                                 );
                             }
                         };
                         if durable_claim.ownership
                             == crate::persistence::SharedBuildOwnership::Joined
                         {
-                            match durable_shared_build_result(&durable_claim.build) {
-                                Ok(result) => {
-                                    durable_result_reused.set(true);
-                                    leader.complete(Ok(result)).map_err(|_| {
-                                        io::Error::other("shared BuildDerivation execution failed")
-                                    })
+                            match durable_claim.build.state {
+                                crate::persistence::SharedBuildState::Succeeded => {
+                                    match durable_shared_build_result(&durable_claim.build) {
+                                        Ok(result) => leader.complete(Ok(result)).map_err(|_| {
+                                            io::Error::other(
+                                                "shared BuildDerivation execution failed",
+                                            )
+                                        }),
+                                        Err(_) => {
+                                            let _ = leader.complete(Err(
+                                                crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                            ));
+                                            return reject(
+                                                &mut output,
+                                                "shared-build-state",
+                                                "shared build succeeded with invalid result metadata",
+                                            );
+                                        }
+                                    }
                                 }
-                                Err(_) => {
+                                crate::persistence::SharedBuildState::Failed => {
                                     let _ = leader.complete(Err(
-                                        crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                        crate::shared_build::SharedBuildTerminalFailure::Backend,
                                     ));
                                     return reject(
                                         &mut output,
                                         "shared-build-state",
-                                        "shared build state operation failed",
+                                        "shared BuildDerivation execution failed",
                                     );
+                                }
+                                crate::persistence::SharedBuildState::Claimed
+                                | crate::persistence::SharedBuildState::Running
+                                | crate::persistence::SharedBuildState::Collecting => {
+                                    let result = match wait_for_shared_build_terminal(
+                                        database_url,
+                                        derivation_path,
+                                    )
+                                    .map_err(|error| {
+                                        io::Error::new(
+                                            error.kind(),
+                                            format!("shared build terminal wait failed: {error}"),
+                                        )
+                                    })
+                                    .and_then(|_| {
+                                        crate::persistence::read_shared_build(
+                                            database_url,
+                                            derivation_path,
+                                        )
+                                        .map_err(|error| {
+                                            io::Error::other(format!(
+                                                "shared build read failed: {:?}",
+                                                error.failure()
+                                            ))
+                                        })?
+                                        .ok_or_else(|| io::Error::other("shared build is missing"))
+                                    })
+                                    .and_then(|build| durable_shared_build_result(&build))
+                                    {
+                                        Ok(result) => result,
+                                        Err(error) => {
+                                            let _ = leader.complete(Err(
+                                                crate::shared_build::SharedBuildTerminalFailure::Internal,
+                                            ));
+                                            return reject(
+                                                &mut output,
+                                                "shared-build-state",
+                                                &error.to_string(),
+                                            );
+                                        }
+                                    };
+                                    leader.complete(Ok(result)).map_err(|_| {
+                                        io::Error::other("shared BuildDerivation execution failed")
+                                    })
                                 }
                             }
                         } else {
@@ -714,17 +770,25 @@ pub fn run_worker_session(
                 let output_paths = validate_build_outputs(&result, store_export);
                 let output_paths = match output_paths {
                     Ok(paths) => {
-                        if durable_execution_owned.get()
-                            && let Err(error) = crate::persistence::collect_shared_build(
+                        if durable_execution_owned.get() {
+                            let build = crate::persistence::read_shared_build(
                                 database_url,
                                 derivation_path,
                             )
-                        {
-                            return reject(
-                                &mut output,
-                                "shared-build-state",
-                                shared_build_error_message(&error),
-                            );
+                            .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
+                            .ok_or_else(|| io::Error::other("shared build is missing"))?;
+                            if build.state == crate::persistence::SharedBuildState::Running
+                                && let Err(error) = crate::persistence::collect_shared_build(
+                                    database_url,
+                                    derivation_path,
+                                )
+                            {
+                                return reject(
+                                    &mut output,
+                                    "shared-build-state",
+                                    shared_build_error_message(&error),
+                                );
+                            }
                         }
                         paths
                     }
@@ -881,7 +945,15 @@ pub fn run_worker_session(
                         release_error_message(&error),
                     );
                 }
+                let build_already_succeeded =
+                    crate::persistence::read_shared_build(database_url, derivation_path)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|build| {
+                            build.state == crate::persistence::SharedBuildState::Succeeded
+                        });
                 if durable_execution_owned.get()
+                    && !build_already_succeeded
                     && let Err(error) = crate::persistence::complete_shared_build_success(
                         database_url,
                         derivation_path,
@@ -903,7 +975,7 @@ pub fn run_worker_session(
                     return reject(
                         &mut output,
                         "shared-build-state",
-                        shared_build_error_message(&error),
+                        &format!("shared build completion failed: {:?}", error.failure()),
                     );
                 }
                 if !requester_detached.get() {
@@ -1491,6 +1563,7 @@ fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result
     tracing::error!(
         event = "worker.operation.rejected",
         rejection,
+        reason = message,
         "worker operation rejected"
     );
     nix_worker_protocol::write_worker_error(output, message)?;

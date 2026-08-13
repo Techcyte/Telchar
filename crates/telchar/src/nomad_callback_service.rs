@@ -88,7 +88,7 @@ impl NomadCallbackService {
                     ) {
                         tracing::warn!(
                             event = "nomad.callback.connection_failed",
-                            reason = error.kind().to_string(),
+                            reason = error.to_string(),
                             "Nomad callback connection failed"
                         );
                     }
@@ -233,7 +233,7 @@ pub fn serve_connection(
             )
             .admit(
                 &body,
-                "GET",
+                "POST",
                 callback_path(callback.public_url())?,
                 SystemTime::now(),
             )?;
@@ -268,7 +268,7 @@ pub fn serve_connection(
             )
             .admit(
                 &body,
-                "GET",
+                "POST",
                 callback_path(callback.public_url())?,
                 SystemTime::now(),
             )?;

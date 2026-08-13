@@ -550,6 +550,7 @@ rec {
   mkNomadGatewayTest =
     {
       name,
+      worker,
       testScript ? "",
     }:
     pkgs.testers.nixosTest {
@@ -583,13 +584,12 @@ rec {
                             poll_interval_seconds = 1
                             runtime_limit_seconds = 120
 
-                            transfer_endpoint = "ws://telchar.example:7443"
-                            
+                            transfer_endpoint = "ws://192.168.1.3:7443/callback"
+
                             [backends.nomad.transfer_authentication]
-                            mode = "workload-identity"
-                            issuer = "http://nomad.example:4646"
-                            jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
-                            audience = "telchar-transfer"
+                            mode = "hmac"
+                            key_id = "fixture"
+                            secret_file = "/var/lib/telchar-import/nomad-transfer.key"
                             
                             [backends.nomad.store]
                             mode = "daemon"
@@ -622,8 +622,7 @@ rec {
                             disk_mb = 256
 
                             [backends.nomad.driver_config]
-                            command = "${pkgs.bash}/bin/bash"
-                            args = ["-c", "while [ ! -e /tmp/telchar-nomad-release ]; do ${pkgs.coreutils}/bin/sleep 1; done"]
+                            command = "${worker}/bin/telchar-nomad-worker"
             '';
           };
         nomad-server =
@@ -667,11 +666,15 @@ rec {
             ];
             networking.firewall.enable = false;
             system.stateVersion = "26.05";
+            environment.variables.TELCHAR_NIX_STORE_URI = "local";
             services.nomad = {
               enable = true;
               enableDocker = false;
               dropPrivileges = false;
-              extraPackages = [ pkgs.bash ];
+              extraPackages = [
+                pkgs.bash
+                worker
+              ];
               settings = {
                 bind_addr = "0.0.0.0";
                 advertise = {
@@ -698,7 +701,7 @@ rec {
         nomad_server.wait_until_succeeds("nomad operator raft list-peers | grep -q true", timeout=60)
         nomad_server.wait_until_succeeds("nomad namespace apply telchar", timeout=60)
         nomad_server.wait_until_succeeds("nomad node status -json | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].Status == \"ready\"'", timeout=60)
-        gateway.succeed("install -d -m 700 -o telchar-ingress -g telchar /var/lib/telchar-import && install -m 600 -o telchar-ingress -g telchar /etc/telchar/nomad.toml /var/lib/telchar-import/telchar.toml")
+        gateway.succeed("install -d -m 700 -o telchar-ingress -g telchar /var/lib/telchar-import && install -m 600 -o telchar-ingress -g telchar /etc/telchar/nomad.toml /var/lib/telchar-import/telchar.toml && printf fixture-transfer-secret > /var/lib/telchar-import/nomad-transfer.key && chown telchar-ingress:telchar /var/lib/telchar-import/nomad-transfer.key && chmod 600 /var/lib/telchar-import/nomad-transfer.key")
         gateway.succeed("systemctl start telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")
         gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")

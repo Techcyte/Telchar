@@ -82,7 +82,7 @@ struct ExactAllocationResponse {
     task_group: String,
     #[serde(rename = "ClientStatus")]
     client_status: String,
-    #[serde(rename = "TaskStates")]
+    #[serde(rename = "TaskStates", default)]
     task_states: std::collections::HashMap<String, AllocationTaskState>,
 }
 
@@ -149,37 +149,71 @@ impl NomadClient {
         job_id: &str,
         task: &str,
     ) -> io::Result<()> {
-        if !valid_nomad_identity(allocation_id)
-            || !valid_nomad_identity(job_id)
-            || !valid_nomad_identity(task)
-        {
-            return Err(io::Error::other("Nomad allocation verification failed"));
+        if !valid_nomad_identity(allocation_id) {
+            return Err(io::Error::other(format!(
+                "Nomad allocation verification failed: invalid allocation ID {allocation_id:?}"
+            )));
         }
-        let allocation: ExactAllocationResponse = bounded_json(
-            self.client
-                .get(format!(
-                    "{}/v1/allocation/{allocation_id}",
-                    self.config.endpoint()
-                ))
-                .query(&[("namespace", self.config.namespace())])
-                .send()
-                .and_then(reqwest::blocking::Response::error_for_status)
-                .map_err(|_| io::Error::other("Nomad allocation verification failed"))?,
-            "Nomad allocation verification failed",
-        )?;
-        if allocation.id != allocation_id
-            || allocation.namespace != self.config.namespace()
-            || allocation.job_id != job_id
-            || allocation.task_group != "build"
-            || allocation.client_status != "running"
-            || allocation
-                .task_states
-                .get(task)
-                .map(|state| state.state.as_str())
-                != Some("running")
-        {
-            return Err(io::Error::other("Nomad allocation verification failed"));
+        if !valid_nomad_identity(job_id) {
+            return Err(io::Error::other(format!(
+                "Nomad allocation verification failed: invalid job ID {job_id:?}"
+            )));
         }
+        if !valid_nomad_identity(task) {
+            return Err(io::Error::other(format!(
+                "Nomad allocation verification failed: invalid task {task:?}"
+            )));
+        }
+        let response = self
+            .client
+            .get(format!(
+                "{}/v1/allocation/{allocation_id}",
+                self.config.endpoint()
+            ))
+            .query(&[("namespace", self.config.namespace())])
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| {
+                io::Error::other(format!("Nomad allocation verification failed: {error}"))
+            })?;
+        let bytes = bounded_response(response, "Nomad allocation verification failed")?;
+        let allocation: ExactAllocationResponse =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                io::Error::other(format!("Nomad allocation verification failed: {error}"))
+            })?;
+        if allocation.id != allocation_id {
+            return Err(io::Error::other("Nomad allocation ID verification failed"));
+        }
+        if allocation.namespace != self.config.namespace() {
+            return Err(io::Error::other(
+                "Nomad allocation namespace verification failed",
+            ));
+        }
+        if allocation.job_id != job_id {
+            return Err(io::Error::other("Nomad allocation job verification failed"));
+        }
+        if allocation.task_group != "build" {
+            return Err(io::Error::other(
+                "Nomad allocation task group verification failed",
+            ));
+        }
+        if !matches!(allocation.client_status.as_str(), "pending" | "running") {
+            return Err(io::Error::other(
+                "Nomad allocation status verification failed",
+            ));
+        }
+        if allocation.task_states.is_empty() {
+            return Ok(());
+        }
+        let task_state = allocation
+            .task_states
+            .get(task)
+            .ok_or_else(|| io::Error::other("Nomad allocation task verification failed"))?;
+        tracing::debug!(
+            event = "nomad.allocation.verified",
+            task_state = task_state.state,
+            "Nomad allocation verified"
+        );
         Ok(())
     }
 
@@ -324,10 +358,10 @@ fn valid_nomad_identity(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn bounded_json<T: serde::de::DeserializeOwned>(
+fn bounded_response(
     response: reqwest::blocking::Response,
     failure: &'static str,
-) -> io::Result<T> {
+) -> io::Result<Vec<u8>> {
     if response
         .content_length()
         .is_some_and(|length| length > MAXIMUM_NOMAD_RESPONSE_BYTES)
@@ -342,6 +376,14 @@ fn bounded_json<T: serde::de::DeserializeOwned>(
     if bytes.len() as u64 > MAXIMUM_NOMAD_RESPONSE_BYTES {
         return Err(io::Error::other(failure));
     }
+    Ok(bytes)
+}
+
+fn bounded_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    failure: &'static str,
+) -> io::Result<T> {
+    let bytes = bounded_response(response, failure)?;
     serde_json::from_slice(&bytes).map_err(|_| io::Error::other(failure))
 }
 

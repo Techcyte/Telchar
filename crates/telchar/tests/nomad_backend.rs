@@ -581,6 +581,36 @@ fn verifies_exact_callback_allocation_identity() {
 }
 
 #[test]
+fn verifies_exact_callback_allocation_during_task_startup() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("listener address")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().expect("allocation request accepts");
+        read_http_request(&mut request);
+        write_json_response(
+            &mut request,
+            200,
+            r#"{"ID":"allocation-1","Namespace":"telchar","JobID":"job-1","TaskGroup":"build","ClientStatus":"running","TaskStates":{"build":{"State":"starting"}}}"#,
+        );
+    });
+
+    client
+        .verify_allocation("allocation-1", "job-1", "build")
+        .expect("starting allocation verifies");
+    server.join().expect("server joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn rejects_foreign_or_terminal_callback_allocation_identity() {
     let _guard = CONFIGURATION_TESTS
         .lock()

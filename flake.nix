@@ -159,6 +159,7 @@
             in
             harness.mkNomadGatewayTest {
               name = "telchar-nixos-nomad-gateway";
+              worker = self.packages.${system}.telchar-nomad-worker;
               testScript = ''
                 stock_client.succeed("cp ${nomadDerivation} /tmp/telchar-nomad-gateway.nix")
                 derivation_path = stock_client.succeed("nix-instantiate /tmp/telchar-nomad-gateway.nix").strip()
@@ -172,14 +173,12 @@
                 assert job_id.startswith("telchar-gateway-")
                 nomad_server.succeed("nomad job status -namespace telchar '" + job_id + "'")
                 nomad_server.succeed("nomad job inspect -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e '.Namespace == \"telchar\" and .Type == \"batch\" and .Meta.telchar_backend == \"nomad-primary\" and .Meta.telchar_system == \"${pkgs.stdenv.hostPlatform.system}\"'")
-                stock_client.succeed("kill $(cat /tmp/nomad-build.pid) || true")
-                gateway.succeed("systemctl restart telchar-daemon.service")
-                gateway.wait_for_unit("telchar-daemon.service")
-                gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --since '-1 minute' | grep -q 'monitoring_count=1'", timeout=60)
-                nomad_server.succeed("test $(nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq 'length') -eq 1")
-                nomad_client.succeed("touch /tmp/telchar-nomad-release")
                 nomad_server.wait_until_succeeds("nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].ClientStatus == \"complete\"'", timeout=60)
-                gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"select state || ':' || failure_classification from shared_builds where derivation_path = '" + derivation_path + "'\" | grep -qx 'failed:restart-recovery-failed'", timeout=60)
+                gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"select state from shared_builds where derivation_path = '" + derivation_path + "'\" | grep -qx succeeded", timeout=60)
+                output_path = stock_client.succeed("nix-store -q --outputs '" + derivation_path + "'").strip()
+                gateway.succeed("nix-store --verify-path '" + output_path + "' && test \"$(cat '" + output_path + "')\" = nomad")
+                stock_client.wait_until_fails("kill -0 $(cat /tmp/nomad-build.pid)", timeout=60)
+                stock_client.succeed("grep -Fqx '" + output_path + "' /tmp/nomad-build.out || { cat /tmp/nomad-build.out >&2; exit 1; }")
                 nomad_server.succeed("test $(nomad job status -namespace telchar -json | ${pkgs.jq}/bin/jq 'length') -eq 1")
                 nomad_server.succeed("nomad job stop -namespace telchar -purge '" + job_id + "'")
                 nomad_server.wait_until_fails("nomad job status -namespace telchar '" + job_id + "'", timeout=30)
