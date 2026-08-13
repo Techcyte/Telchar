@@ -255,6 +255,36 @@ Classic input-addressed evidence does not establish content-addressed identity, 
 
 This is a separate security architecture requiring tenant-bound stores or namespaces, cache and log isolation, path authorization, backend isolation, recovery isolation, and side-channel review. Adding an owner column to the current shared-store design would not provide meaningful isolation.
 
+### Reproducible-build consensus and cryptographic provenance
+
+**Missing:** evidence that a classic input-addressed output was independently reproduced or endorsed by a trusted provenance authority.
+
+This requires an explicit trust and disagreement model: independent executors, quorum or policy rules, provenance statement formats, signing-key custody, replay protection, retention, and behavior when valid outputs disagree. Keep this separate from ordinary gateway output validation, which proves store and transport consistency rather than honest execution.
+
+### Additional backend kinds
+
+**Missing:** execution through Kubernetes jobs, cloud batch services, or another infrastructure scheduler.
+
+Add a backend only for a concrete fleet. Preserve operator-owned credentials and provider configuration, exact persisted execution identity, bounded submission and observation, exact-target recovery, no client-selected infrastructure, and no generic provider-provisioning layer. Do not abstract existing backends merely to make a hypothetical provider fit.
+
+### OCI images
+
+**Missing:** a supported OCI distribution for the daemon, frontend, or allocation worker.
+
+An image must contain the same packaged binaries and configuration authority as native deployment, document Nix daemon and store access explicitly, run without Docker-specific application behavior, and prove signal handling, filesystem ownership, protected secret delivery, and upgrades. Publishing an image does not make Telchar a container orchestrator.
+
+### Soak, load, and performance qualification
+
+**Missing:** measured operating envelopes for queue depth, duplicate fan-in, transfer throughput, callback concurrency, PostgreSQL pressure, restart storms, retention cleanup, and multi-day execution.
+
+Build deterministic workloads and failure injection before tuning. Record resource ceilings and latency distributions, validate bounded memory and file-descriptor behavior, and distinguish scheduler admission from backend and Nomad placement delay. Do not weaken safety bounds or add caching solely to improve a synthetic benchmark.
+
+### Extract `nix-worker-protocol` into a separate repository
+
+**Missing:** an independently versioned and reusable home for the protocol crate.
+
+Extract only when another real consumer exists or release cadence requires it. Preserve primary-source traceability, fixtures, fuzz targets, protocol bounds, and the ban on Telchar domain or telemetry-exporter dependencies. Define compatibility and coordinated-release policy before moving history; repository extraction alone is not an architectural improvement.
+
 ## Explicit exclusions
 
 Do not pursue these without replacing Telchar's product boundary through an explicit architecture decision:
@@ -263,6 +293,7 @@ Do not pursue these without replacing Telchar's product boundary through an expl
 - generic provider provisioning;
 - a Telchar-owned binary-cache service;
 - Redis or object-storage log products;
+- alternative durable databases; PostgreSQL remains control-plane authority;
 - generic automatic retries;
 - interactive shell access;
 - arbitrary command scheduling;
