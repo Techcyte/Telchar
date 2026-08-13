@@ -376,6 +376,8 @@ fn render_job_at(
             "TELCHAR_TRANSFER_ENDPOINT": config.transfer_endpoint(),
             "TELCHAR_NIX_STORE_URI": config.store().uri(),
             "TELCHAR_TRANSFER_CHUNK_BYTES": config.transfer_limits().stream_buffer_bytes().to_string(),
+            "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS": config.transfer_limits().transfer_idle_timeout().as_secs().to_string(),
+            "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS": config.transfer_limits().output_collection_timeout().as_secs().to_string(),
         },
     });
     match config.transfer_authentication() {

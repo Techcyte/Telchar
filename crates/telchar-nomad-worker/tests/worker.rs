@@ -21,6 +21,14 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
             "262144".to_owned(),
         ),
         (
+            "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
+            "30".to_owned(),
+        ),
+        (
+            "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS".to_owned(),
+            "300".to_owned(),
+        ),
+        (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
             "workload-identity".to_owned(),
         ),
@@ -48,6 +56,14 @@ fn parses_exact_workload_identity_environment() {
 
     assert_eq!(config.store_uri(), "daemon");
     assert_eq!(config.transfer_chunk_bytes(), 262_144);
+    assert_eq!(
+        config.transfer_idle_timeout(),
+        std::time::Duration::from_secs(30)
+    );
+    assert_eq!(
+        config.output_collection_timeout(),
+        std::time::Duration::from_secs(300)
+    );
     assert_eq!(config.endpoint().as_str(), "ws://127.0.0.1:1234/callback");
     assert_eq!(
         config.authentication(),
@@ -92,6 +108,14 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
         (
             "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
             "262144".to_owned(),
+        ),
+        (
+            "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
+            "30".to_owned(),
+        ),
+        (
+            "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS".to_owned(),
+            "300".to_owned(),
         ),
         (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),

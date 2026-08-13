@@ -380,6 +380,8 @@ pub struct WorkerConfig {
     endpoint: Url,
     store_uri: String,
     transfer_chunk_bytes: usize,
+    transfer_idle_timeout: std::time::Duration,
+    output_collection_timeout: std::time::Duration,
     authentication: Authentication,
 }
 
@@ -406,6 +408,19 @@ impl WorkerConfig {
             .ok()
             .filter(|value| *value > 0 && *value <= MAXIMUM_NAR_CHUNK_BYTES)
             .ok_or_else(|| invalid("worker transfer chunk limit is invalid"))?;
+        let transfer_idle_timeout = required(&mut lookup, "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS")?
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .map(std::time::Duration::from_secs)
+            .ok_or_else(|| invalid("worker transfer idle timeout is invalid"))?;
+        let output_collection_timeout =
+            required(&mut lookup, "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS")?
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .map(std::time::Duration::from_secs)
+                .ok_or_else(|| invalid("worker output collection timeout is invalid"))?;
         let mode = required(&mut lookup, "TELCHAR_TRANSFER_AUTHENTICATION")?;
         let allocation_id = required(&mut lookup, "NOMAD_ALLOC_ID")?;
         let nomad_namespace = required(&mut lookup, "NOMAD_NAMESPACE")?;
@@ -487,6 +502,8 @@ impl WorkerConfig {
             endpoint,
             store_uri,
             transfer_chunk_bytes,
+            transfer_idle_timeout,
+            output_collection_timeout,
             authentication: Authentication {
                 backend,
                 namespace,
@@ -509,6 +526,14 @@ impl WorkerConfig {
 
     pub fn transfer_chunk_bytes(&self) -> usize {
         self.transfer_chunk_bytes
+    }
+
+    pub fn transfer_idle_timeout(&self) -> std::time::Duration {
+        self.transfer_idle_timeout
+    }
+
+    pub fn output_collection_timeout(&self) -> std::time::Duration {
+        self.output_collection_timeout
     }
 
     pub fn authentication(&self) -> &Authentication {
@@ -538,6 +563,7 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     );
     let (mut socket, response) = tungstenite::connect(request)
         .map_err(|_| io::Error::other("worker callback connection failed"))?;
+    set_socket_timeouts(&mut socket, config.transfer_idle_timeout())?;
     if response.headers().get("sec-websocket-protocol")
         != Some(&tungstenite::http::HeaderValue::from_static(
             "telchar-nomad-transfer-v1",
@@ -549,6 +575,22 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         .send(tungstenite::Message::Binary(body.into()))
         .map_err(|_| io::Error::other("worker callback authentication failed"))?;
     Ok(socket)
+}
+
+fn set_socket_timeouts(socket: &mut WorkerSocket, timeout: std::time::Duration) -> io::Result<()> {
+    match socket.get_mut() {
+        tungstenite::stream::MaybeTlsStream::Plain(stream) => {
+            stream.set_read_timeout(Some(timeout))?;
+            stream.set_write_timeout(Some(timeout))
+        }
+        tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
+            stream.get_mut().set_read_timeout(Some(timeout))?;
+            stream.get_mut().set_write_timeout(Some(timeout))
+        }
+        _ => Err(io::Error::other(
+            "worker callback transport does not support timeouts",
+        )),
+    }
 }
 
 fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
