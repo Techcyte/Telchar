@@ -1536,10 +1536,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: clean-shell release command.
   - Evidence: `scripts/check-release.sh` runs rustfmt check, the full locked workspace test/check/clippy suite, reproducible daemon and worker package builds, the public NixOS module VM, the local Gate 3 stock-Nix contract, static SSH gateway, duplicate/disconnect/reuse Nomad gateway, and the current exact shared-build recovery suite. Nomad evaluation explicitly enables the pinned unfree package only for that impure check.
 
-- [ ] T146 Verify the MVP release candidate
+- [x] T146 Verify the MVP release candidate
   - Depends on: T145
   - Outcome: Telchar demonstrably acts as a stable Nix build gateway with one durable shared execution per equivalent derivation, compatible-backend fan-out, client-independent monitoring, and documented residual limitations.
   - Verify: immutable release report with exact commands and versions.
+  - Evidence: `docs/mvp-release-report.md` records candidate revision `c4e5c91442f435d3970c5ba12284389abe06f767`, Nix 2.34.7, Nomad 1.11.3, PostgreSQL 17.10, OpenSSH 10.4p1, Rust 1.95.0, schema 15, the passing `./scripts/check-release.sh` command, the demonstrated gateway contract, and explicit residual limitations.
 
 - [ ] T147 Supervise daemon background services
   - Depends on: T146
