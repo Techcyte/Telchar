@@ -29,28 +29,22 @@ Telchar daemon
              └── future backend
 ```
 
-## Local isolated-store smoke test
+## Verification
 
-A developer can exercise Telchar locally without reusing the host Nix store. The smoke test starts an isolated `nixos/nix:2.34.3` daemon in Docker, runs Telchar against its Unix socket, submits one typed `BuildDerivation`, and verifies a successful worker result:
-
-```bash
-./scripts/test-local-docker-alpha.sh
-```
-
-Requirements:
-
-- Docker daemon available to the current user.
-- Nix with flakes enabled.
-- Linux host capable of running the privileged Nix daemon container.
-
-The image can be overridden:
+Run the complete MVP release verification from a Nix-enabled Linux host:
 
 ```bash
-TELCHAR_DOCKER_NIX_IMAGE=your-registry/nix:tag \
-  ./scripts/test-local-docker-alpha.sh
+./scripts/check-release.sh
 ```
 
-This is a local implementation smoke test, not the production deployment topology. Normal clients connect to a separate Telchar gateway host:
+For normal development, run:
+
+```bash
+nix flake check
+nix develop -c cargo test --locked --workspace
+```
+
+Normal clients connect to a separate Telchar gateway host:
 
 ```bash
 nix build \

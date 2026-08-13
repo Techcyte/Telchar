@@ -4,7 +4,7 @@
 
 ## Approved mechanism
 
-Initial ingress supports one OpenSSH-controlled identity path: public-key authentication with the fingerprint supplied by the `authorized_keys` forced-command configuration. The real fixture in `scripts/check-openssh-identity-fixture.sh` proves the key fingerprint observed by the forced command matches the key accepted by OpenSSH and that a client-supplied identity value cannot replace it.
+Initial ingress supports one OpenSSH-controlled identity path: public-key authentication with the fingerprint supplied by the `authorized_keys` forced-command configuration. The OpenSSH ingress integration tests prove the key fingerprint observed by the forced command matches the key accepted by OpenSSH and that a client-supplied identity value cannot replace it.
 
 The frontend may carry this bounded credential ID to the daemon through the authenticated local IPC envelope defined by T050/T051. T049 defines deterministic requester normalization. The source address remains audit context and never becomes credential or quota identity.
 

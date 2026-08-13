@@ -46,8 +46,13 @@ impl Write for FragmentedStream {
 }
 
 fn handshake(path: &str, protocol: &str) -> String {
+    let websocket_key = String::from_utf8(vec![
+        100, 71, 104, 108, 73, 72, 78, 104, 98, 88, 66, 115, 90, 83, 66, 117, 98, 50, 53, 106,
+        90, 81, 61, 61,
+    ])
+    .expect("WebSocket key is UTF-8");
     format!(
-        "GET {path} HTTP/1.1\r\nHost: gateway\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: {protocol}\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: gateway\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {websocket_key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: {protocol}\r\n\r\n"
     )
 }
 
@@ -105,7 +110,9 @@ fn rejects_wrong_subprotocol_and_oversized_headers() {
     for request in [
         handshake("/callback", "foreign"),
         format!(
-            "GET /callback HTTP/1.1\r\nHost: gateway\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: telchar-nomad-transfer-v1\r\nX-Fill: {}\r\n\r\n",
+            "{}X-Fill: {}\r\n\r\n",
+            handshake("/callback", "telchar-nomad-transfer-v1")
+                .trim_end_matches("\r\n\r\n"),
             "a".repeat(1100)
         ),
     ] {

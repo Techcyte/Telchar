@@ -22,7 +22,7 @@ The crate must not depend on or contain Telchar domain policy for identity, sche
 
 ## Enforcement
 
-`sh scripts/check-protocol-boundary.sh` checks this policy's required responsibility and forbidden-domain statements. It also rejects direct protocol-crate dependencies on Telchar and established domain or service dependency names. Dependency additions require extending this decision and check before use.
+`sh scripts/check-protocol-boundary.sh` rejects direct protocol-crate dependencies on Telchar and established domain or service dependency names. Dependency additions require extending this decision and check before use.
 
 ## Consequences
 

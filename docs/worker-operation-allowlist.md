@@ -57,6 +57,5 @@ negative tests, and a new sanitized trace classification.
 
 ## Classification result
 
-`sh scripts/check-worker-operation-allowlist.sh` validates the two bounded
-trace artifacts. It reports zero unclassified operations: `1`, `7`, `11`,
-`19`, `26`, `40`, and `46` are all classified above.
+The two bounded trace artifacts contain zero unclassified operations: `1`,
+`7`, `11`, `19`, `26`, `40`, and `46` are all classified above.
