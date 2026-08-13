@@ -262,7 +262,13 @@ impl NixStoreRetentionBackend {
         for entry in entries {
             client
                 .add_temporary_root(entry.store_path.as_bytes())
-                .map_err(|_| {
+                .map_err(|error| {
+                    tracing::error!(
+                        event = "gateway.store_retention.failed",
+                        operation = "add-temporary-root",
+                        diagnostic = %error,
+                        "gateway store retention failed"
+                    );
                     let _ = self.rollback(&retained);
                     retention_error()
                 })?;
@@ -281,17 +287,20 @@ impl NixStoreRetentionBackend {
                 created,
             };
             retained.push(retained_path);
-            if client
-                .add_indirect_root(
-                    retained
-                        .last()
-                        .expect("retained path exists")
-                        .root_path
-                        .as_os_str()
-                        .as_encoded_bytes(),
-                )
-                .is_err()
-            {
+            if let Err(error) = client.add_indirect_root(
+                retained
+                    .last()
+                    .expect("retained path exists")
+                    .root_path
+                    .as_os_str()
+                    .as_encoded_bytes(),
+            ) {
+                tracing::error!(
+                    event = "gateway.store_retention.failed",
+                    operation = "add-indirect-root",
+                    diagnostic = %error,
+                    "gateway store retention failed"
+                );
                 let _ = self.rollback(&retained);
                 return Err(retention_error());
             }

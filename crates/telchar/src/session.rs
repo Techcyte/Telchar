@@ -236,7 +236,13 @@ pub fn run_worker_session(
                 let derivation_info =
                     match store_export.query_path_info(std::path::Path::new(derivation_path)) {
                         Ok(info) if info.nar_size > 0 => info,
-                        _ => {
+                        result => {
+                            tracing::error!(
+                                event = "gateway.store_retention.failed",
+                                operation = "query-derivation-path-info",
+                                diagnostic = ?result,
+                                "gateway store retention failed"
+                            );
                             return reject(
                                 &mut output,
                                 "gateway-store-retention",
