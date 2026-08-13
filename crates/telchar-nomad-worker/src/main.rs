@@ -2,7 +2,8 @@ fn main() -> std::process::ExitCode {
     match telchar_nomad_worker::WorkerConfig::from_environment().and_then(|config| {
         let store_uri = config.store_uri().to_owned();
         let mut session = telchar_nomad_worker::receive_manifest(&config)?;
-        session.resolve_inputs(&store_uri).map(|_| ())
+        let requested = session.resolve_inputs(&store_uri)?;
+        session.import_requested_inputs(&store_uri, &requested)
     }) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

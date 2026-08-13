@@ -8,7 +8,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad_transfer_protocol::{
     decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    Direction, Frame, FrameKind, InputManifest, PathSet, ProtocolLimits, ProtocolSession,
+    Direction, Frame, FrameKind, InputManifest, InputTransferSession, NarMetadata, PathSet,
+    ProtocolLimits, ProtocolSession,
 };
 use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
@@ -27,6 +28,7 @@ pub struct WorkerSession {
     socket: WorkerSocket,
     manifest: InputManifest,
     protocol: ProtocolSession,
+    inputs: InputTransferSession,
 }
 
 impl WorkerSession {
@@ -53,6 +55,7 @@ impl WorkerSession {
             }
         }
         let valid = PathSet { paths: valid };
+        self.inputs.record_valid_paths(valid.clone())?;
         self.send_metadata(FrameKind::ValidPaths, &valid)?;
         let available = valid
             .paths
@@ -68,8 +71,57 @@ impl WorkerSession {
                 .cloned()
                 .collect(),
         };
+        if requested != self.inputs.request_unresolved()? {
+            return Err(invalid("worker unresolved input set is inconsistent"));
+        }
         self.send_metadata(FrameKind::InputRequest, &requested)?;
         Ok(requested)
+    }
+
+    pub fn import_requested_inputs(
+        &mut self,
+        store_uri: &str,
+        requested: &PathSet,
+    ) -> io::Result<()> {
+        let endpoint = GatewayStoreEndpoint::parse(store_uri)
+            .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        let mut store = GatewayStoreConnection::connect(&endpoint)
+            .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        for path in &requested.paths {
+            let entry = self
+                .manifest
+                .paths
+                .iter()
+                .find(|entry| &entry.path == path)
+                .ok_or_else(|| invalid("worker requested input is not admitted"))?;
+            let references = entry
+                .references
+                .iter()
+                .map(|reference| reference.as_bytes().to_vec())
+                .collect::<Vec<_>>();
+            let info = nix_worker_protocol::AddToStoreNarInfo {
+                path: entry.path.as_bytes(),
+                deriver: entry.deriver.as_deref().map(str::as_bytes),
+                nar_hash_hex: &entry.nar_hash,
+                references: &references,
+                registration_time: 0,
+                nar_size: entry.nar_size,
+                ultimate: false,
+                signatures: &[],
+                content_address: None,
+            };
+            let mut source = InputNarReader::new(
+                &mut self.socket,
+                &mut self.protocol,
+                &mut self.inputs,
+                entry,
+            );
+            store
+                .add_to_store_nar(&info, &mut source, false, true)
+                .map_err(|_| io::Error::other("worker input import failed"))?;
+            source.finish()?;
+        }
+        self.inputs.ready_to_build()
     }
 
     fn send_metadata<T: serde::Serialize>(&mut self, kind: FrameKind, value: &T) -> io::Result<()> {
@@ -289,6 +341,14 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
     let manifest: InputManifest =
         decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)?;
     manifest.validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)?;
+    let inputs = InputTransferSession::new(
+        manifest.clone(),
+        MAXIMUM_MANIFEST_PATHS,
+        MAXIMUM_INPUT_NAR_BYTES,
+        MAXIMUM_INPUT_NAR_BYTES
+            .checked_mul(MAXIMUM_MANIFEST_PATHS as u64)
+            .ok_or_else(|| invalid("worker manifest limit is invalid"))?,
+    )?;
     let mut protocol = ProtocolSession::new();
     protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
     protocol.accept(Direction::GatewayToWorker, FrameKind::InputManifest)?;
@@ -296,7 +356,87 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         socket,
         manifest,
         protocol,
+        inputs,
     })
+}
+
+struct InputNarReader<'a> {
+    socket: &'a mut WorkerSocket,
+    protocol: &'a mut ProtocolSession,
+    inputs: &'a mut InputTransferSession,
+    entry: &'a telchar::nomad_transfer_protocol::PathManifestEntry,
+    chunk: std::io::Cursor<Vec<u8>>,
+    complete: bool,
+}
+
+impl<'a> InputNarReader<'a> {
+    fn new(
+        socket: &'a mut WorkerSocket,
+        protocol: &'a mut ProtocolSession,
+        inputs: &'a mut InputTransferSession,
+        entry: &'a telchar::nomad_transfer_protocol::PathManifestEntry,
+    ) -> Self {
+        Self {
+            socket,
+            protocol,
+            inputs,
+            entry,
+            chunk: std::io::Cursor::new(Vec::new()),
+            complete: false,
+        }
+    }
+
+    fn receive_chunk(&mut self) -> io::Result<()> {
+        let message = self
+            .socket
+            .read()
+            .map_err(|_| io::Error::other("worker input NAR receive failed"))?;
+        let tungstenite::Message::Binary(body) = message else {
+            return Err(invalid("worker input NAR message is invalid"));
+        };
+        let mut input = body.as_ref();
+        let frame = read_frame(
+            &mut input,
+            ProtocolLimits::new(
+                MAXIMUM_MANIFEST_METADATA_BYTES,
+                MAXIMUM_MANIFEST_METADATA_BYTES,
+            ),
+        )?;
+        if !input.is_empty() || frame.kind() != FrameKind::InputNar {
+            return Err(invalid("worker input NAR frame is invalid"));
+        }
+        let metadata: NarMetadata =
+            decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)?;
+        if metadata.path != self.entry.path {
+            return Err(invalid("worker input NAR path is interleaved"));
+        }
+        self.inputs
+            .receive_nar_chunk(metadata.clone(), frame.payload().len() as u64)?;
+        self.protocol
+            .accept(Direction::GatewayToWorker, FrameKind::InputNar)?;
+        self.complete = metadata.final_chunk;
+        self.chunk = std::io::Cursor::new(frame.payload().to_vec());
+        Ok(())
+    }
+
+    fn finish(&self) -> io::Result<()> {
+        if !self.complete || self.chunk.position() != self.chunk.get_ref().len() as u64 {
+            return Err(invalid("worker input NAR is incomplete"));
+        }
+        Ok(())
+    }
+}
+
+impl io::Read for InputNarReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.chunk.position() == self.chunk.get_ref().len() as u64 {
+            if self.complete {
+                return Ok(0);
+            }
+            self.receive_chunk()?;
+        }
+        std::io::Read::read(&mut self.chunk, output)
+    }
 }
 
 pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {

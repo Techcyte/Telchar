@@ -13,10 +13,12 @@ use crate::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad_transfer_protocol::{
-    encode_metadata, write_frame, BuildSpecification, Frame, FrameKind, InputManifest,
-    PathManifestEntry, ProtocolLimits, TransferSession,
+    decode_metadata, encode_metadata, read_frame, write_frame, BuildSpecification, Direction,
+    Frame, FrameKind, InputManifest, NarMetadata, PathManifestEntry, PathSet, ProtocolLimits,
+    TransferSession,
 };
 use crate::store_closure::{backend_from_environment, StoreClosureBackend};
+use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 pub fn serve(
     listener: TcpListener,
@@ -177,7 +179,7 @@ pub fn serve_connection(
     let limits = backend.transfer_limits();
     let mut closure = backend_from_environment()?;
     let manifest = input_manifest(build_request, closure.as_mut())?;
-    let _session = TransferSession::new(
+    let mut session = TransferSession::new(
         manifest.clone(),
         limits.maximum_manifest_paths(),
         limits.maximum_input_nar_bytes(),
@@ -198,7 +200,147 @@ pub fn serve_connection(
         &frame,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
     )?;
-    socket.write_binary(message)
+    socket.write_binary(message)?;
+    let valid_paths = read_transfer_frame(
+        &mut socket,
+        ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
+    )?;
+    session.accept(Direction::WorkerToGateway, valid_paths)?;
+    let request_frame = read_transfer_frame(
+        &mut socket,
+        ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
+    )?;
+    let requested: PathSet = decode_metadata(
+        request_frame.metadata(),
+        limits.maximum_frame_metadata_bytes(),
+    )?;
+    session.accept(Direction::WorkerToGateway, request_frame)?;
+    stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)
+}
+
+fn read_transfer_frame<S: io::Read + io::Write>(
+    socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
+    limits: ProtocolLimits,
+) -> io::Result<Frame> {
+    let body = socket.read_binary()?;
+    let mut input = body.as_slice();
+    let frame = read_frame(&mut input, limits)?;
+    if !input.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Nomad transfer message contains trailing bytes",
+        ));
+    }
+    Ok(frame)
+}
+
+fn stream_requested_inputs<S: io::Read + io::Write>(
+    socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
+    session: &mut TransferSession,
+    manifest: &InputManifest,
+    requested: &PathSet,
+    limits: crate::config::NomadTransferLimits,
+) -> io::Result<()> {
+    let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+        .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))
+        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))?;
+    let mut store = GatewayStoreConnection::connect(&endpoint)?;
+    for requested_path in &requested.paths {
+        let entry = manifest
+            .paths
+            .iter()
+            .find(|entry| &entry.path == requested_path)
+            .ok_or_else(|| io::Error::other("Nomad input request is not admitted"))?;
+        let mut sink = InputNarSink {
+            socket,
+            session,
+            entry,
+            offset: 0,
+            chunk: Vec::with_capacity(limits.stream_buffer_bytes()),
+            maximum_metadata_bytes: limits.maximum_frame_metadata_bytes(),
+        };
+        store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)?;
+        sink.finish()?;
+    }
+    Ok(())
+}
+
+struct InputNarSink<'a, S: io::Read + io::Write> {
+    socket: &'a mut crate::nomad_callback_http::CallbackSocket<S>,
+    session: &'a mut TransferSession,
+    entry: &'a PathManifestEntry,
+    offset: u64,
+    chunk: Vec<u8>,
+    maximum_metadata_bytes: usize,
+}
+
+impl<S: io::Read + io::Write> InputNarSink<'_, S> {
+    fn send_chunk(&mut self, final_chunk: bool) -> io::Result<()> {
+        if self.chunk.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad input NAR chunk is empty",
+            ));
+        }
+        let metadata = NarMetadata {
+            path: self.entry.path.clone(),
+            nar_hash: self.entry.nar_hash.clone(),
+            nar_size: self.entry.nar_size,
+            offset: self.offset,
+            final_chunk,
+        };
+        let frame = Frame::new(
+            FrameKind::InputNar,
+            encode_metadata(&metadata, self.maximum_metadata_bytes)?,
+            std::mem::take(&mut self.chunk),
+        );
+        self.offset = self
+            .offset
+            .checked_add(frame.payload().len() as u64)
+            .ok_or_else(|| io::Error::other("Nomad input NAR offset overflow"))?;
+        self.session
+            .accept(Direction::GatewayToWorker, frame.clone())?;
+        let mut message = Vec::new();
+        write_frame(
+            &mut message,
+            &frame,
+            ProtocolLimits::new(self.maximum_metadata_bytes, frame.payload().len()),
+        )?;
+        self.socket.write_binary(message)
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        if self.offset + self.chunk.len() as u64 != self.entry.nar_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad input NAR length is invalid",
+            ));
+        }
+        self.send_chunk(true)
+    }
+}
+
+impl<S: io::Read + io::Write> io::Write for InputNarSink<'_, S> {
+    fn write(&mut self, mut input: &[u8]) -> io::Result<usize> {
+        let input_length = input.len();
+        while !input.is_empty() {
+            let capacity = self.chunk.capacity() - self.chunk.len();
+            let copied = capacity.min(input.len());
+            self.chunk.extend_from_slice(&input[..copied]);
+            input = &input[copied..];
+            if self.chunk.len() == self.chunk.capacity()
+                && self.offset + (self.chunk.len() as u64) < self.entry.nar_size
+            {
+                self.send_chunk(false)?;
+                self.chunk = Vec::with_capacity(self.chunk.capacity());
+            }
+        }
+        Ok(input_length)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn input_manifest(
