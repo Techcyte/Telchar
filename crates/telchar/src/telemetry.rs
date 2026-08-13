@@ -228,6 +228,7 @@ fn telemetry_tests() -> &'static std::sync::Mutex<()> {
             let lock_path = std::env::temp_dir().join("telchar-telemetry-tests.lock");
             let lock = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(lock_path)
