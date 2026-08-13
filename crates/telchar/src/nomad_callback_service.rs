@@ -92,6 +92,8 @@ pub fn serve_connection(
         database_url.to_owned(),
         namespaces,
     )?);
+    connection.set_read_timeout(Some(callback.authentication_request_timeout()))?;
+    connection.set_write_timeout(Some(callback.authentication_request_timeout()))?;
     let limits = CallbackHttpLimits::new(
         callback.maximum_header_bytes(),
         callback.maximum_body_bytes(),
@@ -186,6 +188,12 @@ pub fn serve_connection(
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
     let limits = backend.transfer_limits();
+    socket
+        .inner_mut()
+        .set_read_timeout(Some(limits.transfer_idle_timeout()))?;
+    socket
+        .inner_mut()
+        .set_write_timeout(Some(limits.transfer_idle_timeout()))?;
     let mut closure = backend_from_environment()?;
     let manifest = input_manifest(build_request, closure.as_mut())?;
     let mut session = TransferSession::new(

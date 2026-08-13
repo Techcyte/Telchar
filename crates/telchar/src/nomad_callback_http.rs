@@ -65,6 +65,10 @@ pub fn accept_connection<S: Read + Write>(
 }
 
 impl<S: Read + Write> CallbackSocket<S> {
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner.get_mut().inner
+    }
+
     pub fn into_inner(self) -> S {
         self.inner.into_inner().inner
     }
