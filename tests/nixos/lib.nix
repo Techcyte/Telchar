@@ -571,58 +571,58 @@ rec {
             systemd.services.telchar-daemon.environment.TELCHAR_CONFIG =
               pkgs.lib.mkForce "/var/lib/telchar-import/telchar.toml";
             environment.etc."telchar/nomad.toml".text = ''
-                            running_disconnect_policy = "detach-and-finish"
+              running_disconnect_policy = "detach-and-finish"
 
-                            [[backends.nomad]]
-                            name = "nomad-primary"
-                            system = "${pkgs.stdenv.hostPlatform.system}"
-                            maximum_concurrent_builds = 1
-                            endpoint = "http://192.168.1.1:4646"
-                            namespace = "telchar"
-                            driver = "raw_exec"
-                            job_name_scope = "telchar-gateway"
-                            poll_interval_seconds = 1
-                            runtime_limit_seconds = 120
+              [[backends.nomad]]
+              name = "nomad-primary"
+              system = "${pkgs.stdenv.hostPlatform.system}"
+              maximum_concurrent_builds = 1
+              endpoint = "http://192.168.1.1:4646"
+              namespace = "telchar"
+              driver = "raw_exec"
+              job_name_scope = "telchar-gateway"
+              poll_interval_seconds = 1
+              runtime_limit_seconds = 120
 
-                            transfer_endpoint = "ws://192.168.1.3:7443/callback"
+              transfer_endpoint = "ws://192.168.1.3:7443/callback"
 
-                            [backends.nomad.transfer_authentication]
-                            mode = "hmac"
-                            key_id = "fixture"
-                            secret_file = "/var/lib/telchar-import/nomad-transfer.key"
-                            
-                            [backends.nomad.store]
-                            mode = "daemon"
-                            uri = "unix:///nix/var/nix/daemon-socket/socket"
-                            
-                            [backends.nomad.transfer_limits]
-                            maximum_manifest_paths = 1024
-                            maximum_manifest_bytes = 1048576
-                            maximum_input_nar_bytes = 1073741824
-                            maximum_total_input_bytes = 8589934592
-                            maximum_output_nar_bytes = 1073741824
-                            maximum_total_output_bytes = 8589934592
-                            maximum_frame_metadata_bytes = 65536
-                            stream_buffer_bytes = 262144
-                            maximum_live_log_chunk_bytes = 65536
-                            live_log_queue_bytes = 1048576
-                            transfer_idle_timeout_seconds = 30
-                            setup_timeout_seconds = 300
-                            output_collection_timeout_seconds = 300
+              [backends.nomad.transfer_authentication]
+              mode = "hmac"
+              key_id = "fixture"
+              secret_file = "/var/lib/telchar-import/nomad-transfer.key"
+
+              [backends.nomad.store]
+              mode = "daemon"
+              uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+              [backends.nomad.transfer_limits]
+              maximum_manifest_paths = 1024
+              maximum_manifest_bytes = 1048576
+              maximum_input_nar_bytes = 1073741824
+              maximum_total_input_bytes = 8589934592
+              maximum_output_nar_bytes = 1073741824
+              maximum_total_output_bytes = 8589934592
+              maximum_frame_metadata_bytes = 65536
+              stream_buffer_bytes = 262144
+              maximum_live_log_chunk_bytes = 65536
+              live_log_queue_bytes = 1048576
+              transfer_idle_timeout_seconds = 30
+              setup_timeout_seconds = 300
+              output_collection_timeout_seconds = 300
               maximum_connection_lifetime_seconds = 3600
-                            authentication_lifetime_seconds = 300
-                            clock_skew_seconds = 30
-                            nonce_retention_seconds = 600
-                            reconnect_timeout_seconds = 30
-                            maximum_diagnostic_bytes = 65536
+              authentication_lifetime_seconds = 300
+              clock_skew_seconds = 30
+              nonce_retention_seconds = 600
+              reconnect_timeout_seconds = 30
+              maximum_diagnostic_bytes = 65536
 
-                            [backends.nomad.resources]
-                            cpu_mhz = 100
-                            memory_mb = 128
-                            disk_mb = 256
+              [backends.nomad.resources]
+              cpu_mhz = 100
+              memory_mb = 128
+              disk_mb = 256
 
-                            [backends.nomad.driver_config]
-                            command = "${worker}/bin/telchar-nomad-worker"
+              [backends.nomad.driver_config]
+              command = "${worker}/bin/telchar-nomad-worker"
             '';
           };
         nomad-server =
