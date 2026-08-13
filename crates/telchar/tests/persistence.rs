@@ -15,6 +15,8 @@ use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 
+static TELEMETRY_TESTS: Mutex<()> = Mutex::new(());
+
 #[test]
 fn requester_reference_is_deterministic_and_component_separated() {
     let requester = telchar::ipc::RequesterMetadata {
@@ -2136,6 +2138,7 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
 
 #[test]
 fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
+    let _guard = TELEMETRY_TESTS.lock().expect("telemetry lock holds");
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     telchar::persistence::create_build_request(
@@ -3448,6 +3451,7 @@ fn release_expired_output_leases_rejects_invalid_inputs_before_connection() {
 
 #[test]
 fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
+    let _guard = TELEMETRY_TESTS.lock().expect("telemetry lock holds");
     assert!(telchar::persistence::create_request_output_leases(
         "postgresql://127.0.0.1:1/no-connection",
         "output-empty-request",
