@@ -308,6 +308,7 @@ pub struct NomadTransferLimits {
     transfer_idle_timeout: Duration,
     setup_timeout: Duration,
     output_collection_timeout: Duration,
+    maximum_connection_lifetime: Duration,
     authentication_lifetime: Duration,
     clock_skew: Duration,
     nonce_retention: Duration,
@@ -366,6 +367,10 @@ impl NomadTransferLimits {
 
     pub fn output_collection_timeout(self) -> Duration {
         self.output_collection_timeout
+    }
+
+    pub fn maximum_connection_lifetime(self) -> Duration {
+        self.maximum_connection_lifetime
     }
 
     pub fn authentication_lifetime(self) -> Duration {
@@ -944,6 +949,7 @@ struct RawNomadTransferLimits {
     transfer_idle_timeout_seconds: u64,
     setup_timeout_seconds: u64,
     output_collection_timeout_seconds: u64,
+    maximum_connection_lifetime_seconds: u64,
     authentication_lifetime_seconds: u64,
     clock_skew_seconds: u64,
     nonce_retention_seconds: u64,
@@ -1301,6 +1307,7 @@ fn validate_nomad_transfer_limits(raw: RawNomadTransferLimits) -> io::Result<Nom
         || !valid_transfer_timeout(raw.transfer_idle_timeout_seconds)
         || !valid_transfer_timeout(raw.setup_timeout_seconds)
         || !valid_transfer_timeout(raw.output_collection_timeout_seconds)
+        || !valid_transfer_timeout(raw.maximum_connection_lifetime_seconds)
         || raw.authentication_lifetime_seconds == 0
         || raw.authentication_lifetime_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
         || raw.clock_skew_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
@@ -1327,6 +1334,7 @@ fn validate_nomad_transfer_limits(raw: RawNomadTransferLimits) -> io::Result<Nom
         transfer_idle_timeout: Duration::from_secs(raw.transfer_idle_timeout_seconds),
         setup_timeout: Duration::from_secs(raw.setup_timeout_seconds),
         output_collection_timeout: Duration::from_secs(raw.output_collection_timeout_seconds),
+        maximum_connection_lifetime: Duration::from_secs(raw.maximum_connection_lifetime_seconds),
         authentication_lifetime: Duration::from_secs(raw.authentication_lifetime_seconds),
         clock_skew: Duration::from_secs(raw.clock_skew_seconds),
         nonce_retention: Duration::from_secs(raw.nonce_retention_seconds),

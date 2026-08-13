@@ -71,6 +71,7 @@ live_log_queue_bytes = 1048576
 transfer_idle_timeout_seconds = 30
 setup_timeout_seconds = 300
 output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
 authentication_lifetime_seconds = 300
 clock_skew_seconds = 30
 nonce_retention_seconds = 600
@@ -181,6 +182,10 @@ args = ["--stdio"]
         "300"
     );
     assert_eq!(
+        environment["TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS"],
+        "3600"
+    );
+    assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Env"],
         true
     );
@@ -253,6 +258,7 @@ live_log_queue_bytes = 1048576
 transfer_idle_timeout_seconds = 30
 setup_timeout_seconds = 300
 output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
 authentication_lifetime_seconds = 300
 clock_skew_seconds = 30
 nonce_retention_seconds = 600
@@ -457,6 +463,7 @@ live_log_queue_bytes = 1048576
 transfer_idle_timeout_seconds = 30
 setup_timeout_seconds = 300
 output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
 authentication_lifetime_seconds = 300
 clock_skew_seconds = 30
 nonce_retention_seconds = 600
@@ -995,6 +1002,7 @@ live_log_queue_bytes = 1048576
 transfer_idle_timeout_seconds = 30
 setup_timeout_seconds = 300
 output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
 authentication_lifetime_seconds = 300
 clock_skew_seconds = 30
 nonce_retention_seconds = 600

@@ -1,5 +1,5 @@
 use std::io;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -32,6 +32,7 @@ pub struct WorkerSession {
     protocol: ProtocolSession,
     inputs: InputTransferSession,
     transfer_chunk_bytes: usize,
+    connection_deadline: Instant,
 }
 
 impl WorkerSession {
@@ -44,6 +45,7 @@ impl WorkerSession {
     }
 
     pub fn resolve_inputs(&mut self, store_uri: &str) -> io::Result<PathSet> {
+        self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
@@ -82,6 +84,7 @@ impl WorkerSession {
     }
 
     pub fn build(&mut self, store_uri: &str) -> io::Result<nix_worker_protocol::WorkerBuildResult> {
+        self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
@@ -139,6 +142,7 @@ impl WorkerSession {
         store_uri: &str,
         result: &nix_worker_protocol::WorkerBuildResult,
     ) -> io::Result<()> {
+        self.ensure_connection_active()?;
         let mut actual_outputs = result.outputs().to_vec();
         actual_outputs.sort();
         let mut expected_outputs = self
@@ -157,6 +161,7 @@ impl WorkerSession {
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
         for (_, path) in expected_outputs {
+            self.ensure_connection_active()?;
             let info = store
                 .query_path_info(&path)
                 .map_err(|_| io::Error::other("worker output metadata query failed"))?
@@ -212,11 +217,13 @@ impl WorkerSession {
         store_uri: &str,
         requested: &PathSet,
     ) -> io::Result<()> {
+        self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
         for path in &requested.paths {
+            self.ensure_connection_active()?;
             let entry = self
                 .manifest
                 .paths
@@ -253,7 +260,18 @@ impl WorkerSession {
         self.inputs.ready_to_build()
     }
 
+    fn ensure_connection_active(&self) -> io::Result<()> {
+        if Instant::now() >= self.connection_deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "worker connection lifetime exceeded",
+            ));
+        }
+        Ok(())
+    }
+
     fn read_metadata<T: serde::de::DeserializeOwned>(&mut self, kind: FrameKind) -> io::Result<T> {
+        self.ensure_connection_active()?;
         let body = read_binary_message(&mut self.socket)?;
         let mut input = body.as_slice();
         let frame = read_frame(
@@ -382,6 +400,7 @@ pub struct WorkerConfig {
     transfer_chunk_bytes: usize,
     transfer_idle_timeout: std::time::Duration,
     output_collection_timeout: std::time::Duration,
+    maximum_connection_lifetime: std::time::Duration,
     authentication: Authentication,
 }
 
@@ -421,6 +440,13 @@ impl WorkerConfig {
                 .filter(|value| *value > 0)
                 .map(std::time::Duration::from_secs)
                 .ok_or_else(|| invalid("worker output collection timeout is invalid"))?;
+        let maximum_connection_lifetime =
+            required(&mut lookup, "TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS")?
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .map(std::time::Duration::from_secs)
+                .ok_or_else(|| invalid("worker connection lifetime is invalid"))?;
         let mode = required(&mut lookup, "TELCHAR_TRANSFER_AUTHENTICATION")?;
         let allocation_id = required(&mut lookup, "NOMAD_ALLOC_ID")?;
         let nomad_namespace = required(&mut lookup, "NOMAD_NAMESPACE")?;
@@ -504,6 +530,7 @@ impl WorkerConfig {
             transfer_chunk_bytes,
             transfer_idle_timeout,
             output_collection_timeout,
+            maximum_connection_lifetime,
             authentication: Authentication {
                 backend,
                 namespace,
@@ -534,6 +561,10 @@ impl WorkerConfig {
 
     pub fn output_collection_timeout(&self) -> std::time::Duration {
         self.output_collection_timeout
+    }
+
+    pub fn maximum_connection_lifetime(&self) -> std::time::Duration {
+        self.maximum_connection_lifetime
     }
 
     pub fn authentication(&self) -> &Authentication {
@@ -650,6 +681,9 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         protocol,
         inputs,
         transfer_chunk_bytes: config.transfer_chunk_bytes(),
+        connection_deadline: Instant::now()
+            .checked_add(config.maximum_connection_lifetime())
+            .ok_or_else(|| invalid("worker connection lifetime is invalid"))?,
     })
 }
 

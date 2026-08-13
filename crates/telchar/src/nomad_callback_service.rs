@@ -1,7 +1,7 @@
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::config::{NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication};
 use crate::nomad_callback::{
@@ -188,6 +188,9 @@ pub fn serve_connection(
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
     let limits = backend.transfer_limits();
+    let connection_deadline = Instant::now()
+        .checked_add(limits.maximum_connection_lifetime())
+        .ok_or_else(|| io::Error::other("Nomad connection lifetime is invalid"))?;
     socket
         .inner_mut()
         .set_read_timeout(Some(limits.transfer_idle_timeout()))?;
@@ -218,11 +221,13 @@ pub fn serve_connection(
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
     )?;
     socket.write_binary(message)?;
+    ensure_before(connection_deadline)?;
     let valid_paths = read_transfer_frame(
         &mut socket,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
     )?;
     session.accept(Direction::WorkerToGateway, valid_paths)?;
+    ensure_before(connection_deadline)?;
     let request_frame = read_transfer_frame(
         &mut socket,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
@@ -232,7 +237,14 @@ pub fn serve_connection(
         limits.maximum_frame_metadata_bytes(),
     )?;
     session.accept(Direction::WorkerToGateway, request_frame)?;
-    stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)?;
+    stream_requested_inputs(
+        &mut socket,
+        &mut session,
+        &manifest,
+        &requested,
+        limits,
+        connection_deadline,
+    )?;
     if let Err(error) = receive_build_outputs(
         &mut socket,
         &mut session,
@@ -240,6 +252,7 @@ pub fn serve_connection(
         derivation_path,
         build_request,
         limits,
+        connection_deadline,
     ) {
         let _ = crate::persistence::complete_shared_build_failure(
             database_url,
@@ -293,11 +306,13 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     derivation_path: &str,
     build_request: &crate::build_request::BuildRequest,
     limits: crate::config::NomadTransferLimits,
+    connection_deadline: Instant,
 ) -> io::Result<()> {
     let endpoint = gateway_store_endpoint()?;
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
     loop {
+        ensure_before(connection_deadline)?;
         let frame = read_transfer_frame(
             socket,
             ProtocolLimits::new(
@@ -410,10 +425,12 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     manifest: &InputManifest,
     requested: &PathSet,
     limits: crate::config::NomadTransferLimits,
+    connection_deadline: Instant,
 ) -> io::Result<()> {
     let endpoint = gateway_store_endpoint()?;
     let mut store = GatewayStoreConnection::connect(&endpoint)?;
     for requested_path in &requested.paths {
+        ensure_before(connection_deadline)?;
         let entry = manifest
             .paths
             .iter()
@@ -509,6 +526,16 @@ impl<S: io::Read + io::Write> io::Write for InputNarSink<'_, S> {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+fn ensure_before(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Nomad connection lifetime exceeded",
+        ));
+    }
+    Ok(())
 }
 
 fn gateway_store_endpoint() -> io::Result<GatewayStoreEndpoint> {

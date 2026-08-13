@@ -29,6 +29,10 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
             "300".to_owned(),
         ),
         (
+            "TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS".to_owned(),
+            "3600".to_owned(),
+        ),
+        (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
             "workload-identity".to_owned(),
         ),
@@ -63,6 +67,10 @@ fn parses_exact_workload_identity_environment() {
     assert_eq!(
         config.output_collection_timeout(),
         std::time::Duration::from_secs(300)
+    );
+    assert_eq!(
+        config.maximum_connection_lifetime(),
+        std::time::Duration::from_secs(3600)
     );
     assert_eq!(config.endpoint().as_str(), "ws://127.0.0.1:1234/callback");
     assert_eq!(
@@ -116,6 +124,10 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
         (
             "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS".to_owned(),
             "300".to_owned(),
+        ),
+        (
+            "TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS".to_owned(),
+            "3600".to_owned(),
         ),
         (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
