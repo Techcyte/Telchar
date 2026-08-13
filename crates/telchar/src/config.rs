@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::net::SocketAddr;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,6 +14,14 @@ use crate::deployment::{OutputRetention, RunningDisconnectPolicy};
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/telchar/telchar.toml";
 const DEFAULT_MAXIMUM_IPC_SESSIONS: usize = 64;
 const MAXIMUM_IPC_SESSIONS: usize = 65_536;
+const DEFAULT_NOMAD_CALLBACK_BIND: &str = "0.0.0.0:7443";
+const DEFAULT_NOMAD_CALLBACK_PUBLIC_URL: &str = "http://127.0.0.1:7443/callback";
+const DEFAULT_NOMAD_CALLBACK_MAXIMUM_CONNECTIONS: usize = 64;
+const DEFAULT_NOMAD_CALLBACK_MAXIMUM_HEADER_BYTES: usize = 16 * 1024;
+const DEFAULT_NOMAD_CALLBACK_MAXIMUM_BODY_BYTES: usize = 64 * 1024;
+const MAXIMUM_NOMAD_CALLBACK_CONNECTIONS: usize = 65_536;
+const MAXIMUM_NOMAD_CALLBACK_HEADER_BYTES: usize = 1024 * 1024;
+const MAXIMUM_NOMAD_CALLBACK_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_CREDENTIAL_MAPPINGS: usize = 4_096;
 const MAXIMUM_CREDENTIAL_ID_BYTES: usize = 1_024;
 const MAXIMUM_SUBJECT_BYTES: usize = 256;
@@ -42,6 +51,37 @@ const MAXIMUM_BACKEND_PERMIT_WAIT_SECONDS: u64 = 3_600;
 const MAXIMUM_SSH_DESTINATION_BYTES: usize = 512;
 const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
 const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadCallbackConfig {
+    bind: SocketAddr,
+    public_url: String,
+    maximum_connections: usize,
+    maximum_header_bytes: usize,
+    maximum_body_bytes: usize,
+}
+
+impl NomadCallbackConfig {
+    pub fn bind(&self) -> SocketAddr {
+        self.bind
+    }
+
+    pub fn public_url(&self) -> &str {
+        &self.public_url
+    }
+
+    pub fn maximum_connections(&self) -> usize {
+        self.maximum_connections
+    }
+
+    pub fn maximum_header_bytes(&self) -> usize {
+        self.maximum_header_bytes
+    }
+
+    pub fn maximum_body_bytes(&self) -> usize {
+        self.maximum_body_bytes
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialMapping {
@@ -466,6 +506,7 @@ pub struct ServiceConfig {
     database_url: Option<String>,
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
+    nomad_callback: NomadCallbackConfig,
     credential_mappings: BTreeMap<String, CredentialMapping>,
     default_scheduling_limits: SchedulingLimits,
     subject_scheduling_limits: BTreeMap<String, SchedulingLimits>,
@@ -521,6 +562,10 @@ impl ServiceConfig {
 
     pub fn maximum_ipc_sessions(&self) -> usize {
         self.maximum_ipc_sessions
+    }
+
+    pub fn nomad_callback(&self) -> &NomadCallbackConfig {
+        &self.nomad_callback
     }
 
     pub fn credential_mapping(&self, credential_id: &str) -> Option<&CredentialMapping> {
@@ -641,6 +686,7 @@ impl ServiceConfig {
             return Err(invalid("IPC session limit is invalid"));
         }
 
+        let nomad_callback = validate_nomad_callback(raw.nomad_callback.unwrap_or_default())?;
         let credential_mappings = validate_mappings(
             raw.identity
                 .map(|identity| identity.credentials)
@@ -674,7 +720,7 @@ impl ServiceConfig {
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
         let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
-        let nomad_backends = validate_nomad_backends(backends.nomad)?;
+        let nomad_backends = validate_nomad_backends(backends.nomad, nomad_callback.public_url())?;
         validate_unique_backend_names(
             local_backend.as_ref(),
             &static_ssh_backends,
@@ -687,6 +733,7 @@ impl ServiceConfig {
             database_url,
             ipc_socket,
             maximum_ipc_sessions,
+            nomad_callback,
             credential_mappings,
             default_scheduling_limits,
             subject_scheduling_limits,
@@ -706,6 +753,7 @@ struct RawServiceConfig {
     maximum_retained_input_bytes: Option<u64>,
     database: Option<DatabaseSection>,
     ipc: Option<IpcSection>,
+    nomad_callback: Option<RawNomadCallbackConfig>,
     identity: Option<IdentityConfig>,
     scheduling: Option<SchedulingConfig>,
     backends: Option<BackendConfig>,
@@ -728,6 +776,16 @@ struct DatabaseSection {
 struct IpcSection {
     socket: Option<PathBuf>,
     maximum_sessions: Option<usize>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNomadCallbackConfig {
+    bind: Option<String>,
+    public_url: Option<String>,
+    maximum_connections: Option<usize>,
+    maximum_header_bytes: Option<usize>,
+    maximum_body_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -821,7 +879,7 @@ struct RawNomadBackendConfig {
     job_name_scope: String,
     poll_interval_seconds: u64,
     runtime_limit_seconds: u64,
-    transfer_endpoint: String,
+    transfer_endpoint: Option<String>,
     transfer_authentication: RawNomadTransferAuthentication,
     store: RawNomadStoreConfig,
     transfer_limits: RawNomadTransferLimits,
@@ -895,6 +953,46 @@ struct RawNomadResources {
 struct RawCredentialMapping {
     audit_subject: Option<String>,
     quota_subject: Option<String>,
+}
+
+fn validate_nomad_callback(raw: RawNomadCallbackConfig) -> io::Result<NomadCallbackConfig> {
+    let bind = raw
+        .bind
+        .as_deref()
+        .unwrap_or(DEFAULT_NOMAD_CALLBACK_BIND)
+        .parse::<SocketAddr>()
+        .map_err(|_| invalid("Nomad callback bind address is invalid"))?;
+    let public_url = raw
+        .public_url
+        .unwrap_or_else(|| DEFAULT_NOMAD_CALLBACK_PUBLIC_URL.to_owned());
+    if !valid_nomad_endpoint(&public_url) {
+        return Err(invalid("Nomad callback public URL is invalid"));
+    }
+    let maximum_connections = raw
+        .maximum_connections
+        .unwrap_or(DEFAULT_NOMAD_CALLBACK_MAXIMUM_CONNECTIONS);
+    let maximum_header_bytes = raw
+        .maximum_header_bytes
+        .unwrap_or(DEFAULT_NOMAD_CALLBACK_MAXIMUM_HEADER_BYTES);
+    let maximum_body_bytes = raw
+        .maximum_body_bytes
+        .unwrap_or(DEFAULT_NOMAD_CALLBACK_MAXIMUM_BODY_BYTES);
+    if maximum_connections == 0
+        || maximum_connections > MAXIMUM_NOMAD_CALLBACK_CONNECTIONS
+        || maximum_header_bytes == 0
+        || maximum_header_bytes > MAXIMUM_NOMAD_CALLBACK_HEADER_BYTES
+        || maximum_body_bytes == 0
+        || maximum_body_bytes > MAXIMUM_NOMAD_CALLBACK_BODY_BYTES
+    {
+        return Err(invalid("Nomad callback service limits are invalid"));
+    }
+    Ok(NomadCallbackConfig {
+        bind,
+        public_url,
+        maximum_connections,
+        maximum_header_bytes,
+        maximum_body_bytes,
+    })
 }
 
 fn validate_mappings(
@@ -995,7 +1093,10 @@ fn validate_static_ssh_backends(
     Ok(backends)
 }
 
-fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<NomadBackendConfig>> {
+fn validate_nomad_backends(
+    raw: Vec<RawNomadBackendConfig>,
+    default_transfer_endpoint: &str,
+) -> io::Result<Vec<NomadBackendConfig>> {
     if raw.len() > MAXIMUM_NOMAD_BACKENDS {
         return Err(invalid("Nomad backend count exceeds limit"));
     }
@@ -1046,7 +1147,10 @@ fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<No
             ));
         }
         let driver_config = validate_driver_config(backend.driver_config)?;
-        if !valid_nomad_endpoint(&backend.transfer_endpoint) {
+        let transfer_endpoint = backend
+            .transfer_endpoint
+            .unwrap_or_else(|| default_transfer_endpoint.to_owned());
+        if !valid_nomad_endpoint(&transfer_endpoint) {
             return Err(invalid("Nomad transfer endpoint is invalid"));
         }
         let transfer_authentication =
@@ -1074,7 +1178,7 @@ fn validate_nomad_backends(raw: Vec<RawNomadBackendConfig>) -> io::Result<Vec<No
             job_name_scope,
             poll_interval: Duration::from_secs(backend.poll_interval_seconds),
             runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
-            transfer_endpoint: backend.transfer_endpoint,
+            transfer_endpoint,
             transfer_authentication,
             store,
             transfer_limits,

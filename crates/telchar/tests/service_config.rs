@@ -97,6 +97,14 @@ maximum_concurrent_builds = 2
         Path::new("/run/telchar/daemon.sock")
     );
     assert_eq!(config.maximum_ipc_sessions(), 32);
+    assert_eq!(config.nomad_callback().bind().to_string(), "0.0.0.0:7443");
+    assert_eq!(
+        config.nomad_callback().public_url(),
+        "http://127.0.0.1:7443/callback"
+    );
+    assert_eq!(config.nomad_callback().maximum_connections(), 64);
+    assert_eq!(config.nomad_callback().maximum_header_bytes(), 16 * 1024);
+    assert_eq!(config.nomad_callback().maximum_body_bytes(), 64 * 1024);
     assert_eq!(config.backend_permit_wait().as_secs(), 30);
     assert_eq!(
         config.scheduling_limits("unknown-subject"),
@@ -119,6 +127,141 @@ maximum_concurrent_builds = 2
         .expect("second credential mapping exists");
     assert_eq!(second_mapping.audit_subject.as_deref(), Some("automation"));
     assert_eq!(second_mapping.quota_subject.as_deref(), Some("engineering"));
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn loads_configured_nomad_callback_service() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("nomad-callback");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[nomad_callback]
+bind = "127.0.0.1:17443"
+public_url = "http://gateway.internal:17443/build-callback"
+maximum_connections = 12
+maximum_header_bytes = 8192
+maximum_body_bytes = 32768
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    let callback = config.nomad_callback();
+    assert_eq!(callback.bind().to_string(), "127.0.0.1:17443");
+    assert_eq!(
+        callback.public_url(),
+        "http://gateway.internal:17443/build-callback"
+    );
+    assert_eq!(callback.maximum_connections(), 12);
+    assert_eq!(callback.maximum_header_bytes(), 8192);
+    assert_eq!(callback.maximum_body_bytes(), 32768);
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("nomad-callback-default");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[nomad_callback]
+public_url = "http://gateway.internal:17443/build-callback"
+
+[[backends.nomad]]
+name = "nomad-primary"
+system = "x86_64-linux"
+supported_features = []
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.internal:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+
+[backends.nomad.driver_config]
+command = "/bin/true"
+
+[backends.nomad.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+
+[backends.nomad.transfer_authentication]
+mode = "workload-identity"
+issuer = "http://nomad.internal:4646"
+jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
+audience = "telchar"
+
+[backends.nomad.store]
+mode = "daemon"
+uri = "daemon"
+
+[backends.nomad.transfer_limits]
+maximum_manifest_paths = 100
+maximum_manifest_bytes = 1048576
+maximum_input_nar_bytes = 1048576
+maximum_total_input_bytes = 10485760
+maximum_output_nar_bytes = 1048576
+maximum_total_output_bytes = 10485760
+maximum_frame_metadata_bytes = 65536
+stream_buffer_bytes = 65536
+maximum_live_log_chunk_bytes = 16384
+live_log_queue_bytes = 1048576
+transfer_idle_timeout_seconds = 60
+setup_timeout_seconds = 60
+output_collection_timeout_seconds = 60
+authentication_lifetime_seconds = 60
+clock_skew_seconds = 5
+nonce_retention_seconds = 120
+reconnect_timeout_seconds = 60
+maximum_diagnostic_bytes = 65536
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    assert_eq!(
+        config.nomad_backends()[0].transfer_endpoint(),
+        "http://gateway.internal:17443/build-callback"
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn rejects_invalid_nomad_callback_service_configuration() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-nomad-callback");
+    let config_path = root.join("telchar.toml");
+
+    for callback in [
+        r#"bind = "gateway.example:7443""#,
+        r#"public_url = "file:///tmp/callback""#,
+        "maximum_connections = 0",
+        "maximum_header_bytes = 0",
+        "maximum_body_bytes = 0",
+    ] {
+        fs::write(&config_path, format!("[nomad_callback]\n{callback}\n"))
+            .expect("configuration writes");
+        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        assert!(ServiceConfig::load().is_err(), "accepted {callback}");
+    }
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
