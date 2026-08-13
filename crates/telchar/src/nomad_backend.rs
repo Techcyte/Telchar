@@ -321,6 +321,7 @@ impl NomadClient {
                 | crate::persistence::SharedBuildState::Collecting => {}
             }
             if started.elapsed() >= execution.timeout() {
+                self.stop(submission.job_id())?;
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "Nomad job execution timed out",

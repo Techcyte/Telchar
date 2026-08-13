@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -813,6 +813,113 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
         )
         .expect_err("cancelled execution rejects");
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn timeout_stops_only_the_exact_submitted_nomad_job() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_service_config(&root, &endpoint, None);
+    let backend = config.nomad_backends()[0].clone();
+    let admitted = admitted_request();
+    let shared_build_key = admitted.shared_build_key();
+    let expected_job_id = deterministic_job_name(&backend, shared_build_key.as_bytes());
+    let served_job_id = expected_job_id.clone();
+    let server = thread::spawn(move || {
+        let (mut submit_request, _) = listener.accept().expect("submit request accepts");
+        let request = read_http_request_with_body(&mut submit_request);
+        assert!(request.starts_with("POST /v1/jobs?namespace=telchar HTTP/1.1\r\n"));
+        write_json_response(&mut submit_request, 200, r#"{"EvalID":"evaluation-1"}"#);
+
+        let (mut job_request, _) = listener.accept().expect("job request accepts");
+        let request = read_http_request(&mut job_request);
+        assert!(request.starts_with(&format!(
+            "GET /v1/job/{served_job_id}?namespace=telchar HTTP/1.1\r\n"
+        )));
+        write_json_response(
+            &mut job_request,
+            200,
+            &format!(
+                r#"{{"ID":"{served_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+
+        let (mut allocations_request, _) = listener.accept().expect("allocations request accepts");
+        let request = read_http_request(&mut allocations_request);
+        assert!(request.starts_with(&format!(
+            "GET /v1/job/{served_job_id}/allocations?namespace=telchar HTTP/1.1\r\n"
+        )));
+        write_json_response(
+            &mut allocations_request,
+            200,
+            r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#,
+        );
+
+        listener
+            .set_nonblocking(true)
+            .expect("listener becomes nonblocking");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut stop_request = loop {
+            match listener.accept() {
+                Ok((request, _)) => break request,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "timeout did not stop Nomad job");
+                    thread::yield_now();
+                }
+                Err(error) => panic!("stop request failed: {error}"),
+            }
+        };
+        let request = read_http_request(&mut stop_request);
+        assert!(request.starts_with(&format!(
+            "DELETE /v1/job/{served_job_id}?namespace=telchar&purge=true HTTP/1.1\r\n"
+        )));
+        write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
+    });
+    let database = support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("database migrates");
+    let digest = admitted.shared_build_digest();
+    telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        std::str::from_utf8(admitted.derivation_path()).expect("derivation path is UTF-8"),
+        &digest,
+        "nomad-test",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some(&expected_job_id),
+        &admitted
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| std::str::from_utf8(path).expect("output path is UTF-8"))
+            .collect::<Vec<_>>(),
+        &admitted,
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(
+        database.url(),
+        std::str::from_utf8(admitted.derivation_path()).expect("derivation path is UTF-8"),
+    )
+    .expect("shared build starts");
+    let execution = BuildExecution::new("request-1", &admitted, Duration::from_nanos(1))
+        .expect("execution creates");
+    let client = NomadClient::new(backend).expect("Nomad client constructs");
+    let error = client
+        .execute(
+            database.url(),
+            &execution,
+            shared_build_key.as_bytes(),
+            &mut || Ok(false),
+        )
+        .expect_err("timed out execution rejects");
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }
