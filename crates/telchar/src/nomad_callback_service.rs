@@ -318,7 +318,11 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 let metadata: PathManifestEntry =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
                 session.accept(Direction::WorkerToGateway, frame)?;
-                current = Some(OutputImport::new(&endpoint, metadata)?);
+                current = Some(OutputImport::new(
+                    &endpoint,
+                    metadata,
+                    limits.stream_buffer_bytes(),
+                )?);
             }
             FrameKind::OutputNar => {
                 let metadata: NarMetadata =
@@ -513,11 +517,15 @@ struct OutputImport {
 }
 
 impl OutputImport {
-    fn new(endpoint: &GatewayStoreEndpoint, metadata: PathManifestEntry) -> io::Result<Self> {
+    fn new(
+        endpoint: &GatewayStoreEndpoint,
+        metadata: PathManifestEntry,
+        memory_bytes: usize,
+    ) -> io::Result<Self> {
         Ok(Self {
             metadata,
             store: GatewayStoreConnection::connect(endpoint)?,
-            temporary: tempfile::SpooledTempFile::new(8 * 1024 * 1024),
+            temporary: tempfile::SpooledTempFile::new(memory_bytes),
             received: 0,
         })
     }
