@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -22,17 +22,25 @@ struct SocketFixture {
 
 impl SocketFixture {
     fn create() -> Self {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "telchar-gateway-daemon-{}-{suffix}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).expect("socket fixture directory creates");
-        let socket = root.join("gateway.sock");
-        Self { root, socket }
+        for attempt in 0_u32.. {
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after epoch")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "telchar-gateway-daemon-{}-{suffix}-{attempt}",
+                std::process::id()
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => {
+                    let socket = root.join("gateway.sock");
+                    return Self { root, socket };
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("socket fixture directory creates: {error}"),
+            }
+        }
+        unreachable!("fixture attempt counter exhausted")
     }
 
     fn endpoint(&self) -> GatewayStoreEndpoint {
