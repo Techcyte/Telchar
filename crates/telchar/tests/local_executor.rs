@@ -111,6 +111,10 @@ fn built_and_already_valid_results_have_output_trust() {
         .expect("helper writes");
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
             .expect("helper is executable");
+        fs::File::open(&helper)
+            .expect("helper closes before execution")
+            .sync_all()
+            .expect("helper syncs");
         let build = admitted_request();
         let request = BuildExecution::new(status, &build, Duration::from_secs(5))
             .expect("execution request is valid");
