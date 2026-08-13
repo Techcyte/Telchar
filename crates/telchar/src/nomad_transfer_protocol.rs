@@ -296,6 +296,14 @@ pub struct NarMetadata {
     pub path: String,
     pub nar_hash: String,
     pub nar_size: u64,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default = "default_final_chunk")]
+    pub final_chunk: bool,
+}
+
+const fn default_final_chunk() -> bool {
+    true
 }
 
 impl NarMetadata {
@@ -417,7 +425,7 @@ impl TransferSession {
                 let metadata: NarMetadata =
                     decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
                 self.inputs
-                    .receive_nar(metadata, frame.payload().len() as u64)?;
+                    .receive_nar_chunk(metadata, frame.payload().len() as u64)?;
             }
             FrameKind::BuildStarted => {
                 require_empty_payload(&frame)?;
@@ -449,13 +457,14 @@ impl TransferSession {
                 )?)?;
             }
             FrameKind::OutputNar => {
-                let paths: PathSet =
+                let metadata: NarMetadata =
                     decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
-                if paths.paths.len() != 1 {
-                    return Err(invalid_data("Nomad output NAR identity is invalid"));
-                }
-                self.outputs
-                    .receive_nar(&paths.paths[0], frame.payload().len() as u64)?;
+                self.outputs.receive_nar_chunk(
+                    &metadata.path,
+                    metadata.offset,
+                    frame.payload().len() as u64,
+                    metadata.final_chunk,
+                )?;
             }
             FrameKind::OutputReceipt => {
                 require_empty_payload(&frame)?;
@@ -495,7 +504,7 @@ fn require_empty_payload(frame: &Frame) -> io::Result<()> {
 enum InputState {
     AwaitingResolution,
     Available,
-    Requested,
+    Requested { received_bytes: u64 },
     Received,
 }
 
@@ -577,13 +586,18 @@ impl InputTransferSession {
             .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
         for path in &paths {
-            self.states.insert(path.clone(), InputState::Requested);
+            self.states
+                .insert(path.clone(), InputState::Requested { received_bytes: 0 });
         }
         self.request_created = true;
         Ok(PathSet { paths })
     }
 
-    pub fn receive_nar(&mut self, metadata: NarMetadata, received_bytes: u64) -> io::Result<()> {
+    pub fn receive_nar_chunk(
+        &mut self,
+        metadata: NarMetadata,
+        received_bytes: u64,
+    ) -> io::Result<()> {
         if !self.request_created {
             return Err(invalid_data("Nomad input NAR is out of order"));
         }
@@ -597,14 +611,34 @@ impl InputTransferSession {
             &self.states.keys().cloned().collect::<Vec<_>>(),
             self.maximum_nar_bytes,
         )?;
+        let Some(InputState::Requested {
+            received_bytes: prior_bytes,
+        }) = self.states.get(&metadata.path).copied()
+        else {
+            return Err(invalid_data("Nomad input NAR does not match manifest"));
+        };
+        let total_bytes = prior_bytes
+            .checked_add(received_bytes)
+            .ok_or_else(|| invalid_data("Nomad input NAR length is invalid"))?;
         if metadata.nar_hash != entry.nar_hash
             || metadata.nar_size != entry.nar_size
-            || received_bytes != entry.nar_size
-            || self.states.get(&metadata.path) != Some(&InputState::Requested)
+            || metadata.offset != prior_bytes
+            || received_bytes == 0
+            || total_bytes > entry.nar_size
+            || metadata.final_chunk != (total_bytes == entry.nar_size)
         {
             return Err(invalid_data("Nomad input NAR does not match manifest"));
         }
-        self.states.insert(metadata.path, InputState::Received);
+        self.states.insert(
+            metadata.path,
+            if metadata.final_chunk {
+                InputState::Received
+            } else {
+                InputState::Requested {
+                    received_bytes: total_bytes,
+                }
+            },
+        );
         Ok(())
     }
 
@@ -625,7 +659,7 @@ impl InputTransferSession {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputState {
     Expected,
-    Declared { nar_size: u64 },
+    Declared { nar_size: u64, received_bytes: u64 },
     Received,
     Accepted,
 }
@@ -697,12 +731,19 @@ impl OutputTransferSession {
             .ok_or_else(|| invalid_data("Nomad output transfer exceeds total byte limit"))?;
         *state = OutputState::Declared {
             nar_size: metadata.nar_size,
+            received_bytes: 0,
         };
         self.declared_total_bytes = declared_total_bytes;
         Ok(())
     }
 
-    pub fn receive_nar(&mut self, path: &str, received_bytes: u64) -> io::Result<()> {
+    pub fn receive_nar_chunk(
+        &mut self,
+        path: &str,
+        offset: u64,
+        received_bytes: u64,
+        final_chunk: bool,
+    ) -> io::Result<()> {
         if self.complete {
             return Err(invalid_data("Nomad output transfer is complete"));
         }
@@ -711,8 +752,28 @@ impl OutputTransferSession {
             .get_mut(path)
             .ok_or_else(|| invalid_data("Nomad output is not expected"))?;
         match *state {
-            OutputState::Declared { nar_size } if nar_size == received_bytes => {
-                *state = OutputState::Received;
+            OutputState::Declared {
+                nar_size,
+                received_bytes: prior_bytes,
+            } => {
+                let total_bytes = prior_bytes
+                    .checked_add(received_bytes)
+                    .ok_or_else(|| invalid_data("Nomad output NAR length is invalid"))?;
+                if offset != prior_bytes
+                    || received_bytes == 0
+                    || total_bytes > nar_size
+                    || final_chunk != (total_bytes == nar_size)
+                {
+                    return Err(invalid_data("Nomad output NAR does not match declaration"));
+                }
+                *state = if final_chunk {
+                    OutputState::Received
+                } else {
+                    OutputState::Declared {
+                        nar_size,
+                        received_bytes: total_bytes,
+                    }
+                };
                 Ok(())
             }
             _ => Err(invalid_data("Nomad output NAR does not match declaration")),

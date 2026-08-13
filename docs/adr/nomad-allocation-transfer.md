@@ -85,7 +85,7 @@ The worker resolves inputs in this order:
 3. Recheck exact manifest paths and their store validity.
 4. Request only still-missing paths from Telchar.
 
-Telchar authorizes requests only for paths in the admitted manifest. Each unresolved path is streamed independently from the gateway store using bounded buffers and normal Nix NAR operations, then imported through the allocation-side Nix daemon. Telchar does not buffer a complete NAR or closure in memory.
+Telchar authorizes requests only for paths in the admitted manifest. Each unresolved path is streamed independently from the gateway store using bounded buffers and normal Nix NAR operations, then imported through the allocation-side Nix daemon. `InputNar` and `OutputNar` use ordered chunks carrying the exact path, declared NAR identity, total size, byte offset, and final-chunk marker. Offsets must be contiguous from zero, paths cannot interleave, every non-final chunk must leave bytes outstanding, and the final chunk must end at the exact declared size. Empty, duplicate, skipped, oversized, early-final, and late-final chunks fail closed. Telchar does not buffer a complete NAR or closure in memory.
 
 Consequently, common public dependencies such as GCC normally come from a warm host store or an operator-trusted binary cache. Telchar transfers GCC only as a correctness fallback when it is part of the admitted closure, exists in the gateway store, and remains unresolved after local and substitution checks. Private or unpublished inputs normally use the Telchar fallback.
 

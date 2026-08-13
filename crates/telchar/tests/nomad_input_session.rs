@@ -67,13 +67,51 @@ fn requests_only_unresolved_admitted_inputs_and_starts_when_complete() {
     let request = session.request_unresolved().expect("request creates");
     assert_eq!(request.paths, vec![second.clone()]);
     session
-        .receive_nar(
+        .receive_nar_chunk(
+            NarMetadata {
+                path: second.clone(),
+                nar_hash: HASH.to_owned(),
+                nar_size: 20,
+                offset: 0,
+                final_chunk: false,
+            },
+            8,
+        )
+        .expect("first requested NAR chunk receives");
+    assert!(session
+        .receive_nar_chunk(
+            NarMetadata {
+                path: second.clone(),
+                nar_hash: HASH.to_owned(),
+                nar_size: 20,
+                offset: 7,
+                final_chunk: false,
+            },
+            4,
+        )
+        .is_err());
+    assert!(session
+        .receive_nar_chunk(
+            NarMetadata {
+                path: second.clone(),
+                nar_hash: HASH.to_owned(),
+                nar_size: 20,
+                offset: 8,
+                final_chunk: true,
+            },
+            4,
+        )
+        .is_err());
+    session
+        .receive_nar_chunk(
             NarMetadata {
                 path: second,
                 nar_hash: HASH.to_owned(),
                 nar_size: 20,
+                offset: 8,
+                final_chunk: true,
             },
-            20,
+            12,
         )
         .expect("requested NAR receives");
     session.ready_to_build().expect("all inputs resolve");
@@ -93,42 +131,50 @@ fn rejects_foreign_duplicate_unrequested_and_mismatched_inputs() {
         .record_valid_paths(PathSet { paths: vec![] })
         .expect("empty valid set records");
     assert!(session
-        .receive_nar(
+        .receive_nar_chunk(
             NarMetadata {
                 path: first.clone(),
                 nar_hash: HASH.to_owned(),
                 nar_size: 10,
+                offset: 0,
+                final_chunk: true,
             },
             10,
         )
         .is_err());
     session.request_unresolved().expect("requests inputs");
     assert!(session
-        .receive_nar(
+        .receive_nar_chunk(
             NarMetadata {
                 path: first.clone(),
                 nar_hash: HASH.to_owned(),
                 nar_size: 10,
+                offset: 0,
+                final_chunk: true,
             },
             9,
         )
         .is_err());
     session
-        .receive_nar(
+        .receive_nar_chunk(
             NarMetadata {
                 path: first.clone(),
                 nar_hash: HASH.to_owned(),
                 nar_size: 10,
+                offset: 0,
+                final_chunk: true,
             },
             10,
         )
         .expect("exact NAR receives");
     assert!(session
-        .receive_nar(
+        .receive_nar_chunk(
             NarMetadata {
                 path: first,
                 nar_hash: HASH.to_owned(),
                 nar_size: 10,
+                offset: 0,
+                final_chunk: true,
             },
             10,
         )

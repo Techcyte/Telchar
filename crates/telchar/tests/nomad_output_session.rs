@@ -21,9 +21,13 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             path: first.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 10,
+            offset: 0,
+            final_chunk: true,
         })
         .expect("first output declares");
-    session.receive_nar(&first, 10).expect("first NAR receives");
+    session
+        .receive_nar_chunk(&first, 0, 10, true)
+        .expect("first NAR receives");
     session
         .record_receipt(OutputReceipt {
             path: first.clone(),
@@ -42,10 +46,17 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             path: second.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 20,
+            offset: 0,
+            final_chunk: true,
         })
         .expect("second output declares");
     session
-        .receive_nar(&second, 20)
+        .receive_nar_chunk(&second, 0, 8, false)
+        .expect("first second-output chunk receives");
+    assert!(session.receive_nar_chunk(&second, 7, 4, false).is_err());
+    assert!(session.receive_nar_chunk(&second, 8, 4, true).is_err());
+    session
+        .receive_nar_chunk(&second, 8, 12, true)
         .expect("second NAR receives");
     session
         .record_receipt(OutputReceipt {
@@ -72,14 +83,18 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             path: output("foreign"),
             nar_hash: HASH.to_owned(),
             nar_size: 1,
+            offset: 0,
+            final_chunk: true,
         })
         .is_err());
-    assert!(session.receive_nar(&expected, 1).is_err());
+    assert!(session.receive_nar_chunk(&expected, 0, 1, true).is_err());
     assert!(session
         .declare(NarMetadata {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 17,
+            offset: 0,
+            final_chunk: true,
         })
         .is_err());
 
@@ -88,6 +103,8 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 16,
+            offset: 0,
+            final_chunk: true,
         })
         .expect("expected output declares");
     assert!(session
@@ -95,13 +112,15 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 16,
+            offset: 0,
+            final_chunk: true,
         })
         .is_err());
-    assert!(session.receive_nar(&expected, 15).is_err());
+    assert!(session.receive_nar_chunk(&expected, 0, 15, true).is_err());
     session
-        .receive_nar(&expected, 16)
+        .receive_nar_chunk(&expected, 0, 16, true)
         .expect("exact NAR receives");
-    assert!(session.receive_nar(&expected, 16).is_err());
+    assert!(session.receive_nar_chunk(&expected, 0, 16, true).is_err());
     assert!(session
         .record_receipt(OutputReceipt {
             path: expected.clone(),

@@ -114,6 +114,8 @@ fn round_trips_exact_transfer_metadata_contracts() {
         path: manifest.paths[0].path.clone(),
         nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         nar_size: 42,
+        offset: 0,
+        final_chunk: true,
     };
     let started = BuildStarted {
         derivation_path: manifest.derivation_path.clone(),
@@ -219,6 +221,8 @@ fn rejects_invalid_manifest_and_path_metadata() {
         path: output.clone(),
         nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         nar_size: 1025,
+        offset: 0,
+        final_chunk: true,
     }
     .validate_against(&[output], 1024)
     .expect_err("oversized NAR metadata rejects");

@@ -95,6 +95,8 @@ fn validates_complete_selective_transfer_sequence() {
                     path: input,
                     nar_hash: HASH.to_owned(),
                     nar_size: 10,
+                    offset: 0,
+                    final_chunk: true,
                 },
                 vec![0; 10],
             ),
@@ -125,6 +127,8 @@ fn validates_complete_selective_transfer_sequence() {
                     path: output.clone(),
                     nar_hash: HASH.to_owned(),
                     nar_size: 12,
+                    offset: 0,
+                    final_chunk: true,
                 },
                 vec![],
             ),
@@ -135,8 +139,12 @@ fn validates_complete_selective_transfer_sequence() {
             Direction::WorkerToGateway,
             frame(
                 FrameKind::OutputNar,
-                &PathSet {
-                    paths: vec![output.clone()],
+                &NarMetadata {
+                    path: output.clone(),
+                    nar_hash: HASH.to_owned(),
+                    nar_size: 12,
+                    offset: 0,
+                    final_chunk: true,
                 },
                 vec![0; 12],
             ),
