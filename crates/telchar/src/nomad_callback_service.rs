@@ -1,5 +1,6 @@
 use std::io;
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
@@ -20,56 +21,145 @@ use crate::nomad_transfer_protocol::{
 use crate::store_closure::{backend_from_environment, StoreClosureBackend};
 use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
-pub fn serve(
-    listener: TcpListener,
-    callback: NomadCallbackConfig,
-    database_url: String,
-    backends: Vec<NomadBackendConfig>,
-    output_retention: std::time::Duration,
-) -> io::Result<()> {
-    let active = Arc::new(Mutex::new(0_usize));
-    for connection in listener.incoming() {
-        let mut connection = match connection {
-            Ok(connection) => connection,
-            Err(error) => {
-                tracing::warn!(
-                    event = "nomad.callback.connection_rejected",
-                    reason = error.kind().to_string(),
-                    "Nomad callback connection rejected"
-                );
-                continue;
+pub struct NomadCallbackService {
+    shutdown: Arc<AtomicBool>,
+    connections: Arc<Mutex<std::collections::BTreeMap<u64, TcpStream>>>,
+    workers: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
+    listener: Option<std::thread::JoinHandle<io::Result<()>>>,
+    drain_timeout: std::time::Duration,
+}
+
+impl NomadCallbackService {
+    pub fn start(
+        listener: TcpListener,
+        callback: NomadCallbackConfig,
+        database_url: String,
+        backends: Vec<NomadBackendConfig>,
+        output_retention: std::time::Duration,
+    ) -> io::Result<Self> {
+        listener.set_nonblocking(true)?;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let connections = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let workers = Arc::new(Mutex::new(Vec::new()));
+        let listener_shutdown = Arc::clone(&shutdown);
+        let listener_connections = Arc::clone(&connections);
+        let listener_workers = Arc::clone(&workers);
+        let active = Arc::new(Mutex::new(0_usize));
+        let next_connection = Arc::new(AtomicU64::new(0));
+        let drain_timeout = callback.shutdown_drain_timeout();
+        let listener = std::thread::spawn(move || {
+            while !listener_shutdown.load(Ordering::Acquire) {
+                let mut connection = match listener.accept() {
+                    Ok((connection, _)) => connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                let Some(permit) =
+                    ConnectionPermit::acquire(Arc::clone(&active), callback.maximum_connections())
+                else {
+                    tracing::warn!(
+                        event = "nomad.callback.connection_rejected",
+                        reason = "capacity"
+                    );
+                    continue;
+                };
+                let identity = next_connection.fetch_add(1, Ordering::Relaxed);
+                let shutdown_connection = connection.try_clone()?;
+                let mut registered = listener_connections
+                    .lock()
+                    .map_err(|_| io::Error::other("Nomad callback registry lock failed"))?;
+                registered.insert(identity, shutdown_connection);
+                drop(registered);
+                let callback = callback.clone();
+                let database_url = database_url.clone();
+                let backends = backends.clone();
+                let connections = Arc::clone(&listener_connections);
+                let worker = std::thread::spawn(move || {
+                    let _permit = permit;
+                    if let Err(error) = serve_connection(
+                        &mut connection,
+                        &callback,
+                        &database_url,
+                        &backends,
+                        output_retention,
+                    ) {
+                        tracing::warn!(
+                            event = "nomad.callback.connection_failed",
+                            reason = error.kind().to_string(),
+                            "Nomad callback connection failed"
+                        );
+                    }
+                    if let Ok(mut connections) = connections.lock() {
+                        connections.remove(&identity);
+                    }
+                });
+                listener_workers
+                    .lock()
+                    .map_err(|_| io::Error::other("Nomad callback worker lock failed"))?
+                    .push(worker);
             }
-        };
-        let Some(permit) =
-            ConnectionPermit::acquire(Arc::clone(&active), callback.maximum_connections())
-        else {
-            tracing::warn!(
-                event = "nomad.callback.connection_rejected",
-                reason = "capacity"
-            );
-            continue;
-        };
-        let callback = callback.clone();
-        let database_url = database_url.clone();
-        let backends = backends.clone();
-        std::thread::spawn(move || {
-            let _permit = permit;
-            if let Err(error) = serve_connection(
-                &mut connection,
-                &callback,
-                &database_url,
-                &backends,
-                output_retention,
-            ) {
-                tracing::warn!(
-                    event = "nomad.callback.connection_failed",
-                    reason = error.kind().to_string(),
-                    "Nomad callback connection failed"
-                );
-            }
+            Ok(())
         });
+        Ok(Self {
+            shutdown,
+            connections,
+            workers,
+            listener: Some(listener),
+            drain_timeout,
+        })
     }
-    Ok(())
+
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        self.shutdown.store(true, Ordering::Release);
+        if let Some(listener) = self.listener.take() {
+            listener
+                .join()
+                .map_err(|_| io::Error::other("Nomad callback listener panicked"))??;
+        }
+        let deadline = Instant::now()
+            .checked_add(self.drain_timeout)
+            .ok_or_else(|| io::Error::other("Nomad callback drain timeout is invalid"))?;
+        loop {
+            let empty = self
+                .connections
+                .lock()
+                .map_err(|_| io::Error::other("Nomad callback registry lock failed"))?
+                .is_empty();
+            if empty || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for connection in self
+            .connections
+            .lock()
+            .map_err(|_| io::Error::other("Nomad callback registry lock failed"))?
+            .values()
+        {
+            let _ = connection.shutdown(Shutdown::Both);
+        }
+        let workers = std::mem::take(
+            &mut *self
+                .workers
+                .lock()
+                .map_err(|_| io::Error::other("Nomad callback worker lock failed"))?,
+        );
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| io::Error::other("Nomad callback worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NomadCallbackService {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
 }
 
 pub fn serve_connection(

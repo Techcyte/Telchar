@@ -20,6 +20,7 @@ const DEFAULT_NOMAD_CALLBACK_MAXIMUM_CONNECTIONS: usize = 64;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_HEADER_BYTES: usize = 16 * 1024;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_NOMAD_CALLBACK_AUTHENTICATION_REQUEST_TIMEOUT_SECONDS: u64 = 10;
+const DEFAULT_NOMAD_CALLBACK_SHUTDOWN_DRAIN_TIMEOUT_SECONDS: u64 = 30;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_JWKS_BYTES: usize = 1024 * 1024;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_RETAINED_NONCES: usize = 65_536;
 const MAXIMUM_NOMAD_CALLBACK_CONNECTIONS: usize = 65_536;
@@ -63,6 +64,7 @@ pub struct NomadCallbackConfig {
     maximum_header_bytes: usize,
     maximum_body_bytes: usize,
     authentication_request_timeout: Duration,
+    shutdown_drain_timeout: Duration,
     maximum_jwks_bytes: usize,
     maximum_retained_nonces: usize,
 }
@@ -90,6 +92,10 @@ impl NomadCallbackConfig {
 
     pub fn authentication_request_timeout(&self) -> Duration {
         self.authentication_request_timeout
+    }
+
+    pub fn shutdown_drain_timeout(&self) -> Duration {
+        self.shutdown_drain_timeout
     }
 
     pub fn maximum_jwks_bytes(&self) -> usize {
@@ -810,6 +816,7 @@ struct RawNomadCallbackConfig {
     maximum_header_bytes: Option<usize>,
     maximum_body_bytes: Option<usize>,
     authentication_request_timeout_seconds: Option<u64>,
+    shutdown_drain_timeout_seconds: Option<u64>,
     maximum_jwks_bytes: Option<usize>,
     maximum_retained_nonces: Option<usize>,
 }
@@ -1007,6 +1014,9 @@ fn validate_nomad_callback(raw: RawNomadCallbackConfig) -> io::Result<NomadCallb
     let authentication_request_timeout_seconds = raw
         .authentication_request_timeout_seconds
         .unwrap_or(DEFAULT_NOMAD_CALLBACK_AUTHENTICATION_REQUEST_TIMEOUT_SECONDS);
+    let shutdown_drain_timeout_seconds = raw
+        .shutdown_drain_timeout_seconds
+        .unwrap_or(DEFAULT_NOMAD_CALLBACK_SHUTDOWN_DRAIN_TIMEOUT_SECONDS);
     let maximum_jwks_bytes = raw
         .maximum_jwks_bytes
         .unwrap_or(DEFAULT_NOMAD_CALLBACK_MAXIMUM_JWKS_BYTES);
@@ -1021,6 +1031,8 @@ fn validate_nomad_callback(raw: RawNomadCallbackConfig) -> io::Result<NomadCallb
         || maximum_body_bytes > MAXIMUM_NOMAD_CALLBACK_BODY_BYTES
         || authentication_request_timeout_seconds == 0
         || authentication_request_timeout_seconds > MAXIMUM_NOMAD_TRANSFER_TIMEOUT_SECONDS
+        || shutdown_drain_timeout_seconds == 0
+        || shutdown_drain_timeout_seconds > MAXIMUM_NOMAD_TRANSFER_TIMEOUT_SECONDS
         || maximum_jwks_bytes == 0
         || maximum_jwks_bytes > MAXIMUM_NOMAD_CALLBACK_BODY_BYTES
         || maximum_retained_nonces == 0
@@ -1035,6 +1047,7 @@ fn validate_nomad_callback(raw: RawNomadCallbackConfig) -> io::Result<NomadCallb
         maximum_header_bytes,
         maximum_body_bytes,
         authentication_request_timeout: Duration::from_secs(authentication_request_timeout_seconds),
+        shutdown_drain_timeout: Duration::from_secs(shutdown_drain_timeout_seconds),
         maximum_jwks_bytes,
         maximum_retained_nonces,
     })

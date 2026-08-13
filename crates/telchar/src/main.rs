@@ -387,27 +387,20 @@ fn run_daemon() -> io::Result<()> {
             }
         });
     }
-    if !config.nomad_backends().is_empty() {
+    let mut callback_service = if config.nomad_backends().is_empty() {
+        None
+    } else {
         let callback_listener = std::net::TcpListener::bind(config.nomad_callback().bind())?;
-        let callback_config = config.nomad_callback().clone();
-        let callback_database_url = database_url.clone();
-        let callback_backends = config.nomad_backends().to_vec();
-        std::thread::spawn(move || {
-            if let Err(error) = telchar::nomad_callback_service::serve(
+        Some(
+            telchar::nomad_callback_service::NomadCallbackService::start(
                 callback_listener,
-                callback_config,
-                callback_database_url,
-                callback_backends,
+                config.nomad_callback().clone(),
+                database_url.clone(),
+                config.nomad_backends().to_vec(),
                 output_retention.duration(),
-            ) {
-                tracing::error!(
-                    event = "nomad.callback.service_failed",
-                    reason = error_reason(&error),
-                    "Nomad callback service failed"
-                );
-            }
-        });
-    }
+            )?,
+        )
+    };
     let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
@@ -428,7 +421,7 @@ fn run_daemon() -> io::Result<()> {
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
     if once {
-        return serve_connection(
+        let result = serve_connection(
             &listener,
             envelope_timeout,
             &database_url,
@@ -445,6 +438,10 @@ fn run_daemon() -> io::Result<()> {
             &shared_builds,
             &shared_build_scheduler,
         );
+        if let Some(service) = callback_service.as_mut() {
+            service.shutdown()?;
+        }
+        return result;
     }
     let maintenance_database_url = database_url.clone();
     std::thread::spawn(move || loop {
@@ -480,6 +477,9 @@ fn run_daemon() -> io::Result<()> {
                     failure_class = error.failure().as_str(),
                     "singleton daemon ownership lost"
                 );
+                if let Some(service) = callback_service.as_mut() {
+                    service.shutdown()?;
+                }
                 return Err(invalid("singleton daemon ownership lost"));
             }
             next_ownership_check = std::time::Instant::now() + ownership_check_interval;

@@ -157,6 +157,7 @@ maximum_connections = 12
 maximum_header_bytes = 8192
 maximum_body_bytes = 32768
 authentication_request_timeout_seconds = 7
+shutdown_drain_timeout_seconds = 11
 maximum_jwks_bytes = 131072
 maximum_retained_nonces = 4096
 "#,
@@ -175,6 +176,7 @@ maximum_retained_nonces = 4096
     assert_eq!(callback.maximum_header_bytes(), 8192);
     assert_eq!(callback.maximum_body_bytes(), 32768);
     assert_eq!(callback.authentication_request_timeout().as_secs(), 7);
+    assert_eq!(callback.shutdown_drain_timeout().as_secs(), 11);
     assert_eq!(callback.maximum_jwks_bytes(), 131072);
     assert_eq!(callback.maximum_retained_nonces(), 4096);
 
@@ -273,6 +275,7 @@ fn rejects_invalid_nomad_callback_service_configuration() {
         "maximum_header_bytes = 0",
         "maximum_body_bytes = 0",
         "authentication_request_timeout_seconds = 0",
+        "shutdown_drain_timeout_seconds = 0",
         "maximum_jwks_bytes = 0",
         "maximum_retained_nonces = 0",
     ] {
