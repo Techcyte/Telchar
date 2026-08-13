@@ -198,6 +198,137 @@ pub struct BuildResultMetadata {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputState {
+    AwaitingResolution,
+    Available,
+    Requested,
+    Received,
+}
+
+#[derive(Debug)]
+pub struct InputTransferSession {
+    manifest: InputManifest,
+    states: std::collections::BTreeMap<String, InputState>,
+    maximum_paths: usize,
+    maximum_nar_bytes: u64,
+    maximum_total_bytes: u64,
+    resolution_recorded: bool,
+    request_created: bool,
+}
+
+impl InputTransferSession {
+    pub fn new(
+        manifest: InputManifest,
+        maximum_paths: usize,
+        maximum_nar_bytes: u64,
+        maximum_total_bytes: u64,
+    ) -> io::Result<Self> {
+        if maximum_paths == 0 || maximum_nar_bytes == 0 || maximum_total_bytes == 0 {
+            return Err(invalid_data(
+                "Nomad input transfer configuration is invalid",
+            ));
+        }
+        manifest.validate(maximum_paths, maximum_nar_bytes)?;
+        let states = manifest
+            .paths
+            .iter()
+            .map(|entry| (entry.path.clone(), InputState::AwaitingResolution))
+            .collect();
+        Ok(Self {
+            manifest,
+            states,
+            maximum_paths,
+            maximum_nar_bytes,
+            maximum_total_bytes,
+            resolution_recorded: false,
+            request_created: false,
+        })
+    }
+
+    pub fn record_valid_paths(&mut self, paths: PathSet) -> io::Result<()> {
+        if self.resolution_recorded || self.request_created {
+            return Err(invalid_data("Nomad input resolution is duplicated"));
+        }
+        let admitted = self.states.keys().cloned().collect::<Vec<_>>();
+        paths.validate_against(&admitted, self.maximum_paths)?;
+        for path in paths.paths {
+            let state = self
+                .states
+                .get_mut(&path)
+                .ok_or_else(|| invalid_data("Nomad input path is not admitted"))?;
+            *state = InputState::Available;
+        }
+        self.resolution_recorded = true;
+        Ok(())
+    }
+
+    pub fn request_unresolved(&mut self) -> io::Result<PathSet> {
+        if !self.resolution_recorded || self.request_created {
+            return Err(invalid_data("Nomad input request is out of order"));
+        }
+        let unresolved = self
+            .manifest
+            .paths
+            .iter()
+            .filter(|entry| self.states.get(&entry.path) == Some(&InputState::AwaitingResolution))
+            .collect::<Vec<_>>();
+        unresolved.iter().try_fold(0_u64, |total, entry| {
+            total
+                .checked_add(entry.nar_size)
+                .filter(|value| *value <= self.maximum_total_bytes)
+                .ok_or_else(|| invalid_data("Nomad input transfer exceeds total byte limit"))
+        })?;
+        let paths = unresolved
+            .into_iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        for path in &paths {
+            self.states.insert(path.clone(), InputState::Requested);
+        }
+        self.request_created = true;
+        Ok(PathSet { paths })
+    }
+
+    pub fn receive_nar(&mut self, metadata: NarMetadata, received_bytes: u64) -> io::Result<()> {
+        if !self.request_created {
+            return Err(invalid_data("Nomad input NAR is out of order"));
+        }
+        let entry = self
+            .manifest
+            .paths
+            .iter()
+            .find(|entry| entry.path == metadata.path)
+            .ok_or_else(|| invalid_data("Nomad input path is not admitted"))?;
+        metadata.validate_against(
+            &self.states.keys().cloned().collect::<Vec<_>>(),
+            self.maximum_nar_bytes,
+        )?;
+        if metadata.nar_hash != entry.nar_hash
+            || metadata.nar_size != entry.nar_size
+            || received_bytes != entry.nar_size
+            || self.states.get(&metadata.path) != Some(&InputState::Requested)
+        {
+            return Err(invalid_data("Nomad input NAR does not match manifest"));
+        }
+        self.states.insert(metadata.path, InputState::Received);
+        Ok(())
+    }
+
+    pub fn ready_to_build(&self) -> io::Result<()> {
+        if !self.resolution_recorded
+            || !self.request_created
+            || !self
+                .states
+                .values()
+                .all(|state| matches!(state, InputState::Available | InputState::Received))
+        {
+            return Err(invalid_data("Nomad inputs are unresolved"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputState {
     Expected,
     Declared { nar_size: u64 },
