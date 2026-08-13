@@ -40,19 +40,21 @@ impl ClassicBuildFixtureEnvelope {
             ClassicBuildFixtureEnvelope::relay(client, peer)
         });
 
-        let output = std::process::Command::new("nix")
-            .envs(fixture.environment())
-            .args([
-                "--store",
-                &format!("unix://{}", proxy_path.display()),
-                "build",
-                "--impure",
-                "--expr",
-                CLASSIC_BUILD_EXPRESSION,
-                "--no-link",
-                "--print-out-paths",
-            ])
-            .output()?;
+        let output = std::process::Command::new(
+            std::env::var_os("TELCHAR_NIX_BIN").unwrap_or_else(|| "nix".into()),
+        )
+        .envs(fixture.environment())
+        .args([
+            "--store",
+            &format!("unix://{}", proxy_path.display()),
+            "build",
+            "--impure",
+            "--expr",
+            CLASSIC_BUILD_EXPRESSION,
+            "--no-link",
+            "--print-out-paths",
+        ])
+        .output()?;
 
         let envelope = observer
             .join()
