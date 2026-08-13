@@ -1,3 +1,5 @@
+//! Tests build derivation contract contracts and failure boundaries, including decodes gate 3 build derivation.
+
 use std::io;
 use std::time::Duration;
 

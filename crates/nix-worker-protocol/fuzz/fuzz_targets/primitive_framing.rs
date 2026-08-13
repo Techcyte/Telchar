@@ -1,3 +1,5 @@
+//! Fuzzes primitive worker-protocol framing to ensure hostile bytes cannot panic or exceed limits.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

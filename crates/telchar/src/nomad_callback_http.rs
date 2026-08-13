@@ -1,3 +1,5 @@
+//! Performs bounded WebSocket upgrades, subprotocol checks, message I/O, and keepalive handling.
+
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 

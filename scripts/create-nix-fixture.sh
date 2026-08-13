@@ -1,4 +1,5 @@
 #!/bin/sh
+# Creates a deterministic classic derivation fixture with the configured Nix binary.
 set -eu
 
 root=$1

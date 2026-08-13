@@ -1,3 +1,5 @@
+//! Loads allocation-worker configuration, connects to Telchar, and reports a bounded terminal diagnostic.
+
 fn main() -> std::process::ExitCode {
     match telchar_nomad_worker::WorkerConfig::from_environment().and_then(|config| {
         let store_uri = config.store_uri().to_owned();

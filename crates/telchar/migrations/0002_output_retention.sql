@@ -1,3 +1,4 @@
+-- Adds expiration and retention metadata for output leases.
 ALTER TABLE store_leases ADD COLUMN expires_at timestamptz;
 
 UPDATE store_leases

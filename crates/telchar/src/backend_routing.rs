@@ -1,3 +1,5 @@
+//! Constructs configured backend executors and dispatches admitted builds to the selected target.
+
 use std::io;
 use std::sync::Arc;
 

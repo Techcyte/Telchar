@@ -1,3 +1,5 @@
+//! Imports declared NARs into the gateway store through the typed worker protocol.
+
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,5 @@
+//! Tests gateway daemon connection contract contracts and failure boundaries, including integer.
+
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStringExt;

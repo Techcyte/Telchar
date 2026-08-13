@@ -1,3 +1,5 @@
+//! Tests nomad transfer protocol contracts and failure boundaries, including build specification.
+
 use std::io::Cursor;
 
 use telchar::nomad_transfer_protocol::{

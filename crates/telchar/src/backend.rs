@@ -1,3 +1,5 @@
+//! Defines backend capabilities, routing targets, permits, execution requests, logs, and terminal results.
+
 use std::io;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};

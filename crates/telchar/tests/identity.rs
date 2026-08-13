@@ -1,3 +1,5 @@
+//! Tests identity contracts and failure boundaries, including normalizes public key and certificate requesters deterministically.
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use telchar::identity::{CertificateIdentity, IdentityInput, normalize_requester};

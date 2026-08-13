@@ -1,3 +1,5 @@
+//! Normalizes authenticated SSH identities into stable audit, credential, and quota subjects.
+
 use std::fmt;
 use std::net::IpAddr;
 

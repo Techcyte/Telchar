@@ -1,3 +1,5 @@
+//! Reconciles nonterminal shared builds from gateway outputs or the exact persisted backend execution.
+
 use std::io;
 use std::time::Duration;
 

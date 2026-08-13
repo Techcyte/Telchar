@@ -1,3 +1,5 @@
+//! Tests ipc frontend contracts and failure boundaries, including separate frontend and daemon processes complete worker handshake.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::FileTypeExt;

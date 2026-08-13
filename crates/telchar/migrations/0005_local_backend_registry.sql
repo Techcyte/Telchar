@@ -1,3 +1,4 @@
+-- Adds the durable local executor registry and idempotent execution identity.
 CREATE TABLE local_backend_executions (
     backend_execution_id text PRIMARY KEY CONSTRAINT local_backend_executions_id_check CHECK (length(backend_execution_id) BETWEEN 1 AND 4096),
     idempotency_key text NOT NULL UNIQUE CONSTRAINT local_backend_executions_idempotency_key_check CHECK (length(idempotency_key) BETWEEN 1 AND 4096),

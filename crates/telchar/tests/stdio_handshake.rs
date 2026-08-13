@@ -1,3 +1,5 @@
+//! Tests stdio handshake contracts and failure boundaries, including serve stdio does not require database configuration.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

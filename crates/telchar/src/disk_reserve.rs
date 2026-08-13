@@ -1,3 +1,5 @@
+//! Checks filesystem free-space reserves before admitting builds and NAR transfers.
+
 use std::io;
 use std::path::Path;
 

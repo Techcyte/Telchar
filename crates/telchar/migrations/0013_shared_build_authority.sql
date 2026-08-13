@@ -1,3 +1,4 @@
+-- Removes superseded request-level scheduler tables and makes shared builds authoritative.
 DROP TABLE capacity_reservations;
 DROP TABLE execution_outcomes;
 DROP TABLE execution_attempts;

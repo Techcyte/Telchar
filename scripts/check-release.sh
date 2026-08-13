@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Runs the authoritative package, workspace, and selected NixOS release verification.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

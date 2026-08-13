@@ -1,3 +1,5 @@
+//! Tests nomad workload identity contracts and failure boundaries, including authentication.
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;

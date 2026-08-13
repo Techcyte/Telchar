@@ -1,3 +1,5 @@
+//! Tests nomad callback service contracts and failure boundaries, including shutdown stops accepting and force closes after bounded drain.
+
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;

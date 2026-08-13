@@ -1,3 +1,5 @@
+//! Relays real Nix worker traffic through typed parsers to capture compatibility evidence without retaining payloads.
+
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;

@@ -1,3 +1,5 @@
+//! Tests local executor contracts and failure boundaries, including local executors implement the backend contract.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;

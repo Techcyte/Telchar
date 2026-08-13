@@ -1,3 +1,5 @@
+//! Tests local executor config contracts and failure boundaries, including deployment environment selects the gateway executor.
+
 use std::ffi::OsString;
 use std::sync::Mutex;
 

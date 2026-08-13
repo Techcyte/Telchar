@@ -1,3 +1,5 @@
+//! Creates isolated real-Nix stores and daemons for authoritative protocol and store integration tests.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};

@@ -1,3 +1,5 @@
+//! Tests daemon services contracts and failure boundaries, including maintenance shutdown interrupts wait and joins worker.
+
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};

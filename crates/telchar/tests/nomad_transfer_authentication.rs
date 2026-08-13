@@ -1,3 +1,5 @@
+//! Tests nomad transfer authentication contracts and failure boundaries, including authentication.
+
 use std::time::{Duration, UNIX_EPOCH};
 
 use base64::Engine;

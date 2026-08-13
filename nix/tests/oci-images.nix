@@ -1,3 +1,4 @@
+# Checks the names, entrypoints, commands, and buildability of OCI image outputs.
 {
   pkgs,
   telcharImage,

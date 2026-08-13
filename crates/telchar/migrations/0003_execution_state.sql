@@ -1,3 +1,4 @@
+-- Adds durable execution, attempt, outcome, reservation, and requester-subject state.
 ALTER TABLE protocol_sessions
     ADD COLUMN audit_subject text NOT NULL DEFAULT 'gate-three',
     ADD COLUMN quota_subject text NOT NULL DEFAULT 'gate-three';

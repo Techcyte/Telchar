@@ -1,3 +1,5 @@
+//! Defines the bounded versioned TLNW messages exchanged with Nomad allocation workers.
+
 use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 

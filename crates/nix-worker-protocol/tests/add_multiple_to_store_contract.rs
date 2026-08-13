@@ -1,3 +1,5 @@
+//! Tests add multiple to store contract contracts and failure boundaries, including decodes empty add multiple to store request.
+
 use std::io;
 use std::time::Duration;
 

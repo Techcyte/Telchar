@@ -1,3 +1,4 @@
+-- Adds replay-resistant Nomad callback nonce reservations.
 CREATE TABLE nomad_callback_nonces (
     nonce_digest bytea PRIMARY KEY CHECK (octet_length(nonce_digest) = 32),
     backend_name text NOT NULL CHECK (backend_name <> '' AND octet_length(backend_name) <= 256),

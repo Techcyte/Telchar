@@ -1,3 +1,4 @@
+-- Extends lifecycle states and reconciliation metadata for restart recovery.
 ALTER TABLE build_requests
     DROP CONSTRAINT build_requests_queue_state_check,
     ADD CONSTRAINT build_requests_queue_state_check CHECK (

@@ -1,3 +1,5 @@
+//! Tests store export contracts and failure boundaries, including real store streams raw nar with registered hash and size.
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 

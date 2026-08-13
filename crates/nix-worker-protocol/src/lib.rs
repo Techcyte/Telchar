@@ -1,3 +1,5 @@
+//! Implements bounded typed Nix worker-protocol framing, negotiation, operations, daemon calls, and build results.
+
 #![forbid(unsafe_code)]
 
 use std::io::{self, Read, Write};

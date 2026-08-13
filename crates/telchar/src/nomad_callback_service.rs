@@ -1,3 +1,5 @@
+//! Owns the callback listener and drives authenticated input, build, log, output, and completion sessions.
+
 use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

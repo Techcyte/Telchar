@@ -1,3 +1,5 @@
+//! Tests nar from path contract contracts and failure boundaries, including integer.
+
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{

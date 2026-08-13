@@ -1,3 +1,4 @@
+-- Adds trusted quota ownership and durable queue ordering to shared builds.
 ALTER TABLE shared_builds
     ADD COLUMN quota_subject text,
     ADD COLUMN queue_position bigint,

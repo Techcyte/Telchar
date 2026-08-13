@@ -1,3 +1,5 @@
+//! Tests ipc auth contracts and failure boundaries, including accepts socket peer with expected uid.
+
 use std::os::unix::net::UnixStream;
 
 use telchar::ipc::authorize_peer;

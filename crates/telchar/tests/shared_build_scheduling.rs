@@ -1,3 +1,5 @@
+//! Tests shared build scheduling contracts and failure boundaries, including claim.
+
 mod support;
 
 use std::thread;

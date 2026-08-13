@@ -1,3 +1,4 @@
+-- Stores bounded terminal results for local backend executions.
 CREATE TABLE local_backend_execution_results (
     backend_execution_id text PRIMARY KEY REFERENCES local_backend_executions(backend_execution_id) ON DELETE RESTRICT,
     classification text NOT NULL CONSTRAINT local_backend_execution_results_classification_check CHECK (

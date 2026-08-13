@@ -1,3 +1,5 @@
+//! Maintains durable GC roots and reconciles released or expired retained outputs.
+
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;

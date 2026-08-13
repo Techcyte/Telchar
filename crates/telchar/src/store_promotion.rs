@@ -1,3 +1,5 @@
+//! Validates staged NAR metadata, imports it, and confirms authoritative gateway-store registration.
+
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 

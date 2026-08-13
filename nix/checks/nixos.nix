@@ -1,3 +1,4 @@
+# Defines NixOS VM integration checks for module, ingress, backend, recovery, and artifact behavior.
 {
   pkgs,
   system,

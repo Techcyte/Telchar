@@ -1,3 +1,5 @@
+//! Parses operator lifecycle policies such as requester disconnect handling and output retention.
+
 use std::io;
 use std::time::Duration;
 

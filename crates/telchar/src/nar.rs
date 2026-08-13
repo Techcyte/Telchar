@@ -1,3 +1,5 @@
+//! Parses and stages one bounded NAR while validating structure, size, and hash.
+
 use std::io::{self, ErrorKind, Read, Write};
 
 use sha2::{Digest, Sha256};

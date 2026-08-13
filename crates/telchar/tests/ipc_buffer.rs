@@ -1,3 +1,5 @@
+//! Tests ipc buffer contracts and failure boundaries, including slow daemon observes bounded frontend buffer.
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::thread;

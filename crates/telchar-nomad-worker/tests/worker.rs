@@ -1,3 +1,5 @@
+//! Tests worker contracts and failure boundaries, including workload environment.
+
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::thread;

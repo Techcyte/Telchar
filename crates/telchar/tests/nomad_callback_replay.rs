@@ -1,3 +1,5 @@
+//! Tests nomad callback replay contracts and failure boundaries, including reserves callback nonce once and survives new connections.
+
 mod support;
 
 use std::time::{Duration, SystemTime};

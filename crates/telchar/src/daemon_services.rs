@@ -1,3 +1,5 @@
+//! Owns cancellable maintenance and recovery background threads and guarantees bounded joining.
+
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;

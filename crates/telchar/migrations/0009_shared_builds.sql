@@ -1,3 +1,4 @@
+-- Introduces durable shared builds that coalesce equivalent derivations.
 CREATE TABLE shared_builds (
     derivation_path text PRIMARY KEY CONSTRAINT shared_builds_derivation_path_check CHECK (
         length(derivation_path) BETWEEN 1 AND 4096

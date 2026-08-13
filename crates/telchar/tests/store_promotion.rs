@@ -1,3 +1,5 @@
+//! Tests store promotion contracts and failure boundaries, including real store promotes matching nar with explicit metadata.
+
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 

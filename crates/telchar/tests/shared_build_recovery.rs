@@ -1,3 +1,5 @@
+//! Tests shared build recovery contracts and failure boundaries, including claim.
+
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};

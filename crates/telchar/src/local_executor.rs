@@ -1,3 +1,5 @@
+//! Runs local Nix BuildDerivation work through a fixed helper while bounding logs, results, cancellation, and timeouts.
+
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -1,3 +1,5 @@
+//! Tests classic build envelope contracts and failure boundaries, including observes a repeatable typed envelope for each classic build fixture.
+
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};

@@ -1,3 +1,5 @@
+//! Walks gateway-store references to compute the complete bounded admitted input closure.
+
 use std::collections::{BTreeSet, VecDeque};
 use std::io;
 

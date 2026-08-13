@@ -1,3 +1,5 @@
+//! Tests query valid paths contract contracts and failure boundaries, including decodes bounded query valid paths request.
+
 use std::io;
 use std::time::Duration;
 

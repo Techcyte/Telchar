@@ -1,3 +1,5 @@
+//! Tests service config contracts and failure boundaries, including loads strict toml and identity mappings.
+
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;

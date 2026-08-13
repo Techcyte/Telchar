@@ -1,3 +1,5 @@
+//! Tests output transfer contract contracts and failure boundaries, including decodes bounded query path info request.
+
 use std::io;
 use std::time::Duration;
 

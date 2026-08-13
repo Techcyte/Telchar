@@ -1,4 +1,5 @@
 #!/bin/sh
+# Runs the worker-protocol primitive framing fuzz target in the Nix development shell.
 set -eu
 
 cd crates/nix-worker-protocol/fuzz

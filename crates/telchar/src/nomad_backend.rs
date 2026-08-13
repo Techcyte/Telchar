@@ -1,3 +1,5 @@
+//! Renders, submits, monitors, adopts, and cancels exact deterministic Nomad batch jobs.
+
 use std::fs;
 use std::io::{self, Read};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};

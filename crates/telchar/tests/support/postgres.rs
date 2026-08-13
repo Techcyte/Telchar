@@ -1,3 +1,5 @@
+//! Provides shared integration-test helpers for postgres scenarios.
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};

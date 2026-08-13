@@ -1,3 +1,5 @@
+//! Tests shared build registry contracts and failure boundaries, including identical connected builds share one execution.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;

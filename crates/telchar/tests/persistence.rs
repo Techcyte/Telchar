@@ -1,3 +1,5 @@
+//! Tests persistence contracts and failure boundaries, including requester reference is deterministic and component separated.
+
 mod support;
 
 use std::fmt;

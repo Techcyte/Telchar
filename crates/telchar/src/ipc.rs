@@ -1,3 +1,5 @@
+//! Defines authenticated frontend-to-daemon envelopes, peer authorization, and bounded stream relaying.
+
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};

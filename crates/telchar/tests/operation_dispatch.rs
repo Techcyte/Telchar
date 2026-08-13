@@ -1,3 +1,5 @@
+//! Tests operation dispatch contracts and failure boundaries, including live set options request returns terminal frame.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;

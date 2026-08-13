@@ -1,3 +1,5 @@
+//! Coordinates durable subject-fair queue admission and active-execution limits.
+
 use std::io;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;

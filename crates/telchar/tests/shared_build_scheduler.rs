@@ -1,3 +1,5 @@
+//! Tests shared build scheduler contracts and failure boundaries, including claim.
+
 mod support;
 
 use std::sync::Arc;

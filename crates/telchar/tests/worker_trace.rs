@@ -1,3 +1,5 @@
+//! Tests worker trace contracts and failure boundaries, including captures real nix worker handshake and operation without payloads.
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};

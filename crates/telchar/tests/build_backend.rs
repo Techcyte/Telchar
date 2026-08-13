@@ -1,3 +1,5 @@
+//! Tests build backend contracts and failure boundaries, including routing selects first backend with matching system and features.
+
 use std::io;
 use std::sync::{Arc, Barrier};
 use std::thread;

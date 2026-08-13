@@ -1,3 +1,5 @@
+//! Provides the telchar CLI, restricted stdio frontend, daemon startup, connection serving, and shutdown orchestration.
+
 mod telemetry;
 
 use std::fs::Permissions;

@@ -1,3 +1,5 @@
+//! Tests store retention contracts and failure boundaries, including empty retention set does not connect to daemon.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;

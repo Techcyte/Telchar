@@ -1,3 +1,5 @@
+//! Enforces object counts, byte totals, rates, timeouts, and bounded readers for transfer sessions.
+
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

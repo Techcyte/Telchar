@@ -1,3 +1,4 @@
+-- Adds durable backend attempt identities and terminal attempt outcomes.
 CREATE TABLE shared_build_attempts (
     attempt_id bigserial PRIMARY KEY,
     derivation_path text NOT NULL REFERENCES shared_builds(derivation_path),

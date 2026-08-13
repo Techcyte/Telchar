@@ -1,3 +1,5 @@
+//! Tests executor service contracts and failure boundaries, including executor service persists idempotent submit and status across restart.
+
 use std::fs;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

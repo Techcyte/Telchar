@@ -1,3 +1,5 @@
+//! Owns PostgreSQL migrations and durable request, lease, shared-build, attempt, transfer, and recovery operations.
+
 use std::fmt;
 
 use std::time::{Duration, SystemTime};

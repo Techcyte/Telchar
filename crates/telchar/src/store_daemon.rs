@@ -1,3 +1,5 @@
+//! Connects to the configured gateway Nix daemon and negotiates a typed worker-protocol profile.
+
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;

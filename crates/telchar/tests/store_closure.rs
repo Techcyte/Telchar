@@ -1,3 +1,5 @@
+//! Tests store closure contracts and failure boundaries, including missing gateway path fails closed through typed daemon query.
+
 use telchar::store_closure::{GatewayStoreClosureBackend, StoreClosureBackend};
 use telchar::store_daemon::GatewayStoreEndpoint;
 

@@ -1,3 +1,5 @@
+//! Tests singleton ownership contracts and failure boundaries, including only one owner acquires the database lifetime lock.
+
 mod support;
 
 use support::postgres::PostgresFixture;

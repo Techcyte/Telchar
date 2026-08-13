@@ -1,3 +1,5 @@
+//! Validates worker BuildDerivation requests and derives the bounded semantic identity used for shared builds.
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;

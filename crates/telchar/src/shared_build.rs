@@ -1,3 +1,5 @@
+//! Coalesces equivalent in-process requests into one leader execution with bounded follower waiting.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 

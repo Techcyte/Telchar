@@ -1,3 +1,4 @@
+-- Adds retained NAR-size accounting to store leases.
 ALTER TABLE store_leases
     ADD COLUMN nar_size bigint
     CONSTRAINT store_leases_nar_size_check CHECK (nar_size IS NULL OR nar_size > 0);

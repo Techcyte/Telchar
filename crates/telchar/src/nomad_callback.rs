@@ -1,3 +1,5 @@
+//! Authenticates allocation callbacks and resolves them to one exact active durable Nomad execution.
+
 use std::collections::BTreeMap;
 use std::io::{self, Cursor, Read};
 use std::time::SystemTime;

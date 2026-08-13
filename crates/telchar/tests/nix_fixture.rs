@@ -1,3 +1,5 @@
+//! Tests nix fixture contracts and failure boundaries, including dropping fixture removes isolated root without explicit cleanup.
+
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;

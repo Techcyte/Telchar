@@ -1,3 +1,5 @@
+//! Verifies workload-identity JWTs and exact-build HMAC callback capabilities.
+
 use std::collections::BTreeMap;
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

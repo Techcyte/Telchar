@@ -1,3 +1,5 @@
+//! Tests store export process contracts and failure boundaries, including oversized helper stderr is drained bounded and helper is reaped.
+
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;

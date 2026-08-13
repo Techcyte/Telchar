@@ -1,3 +1,5 @@
+//! Runs one authenticated Nix worker session from operation dispatch through durable build completion and cleanup.
+
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};

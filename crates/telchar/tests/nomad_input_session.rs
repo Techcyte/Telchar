@@ -1,3 +1,5 @@
+//! Tests nomad input session contracts and failure boundaries, including path.
+
 use telchar::nomad_transfer_protocol::{
     BuildSpecification, InputManifest, InputTransferSession, NamedOutput, NarMetadata,
     PathManifestEntry, PathSet,

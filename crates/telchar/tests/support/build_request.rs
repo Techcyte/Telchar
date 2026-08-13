@@ -1,3 +1,5 @@
+//! Provides shared integration-test helpers for build request scenarios.
+
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;

@@ -1,3 +1,4 @@
+# Defines sandbox-compatible Rust formatting, lint, and library-test checks.
 {
   pkgs,
   craneLib,

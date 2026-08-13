@@ -1,3 +1,5 @@
+//! Tests deployment config contracts and failure boundaries, including parses running disconnect policy.
+
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::OsStringExt;

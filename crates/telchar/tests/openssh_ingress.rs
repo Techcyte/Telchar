@@ -1,3 +1,5 @@
+//! Tests openssh ingress contracts and failure boundaries, including arbitrary ssh command is replaced by forced command.
+
 use std::fs;
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;

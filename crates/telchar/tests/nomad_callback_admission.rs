@@ -1,3 +1,5 @@
+//! Tests nomad callback admission contracts and failure boundaries, including authentication.
+
 mod support;
 
 use std::cell::RefCell;

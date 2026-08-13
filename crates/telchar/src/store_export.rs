@@ -1,3 +1,5 @@
+//! Streams verified gateway-store NARs and checks registered metadata against admitted output expectations.
+
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 

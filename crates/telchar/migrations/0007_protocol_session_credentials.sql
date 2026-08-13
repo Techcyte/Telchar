@@ -1,3 +1,4 @@
+-- Adds authenticated credential and authority metadata to protocol sessions.
 ALTER TABLE protocol_sessions
     ADD COLUMN credential_id text,
     ADD COLUMN authentication_authority text;

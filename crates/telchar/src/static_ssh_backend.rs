@@ -1,3 +1,5 @@
+//! Executes and recovers builds through operator-configured SSH builders with bounded streaming and exact output import.
+
 use std::io::{self, Read, Seek, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{ChildStdin, ChildStdout, Stdio};

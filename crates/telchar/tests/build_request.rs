@@ -1,3 +1,5 @@
+//! Tests build request contracts and failure boundaries, including admits each system from the individual backend fleet.
+
 use std::io;
 use std::time::Duration;
 

@@ -1,3 +1,5 @@
+//! Parses and validates strict service configuration for identity, scheduling, stores, and every backend kind.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;

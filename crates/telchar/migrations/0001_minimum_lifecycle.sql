@@ -1,3 +1,4 @@
+-- Creates the baseline protocol-session, request, attachment, lease, and migration-ledger schema.
 CREATE TABLE protocol_sessions (
     session_id text PRIMARY KEY,
     requester_reference text NOT NULL,

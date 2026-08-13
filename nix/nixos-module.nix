@@ -1,3 +1,4 @@
+# Defines the opinionated NixOS service boundary for Telchar, PostgreSQL, gateway-store access, and restricted SSH ingress.
 {
   config,
   lib,

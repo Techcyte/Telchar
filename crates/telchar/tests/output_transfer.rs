@@ -1,3 +1,5 @@
+//! Tests output transfer contracts and failure boundaries, including real gateway store metadata encodes for stock nix.
+
 use std::io::{Read, Write};
 use std::path::PathBuf;
 

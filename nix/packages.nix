@@ -1,3 +1,4 @@
+# Builds Rust packages and reproducible OCI image archives exposed by the flake.
 {
   pkgs,
   craneLib,

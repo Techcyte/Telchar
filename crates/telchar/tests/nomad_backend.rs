@@ -1,3 +1,5 @@
+//! Tests nomad backend contracts and failure boundaries, including renders operator selected driver and stable backend bound job.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;

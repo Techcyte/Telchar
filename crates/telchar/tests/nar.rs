@@ -1,3 +1,5 @@
+//! Tests nar contracts and failure boundaries, including stages one valid nar and reports its fingerprint.
+
 use std::io::Cursor;
 
 use telchar::nar::stage_nar;

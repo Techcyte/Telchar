@@ -1,3 +1,5 @@
+//! Acquires and monitors the PostgreSQL advisory lock that fences Telchar to one active daemon.
+
 use std::fmt;
 
 use postgres::{Client, NoTls};

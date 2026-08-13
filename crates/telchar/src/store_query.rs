@@ -1,3 +1,5 @@
+//! Queries exact gateway-store path validity for stock-Nix protocol operations.
+
 use std::collections::BTreeSet;
 use std::io::{self, Read};
 use std::process::{Command, Stdio};

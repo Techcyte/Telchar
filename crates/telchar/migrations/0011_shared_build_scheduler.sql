@@ -1,3 +1,4 @@
+-- Adds singleton scheduler rotation state and subject limit accounting.
 CREATE TABLE shared_build_scheduler_state (
     singleton boolean PRIMARY KEY DEFAULT true CONSTRAINT shared_build_scheduler_state_singleton_check CHECK (singleton),
     last_admitted_subject text CONSTRAINT shared_build_scheduler_state_subject_check CHECK (

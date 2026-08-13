@@ -1,3 +1,5 @@
+//! Tests build result contract contracts and failure boundaries, including writes latest empty success result matching pinned field order.
+
 use nix_worker_protocol::{WorkerVersion, write_build_derivation_success_response};
 
 #[test]

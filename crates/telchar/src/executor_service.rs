@@ -1,3 +1,5 @@
+//! Implements the bounded local executor IPC protocol and its idempotent execution registry.
+
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;

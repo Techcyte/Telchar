@@ -1,3 +1,4 @@
+# Provides reusable NixOS VM node topologies and test constructors for Telchar integration checks.
 { pkgs, telchar }:
 let
   machineModule =

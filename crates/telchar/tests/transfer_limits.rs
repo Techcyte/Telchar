@@ -1,3 +1,5 @@
+//! Tests transfer limits contracts and failure boundaries, including finite defaults and strict parsing.
+
 use std::io::{Cursor, Read, Write};
 use std::sync::{Arc, Mutex};
 

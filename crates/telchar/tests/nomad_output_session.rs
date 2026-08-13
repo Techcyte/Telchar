@@ -1,3 +1,5 @@
+//! Tests nomad output session contracts and failure boundaries, including output.
+
 use telchar::nomad_transfer_protocol::{
     BuildOutcome, BuildResultMetadata, OutputReceipt, OutputTransferSession, PathManifestEntry,
 };

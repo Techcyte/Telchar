@@ -1,3 +1,5 @@
+//! Tests disk reserve contracts and failure boundaries, including filesystem.
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 

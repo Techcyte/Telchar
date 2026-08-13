@@ -1,3 +1,5 @@
+//! Tests executor execution contracts and failure boundaries, including executor owns running work after submitter disconnects.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
