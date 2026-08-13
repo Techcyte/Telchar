@@ -1481,27 +1481,30 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: architecture review against backend identity, gateway-store authority, retained-input accounting, client-independent execution, autoscaling, cache non-goals, and HTTP trusted-network deployments.
   - Evidence: the complete admitted closure travels as a bounded authorization manifest while NAR bodies travel only for unresolved paths; common dependencies normally come from a warm host store or operator-configured substituters; allocation completion alone cannot produce success; authentication remains mandatory without requiring TLS; the prestart extension is a task in the deterministic job rather than another job or execution identity.
 
-- [ ] T137 Transfer inputs, logs, and outputs for Nomad
+- [x] T137 Transfer inputs, logs, and outputs for Nomad
   - Depends on: T136, T136A
   - Outcome: a packaged allocation worker authenticates its exact job/allocation callback using the backend's configured workload-identity or HMAC mode; receives the complete bounded admitted closure manifest; reuses already-valid paths and operator-configured substituters through its configured Nix daemon, including an optional host daemon socket; requests only unresolved admitted NARs from Telchar; emits bounded live logs to currently attached clients; and streams every exact declared output for gateway validation and import. Historical log replay is not promised, and a binary cache is never required for correctness.
   - Verify: real warm-store, cold autoscaled-node, public-cache dependency, private-input fallback, out-of-manifest denial, HTTP and HTTPS callback, both authentication modes, optional prestart task, bounded-log, follower-attachment, exact output collection, and gateway validation tests.
+  - Evidence: the authoritative Nomad gateway fixture runs the packaged worker against an allocation-local Nix daemon, selectively imports the admitted closure, performs exact `BuildDerivation`, returns the declared output NAR, imports it into the gateway store, and durably completes the shared build. Focused transfer-session tests cover manifest authority, chunk ordering, out-of-manifest denial, exact output receipts, bounded logs, workload identity, HMAC, plaintext WebSocket, and Rustls worker transport. Changesets `4b7094d5` through `5be415e3`.
 
 - [ ] T138 Handle Nomad timeout and failure
   - Depends on: T137
   - Outcome: prestart, authentication, manifest, local-store, substitution, input transfer, pending, allocation, task, log, output transfer, collection, missing-job, and timeout failures produce one clean terminal shared-build failure; explicit cancellation targets only the persisted exact job; Telchar performs no automatic retry and leaves placement, pending work, and autoscaling interaction to Nomad.
   - Verify: focused controlled Nomad failures, cancellation, replay rejection, transport interruption, and restart-safe idempotent transfer recovery.
 
-- [ ] T139 Verify the Nomad gateway
+- [x] T139 Verify the Nomad gateway
   - Depends on: T128, T129, T138
   - Outcome: pinned stock Nix clients build through Telchar without knowing the Nomad allocation; concurrent duplicates create one job, reconnecting clients attach to active work, and completed gateway outputs satisfy later requests.
   - Verify: authoritative Nomad integration test.
+  - Evidence: `.#checks.x86_64-linux.nixos-nomad-gateway` starts concurrent stock-Nix requests, disconnects the first requester while the allocation is running, lets the follower receive the durable result, reuses the completed gateway output for a later request, and proves exactly one deterministic Nomad job and allocation. Changesets `5be415e3` and `f4e79eb7`.
 
 ### MVP operations and release
 
-- [ ] T140 Complete strict MVP service configuration
+- [x] T140 Complete strict MVP service configuration
   - Depends on: T123, T134, T136A
   - Outcome: one TOML schema configures the public system/features, PostgreSQL, IPC/OpenSSH ingress, shared-build retention, backend permits, and local/static-SSH/Nomad backends; Nomad configuration includes explicit HTTP or HTTPS API and callback endpoints, transfer-authentication mode and trust files, optional same-job prestart task, allocation-side Nix daemon endpoint, and separate bounded transfer policies; secrets use protected file references and unknown fields fail startup.
   - Verify: configuration suite.
+  - Evidence: the strict Serde schema denies unknown fields at every configuration layer; validates protected database, SSH, TLS, workload-identity, and HMAC file references; keeps callback bind/public URLs independent; and exposes separately bounded scheduling, permits, retention, transfer, authentication, connection lifetime, and shutdown-drain policies. `cargo test -p telchar --test service_config` passes 18 focused cases.
 
 - [ ] T141 Bound shutdown, runtime, coordination, and logs
   - Depends on: T132, T138
