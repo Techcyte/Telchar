@@ -1533,6 +1533,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Outcome: Telchar demonstrably acts as a stable Nix build gateway with one durable shared execution per equivalent derivation, compatible-backend fan-out, client-independent monitoring, and documented residual limitations.
   - Verify: immutable release report with exact commands and versions.
 
+- [ ] T147 Supervise daemon background services
+  - Depends on: T146
+  - Outcome: detached retention-maintenance and recovery-monitor threads become owned lifecycle components with coordinated cancellation, joining, error reporting, and bounded shutdown alongside the Nomad callback service. This follows completion of the Nomad transfer and MVP release checklist rather than expanding the callback-drain change into a general daemon supervisor now.
+  - Verify: shutdown tests prove maintenance and recovery workers stop and join without leaking work or masking service failures.
+
 ## Explicitly deferred work
 
 These features require a demonstrated operational need before design or implementation:
