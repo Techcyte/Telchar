@@ -1,5 +1,9 @@
+use std::collections::BTreeMap;
 use std::io::{self, Cursor, Read};
 use std::time::SystemTime;
+
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use crate::nomad_backend::NomadClient;
 use crate::nomad_transfer_authentication::{
@@ -9,6 +13,148 @@ use crate::nomad_transfer_protocol::{
     Authentication, Direction, FrameKind, ProtocolLimits, ProtocolSession, decode_metadata,
     read_frame,
 };
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallbackExecution {
+    backend: String,
+    namespace: String,
+    job_id: String,
+    shared_build_digest: String,
+    task: String,
+}
+
+impl CallbackExecution {
+    pub fn new(
+        backend: String,
+        namespace: String,
+        job_id: String,
+        shared_build_digest: String,
+        task: String,
+    ) -> io::Result<Self> {
+        if [
+            &backend,
+            &namespace,
+            &job_id,
+            &shared_build_digest,
+            &task,
+        ]
+        .into_iter()
+        .any(|value| value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control))
+        {
+            return Err(invalid("Nomad callback execution identity is invalid"));
+        }
+        Ok(Self {
+            backend,
+            namespace,
+            job_id,
+            shared_build_digest,
+            task,
+        })
+    }
+
+    pub fn matches(&self, authentication: &Authentication) -> bool {
+        authentication.backend == self.backend
+            && authentication.namespace == self.namespace
+            && authentication.job_id == self.job_id
+            && authentication.shared_build_digest == self.shared_build_digest
+            && authentication.task == self.task
+    }
+}
+
+pub trait CallbackExecutionResolver {
+    fn resolve(&self, authentication: &Authentication) -> io::Result<Option<CallbackExecution>>;
+}
+
+pub struct CallbackResolver<R> {
+    resolver: R,
+}
+
+impl<R: CallbackExecutionResolver> CallbackResolver<R> {
+    pub fn new(resolver: R) -> Self {
+        Self { resolver }
+    }
+
+    pub fn resolve(
+        &self,
+        authentication: &Authentication,
+    ) -> io::Result<Option<CallbackExecution>> {
+        let execution = self.resolver.resolve(authentication)?;
+        if execution
+            .as_ref()
+            .is_some_and(|execution| !execution.matches(authentication))
+        {
+            return Err(invalid("Nomad callback execution identity is inconsistent"));
+        }
+        Ok(execution)
+    }
+}
+
+pub struct PostgresCallbackExecutionResolver {
+    database_url: String,
+    namespaces: BTreeMap<String, String>,
+}
+
+impl PostgresCallbackExecutionResolver {
+    pub fn new(database_url: String, namespaces: Vec<(String, String)>) -> io::Result<Self> {
+        if database_url.trim().is_empty() || namespaces.is_empty() {
+            return Err(invalid("Nomad callback resolver configuration is invalid"));
+        }
+        let mut configured = BTreeMap::new();
+        for (backend, namespace) in namespaces {
+            if backend.is_empty()
+                || namespace.is_empty()
+                || configured.insert(backend, namespace).is_some()
+            {
+                return Err(invalid("Nomad callback resolver configuration is invalid"));
+            }
+        }
+        Ok(Self {
+            database_url,
+            namespaces: configured,
+        })
+    }
+}
+
+impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
+    fn resolve(&self, authentication: &Authentication) -> io::Result<Option<CallbackExecution>> {
+        let Some(namespace) = self.namespaces.get(&authentication.backend) else {
+            return Ok(None);
+        };
+        if namespace != &authentication.namespace {
+            return Ok(None);
+        }
+        let build = crate::persistence::read_shared_build_by_execution(
+            &self.database_url,
+            &authentication.backend,
+            &authentication.job_id,
+        )
+        .map_err(|_| io::Error::other("Nomad callback execution lookup failed"))?;
+        let Some(build) = build else {
+            return Ok(None);
+        };
+        if build.backend_kind != crate::backend::BackendKind::Nomad
+            || !matches!(
+                build.state,
+                crate::persistence::SharedBuildState::Running
+                    | crate::persistence::SharedBuildState::Collecting
+            )
+        {
+            return Ok(None);
+        }
+        let shared_build_digest = URL_SAFE_NO_PAD.encode(build.request_digest);
+        if authentication.shared_build_digest != shared_build_digest {
+            return Ok(None);
+        }
+        CallbackExecution::new(
+            build.backend_name,
+            namespace.clone(),
+            authentication.job_id.clone(),
+            shared_build_digest,
+            "build".to_owned(),
+        )
+        .map(Some)
+    }
+}
 
 pub trait AllocationVerifier {
     fn verify_allocation(&self, allocation_id: &str, job_id: &str, task: &str) -> io::Result<()>;

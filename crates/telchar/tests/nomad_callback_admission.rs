@@ -1,3 +1,5 @@
+mod support;
+
 use std::cell::RefCell;
 use std::io;
 use std::time::{Duration, UNIX_EPOCH};
@@ -7,7 +9,11 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use telchar::nomad_callback::{AllocationVerifier, CallbackAdmission, ReplayAuthority};
+use telchar::backend::BackendKind;
+use telchar::nomad_callback::{
+    AllocationVerifier, CallbackAdmission, CallbackExecution, CallbackExecutionResolver,
+    CallbackResolver, PostgresCallbackExecutionResolver, ReplayAuthority,
+};
 use telchar::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, VerifiedHmacRequest,
 };
@@ -147,6 +153,93 @@ fn hmac_verifier() -> HmacCallbackVerifier {
         maximum_retained_nonces: 8,
     })
     .expect("HMAC verifier creates")
+}
+
+struct RecordingExecutionResolver {
+    execution: Option<CallbackExecution>,
+}
+
+impl CallbackExecutionResolver for RecordingExecutionResolver {
+    fn resolve(&self, authentication: &Authentication) -> io::Result<Option<CallbackExecution>> {
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.matches(authentication))
+        {
+            Ok(self.execution.clone())
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[test]
+fn resolves_exact_active_callback_execution() {
+    let execution = CallbackExecution::new(
+        "nomad-primary".to_owned(),
+        "telchar".to_owned(),
+        "job-1".to_owned(),
+        "digest-1".to_owned(),
+        "build".to_owned(),
+    )
+    .expect("execution creates");
+    let resolver = CallbackResolver::new(RecordingExecutionResolver {
+        execution: Some(execution.clone()),
+    });
+
+    assert_eq!(
+        resolver
+            .resolve(&authentication("request-resolve"))
+            .expect("execution resolves"),
+        Some(execution)
+    );
+    let mut foreign = authentication("request-foreign");
+    foreign.job_id = "foreign-job".to_owned();
+    assert!(resolver
+        .resolve(&foreign)
+        .expect("foreign resolves")
+        .is_none());
+}
+
+#[test]
+fn postgres_resolver_requires_exact_active_nomad_execution() {
+    let database = support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("database migrates");
+    let digest = [3_u8; 32];
+    telchar::persistence::claim_shared_build(
+        database.url(),
+        "/nix/store/00000000000000000000000000000000-callback.drv",
+        &digest,
+        "nomad-primary",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("job-1"),
+        &["/nix/store/11111111111111111111111111111111-output"],
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(
+        database.url(),
+        "/nix/store/00000000000000000000000000000000-callback.drv",
+    )
+    .expect("shared build runs");
+    let resolver = PostgresCallbackExecutionResolver::new(
+        database.url().to_owned(),
+        vec![("nomad-primary".to_owned(), "telchar".to_owned())],
+    )
+    .expect("resolver creates");
+    let mut exact = authentication("request-postgres");
+    exact.shared_build_digest = URL_SAFE_NO_PAD.encode(digest);
+
+    assert!(resolver
+        .resolve(&exact)
+        .expect("active execution resolves")
+        .is_some());
+    let mut foreign = exact.clone();
+    foreign.shared_build_digest = "foreign".to_owned();
+    assert!(resolver
+        .resolve(&foreign)
+        .expect("foreign execution resolves")
+        .is_none());
 }
 
 #[test]

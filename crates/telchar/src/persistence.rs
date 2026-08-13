@@ -655,6 +655,41 @@ pub fn claim_shared_build(
     })
 }
 
+pub fn read_shared_build_by_execution(
+    database_url: &str,
+    backend_name: &str,
+    backend_execution_id: &str,
+) -> Result<Option<SharedBuild>, SharedBuildError> {
+    if database_url.trim().is_empty()
+        || backend_name.is_empty()
+        || backend_name.len() > MAX_IPC_COMPONENT_BYTES
+        || backend_name.contains('\0')
+        || backend_execution_id.is_empty()
+        || backend_execution_id.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+        || backend_execution_id.contains('\0')
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
+                    execution_recovery, cancellation, log_recovery,
+                    backend_execution_id, expected_outputs, result_metadata::text,
+                    failure_classification, created_at, started_at, collecting_at,
+                    completed_at, expires_at
+             FROM shared_builds
+             WHERE backend_name = $1
+               AND backend_execution_id = $2
+               AND state IN ('running', 'collecting')",
+            &[&backend_name, &backend_execution_id],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .map(|row| decode_shared_build(&row).map_err(SharedBuildError))
+        .transpose()
+}
+
 pub fn read_shared_build(
     database_url: &str,
     derivation_path: &str,
