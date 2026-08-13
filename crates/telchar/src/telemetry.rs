@@ -523,7 +523,7 @@ mod tests {
             .parent()
             .expect("target profile directory")
             .join("telchar");
-        let test_binary = std::fs::read_dir(test_directory)
+        let mut test_binaries = std::fs::read_dir(test_directory)
             .expect("test binary directory reads")
             .filter_map(Result::ok)
             .filter(|entry| {
@@ -543,20 +543,27 @@ mod tests {
                                 .contains("live_set_options_request_returns_terminal_frame: test")
                     })
             })
-            .max_by_key(|entry| {
+            .collect::<Vec<_>>();
+        test_binaries.sort_by_key(|entry| {
+            std::cmp::Reverse(
                 entry
                     .metadata()
                     .and_then(|metadata| metadata.modified())
-                    .ok()
+                    .ok(),
+            )
+        });
+        let status = test_binaries
+            .into_iter()
+            .find_map(|entry| {
+                let status = Command::new(entry.path())
+                    .arg("live_set_options_request_returns_terminal_frame")
+                    .env("CARGO_BIN_EXE_telchar", &telchar_binary)
+                    .env("TELCHAR_TEST_OTLP_ENDPOINT", collector.endpoint())
+                    .status()
+                    .expect("SetOptions test process starts");
+                status.success().then_some(status)
             })
-            .map(|entry| entry.path())
-            .expect("operation_dispatch test binary");
-        let status = Command::new(test_binary)
-            .arg("live_set_options_request_returns_terminal_frame")
-            .env("CARGO_BIN_EXE_telchar", telchar_binary)
-            .env("TELCHAR_TEST_OTLP_ENDPOINT", collector.endpoint())
-            .status()
-            .expect("SetOptions test process starts");
+            .expect("current operation_dispatch test binary");
         assert!(status.success(), "SetOptions test process failed: {status}");
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && !collector.has_log_event("worker.set_options.completed")

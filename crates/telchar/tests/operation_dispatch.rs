@@ -67,6 +67,19 @@ fn live_set_options_request_returns_terminal_frame() {
     );
 
     assert!(child.wait().expect("Telchar exits").success());
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while fixture
+        .daemon
+        .try_wait()
+        .expect("daemon status reads")
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not finish telemetry shutdown"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     let stderr = fixture.finish();
     assert!(
         stderr.contains("worker.set_options.completed"),
