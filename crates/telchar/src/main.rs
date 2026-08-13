@@ -398,6 +398,7 @@ fn run_daemon() -> io::Result<()> {
                 callback_config,
                 callback_database_url,
                 callback_backends,
+                output_retention.duration(),
             ) {
                 tracing::error!(
                     event = "nomad.callback.service_failed",

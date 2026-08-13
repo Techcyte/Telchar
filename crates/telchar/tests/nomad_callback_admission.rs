@@ -236,10 +236,14 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
             .collect::<String>()
     )));
 
-    assert!(resolver
+    let execution = resolver
         .resolve(&exact)
         .expect("active execution resolves")
-        .is_some());
+        .expect("active execution exists");
+    assert_eq!(
+        execution.derivation_path(),
+        Some("/nix/store/00000000000000000000000000000000-callback.drv")
+    );
     let mut foreign = exact.clone();
     foreign.shared_build_digest = "foreign".to_owned();
     assert!(resolver

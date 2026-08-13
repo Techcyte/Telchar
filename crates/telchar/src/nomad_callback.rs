@@ -22,6 +22,7 @@ pub struct CallbackExecution {
     job_id: String,
     shared_build_digest: String,
     task: String,
+    derivation_path: Option<String>,
     build_request: Option<crate::build_request::BuildRequest>,
 }
 
@@ -47,8 +48,13 @@ impl CallbackExecution {
             job_id,
             shared_build_digest,
             task,
+            derivation_path: None,
             build_request: None,
         })
+    }
+
+    pub fn derivation_path(&self) -> Option<&str> {
+        self.derivation_path.as_deref()
     }
 
     pub fn build_request(&self) -> Option<&crate::build_request::BuildRequest> {
@@ -163,6 +169,7 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
             shared_build_digest,
             "build".to_owned(),
         )?;
+        execution.derivation_path = Some(build.derivation_path);
         execution.build_request = build.build_request;
         Ok(Some(execution))
     }

@@ -25,6 +25,7 @@ pub fn serve(
     callback: NomadCallbackConfig,
     database_url: String,
     backends: Vec<NomadBackendConfig>,
+    output_retention: std::time::Duration,
 ) -> io::Result<()> {
     let active = Arc::new(Mutex::new(0_usize));
     for connection in listener.incoming() {
@@ -53,9 +54,13 @@ pub fn serve(
         let backends = backends.clone();
         std::thread::spawn(move || {
             let _permit = permit;
-            if let Err(error) =
-                serve_connection(&mut connection, &callback, &database_url, &backends)
-            {
+            if let Err(error) = serve_connection(
+                &mut connection,
+                &callback,
+                &database_url,
+                &backends,
+                output_retention,
+            ) {
                 tracing::warn!(
                     event = "nomad.callback.connection_failed",
                     reason = error.kind().to_string(),
@@ -72,6 +77,7 @@ pub fn serve_connection(
     callback: &NomadCallbackConfig,
     database_url: &str,
     backends: &[NomadBackendConfig],
+    output_retention: std::time::Duration,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -173,6 +179,9 @@ pub fn serve_connection(
             "Nomad callback execution identity is inconsistent",
         ));
     }
+    let derivation_path = execution
+        .derivation_path()
+        .ok_or_else(|| io::Error::other("Nomad callback derivation identity is unavailable"))?;
     let build_request = execution
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
@@ -216,7 +225,34 @@ pub fn serve_connection(
     )?;
     session.accept(Direction::WorkerToGateway, request_frame)?;
     stream_requested_inputs(&mut socket, &mut session, &manifest, &requested, limits)?;
-    receive_build_outputs(&mut socket, &mut session, build_request, limits)
+    if let Err(error) = receive_build_outputs(&mut socket, &mut session, build_request, limits) {
+        let _ = crate::persistence::complete_shared_build_failure(
+            database_url,
+            derivation_path,
+            "nomad-transfer-failure",
+            &serde_json::json!({"stage": "output-collection"}),
+            output_retention,
+        );
+        return Err(error);
+    }
+    crate::persistence::complete_shared_build_success(
+        database_url,
+        derivation_path,
+        &serde_json::json!({
+            "status": "built",
+            "outputs": build_request.expected_outputs().iter().map(|(name, path)| {
+                serde_json::json!({
+                    "name": String::from_utf8_lossy(name),
+                    "path": String::from_utf8_lossy(path),
+                })
+            }).collect::<Vec<_>>(),
+            "backend": authentication.backend,
+            "execution_id": authentication.job_id,
+        }),
+        output_retention,
+    )
+    .map_err(|_| io::Error::other("Nomad shared build completion failed"))?;
+    Ok(())
 }
 
 fn read_transfer_frame<S: io::Read + io::Write>(
