@@ -62,9 +62,9 @@ Recovery remains exact-target and exact-execution bound. Telchar does not blindl
 - Logs are bounded and connection-scoped; PostgreSQL stores no build log bytes and replay is not provided.
 - Telchar performs no automatic build retry.
 - Cache publication and log archival require external operator tooling.
-- Native listener TLS is not provided; deployments may terminate TLS at an external or sibling load balancer.
+- Native TLS termination is an explicit non-goal; public WSS endpoints use an operator-managed reverse proxy or load balancer.
 - Workload identity or HMAC authentication remains mandatory on plaintext trusted networks.
-- General supervision of retention-maintenance and recovery-monitor background threads remains roadmap task T147.
+- Retention-maintenance and recovery-monitor background threads are owned lifecycle services under completed roadmap task T147.
 - The historical `nixos-restart-reconciliation` fixture targets schema authority removed by migration 13. Release verification uses the current eight-case `shared_build_recovery` suite instead.
 
 ## Release conclusion

@@ -253,6 +253,7 @@ Telchar does not aim to:
 - Transparently migrate an in-progress build between executors.
 - Provide active/active gateway scheduling in the initial architecture.
 - Provide hostile multi-tenant store isolation without separate security design.
+- Terminate TLS. Public HTTPS or WSS endpoints belong to an operator-managed reverse proxy or load balancer.
 
 ## License
 

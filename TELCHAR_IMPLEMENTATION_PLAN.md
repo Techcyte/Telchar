@@ -1556,6 +1556,7 @@ These features require a demonstrated operational need before design or implemen
 - FIFO, round-robin, fairness, priorities, non-starvation proofs, and scheduler load testing.
 - Per-person, per-credential, or per-quota-subject limits and accounting.
 - Automatic retry frameworks, attempt history, exact-once execution promises, and ambiguous-execution reconciliation beyond deterministic backend identity plus clean failure.
+- Native TLS termination and certificate lifecycle management. Public HTTPS or WSS endpoints use an operator-managed reverse proxy or load balancer.
 - Administrative queue/status/cancellation APIs and cancellation-race machinery.
 - Backend drain orchestration, autoscaling demand signals, and provider-specific provisioning.
 - Telchar-owned binary-cache lookup, storage, publication, credentials, or durable publication state. Existing Nix, Attic, S3, post-build hooks, and `nix copy` own cache behavior.

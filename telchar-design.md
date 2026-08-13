@@ -227,6 +227,7 @@ Telchar is not intended to:
 - Schedule arbitrary shell commands.
 - Expose interactive shell access to builders.
 - Promise transparent migration of an in-progress build between executors.
+- Terminate TLS. Public HTTPS or WSS endpoints belong to an operator-managed reverse proxy or load balancer.
 
 ## Why Telchar exists
 
@@ -531,7 +532,7 @@ Nomad batch job
       └── terminal report
 ```
 
-Nomad API and allocation callback URLs explicitly support HTTP or HTTPS. Authentication is always required. Workload identity is the default callback authentication mode and uses operator-configured issuer, audience, and JWKS trust. A protected-key HMAC mode is also supported. TLS is operator-selected rather than assumed on trusted networks.
+Nomad API URLs support HTTP or HTTPS. Allocation callback URLs support `ws://` or `wss://`, but Telchar's callback listener speaks plaintext WebSocket. Authentication is always required. Workload identity is the default callback authentication mode and uses operator-configured issuer, audience, and JWKS trust. A protected-key HMAC mode is also supported. Operators expose `wss://` through a reverse proxy or load balancer that terminates TLS and forwards WebSocket upgrades to Telchar. Native TLS termination is outside Telchar's scope.
 
 Telchar sends the complete admitted input closure as a bounded authorization manifest, not as an unconditional bulk copy. The allocation first reuses already-valid paths from its configured Nix daemon and invokes operator-configured substituters. It requests only unresolved manifest paths from Telchar. A persistent host Nix daemon store therefore acts as a best-effort local cache, while newly autoscaled cold nodes can use ordinary binary caches before falling back to Telchar for private or unpublished inputs.
 

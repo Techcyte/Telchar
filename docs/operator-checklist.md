@@ -6,12 +6,15 @@
 - [ ] Expose stock Nix ingress only through the restricted OpenSSH account and forced command.
 - [ ] Keep the daemon IPC socket private to the configured frontend UID.
 - [ ] Give the Telchar daemon access only to its configured PostgreSQL database, gateway store, state directories, and backend credentials.
-- [ ] Set callback load-balancer idle timeout above Telchar's transfer idle timeout.
+- [ ] Terminate public callback TLS at an operator-managed reverse proxy or load balancer; Telchar's callback listener speaks plaintext WebSocket.
+- [ ] Forward WebSocket upgrade requests and the exact `telchar-nomad-transfer-v1` subprotocol unchanged.
+- [ ] Restrict the plaintext proxy-to-Telchar hop to a trusted network or local interface.
+- [ ] Set callback proxy idle timeout above Telchar's transfer idle timeout.
 - [ ] Disable automatic request retries at callback proxies. One WebSocket remains bound to one transfer; stickiness is unnecessary.
 
 ## Credentials and identities
 
-- [ ] Keep PostgreSQL passwords, SSH identities, TLS keys, Nomad tokens, HMAC keys, and cache credentials outside the Nix store.
+- [ ] Keep PostgreSQL passwords, SSH identities, Nomad tokens, HMAC keys, and cache credentials outside the Nix store. Keep TLS keys in the terminating proxy or load balancer, never Telchar configuration.
 - [ ] Use `services.telchar.credentials` or another protected deployment mechanism and refer to files below `CREDENTIALS_DIRECTORY` from Telchar TOML.
 - [ ] Pin static SSH host keys. Do not use permissive host-key checking.
 - [ ] Configure workload identity with explicit issuer, JWKS URL, audience, and optional CA file. Do not infer trust from the Nomad API endpoint.
@@ -85,7 +88,8 @@ Telchar MVP does not provide:
 - PostgreSQL log storage or historical log replay;
 - Redis or object-storage log clients;
 - fixed-output derivation execution;
-- arbitrary Nomad host mounts or task interpolation from client bytes.
+- arbitrary Nomad host mounts or task interpolation from client bytes;
+- native TLS termination or certificate lifecycle management.
 
 ## Release checks
 
