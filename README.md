@@ -86,6 +86,16 @@ nix build .#telchar
 nix build .#telchar-nomad-worker
 ```
 
+Reproducible OCI image archives are also flake packages:
+
+```bash
+nix build .#telchar-oci
+nix build .#telchar-nomad-worker-oci
+podman load < result
+```
+
+The gateway image starts `telchar daemon`; the worker image starts `telchar-nomad-worker`. Runtime configuration, credentials, PostgreSQL, gateway-store access, and callback networking remain operator responsibilities.
+
 ## Documentation
 
 - [Architecture](docs/design.md)
