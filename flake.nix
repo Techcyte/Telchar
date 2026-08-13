@@ -95,22 +95,13 @@
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
           };
-          workspace-tests = craneLib.cargoTest {
+          library-tests = craneLib.cargoTest {
             src = source;
             pname = "telchar";
             version = "0.1.0";
             inherit cargoArtifacts;
-            nativeBuildInputs = [
-              pkgs.nix
-              pkgs.openssh
-              pkgs.postgresql
-            ];
-            TELCHAR_NIX = "${pkgs.nix}/bin/nix";
-            TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
-            preCheck = ''
-              export PATH=${pkgs.nix}/bin:${pkgs.openssh}/bin:${pkgs.postgresql}/bin:$PATH
-            '';
-            cargoTestExtraArgs = "--workspace";
+            nativeBuildInputs = [ pkgs.postgresql ];
+            cargoTestExtraArgs = "--workspace --lib";
           };
           protocol-dependency-boundary = pkgs.runCommand "telchar-protocol-dependency-boundary" { } ''
             protocol_manifest=${./crates/nix-worker-protocol/Cargo.toml}
