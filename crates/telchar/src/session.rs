@@ -706,18 +706,28 @@ pub fn run_worker_session(
                             },
                         )?;
                         output.flush()?;
-                        let result = follower.wait().map_err(|failure| match failure {
+                        let result = follower
+                            .wait_timeout(execution.timeout())
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "shared BuildDerivation follower wait timed out",
+                                )
+                            })?
+                            .map_err(|failure| {
+                                match failure {
                             crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable => {
                                 io::Error::new(
                                     io::ErrorKind::Unsupported,
                                     "shared BuildDerivation execution is unavailable",
                                 )
                             }
-                            crate::shared_build::SharedBuildTerminalFailure::Backend
-                            | crate::shared_build::SharedBuildTerminalFailure::Internal => {
-                                io::Error::other("shared BuildDerivation execution failed")
+                                crate::shared_build::SharedBuildTerminalFailure::Backend
+                                | crate::shared_build::SharedBuildTerminalFailure::Internal => {
+                                    io::Error::other("shared BuildDerivation execution failed")
+                                }
                             }
-                        })?;
+                            })?;
                         wait_for_shared_build_terminal(database_url, derivation_path)?;
                         Ok(result)
                     }

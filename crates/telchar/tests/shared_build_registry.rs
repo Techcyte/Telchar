@@ -105,6 +105,27 @@ fn explicit_leader_and_follower_share_terminal_result() {
 }
 
 #[test]
+fn follower_wait_is_bounded_without_cancelling_the_leader() {
+    let registry = SharedBuildRegistry::new();
+
+    let leader = match registry.acquire("slow-build") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let follower = match registry.acquire("slow-build") {
+        SharedBuildAccess::Follower(follower) => follower,
+        SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
+    };
+
+    assert_eq!(follower.wait_timeout(Duration::from_millis(10)), None);
+    assert_eq!(registry.active_build_count(), 1);
+    leader
+        .complete(successful_result())
+        .expect("leader still completes");
+    assert_eq!(registry.active_build_count(), 0);
+}
+
+#[test]
 fn dropped_leader_fails_followers_and_releases_build_key() {
     let registry = SharedBuildRegistry::new();
 

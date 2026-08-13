@@ -65,6 +65,21 @@ pub struct SharedBuildFollower {
 
 impl SharedBuildFollower {
     pub fn wait(self) -> Result<BuildResult, SharedBuildTerminalFailure> {
+        self.wait_until(None)
+            .unwrap_or(Err(SharedBuildTerminalFailure::Internal))
+    }
+
+    pub fn wait_timeout(
+        self,
+        timeout: std::time::Duration,
+    ) -> Option<Result<BuildResult, SharedBuildTerminalFailure>> {
+        self.wait_until(std::time::Instant::now().checked_add(timeout))
+    }
+
+    fn wait_until(
+        self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Result<BuildResult, SharedBuildTerminalFailure>> {
         let mut state = self
             .active
             .state
@@ -73,13 +88,27 @@ impl SharedBuildFollower {
         loop {
             match &*state {
                 ActiveBuildState::Running => {
-                    state = self
-                        .active
-                        .completed
-                        .wait(state)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(deadline) = deadline {
+                        let remaining =
+                            deadline.checked_duration_since(std::time::Instant::now())?;
+                        let (next_state, wait) = self
+                            .active
+                            .completed
+                            .wait_timeout(state, remaining)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        state = next_state;
+                        if wait.timed_out() && matches!(&*state, ActiveBuildState::Running) {
+                            return None;
+                        }
+                    } else {
+                        state = self
+                            .active
+                            .completed
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
                 }
-                ActiveBuildState::Completed(result) => return result.clone(),
+                ActiveBuildState::Completed(result) => return Some(result.clone()),
             }
         }
     }
