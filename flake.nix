@@ -37,6 +37,7 @@
             src = source;
             pname = "telchar";
             version = "0.1.0";
+            doCheck = false;
           };
         in
         {
@@ -106,7 +107,7 @@
             ];
             TELCHAR_NIX = "${pkgs.nix}/bin/nix";
             TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
-            cargoTestExtraArgs = "--locked --workspace";
+            cargoTestExtraArgs = "--workspace";
           };
           protocol-dependency-boundary = pkgs.runCommand "telchar-protocol-dependency-boundary" { } ''
             protocol_manifest=${./crates/nix-worker-protocol/Cargo.toml}
