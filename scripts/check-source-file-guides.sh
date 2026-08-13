@@ -8,7 +8,7 @@ status=0
 while IFS= read -r -d '' path; do
   case "$path" in
     *.rs)
-      pattern='^//! '
+      pattern='^//(!)? '
       line=1
       ;;
     *.nix)

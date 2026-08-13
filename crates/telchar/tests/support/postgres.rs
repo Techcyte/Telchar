@@ -1,4 +1,4 @@
-//! Provides shared integration-test helpers for postgres scenarios.
+// Provides shared integration-test helpers for PostgreSQL scenarios.
 
 use std::fs;
 use std::path::PathBuf;
