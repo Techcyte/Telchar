@@ -644,7 +644,7 @@ fn serve_accepted_connection(
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
-        let mut build_executor = backends.executor();
+        let mut build_executor = backends.executor(database_url)?;
         let mut store_export = telchar::store_export::backend_from_environment()?;
         let mut store_import = telchar::store_import::importer_from_environment()?;
         let mut store_closure = telchar::store_closure::backend_from_environment()?;

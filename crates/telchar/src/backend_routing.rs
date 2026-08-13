@@ -45,10 +45,14 @@ impl ConfiguredBackends {
         })
     }
 
-    pub fn executor(&self) -> BackendExecutor {
-        BackendExecutor {
-            backends: self.clone(),
+    pub fn executor(&self, database_url: &str) -> io::Result<BackendExecutor> {
+        if database_url.trim().is_empty() {
+            return Err(io::Error::other("database URL is not configured"));
         }
+        Ok(BackendExecutor {
+            backends: self.clone(),
+            database_url: database_url.to_owned(),
+        })
     }
 }
 
@@ -116,6 +120,7 @@ impl crate::shared_build_recovery::RecoveryBackend for ConfiguredBackends {
 
 pub struct BackendExecutor {
     backends: ConfiguredBackends,
+    database_url: String,
 }
 
 impl BuildBackend for BackendExecutor {
@@ -209,6 +214,7 @@ impl BuildBackend for BackendExecutor {
                     .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
                 let shared_build_key = execution.build().shared_build_key();
                 return crate::nomad_backend::NomadClient::new(config.clone())?.execute(
+                    &self.database_url,
                     execution,
                     shared_build_key.as_bytes(),
                     cancelled,

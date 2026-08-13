@@ -244,6 +244,7 @@ impl NomadClient {
 
     pub fn execute(
         &self,
+        database_url: &str,
         execution: &BuildExecution<'_>,
         shared_build_key: &[u8],
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
@@ -259,16 +260,30 @@ impl NomadClient {
             }
             match self.status(submission.job_id())? {
                 NomadExecutionState::Monitoring => {}
-                NomadExecutionState::Succeeded => {
+                NomadExecutionState::Succeeded => {}
+                NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                    return Err(io::Error::other("Nomad job execution failed"));
+                }
+            }
+            let derivation_path = std::str::from_utf8(execution.build().derivation_path())
+                .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
+            let build = crate::persistence::read_shared_build(database_url, derivation_path)
+                .map_err(|_| io::Error::other("Nomad shared build state is unavailable"))?
+                .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
+            match build.state {
+                crate::persistence::SharedBuildState::Succeeded => {
                     return BuildResult::new(
                         BuildStatus::Built,
                         execution.build().expected_outputs().to_vec(),
                         OutputTrust::TrustedExecutor,
                     );
                 }
-                NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                    return Err(io::Error::other("Nomad job execution failed"));
+                crate::persistence::SharedBuildState::Failed => {
+                    return Err(io::Error::other("Nomad build transfer failed"));
                 }
+                crate::persistence::SharedBuildState::Claimed
+                | crate::persistence::SharedBuildState::Running
+                | crate::persistence::SharedBuildState::Collecting => {}
             }
             if started.elapsed() >= execution.timeout() {
                 return Err(io::Error::new(

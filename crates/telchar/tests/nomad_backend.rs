@@ -20,6 +20,8 @@ use telchar::nomad_backend::{
     deterministic_job_name, render_job, NomadClient, NomadExecutionState,
 };
 
+mod support;
+
 static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
@@ -715,7 +717,9 @@ fn configured_backend_exposes_deterministic_execution_identity_before_submission
     let config = load_service_config(&root, "http://127.0.0.1:4646", None);
     let backend = config.nomad_backends()[0].clone();
     let configured = ConfiguredBackends::new(&config).expect("backends configure");
-    let executor = configured.executor();
+    let executor = configured
+        .executor("postgresql://fixture")
+        .expect("executor configures");
     assert_eq!(
         executor
             .execution_id(backend.target(), b"shared-build-key")
@@ -768,9 +772,50 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
     let admitted = admitted_request();
     let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
         .expect("execution creates");
+    let database = support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("database migrates");
+    let request = &admitted;
+    let digest = request.shared_build_digest();
+    telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        std::str::from_utf8(request.derivation_path()).expect("derivation path is UTF-8"),
+        &digest,
+        "nomad-test",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some(&deterministic_job_name(
+            &config.nomad_backends()[0],
+            request.shared_build_key().as_bytes(),
+        )),
+        &request
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| std::str::from_utf8(path).expect("output path is UTF-8"))
+            .collect::<Vec<_>>(),
+        request,
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(
+        database.url(),
+        std::str::from_utf8(request.derivation_path()).expect("derivation path is UTF-8"),
+    )
+    .expect("shared build starts");
+    telchar::persistence::collect_shared_build(
+        database.url(),
+        std::str::from_utf8(request.derivation_path()).expect("derivation path is UTF-8"),
+    )
+    .expect("shared build collects");
+    telchar::persistence::complete_shared_build_success(
+        database.url(),
+        std::str::from_utf8(request.derivation_path()).expect("derivation path is UTF-8"),
+        &serde_json::json!({"status": "built"}),
+        Duration::from_secs(60),
+    )
+    .expect("shared build completes");
     let mut executor = ConfiguredBackends::new(&config)
         .expect("backends configure")
-        .executor();
+        .executor(database.url())
+        .expect("executor configures");
     let result = executor
         .execute(&execution)
         .expect("Nomad execution completes");
