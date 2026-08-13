@@ -1506,10 +1506,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: configuration suite.
   - Evidence: the strict Serde schema denies unknown fields at every configuration layer; validates protected database, SSH, TLS, workload-identity, and HMAC file references; keeps callback bind/public URLs independent; and exposes separately bounded scheduling, permits, retention, transfer, authentication, connection lifetime, and shutdown-drain policies. `cargo test -p telchar --test service_config` passes 18 focused cases.
 
-- [ ] T141 Bound shutdown, runtime, coordination, and logs
+- [x] T141 Bound shutdown, runtime, coordination, and logs
   - Depends on: T132, T138
   - Outcome: daemon shutdown, shared-build monitoring, backend runtime, follower waiting, child processes, polling, and live logs have explicit bounded behavior; active backend work remains client-independent and optional historical log archival remains deferred.
   - Verify: shutdown, timeout, follower, polling, and bounded-log tests.
+  - Evidence: callback ownership stops acceptance, drains active transfers for a separately configured duration, force-closes survivors, and joins retained threads; Nomad runtime, polling, transfer idle, output collection, connection lifetime, setup, authentication, and diagnostics are independently bounded; child-process backends retain ownership without `Command::output()`; live logs use bounded chunks and queues; and in-process followers now wait no longer than the admitted execution timeout without cancelling the leader. Changesets `bf3606ca`, `1ba8200c`, `1fe9fd45`, and `a661b474`.
 
 - [ ] T142 Build the reproducible package and NixOS module
   - Depends on: T140, T141
