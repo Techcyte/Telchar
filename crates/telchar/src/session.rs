@@ -504,7 +504,7 @@ pub fn run_worker_session(
                     build_executor.execution_id(&selected_target, shared_build_key.as_bytes())?;
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
-                        let durable_claim = crate::persistence::claim_shared_build(
+                        let durable_claim = crate::persistence::claim_shared_build_with_request(
                             database_url,
                             derivation_path,
                             &admitted.shared_build_digest(),
@@ -513,6 +513,7 @@ pub fn run_worker_session(
                             selected_target.capabilities(),
                             backend_execution_id.as_deref(),
                             &expected_outputs,
+                            &admitted,
                         );
                         let durable_claim = match durable_claim {
                             Ok(claim) => claim,

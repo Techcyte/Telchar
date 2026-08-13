@@ -97,6 +97,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "nomad_callback_nonces",
         sql: include_str!("../migrations/0014_nomad_callback_nonces.sql"),
     },
+    Migration {
+        version: 15,
+        name: "shared_build_specification",
+        sql: include_str!("../migrations/0015_shared_build_specification.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -232,6 +237,7 @@ pub struct SharedBuild {
     pub capabilities: BackendCapabilities,
     pub backend_execution_id: Option<String>,
     pub expected_outputs: Vec<String>,
+    pub build_request: Option<crate::build_request::BuildRequest>,
     pub result_metadata: Option<serde_json::Value>,
     pub failure_classification: Option<String>,
     pub created_at: SystemTime,
@@ -399,7 +405,7 @@ pub fn start_queued_shared_build(
              WHERE derivation_path = $1 AND state = 'claimed'
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
-                       backend_execution_id, expected_outputs, result_metadata::text,
+                       backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                        failure_classification, created_at, started_at, collecting_at,
                        completed_at, expires_at",
             &[&derivation_path],
@@ -554,6 +560,67 @@ pub fn claim_shared_build(
     backend_execution_id: Option<&str>,
     expected_outputs: &[&str],
 ) -> Result<SharedBuildClaim, SharedBuildError> {
+    claim_shared_build_inner(
+        database_url,
+        derivation_path,
+        request_digest,
+        backend_name,
+        backend_kind,
+        capabilities,
+        backend_execution_id,
+        expected_outputs,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn claim_shared_build_with_request(
+    database_url: &str,
+    derivation_path: &str,
+    request_digest: &[u8],
+    backend_name: &str,
+    backend_kind: BackendKind,
+    capabilities: BackendCapabilities,
+    backend_execution_id: Option<&str>,
+    expected_outputs: &[&str],
+    build_request: &crate::build_request::BuildRequest,
+) -> Result<SharedBuildClaim, SharedBuildError> {
+    if build_request.validate_for_execution().is_err()
+        || build_request.derivation_path() != derivation_path.as_bytes()
+        || build_request.shared_build_digest().as_slice() != request_digest
+        || build_request
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| path.as_slice())
+            .ne(expected_outputs.iter().map(|path| path.as_bytes()))
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    claim_shared_build_inner(
+        database_url,
+        derivation_path,
+        request_digest,
+        backend_name,
+        backend_kind,
+        capabilities,
+        backend_execution_id,
+        expected_outputs,
+        Some(build_request),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn claim_shared_build_inner(
+    database_url: &str,
+    derivation_path: &str,
+    request_digest: &[u8],
+    backend_name: &str,
+    backend_kind: BackendKind,
+    capabilities: BackendCapabilities,
+    backend_execution_id: Option<&str>,
+    expected_outputs: &[&str],
+    build_request: Option<&crate::build_request::BuildRequest>,
+) -> Result<SharedBuildClaim, SharedBuildError> {
     validate_shared_build_claim(
         database_url,
         derivation_path,
@@ -564,6 +631,10 @@ pub fn claim_shared_build(
         backend_execution_id,
         expected_outputs,
     )?;
+    let encoded_build_request = build_request
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let backend_kind_value = backend_kind_name(backend_kind);
     let execution_recovery = execution_recovery_name(capabilities.execution_recovery());
     let cancellation = cancellation_name(capabilities.cancellation());
@@ -582,9 +653,9 @@ pub fn claim_shared_build(
             "INSERT INTO shared_builds (
                  derivation_path, request_digest, backend_name, backend_kind,
                  execution_recovery, cancellation, log_recovery,
-                 backend_execution_id, expected_outputs
+                 backend_execution_id, expected_outputs, build_request
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text::jsonb)
              ON CONFLICT (derivation_path) DO UPDATE
              SET request_digest = EXCLUDED.request_digest,
                  state = 'claimed',
@@ -595,6 +666,7 @@ pub fn claim_shared_build(
                  log_recovery = EXCLUDED.log_recovery,
                  backend_execution_id = EXCLUDED.backend_execution_id,
                  expected_outputs = EXCLUDED.expected_outputs,
+                 build_request = EXCLUDED.build_request,
                  result_metadata = NULL,
                  failure_classification = NULL,
                  created_at = transaction_timestamp(),
@@ -614,6 +686,7 @@ pub fn claim_shared_build(
                 &log_recovery,
                 &backend_execution_id,
                 &expected_outputs,
+                &encoded_build_request,
             ],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
@@ -622,7 +695,7 @@ pub fn claim_shared_build(
         .query_one(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
                     execution_recovery, cancellation, log_recovery,
-                    backend_execution_id, expected_outputs, result_metadata::text,
+                    backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                     failure_classification, created_at, started_at, collecting_at,
                     completed_at, expires_at
              FROM shared_builds WHERE derivation_path = $1",
@@ -638,7 +711,8 @@ pub fn claim_shared_build(
             || build.backend_kind != backend_kind
             || build.capabilities != capabilities
             || build.backend_execution_id.as_deref() != backend_execution_id
-            || build.expected_outputs != expected_outputs)
+            || build.expected_outputs != expected_outputs
+            || build.build_request.as_ref() != build_request)
     {
         return Err(SharedBuildError(SharedBuildFailure::Conflict));
     }
@@ -676,7 +750,7 @@ pub fn read_shared_build_by_execution(
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
                     execution_recovery, cancellation, log_recovery,
-                    backend_execution_id, expected_outputs, result_metadata::text,
+                    backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                     failure_classification, created_at, started_at, collecting_at,
                     completed_at, expires_at
              FROM shared_builds
@@ -701,7 +775,7 @@ pub fn read_shared_build(
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
                     execution_recovery, cancellation, log_recovery,
-                    backend_execution_id, expected_outputs, result_metadata::text,
+                    backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                     failure_classification, created_at, started_at, collecting_at,
                     completed_at, expires_at
              FROM shared_builds WHERE derivation_path = $1",
@@ -727,7 +801,7 @@ pub fn read_active_shared_builds(
         .query(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
                     execution_recovery, cancellation, log_recovery,
-                    backend_execution_id, expected_outputs, result_metadata::text,
+                    backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                     failure_classification, created_at, started_at, collecting_at,
                     completed_at, expires_at
              FROM shared_builds
@@ -759,7 +833,7 @@ pub fn start_shared_build(
              WHERE derivation_path = $1 AND state = 'claimed'
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
-                       backend_execution_id, expected_outputs, result_metadata::text,
+                       backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                        failure_classification, created_at, started_at, collecting_at,
                        completed_at, expires_at",
             &[&derivation_path],
@@ -791,7 +865,7 @@ pub fn collect_shared_build(
              WHERE derivation_path = $1 AND state = 'running'
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
-                       backend_execution_id, expected_outputs, result_metadata::text,
+                       backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                        failure_classification, created_at, started_at, collecting_at,
                        completed_at, expires_at",
             &[&derivation_path],
@@ -1032,7 +1106,7 @@ fn complete_shared_build(
              WHERE derivation_path = $1
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
-                       backend_execution_id, expected_outputs, result_metadata::text,
+                       backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                        failure_classification, created_at, started_at, collecting_at,
                        completed_at, expires_at",
             &[
@@ -1146,16 +1220,17 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
     let backend_execution_id: Option<String> =
         row.try_get(8).map_err(|_| SharedBuildFailure::Query)?;
     let expected_outputs: Vec<String> = row.try_get(9).map_err(|_| SharedBuildFailure::Query)?;
-    let result_metadata: Option<String> = row.try_get(10).map_err(|_| SharedBuildFailure::Query)?;
+    let build_request: Option<String> = row.try_get(10).map_err(|_| SharedBuildFailure::Query)?;
+    let result_metadata: Option<String> = row.try_get(11).map_err(|_| SharedBuildFailure::Query)?;
     let failure_classification: Option<String> =
-        row.try_get(11).map_err(|_| SharedBuildFailure::Query)?;
-    let created_at: SystemTime = row.try_get(12).map_err(|_| SharedBuildFailure::Query)?;
-    let started_at: Option<SystemTime> = row.try_get(13).map_err(|_| SharedBuildFailure::Query)?;
+        row.try_get(12).map_err(|_| SharedBuildFailure::Query)?;
+    let created_at: SystemTime = row.try_get(13).map_err(|_| SharedBuildFailure::Query)?;
+    let started_at: Option<SystemTime> = row.try_get(14).map_err(|_| SharedBuildFailure::Query)?;
     let collecting_at: Option<SystemTime> =
-        row.try_get(14).map_err(|_| SharedBuildFailure::Query)?;
-    let completed_at: Option<SystemTime> =
         row.try_get(15).map_err(|_| SharedBuildFailure::Query)?;
-    let expires_at: Option<SystemTime> = row.try_get(16).map_err(|_| SharedBuildFailure::Query)?;
+    let completed_at: Option<SystemTime> =
+        row.try_get(16).map_err(|_| SharedBuildFailure::Query)?;
+    let expires_at: Option<SystemTime> = row.try_get(17).map_err(|_| SharedBuildFailure::Query)?;
     let request_digest: [u8; 32] = request_digest
         .try_into()
         .map_err(|_| SharedBuildFailure::Query)?;
@@ -1187,6 +1262,21 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
         "failed" => SharedBuildState::Failed,
         _ => return Err(SharedBuildFailure::Query),
     };
+    let build_request: Option<crate::build_request::BuildRequest> = build_request
+        .map(|request| serde_json::from_str(&request).map_err(|_| SharedBuildFailure::Query))
+        .transpose()?;
+    if build_request.as_ref().is_some_and(|request| {
+        request.validate_for_execution().is_err()
+            || request.derivation_path() != derivation_path.as_bytes()
+            || request.shared_build_digest() != request_digest
+            || request
+                .expected_outputs()
+                .iter()
+                .map(|(_, path)| path.as_slice())
+                .ne(expected_outputs.iter().map(|path| path.as_bytes()))
+    }) {
+        return Err(SharedBuildFailure::Query);
+    }
     let result_metadata: Option<serde_json::Value> = result_metadata
         .map(|metadata| serde_json::from_str(&metadata).map_err(|_| SharedBuildFailure::Query))
         .transpose()?;
@@ -1221,6 +1311,7 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
         capabilities,
         backend_execution_id,
         expected_outputs,
+        build_request,
         result_metadata,
         failure_classification,
         created_at,

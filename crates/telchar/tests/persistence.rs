@@ -66,6 +66,106 @@ fn requester_reference_is_deterministic_and_component_separated() {
     }
 }
 
+fn durable_build_request() -> telchar::build_request::BuildRequest {
+    use nix_worker_protocol::{
+        write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
+        WorkerReader,
+    };
+
+    let derivation = b"/nix/store/11111111111111111111111111111111-shared.drv";
+    let output = b"/nix/store/22222222222222222222222222222222-shared";
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 36);
+    write_worker_byte_string(&mut wire, derivation);
+    write_worker_integer(&mut wire, 1);
+    write_worker_byte_string(&mut wire, b"out");
+    write_worker_byte_string(&mut wire, output);
+    write_worker_byte_string(&mut wire, b"");
+    write_worker_byte_string(&mut wire, b"");
+    write_worker_integer(&mut wire, 1);
+    write_worker_byte_string(
+        &mut wire,
+        b"/nix/store/33333333333333333333333333333333-input",
+    );
+    write_worker_byte_string(&mut wire, b"x86_64-linux");
+    write_worker_byte_string(&mut wire, b"/bin/sh");
+    write_worker_integer(&mut wire, 1);
+    write_worker_byte_string(&mut wire, b"-e");
+    write_worker_integer(&mut wire, 4);
+    for (key, value) in [
+        (b"system".as_slice(), b"x86_64-linux".as_slice()),
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"shared".as_slice()),
+        (b"out".as_slice(), output.as_slice()),
+    ] {
+        write_worker_byte_string(&mut wire, key);
+        write_worker_byte_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    let mut reader = WorkerReader::new(
+        wire.as_slice(),
+        ProtocolSessionLimits::new(16 * 1024 * 1024, Duration::from_secs(1)),
+    );
+    assert_eq!(
+        reader.read_operation().expect("operation reads"),
+        WorkerOperation::BuildDerivation
+    );
+    let request = reader
+        .complete_build_derivation()
+        .expect("build request decodes");
+    telchar::build_request::BuildRequest::from_worker_request(
+        &request,
+        &[telchar::backend::BackendTarget::new(
+            "nomad",
+            BackendKind::Nomad,
+            "x86_64-linux",
+            Vec::<String>::new(),
+        )
+        .expect("backend target creates")],
+    )
+    .expect("durable build request admits")
+}
+
+#[test]
+fn shared_build_persists_exact_admitted_build_request() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let request = durable_build_request();
+    let digest = request.shared_build_digest();
+
+    let claim = telchar::persistence::claim_shared_build_with_request(
+        fixture.url(),
+        "/nix/store/11111111111111111111111111111111-shared.drv",
+        &digest,
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("telchar-build-shared"),
+        &["/nix/store/22222222222222222222222222222222-shared"],
+        &request,
+    )
+    .expect("shared build claim succeeds");
+
+    assert_eq!(
+        claim.build.build_request.as_ref(),
+        Some(&request),
+        "exact admitted BuildDerivation request persists"
+    );
+    telchar::persistence::start_shared_build(
+        fixture.url(),
+        "/nix/store/11111111111111111111111111111111-shared.drv",
+    )
+    .expect("shared build starts");
+    let loaded = telchar::persistence::read_shared_build_by_execution(
+        fixture.url(),
+        "nomad",
+        "telchar-build-shared",
+    )
+    .expect("shared build reads")
+    .expect("shared build exists");
+    assert_eq!(loaded.build_request.as_ref(), Some(&request));
+}
+
 #[test]
 fn equivalent_shared_build_claims_have_one_owner() {
     let fixture = PostgresFixture::start();
@@ -2287,7 +2387,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 14);
+    assert_eq!(ledger.len(), 15);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -2333,6 +2433,9 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[13].get::<_, i64>(0), 14);
     assert_eq!(ledger[13].get::<_, String>(1), "nomad_callback_nonces");
     assert_eq!(ledger[13].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[14].get::<_, i64>(0), 15);
+    assert_eq!(ledger[14].get::<_, String>(1), "shared_build_specification");
+    assert_eq!(ledger[14].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -2491,7 +2594,7 @@ fn shared_build_attempt_migration_backfills_active_builds() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("attempt migration applies");
 
     assert_eq!(outcome.previously_applied, 11);
-    assert_eq!(outcome.applied_this_run, 3);
+    assert_eq!(outcome.applied_this_run, 4);
     let attempt = telchar::persistence::read_shared_build_attempt(
         fixture.url(),
         "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-active.drv",
@@ -2546,7 +2649,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 13);
+    assert_eq!(outcome.applied_this_run, 14);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -2581,8 +2684,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 14);
-    assert_eq!(second.previously_applied, 14);
+    assert_eq!(first.applied_this_run, 15);
+    assert_eq!(second.previously_applied, 15);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -2590,7 +2693,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        14
+        15
     );
 }
 
@@ -2622,7 +2725,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (15, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (16, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -2675,7 +2778,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 14);
+    assert_eq!(first.applied_this_run, 15);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -2683,7 +2786,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        14
+        15
     );
 }
 
@@ -2711,7 +2814,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        14
+        15
     );
     assert_eq!(
         fixture
@@ -2719,7 +2822,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        14
+        15
     );
 }
 

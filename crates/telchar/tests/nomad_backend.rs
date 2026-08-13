@@ -821,6 +821,7 @@ fn configured_backend_adopts_exact_nomad_execution() {
         capabilities: BackendKind::Nomad.capabilities(),
         backend_execution_id: Some(job_id),
         expected_outputs: vec!["/nix/store/11111111111111111111111111111111-output".to_owned()],
+        build_request: None,
         result_metadata: None,
         failure_classification: None,
         created_at: std::time::SystemTime::now(),
