@@ -60,8 +60,8 @@ maximum_retained_nonces = 65536
     .expect("service starts");
     let mut client = TcpStream::connect(address).expect("client connects");
     let websocket_key = String::from_utf8(vec![
-        100, 71, 104, 108, 73, 72, 78, 104, 98, 88, 66, 115, 90, 83, 66, 117, 98, 50, 53, 106,
-        90, 81, 61, 61,
+        100, 71, 104, 108, 73, 72, 78, 104, 98, 88, 66, 115, 90, 83, 66, 117, 98, 50, 53, 106, 90,
+        81, 61, 61,
     ])
     .expect("WebSocket key is UTF-8");
     write!(
