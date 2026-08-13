@@ -14,10 +14,20 @@ use telchar::worker_trace::{TRACE_RELAY_BUFFER_BYTES, TraceCapture};
 fn captures_real_nix_worker_handshake_and_operation_without_payloads() {
     let capture = TraceCapture::start("/nix/var/nix/daemon-socket/socket").expect("capture starts");
 
-    let output = std::process::Command::new("nix")
-        .args(["--store", &capture.store_url(), "store", "info", "--json"])
-        .output()
-        .expect("real Nix client runs");
+    let output = std::process::Command::new(
+        std::env::var_os("TELCHAR_NIX_BIN").unwrap_or_else(|| "nix".into()),
+    )
+    .args([
+        "--extra-experimental-features",
+        "nix-command",
+        "--store",
+        &capture.store_url(),
+        "store",
+        "info",
+        "--json",
+    ])
+    .output()
+    .expect("real Nix client runs");
     assert!(output.status.success(), "Nix client failed: {output:?}");
 
     let trace = capture.finish().expect("capture finishes");
