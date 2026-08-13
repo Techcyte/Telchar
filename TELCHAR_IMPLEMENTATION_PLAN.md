@@ -1524,10 +1524,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: tested configuration examples and explicit log-loss behavior after late attachment or restart.
   - Evidence: `docs/nomad-cache-and-logs.md` documents manifest-authorized selective transfer, host-daemon and local-store composition, ordinary substituters and public keys, bounded same-group prestart setup, Attic/post-build-hook/`nix copy` publication, systemd credential ownership, connection-scoped log loss, and the bounded post-MVP zstd spool seam.
 
-- [ ] T144 Document deployment, security assumptions, and limitations
+- [x] T144 Document deployment, security assumptions, and limitations
   - Depends on: T142
   - Outcome: docs cover trust, credentials, host keys, stores, PostgreSQL shared-build ownership, backend-specific restart recovery, supported backends, normal Nix retry behavior, connection-scoped logs, and explicit non-goals.
   - Verify: operator checklist.
+  - Evidence: `docs/operator-checklist.md` provides deployment, identity, credential, host-key, store, PostgreSQL, backend, recovery, client, logging, shutdown, sizing, non-goal, and release checklists aligned with the accepted gateway and Nomad transfer ADRs.
 
 - [ ] T145 Add one focused release verification command
   - Depends on: T133, T139, T142, T143, T144
