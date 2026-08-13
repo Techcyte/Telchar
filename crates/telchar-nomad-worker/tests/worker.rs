@@ -33,6 +33,10 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
             "3600".to_owned(),
         ),
         (
+            "TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES".to_owned(),
+            "65536".to_owned(),
+        ),
+        (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
             "workload-identity".to_owned(),
         ),
@@ -128,6 +132,10 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
         (
             "TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS".to_owned(),
             "3600".to_owned(),
+        ),
+        (
+            "TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES".to_owned(),
+            "65536".to_owned(),
         ),
         (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),

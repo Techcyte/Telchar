@@ -137,6 +137,22 @@ impl WorkerSession {
         })
     }
 
+    pub fn report_failure(&mut self, error: &io::Error, maximum_bytes: usize) -> io::Result<()> {
+        let diagnostic = error.to_string();
+        let diagnostic = diagnostic
+            .char_indices()
+            .take_while(|(offset, _)| *offset < maximum_bytes)
+            .map(|(_, character)| character)
+            .collect::<String>();
+        self.send_metadata(
+            FrameKind::BuildResult,
+            &BuildResultMetadata {
+                outcome: BuildOutcome::Failed,
+                diagnostic: Some(diagnostic),
+            },
+        )
+    }
+
     pub fn return_outputs(
         &mut self,
         store_uri: &str,
@@ -401,6 +417,7 @@ pub struct WorkerConfig {
     transfer_idle_timeout: std::time::Duration,
     output_collection_timeout: std::time::Duration,
     maximum_connection_lifetime: std::time::Duration,
+    maximum_diagnostic_bytes: usize,
     authentication: Authentication,
 }
 
@@ -447,6 +464,11 @@ impl WorkerConfig {
                 .filter(|value| *value > 0)
                 .map(std::time::Duration::from_secs)
                 .ok_or_else(|| invalid("worker connection lifetime is invalid"))?;
+        let maximum_diagnostic_bytes = required(&mut lookup, "TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES")?
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0 && *value <= MAXIMUM_MANIFEST_METADATA_BYTES)
+            .ok_or_else(|| invalid("worker diagnostic limit is invalid"))?;
         let mode = required(&mut lookup, "TELCHAR_TRANSFER_AUTHENTICATION")?;
         let allocation_id = required(&mut lookup, "NOMAD_ALLOC_ID")?;
         let nomad_namespace = required(&mut lookup, "NOMAD_NAMESPACE")?;
@@ -531,6 +553,7 @@ impl WorkerConfig {
             transfer_idle_timeout,
             output_collection_timeout,
             maximum_connection_lifetime,
+            maximum_diagnostic_bytes,
             authentication: Authentication {
                 backend,
                 namespace,
@@ -565,6 +588,10 @@ impl WorkerConfig {
 
     pub fn maximum_connection_lifetime(&self) -> std::time::Duration {
         self.maximum_connection_lifetime
+    }
+
+    pub fn maximum_diagnostic_bytes(&self) -> usize {
+        self.maximum_diagnostic_bytes
     }
 
     pub fn authentication(&self) -> &Authentication {

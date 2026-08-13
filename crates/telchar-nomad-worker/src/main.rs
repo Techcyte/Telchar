@@ -4,7 +4,13 @@ fn main() -> std::process::ExitCode {
         let mut session = telchar_nomad_worker::receive_manifest(&config)?;
         let requested = session.resolve_inputs(&store_uri)?;
         session.import_requested_inputs(&store_uri, &requested)?;
-        let result = session.build(&store_uri)?;
+        let result = match session.build(&store_uri) {
+            Ok(result) => result,
+            Err(error) => {
+                session.report_failure(&error, config.maximum_diagnostic_bytes())?;
+                return Err(error);
+            }
+        };
         session.return_outputs(&store_uri, &result)
     }) {
         Ok(()) => std::process::ExitCode::SUCCESS,

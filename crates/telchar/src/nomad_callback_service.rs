@@ -245,7 +245,7 @@ pub fn serve_connection(
         limits,
         connection_deadline,
     )?;
-    if let Err(error) = receive_build_outputs(
+    let outcome = match receive_build_outputs(
         &mut socket,
         &mut session,
         database_url,
@@ -254,14 +254,28 @@ pub fn serve_connection(
         limits,
         connection_deadline,
     ) {
-        let _ = crate::persistence::complete_shared_build_failure(
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = crate::persistence::complete_shared_build_failure(
+                database_url,
+                derivation_path,
+                "nomad-transfer-failure",
+                &serde_json::json!({"stage": "output-collection"}),
+                output_retention,
+            );
+            return Err(error);
+        }
+    };
+    if let BuildCollectionOutcome::Failed { diagnostic } = outcome {
+        crate::persistence::complete_shared_build_failure(
             database_url,
             derivation_path,
-            "nomad-transfer-failure",
-            &serde_json::json!({"stage": "output-collection"}),
+            "nomad-build-failure",
+            &serde_json::json!({"diagnostic": diagnostic}),
             output_retention,
-        );
-        return Err(error);
+        )
+        .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
+        return Ok(());
     }
     crate::persistence::complete_shared_build_success(
         database_url,
@@ -299,6 +313,11 @@ fn read_transfer_frame<S: io::Read + io::Write>(
     Ok(frame)
 }
 
+enum BuildCollectionOutcome {
+    Built,
+    Failed { diagnostic: Option<String> },
+}
+
 fn receive_build_outputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad_callback_http::CallbackSocket<S>,
     session: &mut TransferSession,
@@ -307,7 +326,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     build_request: &crate::build_request::BuildRequest,
     limits: crate::config::NomadTransferLimits,
     connection_deadline: Instant,
-) -> io::Result<()> {
+) -> io::Result<BuildCollectionOutcome> {
     let endpoint = gateway_store_endpoint()?;
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
@@ -380,8 +399,10 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 let result: BuildResultMetadata =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
                 session.accept(Direction::WorkerToGateway, frame)?;
-                if result.outcome != BuildOutcome::Built {
-                    return Err(io::Error::other("Nomad allocation build failed"));
+                if result.outcome == BuildOutcome::Failed {
+                    return Ok(BuildCollectionOutcome::Failed {
+                        diagnostic: result.diagnostic,
+                    });
                 }
                 for (_, path) in build_request.expected_outputs() {
                     let mut store = GatewayStoreConnection::connect(&endpoint)?;
@@ -392,7 +413,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                         ));
                     }
                 }
-                return Ok(());
+                return Ok(BuildCollectionOutcome::Built);
             }
             _ => {
                 return Err(io::Error::new(
