@@ -1512,10 +1512,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: shutdown, timeout, follower, polling, and bounded-log tests.
   - Evidence: callback ownership stops acceptance, drains active transfers for a separately configured duration, force-closes survivors, and joins retained threads; Nomad runtime, polling, transfer idle, output collection, connection lifetime, setup, authentication, and diagnostics are independently bounded; child-process backends retain ownership without `Command::output()`; live logs use bounded chunks and queues; and in-process followers now wait no longer than the admitted execution timeout without cancelling the leader. Changesets `bf3606ca`, `1ba8200c`, `1fe9fd45`, and `a661b474`.
 
-- [ ] T142 Build the reproducible package and NixOS module
+- [x] T142 Build the reproducible package and NixOS module
   - Depends on: T140, T141
   - Outcome: flake outputs install Telchar services, restricted OpenSSH ingress, configuration, credentials, gateway Nix-daemon access, PostgreSQL coordination, and the selected backend dependencies.
   - Verify: package build and NixOS module VM test.
+  - Evidence: `nixosModules.telchar` and `nixosModules.default` expose an opinionated module with independently disableable local PostgreSQL, restricted OpenSSH ingress, gateway Nix-daemon trust, protected systemd credentials, generated strict TOML configuration, backend helper packages, private runtime/state directories, and owned daemon restart policy. `.#checks.x86_64-linux.nixos-module` boots the module, verifies PostgreSQL ownership, OpenSSH restrictions, service identity, private runtime directory, and daemon socket. `.#telchar` and `.#telchar-nomad-worker` build reproducibly.
 
 - [ ] T143 Document external cache and optional log-archive integration
   - Depends on: T142

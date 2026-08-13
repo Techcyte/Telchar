@@ -26,6 +26,11 @@
       };
     in
     {
+      nixosModules = {
+        telchar = import ./nix/nixos-module.nix;
+        default = self.nixosModules.telchar;
+      };
+
       checks.${system} =
         let
           cargoArtifacts = craneLib.buildDepsOnly {
@@ -35,6 +40,48 @@
           };
         in
         {
+          nixos-module = pkgs.testers.nixosTest {
+            name = "telchar-nixos-module";
+            nodes.gateway =
+              { pkgs, ... }:
+              {
+                imports = [ self.nixosModules.telchar ];
+                networking.firewall.enable = false;
+                services.telchar = {
+                  enable = true;
+                  package = self.packages.${system}.telchar;
+                  frontendUid = 995;
+                  settings = {
+                    running_disconnect_policy = "detach-and-finish";
+                    backends.local = {
+                      name = "local";
+                      system = system;
+                      maximum_concurrent_builds = 1;
+                    };
+                  };
+                  environment = {
+                    TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
+                    TELCHAR_NIX = "${pkgs.nix}/bin/nix";
+                  };
+                };
+                environment.etc."ssh/authorized_keys.d/telchar".text =
+                  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGQ5k8KfV+TWbrZG7MBXn9cKbIYB1vLLtvbCeK6ucvE3 telchar-module-test\n";
+                services.telchar.openssh.authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
+                system.stateVersion = "26.05";
+              };
+            testScript = ''
+              start_all()
+              gateway.wait_for_unit("postgresql.service")
+              gateway.wait_for_unit("telchar.service")
+              gateway.succeed("systemctl is-active sshd.service")
+              gateway.succeed("systemctl is-active telchar.service || { systemctl status telchar.service --no-pager >&2; journalctl -u telchar.service --no-pager >&2; exit 1; }")
+              gateway.succeed("test -S /run/telchar/daemon.sock")
+              gateway.succeed("test $(stat -c %a /run/telchar) = 700")
+              gateway.succeed("sudo -u postgres psql -Atc \"select 1 from pg_database where datname = 'telchar'\" | grep -qx 1")
+              gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")
+              gateway.succeed("grep -q 'ForceCommand /nix/store/' /etc/ssh/sshd_config")
+            '';
+          };
           format = craneLib.cargoFmt {
             src = source;
             pname = "telchar";
