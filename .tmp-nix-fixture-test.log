@@ -1,0 +1,31 @@
+   Compiling ring v0.17.14
+   Compiling rustls v0.23.43
+   Compiling rustls-webpki v0.103.14
+   Compiling jsonwebtoken v9.3.1
+   Compiling tokio-rustls v0.26.4
+   Compiling tungstenite v0.28.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling telchar v0.1.0 (/home/travis/dev/Personal/Telchar/crates/telchar)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.26s
+     Running tests/nix_fixture.rs (target/debug/deps/nix_fixture-3341ca71c1b4f8a1)
+
+running 15 tests
+test classic_build_diagnostics_repeat_sanitized_worker_operation_candidates ... ok
+test creates_isolated_real_nix_client_state_and_removes_it ... ok
+test dropping_fixture_removes_isolated_root_without_explicit_cleanup ... ok
+test dropping_running_daemon_and_fixture_cleans_process_and_store ... ok
+test fixture_owned_daemon_builds_the_fixed_classic_derivation_in_both_trust_modes ... ok
+test fixture_owned_daemon_reports_explicit_trust_modes_without_host_store_access ... ok
+test killed_fixture_owner_cleans_process_and_store ... ok
+test legacy_import_rejects_structurally_corrupt_export ... ok
+test real_garbage_collection_removes_unrooted_private_store_path ... ok
+test real_store_import_registers_valid_nar_and_export_streams_it ... ok
+test real_store_query_reports_valid_and_invalid_paths ... ok
+test real_store_query_returns_required_path_metadata ... ok
+test real_store_validity_query_does_not_hide_daemon_failure ... ok
+test relay_streams_the_complete_classic_build_fixture_in_both_trust_modes ... ok
+test reusable_client_negotiates_with_real_private_daemon ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s
+

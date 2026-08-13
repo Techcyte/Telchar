@@ -683,9 +683,12 @@ fn fixture_user() -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fixture user is not UTF-8"))
 }
 
-fn unique_suffix() -> u128 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+fn unique_suffix() -> String {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => duration.as_nanos(),
         Err(_) => 0,
-    }
+    };
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{timestamp}-{sequence}")
 }
