@@ -49,7 +49,6 @@ struct NixPathInfo {
 }
 
 pub struct NixFixture {
-    _process_lock: fs::File,
     cleanup_guard: Option<Child>,
     root: PathBuf,
     config_path: PathBuf,
@@ -75,7 +74,9 @@ impl NixFixture {
             event = "nix.fixture.setup.started",
             "Nix fixture setup started"
         );
-        let process_lock = fixture_process_lock()?;
+        if std::env::var_os("TELCHAR_NIX_FIXTURE_SKIP_PROCESS_LOCK").is_none() {
+            fixture_process_lock()?;
+        }
         let root = std::env::temp_dir().join(format!(
             "telchar-nix-fixture-{}-{}",
             std::process::id(),
@@ -116,7 +117,6 @@ impl NixFixture {
             "Nix fixture setup finished"
         );
         Ok(Self {
-            _process_lock: process_lock,
             cleanup_guard: Some(cleanup_guard),
             root,
             config_path,
@@ -720,16 +720,24 @@ fn fixture_user() -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fixture user is not UTF-8"))
 }
 
-fn fixture_process_lock() -> io::Result<fs::File> {
-    let path = std::env::temp_dir().join("telchar-nix-fixture.lock");
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
-    Ok(lock)
+fn fixture_process_lock() -> io::Result<&'static fs::File> {
+    static LOCK: std::sync::OnceLock<Result<fs::File, String>> = std::sync::OnceLock::new();
+    match LOCK.get_or_init(|| {
+        let path = std::env::temp_dir().join("telchar-nix-fixture.lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+            .map_err(|error| error.to_string())?;
+        Ok(lock)
+    }) {
+        Ok(lock) => Ok(lock),
+        Err(error) => Err(io::Error::other(error.clone())),
+    }
 }
 
 fn unique_suffix() -> String {
