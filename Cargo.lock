@@ -1812,6 +1812,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "hmac 0.12.1",
+ "nix-worker-protocol",
  "reqwest",
  "serde",
  "serde_json",

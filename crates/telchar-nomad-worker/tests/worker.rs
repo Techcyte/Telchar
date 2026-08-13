@@ -6,9 +6,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::json;
 use telchar::nomad_transfer_protocol::{
-    decode_metadata, read_frame, Authentication, AuthenticationProof, FrameKind, ProtocolLimits,
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildSpecification, Frame, FrameKind, InputManifest, NamedOutput, PathManifestEntry,
+    ProtocolLimits,
 };
-use telchar_nomad_worker::{authenticate, WorkerConfig};
+use telchar_nomad_worker::{authenticate, receive_manifest, WorkerConfig};
 
 fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -124,6 +126,91 @@ fn rejects_missing_or_mismatched_identity_environment() {
     );
 }
 
+#[allow(clippy::result_large_err)]
+fn select_protocol(
+    request: &tungstenite::handshake::server::Request,
+    mut response: tungstenite::handshake::server::Response,
+) -> Result<tungstenite::handshake::server::Response, tungstenite::handshake::server::ErrorResponse>
+{
+    assert_eq!(
+        request.headers().get("sec-websocket-protocol"),
+        Some(&tungstenite::http::HeaderValue::from_static(
+            "telchar-nomad-transfer-v1"
+        ))
+    );
+    response.headers_mut().insert(
+        "sec-websocket-protocol",
+        tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
+    );
+    Ok(response)
+}
+
+fn manifest() -> InputManifest {
+    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned();
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();
+    InputManifest {
+        derivation_path: derivation.clone(),
+        build: BuildSpecification {
+            derivation_path: derivation.into_bytes(),
+            outputs: vec![NamedOutput {
+                name: b"out".to_vec(),
+                path: output.clone().into_bytes(),
+            }],
+            input_sources: vec![input.clone().into_bytes()],
+            system: "x86_64-linux".to_owned(),
+            required_system_features: vec![],
+            builder: b"/bin/sh".to_vec(),
+            arguments: vec![b"-e".to_vec()],
+            environment: vec![
+                (b"system".to_vec(), b"x86_64-linux".to_vec()),
+                (b"builder".to_vec(), b"/bin/sh".to_vec()),
+                (b"name".to_vec(), b"build".to_vec()),
+                (b"out".to_vec(), output.into_bytes()),
+            ],
+        },
+        paths: vec![PathManifestEntry {
+            path: input,
+            nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            nar_size: 42,
+            references: vec![],
+            deriver: None,
+        }],
+        outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+    }
+}
+
+#[test]
+fn receives_exact_bounded_manifest_after_authentication() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let endpoint = format!("ws://{}/callback", listener.local_addr().expect("address"));
+    let environment = workload_environment(&endpoint);
+    let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
+        .expect("worker environment parses");
+    let expected = manifest();
+    let sent = expected.clone();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("callback accepted");
+        let mut socket = tungstenite::accept_hdr(stream, select_protocol).expect("socket accepts");
+        let _ = socket.read().expect("authentication reads");
+        let metadata = encode_metadata(&sent, 64 * 1024).expect("manifest encodes");
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &Frame::new(FrameKind::InputManifest, metadata, vec![]),
+            ProtocolLimits::new(64 * 1024, 0),
+        )
+        .expect("manifest frame writes");
+        socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .expect("manifest sends");
+    });
+
+    let received = receive_manifest(&config).expect("worker receives manifest");
+    assert_eq!(received.manifest(), &expected);
+    server.join().expect("server joins");
+}
+
 #[test]
 fn sends_one_bounded_authentication_frame_over_websocket() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
@@ -131,26 +218,6 @@ fn sends_one_bounded_authentication_frame_over_websocket() {
     let environment = workload_environment(&endpoint);
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
         .expect("worker environment parses");
-    #[allow(clippy::result_large_err)]
-    fn select_protocol(
-        request: &tungstenite::handshake::server::Request,
-        mut response: tungstenite::handshake::server::Response,
-    ) -> Result<
-        tungstenite::handshake::server::Response,
-        tungstenite::handshake::server::ErrorResponse,
-    > {
-        assert_eq!(
-            request.headers().get("sec-websocket-protocol"),
-            Some(&tungstenite::http::HeaderValue::from_static(
-                "telchar-nomad-transfer-v1"
-            ))
-        );
-        response.headers_mut().insert(
-            "sec-websocket-protocol",
-            tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
-        );
-        Ok(response)
-    }
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("callback accepted");
         let mut socket =

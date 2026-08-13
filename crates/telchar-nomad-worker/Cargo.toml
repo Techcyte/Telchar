@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 telchar = { path = "../telchar" }
+nix-worker-protocol = { path = "../nix-worker-protocol" }
 base64 = "0.22"
 reqwest.workspace = true
 tungstenite.workspace = true

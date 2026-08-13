@@ -7,14 +7,86 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad_transfer_protocol::{
-    encode_metadata, write_frame, Authentication, AuthenticationProof, Frame, FrameKind,
-    ProtocolLimits,
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    Direction, Frame, FrameKind, InputManifest, PathSet, ProtocolLimits, ProtocolSession,
 };
+use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
 use url::Url;
 
 const MAXIMUM_ENVIRONMENT_VALUE_BYTES: usize = 4096;
 const MAXIMUM_AUTHENTICATION_METADATA_BYTES: usize = 16 * 1024;
+const MAXIMUM_MANIFEST_METADATA_BYTES: usize = 1024 * 1024;
+const MAXIMUM_MANIFEST_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
+const MAXIMUM_INPUT_NAR_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+type WorkerSocket =
+    tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+
+pub struct WorkerSession {
+    socket: WorkerSocket,
+    manifest: InputManifest,
+    protocol: ProtocolSession,
+}
+
+impl WorkerSession {
+    pub fn manifest(&self) -> &InputManifest {
+        &self.manifest
+    }
+
+    pub fn into_parts(self) -> (WorkerSocket, InputManifest) {
+        (self.socket, self.manifest)
+    }
+
+    pub fn resolve_inputs(&mut self, store_uri: &str) -> io::Result<PathSet> {
+        let endpoint = GatewayStoreEndpoint::parse(store_uri)
+            .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        let mut store = GatewayStoreConnection::connect(&endpoint)
+            .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        let mut valid = Vec::new();
+        for entry in &self.manifest.paths {
+            if store
+                .is_valid_path(entry.path.as_bytes())
+                .map_err(|_| io::Error::other("worker Nix store query failed"))?
+            {
+                valid.push(entry.path.clone());
+            }
+        }
+        let valid = PathSet { paths: valid };
+        self.send_metadata(FrameKind::ValidPaths, &valid)?;
+        let available = valid
+            .paths
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let requested = PathSet {
+            paths: self
+                .manifest
+                .paths
+                .iter()
+                .map(|entry| &entry.path)
+                .filter(|path| !available.contains(path))
+                .cloned()
+                .collect(),
+        };
+        self.send_metadata(FrameKind::InputRequest, &requested)?;
+        Ok(requested)
+    }
+
+    fn send_metadata<T: serde::Serialize>(&mut self, kind: FrameKind, value: &T) -> io::Result<()> {
+        let metadata = encode_metadata(value, MAXIMUM_MANIFEST_METADATA_BYTES)?;
+        let frame = Frame::new(kind, metadata, Vec::new());
+        self.protocol.accept(Direction::WorkerToGateway, kind)?;
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &frame,
+            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
+        )?;
+        self.socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .map_err(|_| io::Error::other("worker input resolution send failed"))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -146,9 +218,7 @@ impl WorkerConfig {
     }
 }
 
-pub fn connect(
-    config: &WorkerConfig,
-) -> io::Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>> {
+pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     let metadata = encode_metadata(
         config.authentication(),
         MAXIMUM_AUTHENTICATION_METADATA_BYTES,
@@ -181,6 +251,52 @@ pub fn connect(
         .send(tungstenite::Message::Binary(body.into()))
         .map_err(|_| io::Error::other("worker callback authentication failed"))?;
     Ok(socket)
+}
+
+pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
+    let mut socket = connect(config)?;
+    let message = loop {
+        match socket
+            .read()
+            .map_err(|_| io::Error::other("worker manifest receive failed"))?
+        {
+            tungstenite::Message::Binary(body) => break body,
+            tungstenite::Message::Ping(payload) => socket
+                .send(tungstenite::Message::Pong(payload))
+                .map_err(|_| io::Error::other("worker manifest receive failed"))?,
+            tungstenite::Message::Close(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "worker callback closed before manifest",
+                ));
+            }
+            tungstenite::Message::Text(_)
+            | tungstenite::Message::Pong(_)
+            | tungstenite::Message::Frame(_) => {
+                return Err(invalid("worker manifest message is invalid"));
+            }
+        }
+    };
+    let mut input = message.as_ref();
+    let frame = read_frame(
+        &mut input,
+        ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
+    )?;
+    if !input.is_empty() || frame.kind() != FrameKind::InputManifest || !frame.payload().is_empty()
+    {
+        return Err(invalid("worker manifest frame is invalid"));
+    }
+    let manifest: InputManifest =
+        decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)?;
+    manifest.validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)?;
+    let mut protocol = ProtocolSession::new();
+    protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
+    protocol.accept(Direction::GatewayToWorker, FrameKind::InputManifest)?;
+    Ok(WorkerSession {
+        socket,
+        manifest,
+        protocol,
+    })
 }
 
 pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
