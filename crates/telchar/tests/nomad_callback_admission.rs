@@ -228,7 +228,13 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
     )
     .expect("resolver creates");
     let mut exact = authentication("request-postgres");
-    exact.shared_build_digest = URL_SAFE_NO_PAD.encode(digest);
+    exact.shared_build_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(format!(
+        "/nix/store/00000000000000000000000000000000-callback.drv:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )));
 
     assert!(resolver
         .resolve(&exact)

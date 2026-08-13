@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 
 use crate::nomad_backend::NomadClient;
 use crate::nomad_transfer_authentication::{
@@ -141,7 +142,15 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
         {
             return Ok(None);
         }
-        let shared_build_digest = URL_SAFE_NO_PAD.encode(build.request_digest);
+        let request_digest = build
+            .request_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let shared_build_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(format!(
+            "{}:{request_digest}",
+            build.derivation_path
+        )));
         if authentication.shared_build_digest != shared_build_digest {
             return Ok(None);
         }
