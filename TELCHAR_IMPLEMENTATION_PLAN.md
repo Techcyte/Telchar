@@ -1530,10 +1530,11 @@ The durable coordinator is intentionally an extension seam rather than a reduced
   - Verify: operator checklist.
   - Evidence: `docs/operator-checklist.md` provides deployment, identity, credential, host-key, store, PostgreSQL, backend, recovery, client, logging, shutdown, sizing, non-goal, and release checklists aligned with the accepted gateway and Nomad transfer ADRs.
 
-- [ ] T145 Add one focused release verification command
+- [x] T145 Add one focused release verification command
   - Depends on: T133, T139, T142, T143, T144
   - Outcome: one command verifies formatting, lint, tests, package/module checks, duplicate coalescing, restart reconciliation, and stock-Nix builds through local, static SSH, and Nomad backends.
   - Verify: clean-shell release command.
+  - Evidence: `scripts/check-release.sh` runs rustfmt check, the full locked workspace test/check/clippy suite, reproducible daemon and worker package builds, the public NixOS module VM, the local Gate 3 stock-Nix contract, static SSH gateway, duplicate/disconnect/reuse Nomad gateway, and restart-reconciliation fixtures. Nomad evaluation explicitly enables the pinned unfree package only for that impure check.
 
 - [ ] T146 Verify the MVP release candidate
   - Depends on: T145
