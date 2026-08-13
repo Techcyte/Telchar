@@ -371,6 +371,7 @@
                 stock_client.succeed("grep -Eqi 'unable to start any build|0 local jobs|no enabled build users|cannot build|no machines' /tmp/local-build.out || { cat /tmp/local-build.out >&2; exit 1; }")
                 gateway.succeed("mkdir -p /run/telchar-direct-bin /var/lib/telchar-direct-client")
                 gateway.succeed("nix --extra-experimental-features nix-command copy --no-check-sigs --to 'local?root=/var/lib/telchar-direct-client' ${pkgs.runtimeShell}")
+                gateway.succeed("derivation_path=$(nix-instantiate ${remoteOnlyDerivation}); nix --extra-experimental-features nix-command copy --no-check-sigs --to 'local?root=/var/lib/telchar-direct-client' \"$derivation_path\"")
                 gateway.succeed("printf '#!/bin/sh\\nset -eu\\ncase \" $* \" in *\" -O check \"*) exit 1 ;; esac\\nprintf '\"'\"'started\\n'\"'\"'\\nexec sudo -u telchar-ingress env TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY=SHA256:direct-stdio ${
                   self.packages.${system}.telchar
                 }/bin/telchar serve-stdio\\n' > /run/telchar-direct-bin/ssh && chmod 755 /run/telchar-direct-bin/ssh")
