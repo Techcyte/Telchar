@@ -93,7 +93,6 @@ nix build .#telchar-nomad-worker
 - [Nomad backend](docs/nomad.md)
 - [Nix compatibility](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
-- [Architecture decisions](docs/adr/)
 
 ## AI usage
 

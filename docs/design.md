@@ -40,7 +40,9 @@ The infrastructure scheduler owns machine placement and autoscaling. Nix stores 
 
 OpenSSH starts `telchar serve-stdio` as a restricted forced command for each client connection. The frontend attaches authenticated identity to the worker-protocol stream and forwards it over a private Unix socket. It has no database access and does not schedule work.
 
-One `telchar daemon` process owns the socket, scheduling, gateway-store access, backends, callback service, recovery monitors, and maintenance work. Before becoming ready it takes a fixed PostgreSQL advisory lock. Lock contention rejects startup. Losing the lock connection fences the daemon and causes a bounded shutdown.
+One `telchar daemon` process owns the socket, scheduling, gateway-store access, backends, callback service, recovery monitors, and maintenance work. Before becoming ready it takes the fixed PostgreSQL advisory lock `0x5445_4c43_4841_5202` on a dedicated lifetime connection. The lock connection performs no ordinary transactions.
+
+Lock contention rejects startup before listeners or backend side effects begin. Losing the connection permanently fences the daemon: it closes admission, prevents new mutations and submissions, joins bounded service work, and exits. Reconnecting does not restore ownership. PostgreSQL releases the lock after connection loss or process death, allowing a replacement daemon to perform normal recovery.
 
 This is single-active process exclusion, not high availability. A standby design would need leadership epochs, callback routing, dispatch fencing, and shared or replicated gateway-store authority.
 
@@ -57,7 +59,16 @@ This is single-active process exclusion, not high availability. A standby design
 9. Every declared output is returned to the gateway, validated, imported, and confirmed in the store.
 10. Telchar records one terminal result and replies using the normal Nix worker protocol.
 
-The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Requester disconnect does not cancel admitted work under the default policy.
+One equivalent derivation has at most one active shared execution. The derivation path and a digest of the admitted specification protect request equivalence. Shared builds move through `claimed`, `running`, `collecting`, `succeeded`, or `failed`.
+
+The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Queue and active limits are transactional. Backend capacity is a separate gate, so an admitted build may wait for its selected backend permit.
+
+Requester disconnect behavior is operator configuration:
+
+- `detach-and-finish` is the default and leaves admitted work running;
+- `cancel-running` cancels and reaps the owned execution.
+
+Client bytes cannot select the policy. A disconnected requester cannot resume its original protocol stream. A later equivalent request may join active work or reuse completed outputs, but receives neither earlier logs nor the old byte stream.
 
 A failed shared build is terminal. Telchar does not automatically retry it. A later independent request may create replacement work after checking the gateway store.
 
@@ -75,6 +86,17 @@ A compatible backend is fungible only before dispatch. In-flight work is never m
 ## Gateway store
 
 The gateway Nix store is durable authority for admitted inputs, returned outputs, retention, and restart recovery. Telchar accesses it through typed worker-protocol operations rather than the Nix C++ ABI or shell commands.
+
+NAR import follows a fixed validation order:
+
+1. parse one bounded NAR while computing its hash and size;
+2. compare those values with independently declared metadata;
+3. validate the path, references, deriver, and supported content-address fields;
+4. require non-self references to exist in the gateway store;
+5. stream the normalized metadata and NAR with `AddToStoreNar`;
+6. query the store and require the registered metadata to match.
+
+Malformed data, metadata disagreement, missing references, interruption, or daemon failure fails closed. Telchar does not use `nix-store --import`, `nix store add`, or the Nix C++ ABI for production import.
 
 Transfers are streamed with bounded memory. Store leases and GC roots keep paths alive while requests, active executions, transfers, or configured output retention still require them. Telchar controls eligibility; Nix garbage collection performs deletion.
 
@@ -96,7 +118,7 @@ Submits a deterministic batch job and persists its identity before monitoring. A
 
 The callback uses WebSocket transport with the `telchar-nomad-transfer-v1` subprotocol and typed TLNW messages. Authentication is workload identity or an HMAC capability. Public `wss://` endpoints require an operator-managed TLS terminator; Telchar itself listens with plaintext WebSocket.
 
-See [Nomad backend](nomad.md) and the [Nomad transfer ADR](adr/nomad-allocation-transfer.md).
+See [Nomad backend](nomad.md).
 
 ## Security boundary
 
@@ -110,7 +132,7 @@ Hostile multi-tenancy needs a separate store, cache, log, backend, and recovery 
 
 ## Protocol boundary
 
-The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, and fuzz targets. It contains no Telchar identity, scheduling, persistence, backend, or exporter policy. Dependency checks enforce that direction.
+The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, property tests, and fuzz targets. It may emit `tracing` instrumentation but contains no Telchar identity, scheduling, persistence, backend, service configuration, or OpenTelemetry exporter policy. Telchar may depend on the protocol crate; the reverse dependency is forbidden. `scripts/check-protocol-boundary.sh` enforces that direction.
 
 Unknown or unsupported operations fail closed because the worker protocol has no generic envelope that can safely skip arbitrary messages. Compatibility claims require typed coverage and real Nix fixtures, not only a matching protocol number.
 
@@ -130,4 +152,4 @@ Telchar does not:
 - provide hostile multi-tenant isolation;
 - terminate TLS.
 
-Future work is tracked in the [roadmap](roadmap.md). Lasting decisions live under [`docs/adr`](adr/).
+Future work is tracked in the [roadmap](roadmap.md).
