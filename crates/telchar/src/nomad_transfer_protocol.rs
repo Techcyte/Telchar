@@ -198,6 +198,148 @@ pub struct BuildResultMetadata {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputState {
+    Expected,
+    Declared { nar_size: u64 },
+    Received,
+    Accepted,
+}
+
+#[derive(Debug)]
+pub struct OutputTransferSession {
+    outputs: std::collections::BTreeMap<String, OutputState>,
+    maximum_nar_bytes: u64,
+    maximum_total_bytes: u64,
+    maximum_diagnostic_bytes: usize,
+    declared_total_bytes: u64,
+    complete: bool,
+}
+
+impl OutputTransferSession {
+    pub fn new(
+        expected_outputs: Vec<String>,
+        maximum_nar_bytes: u64,
+        maximum_total_bytes: u64,
+        maximum_diagnostic_bytes: usize,
+    ) -> io::Result<Self> {
+        if expected_outputs.is_empty()
+            || maximum_nar_bytes == 0
+            || maximum_total_bytes == 0
+            || maximum_diagnostic_bytes == 0
+        {
+            return Err(invalid_data(
+                "Nomad output transfer configuration is invalid",
+            ));
+        }
+        let mut outputs = std::collections::BTreeMap::new();
+        for output in expected_outputs {
+            validate_store_path(&output, false)?;
+            if outputs.insert(output, OutputState::Expected).is_some() {
+                return Err(invalid_data(
+                    "Nomad output transfer contains duplicate output",
+                ));
+            }
+        }
+        Ok(Self {
+            outputs,
+            maximum_nar_bytes,
+            maximum_total_bytes,
+            maximum_diagnostic_bytes,
+            declared_total_bytes: 0,
+            complete: false,
+        })
+    }
+
+    pub fn declare(&mut self, metadata: NarMetadata) -> io::Result<()> {
+        if self.complete {
+            return Err(invalid_data("Nomad output transfer is complete"));
+        }
+        metadata.validate_against(
+            &self.outputs.keys().cloned().collect::<Vec<_>>(),
+            self.maximum_nar_bytes,
+        )?;
+        let state = self
+            .outputs
+            .get_mut(&metadata.path)
+            .ok_or_else(|| invalid_data("Nomad output is not expected"))?;
+        if *state != OutputState::Expected {
+            return Err(invalid_data("Nomad output metadata is duplicated"));
+        }
+        let declared_total_bytes = self
+            .declared_total_bytes
+            .checked_add(metadata.nar_size)
+            .filter(|total| *total <= self.maximum_total_bytes)
+            .ok_or_else(|| invalid_data("Nomad output transfer exceeds total byte limit"))?;
+        *state = OutputState::Declared {
+            nar_size: metadata.nar_size,
+        };
+        self.declared_total_bytes = declared_total_bytes;
+        Ok(())
+    }
+
+    pub fn receive_nar(&mut self, path: &str, received_bytes: u64) -> io::Result<()> {
+        if self.complete {
+            return Err(invalid_data("Nomad output transfer is complete"));
+        }
+        let state = self
+            .outputs
+            .get_mut(path)
+            .ok_or_else(|| invalid_data("Nomad output is not expected"))?;
+        match *state {
+            OutputState::Declared { nar_size } if nar_size == received_bytes => {
+                *state = OutputState::Received;
+                Ok(())
+            }
+            _ => Err(invalid_data("Nomad output NAR does not match declaration")),
+        }
+    }
+
+    pub fn record_receipt(&mut self, receipt: OutputReceipt) -> io::Result<()> {
+        if self.complete || !receipt.accepted {
+            return Err(invalid_data("Nomad output receipt is invalid"));
+        }
+        let state = self
+            .outputs
+            .get_mut(&receipt.path)
+            .ok_or_else(|| invalid_data("Nomad output is not expected"))?;
+        if *state != OutputState::Received {
+            return Err(invalid_data("Nomad output receipt is out of order"));
+        }
+        *state = OutputState::Accepted;
+        Ok(())
+    }
+
+    pub fn finish(&mut self, result: &BuildResultMetadata) -> io::Result<()> {
+        if self.complete {
+            return Err(invalid_data("Nomad output transfer is complete"));
+        }
+        if result
+            .diagnostic
+            .as_ref()
+            .is_some_and(|diagnostic| diagnostic.len() > self.maximum_diagnostic_bytes)
+        {
+            return Err(invalid_data("Nomad build diagnostic exceeds limit"));
+        }
+        match result.outcome {
+            BuildOutcome::Built
+                if result.diagnostic.is_none()
+                    && self
+                        .outputs
+                        .values()
+                        .all(|state| *state == OutputState::Accepted) => {}
+            BuildOutcome::Failed => {}
+            _ => return Err(invalid_data("Nomad terminal build result is invalid")),
+        }
+        self.complete = true;
+        Ok(())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum FrameKind {
     Authenticate = 1,
