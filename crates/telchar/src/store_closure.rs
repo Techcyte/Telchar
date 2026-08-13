@@ -9,7 +9,10 @@ const MAXIMUM_CLOSURE_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClosurePath {
     pub store_path: String,
+    pub nar_hash: String,
     pub nar_size: u64,
+    pub references: Vec<String>,
+    pub deriver: Option<String>,
 }
 
 pub trait StoreClosureBackend: Send {
@@ -57,14 +60,27 @@ impl StoreClosureBackend for GatewayStoreClosureBackend {
     }
 }
 
+struct ClosurePathInfo {
+    nar_hash: String,
+    nar_size: u64,
+    references: Vec<Vec<u8>>,
+    deriver: Option<Vec<u8>>,
+}
+
 trait PathInfoQuery {
-    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>>;
+    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<ClosurePathInfo>>;
 }
 
 impl PathInfoQuery for GatewayStoreConnection {
-    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>> {
-        self.query_path_info(path)
-            .map(|info| info.map(|info| (info.references().to_vec(), info.nar_size())))
+    fn query_path(&mut self, path: &[u8]) -> io::Result<Option<ClosurePathInfo>> {
+        self.query_path_info(path).map(|info| {
+            info.map(|info| ClosurePathInfo {
+                nar_hash: info.nar_hash_hex().to_owned(),
+                nar_size: info.nar_size(),
+                references: info.references().to_vec(),
+                deriver: info.deriver().map(ToOwned::to_owned),
+            })
+        })
     }
 }
 
@@ -78,22 +94,22 @@ fn compute_input_closure(
     let mut pending = VecDeque::new();
     let mut discovered = BTreeSet::new();
     let mut retained_bytes = 0_usize;
-    let mut sizes = std::collections::BTreeMap::new();
+    let mut metadata = std::collections::BTreeMap::new();
     for root in roots {
         add_path(root, &mut pending, &mut discovered, &mut retained_bytes)?;
     }
 
     while let Some(path) = pending.pop_front() {
-        let (references, nar_size) = store
+        let info = store
             .query_path(&path)
             .map_err(|_| query_error())?
             .ok_or_else(query_error)?;
-        if nar_size == 0 || sizes.insert(path.clone(), nar_size).is_some() {
+        if info.nar_size == 0 || metadata.insert(path.clone(), info).is_some() {
             return Err(query_error());
         }
-        for reference in references {
+        for reference in &metadata.get(&path).ok_or_else(query_error)?.references {
             add_path(
-                &reference,
+                reference,
                 &mut pending,
                 &mut discovered,
                 &mut retained_bytes,
@@ -104,10 +120,20 @@ fn compute_input_closure(
     discovered
         .into_iter()
         .map(|path| {
-            let nar_size = sizes.remove(&path).ok_or_else(query_error)?;
+            let info = metadata.remove(&path).ok_or_else(query_error)?;
             Ok(ClosurePath {
                 store_path: String::from_utf8(path).map_err(|_| query_error())?,
-                nar_size,
+                nar_hash: info.nar_hash,
+                nar_size: info.nar_size,
+                references: info
+                    .references
+                    .into_iter()
+                    .map(|reference| String::from_utf8(reference).map_err(|_| query_error()))
+                    .collect::<io::Result<Vec<_>>>()?,
+                deriver: info
+                    .deriver
+                    .map(|deriver| String::from_utf8(deriver).map_err(|_| query_error()))
+                    .transpose()?,
             })
         })
         .collect()
@@ -181,13 +207,19 @@ mod tests {
     }
 
     impl PathInfoQuery for Store {
-        fn query_path(&mut self, path: &[u8]) -> io::Result<Option<(Vec<Vec<u8>>, u64)>> {
+        fn query_path(&mut self, path: &[u8]) -> io::Result<Option<ClosurePathInfo>> {
             self.queries.push(path.to_vec());
             Ok(self
                 .paths
                 .get(path)
                 .cloned()
-                .map(|references| (references, 1)))
+                .map(|references| ClosurePathInfo {
+                    nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .to_owned(),
+                    nar_size: 1,
+                    references,
+                    deriver: None,
+                }))
         }
     }
 
@@ -215,7 +247,18 @@ mod tests {
                 .into_iter()
                 .map(|path| ClosurePath {
                     store_path: String::from_utf8(path.to_vec()).unwrap(),
+                    nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .to_owned(),
                     nar_size: 1,
+                    references: store
+                        .paths
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|reference| String::from_utf8(reference).unwrap())
+                        .collect(),
+                    deriver: None,
                 })
                 .collect::<Vec<_>>()
         );
