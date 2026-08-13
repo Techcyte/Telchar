@@ -21,7 +21,16 @@ static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn live_set_options_request_returns_terminal_frame() {
-    let mut fixture = FrontendFixture::spawn(None);
+    let otlp_endpoint = std::env::var("TELCHAR_TEST_OTLP_ENDPOINT").ok();
+    let mut fixture = FrontendFixture::spawn_configured(
+        None,
+        None,
+        otlp_endpoint
+            .as_ref()
+            .into_iter()
+            .map(|endpoint| ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone())),
+        Some("cancel-running"),
+    );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
 

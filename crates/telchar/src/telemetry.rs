@@ -495,23 +495,50 @@ mod tests {
     fn exports_set_options_event_to_otlp() {
         let _guard = TELEMETRY_TESTS.lock().expect("telemetry test lock");
         let collector = start_collector();
-        let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
-            .args([
-                "test",
-                "--test",
-                "operation_dispatch",
-                "--locked",
-                "live_set_options_request_returns_terminal_frame",
-            ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
-            .output()
+        let current_executable = std::env::current_exe().expect("current test executable");
+        let test_directory = current_executable
+            .parent()
+            .expect("test executable directory")
+            .to_owned();
+        let telchar_binary = test_directory
+            .parent()
+            .expect("target profile directory")
+            .join("telchar");
+        let test_binary = std::fs::read_dir(test_directory)
+            .expect("test binary directory reads")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("operation_dispatch-"))
+                    && entry.path().is_file()
+            })
+            .filter(|entry| {
+                Command::new(entry.path())
+                    .args(["--list", "--format", "terse"])
+                    .output()
+                    .is_ok_and(|output| {
+                        output.status.success()
+                            && String::from_utf8_lossy(&output.stdout)
+                                .contains("live_set_options_request_returns_terminal_frame: test")
+                    })
+            })
+            .max_by_key(|entry| {
+                entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            })
+            .map(|entry| entry.path())
+            .expect("operation_dispatch test binary");
+        let status = Command::new(test_binary)
+            .arg("live_set_options_request_returns_terminal_frame")
+            .env("CARGO_BIN_EXE_telchar", telchar_binary)
+            .env("TELCHAR_TEST_OTLP_ENDPOINT", collector.endpoint())
+            .status()
             .expect("SetOptions test process starts");
-        assert!(
-            output.status.success(),
-            "SetOptions test process failed: {output:?}"
-        );
-
+        assert!(status.success(), "SetOptions test process failed: {status}");
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && !collector.has_log_event("worker.set_options.completed")
         {
