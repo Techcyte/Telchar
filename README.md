@@ -99,6 +99,7 @@ The gateway image starts `telchar daemon`; the worker image starts `telchar-noma
 ## Documentation
 
 - [Architecture](docs/design.md)
+- [Code tour](docs/code-tour.md)
 - [Operator guide](docs/operations.md)
 - [Nomad backend](docs/nomad.md)
 - [Nix compatibility](docs/compatibility.md)
