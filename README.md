@@ -1,5 +1,10 @@
 # Telchar
 
+## AI Usage Disclosure
+The original implementation for Telchar was planned out by a human with AI assistance for all the features and issues. Actual coding took place almost entirely with an AI agent for the initial implementation. I was curious if I could actually make something useful by planning something out before-hand and then giving that to an LLM to completely implement, time will tell if that was a horrible idea or not. 
+
+## Description 
+
 Telchar is intended to be a self-hosted Nix build gateway. It will present one stable remote-builder endpoint to stock Nix clients, apply admission and scheduling policy, and dispatch submitted build operations to compatible execution backends.
 
 Clients will continue using ordinary Nix commands and remote-builder configuration. They will not need a custom client, a patched Nix installation, or knowledge of the execution fleet.
