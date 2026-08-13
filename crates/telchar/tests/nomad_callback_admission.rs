@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::io;
 use std::time::{Duration, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -18,8 +18,8 @@ use telchar::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, VerifiedHmacRequest,
 };
 use telchar::nomad_transfer_protocol::{
-    encode_metadata, write_frame, Authentication, AuthenticationProof, Direction, Frame, FrameKind,
-    ProtocolLimits,
+    Authentication, AuthenticationProof, Direction, Frame, FrameKind, ProtocolLimits,
+    encode_metadata, write_frame,
 };
 
 const SECRET: &[u8] = b"backend-signing-secret\n";
@@ -195,10 +195,12 @@ fn resolves_exact_active_callback_execution() {
     );
     let mut foreign = authentication("request-foreign");
     foreign.job_id = "foreign-job".to_owned();
-    assert!(resolver
-        .resolve(&foreign)
-        .expect("foreign resolves")
-        .is_none());
+    assert!(
+        resolver
+            .resolve(&foreign)
+            .expect("foreign resolves")
+            .is_none()
+    );
 }
 
 #[test]
@@ -246,10 +248,12 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
     );
     let mut foreign = exact.clone();
     foreign.shared_build_digest = "foreign".to_owned();
-    assert!(resolver
-        .resolve(&foreign)
-        .expect("foreign execution resolves")
-        .is_none());
+    assert!(
+        resolver
+            .resolve(&foreign)
+            .expect("foreign execution resolves")
+            .is_none()
+    );
 }
 
 #[test]
@@ -286,14 +290,16 @@ fn requires_replay_reservation_before_allocation_lookup() {
     let replay = RecordingReplayAuthority::default();
     let mut admission = CallbackAdmission::with_replay(hmac_verifier(), allocation, replay, 4096);
 
-    assert!(admission
-        .admit(
-            &frame(&authentication("request-durable")),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        admission
+            .admit(
+                &frame(&authentication("request-durable")),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
     assert!(admission.allocation_verifier().calls.borrow().is_empty());
 }
 
@@ -304,14 +310,16 @@ fn rejects_invalid_frame_before_allocation_lookup() {
     let mut body = frame(&authentication("request-2"));
     body.push(0);
 
-    assert!(admission
-        .admit(
-            &body,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        admission
+            .admit(
+                &body,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
     assert!(admission.allocation_verifier().calls.borrow().is_empty());
 }
 
@@ -324,21 +332,25 @@ fn rejects_unverified_allocation_and_consumes_authenticated_nonce() {
     let mut admission = CallbackAdmission::new(hmac_verifier(), allocation, 4096);
     let body = frame(&authentication("request-3"));
 
-    assert!(admission
-        .admit(
-            &body,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
-    assert!(admission
-        .admit(
-            &body,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        admission
+            .admit(
+                &body,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
+    assert!(
+        admission
+            .admit(
+                &body,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
     assert_eq!(admission.allocation_verifier().calls.borrow().len(), 1);
 }

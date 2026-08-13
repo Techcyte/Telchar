@@ -1,8 +1,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    WorkerClient, WorkerPathInfo, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC,
-    STDERR_ERROR, STDERR_LAST,
+    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
+    WorkerClient, WorkerPathInfo,
 };
 
 const PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
@@ -192,9 +192,11 @@ fn duplicate_references_and_signatures_are_rejected() {
         integer(&mut duplicate_reference, value);
     }
     byte_string(&mut duplicate_reference, b"");
-    assert!(connected(duplicate_reference)
-        .query_path_info(PATH)
-        .is_err());
+    assert!(
+        connected(duplicate_reference)
+            .query_path_info(PATH)
+            .is_err()
+    );
 
     let mut duplicate_signature = Vec::new();
     integer(&mut duplicate_signature, STDERR_LAST);
@@ -209,9 +211,11 @@ fn duplicate_references_and_signatures_are_rejected() {
     byte_string(&mut duplicate_signature, b"same");
     byte_string(&mut duplicate_signature, b"same");
     byte_string(&mut duplicate_signature, b"");
-    assert!(connected(duplicate_signature)
-        .query_path_info(PATH)
-        .is_err());
+    assert!(
+        connected(duplicate_signature)
+            .query_path_info(PATH)
+            .is_err()
+    );
 }
 
 #[test]

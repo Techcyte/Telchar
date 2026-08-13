@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_promotion::{
-    validate_and_promote_nar, DeclaredPathInfo, PromotionRequest, RegisteredPathInfo,
-    StorePromotionBackend, MAXIMUM_PROMOTION_REFERENCES,
+    DeclaredPathInfo, MAXIMUM_PROMOTION_REFERENCES, PromotionRequest, RegisteredPathInfo,
+    StorePromotionBackend, validate_and_promote_nar,
 };
 use telchar::transfer_limits::{LimitedReader, TransferBudget};
 
@@ -125,9 +125,11 @@ fn real_store_rejects_mutated_nar_before_authoritative_registration() {
         error.to_string().contains("NAR hash mismatch"),
         "mutation did not reach staged hash comparison: {error}"
     );
-    assert!(!source_daemon
-        .is_valid_path(&path)
-        .expect("authoritative path query"));
+    assert!(
+        !source_daemon
+            .is_valid_path(&path)
+            .expect("authoritative path query")
+    );
 
     source_daemon.stop().expect("source daemon stops");
     source_fixture.cleanup().expect("source fixture cleans");

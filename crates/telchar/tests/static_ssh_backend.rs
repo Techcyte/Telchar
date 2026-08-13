@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telchar::backend::{BuildBackend, BuildExecution};
 use telchar::config::ServiceConfig;
-use telchar::static_ssh_backend::{verify_configured_backends, StaticSshBackend};
+use telchar::static_ssh_backend::{StaticSshBackend, verify_configured_backends};
 use telchar::store_daemon::GatewayStoreEndpoint;
 
 #[path = "support/build_request.rs"]

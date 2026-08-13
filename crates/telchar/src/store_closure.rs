@@ -280,11 +280,13 @@ mod tests {
     #[test]
     fn missing_root_or_reference_fails_closed() {
         let mut missing_root = store();
-        assert!(compute_input_closure(
-            &mut missing_root,
-            &[b"/nix/store/00000000000000000000000000000000-missing".to_vec()]
-        )
-        .is_err());
+        assert!(
+            compute_input_closure(
+                &mut missing_root,
+                &[b"/nix/store/00000000000000000000000000000000-missing".to_vec()]
+            )
+            .is_err()
+        );
 
         let mut missing_reference = store();
         missing_reference.paths.remove(LEAF);

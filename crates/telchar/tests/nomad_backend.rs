@@ -5,8 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use serde_json::Value;
@@ -17,7 +17,7 @@ use telchar::backend::{
 use telchar::backend_routing::ConfiguredBackends;
 use telchar::config::ServiceConfig;
 use telchar::nomad_backend::{
-    deterministic_job_name, render_job, NomadClient, NomadExecutionState,
+    NomadClient, NomadExecutionState, deterministic_job_name, render_job,
 };
 
 mod support;
@@ -316,9 +316,11 @@ command = "/opt/telchar/bin/worker"
         URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
     );
     assert!(claims["allocation_id"].is_null());
-    assert!(claims["request_key"]
-        .as_str()
-        .is_some_and(|key| !key.is_empty()));
+    assert!(
+        claims["request_key"]
+            .as_str()
+            .is_some_and(|key| !key.is_empty())
+    );
     assert!(
         claims["expires_at"].as_u64().expect("expiry is numeric")
             > claims["issued_at"].as_u64().expect("issue time is numeric")
@@ -564,8 +566,10 @@ fn verifies_exact_callback_allocation_identity() {
     let client = NomadClient::new(config).expect("Nomad client constructs");
     let server = thread::spawn(move || {
         let (mut request, _) = listener.accept().expect("allocation request accepts");
-        assert!(read_http_request(&mut request)
-            .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n"));
+        assert!(
+            read_http_request(&mut request)
+                .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n")
+        );
         write_json_response(
             &mut request,
             200,

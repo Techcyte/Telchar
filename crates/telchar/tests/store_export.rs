@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use telchar::nix_fixture::{NixFixture, TrustMode};
 use telchar::store_export::{
-    export_verified_nar, export_verified_nar_with_limits, validate_store_output,
     GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
+    export_verified_nar, export_verified_nar_with_limits, validate_store_output,
 };
 use telchar::store_promotion::RegisteredPathInfo;
 use telchar::transfer_limits::{TransferBudget, TransferLimits};

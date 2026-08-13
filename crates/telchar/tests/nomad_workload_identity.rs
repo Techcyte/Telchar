@@ -3,9 +3,9 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jsonwebtoken::{decode_header, Algorithm};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use jsonwebtoken::{Algorithm, decode_header};
 use telchar::nomad_callback::AuthenticationVerifier;
 use telchar::nomad_transfer_authentication::{WorkloadIdentityPolicy, WorkloadIdentityVerifier};
 use telchar::nomad_transfer_protocol::{Authentication, AuthenticationProof};
@@ -46,8 +46,10 @@ fn fetches_bounded_jwks_and_verifies_exact_nomad_claims() {
         let (mut stream, _) = listener.accept().expect("JWKS request accepts");
         let mut request = [0_u8; 1024];
         let length = stream.read(&mut request).expect("request reads");
-        assert!(String::from_utf8_lossy(&request[..length])
-            .starts_with("GET /.well-known/jwks.json HTTP/1.1\r\n"));
+        assert!(
+            String::from_utf8_lossy(&request[..length])
+                .starts_with("GET /.well-known/jwks.json HTTP/1.1\r\n")
+        );
         let body = format!(
             r#"{{"keys":[{{"kty":"RSA","kid":"key-1","use":"sig","alg":"RS256","n":"{MODULUS}","e":"AQAB"}}]}}"#
         );
@@ -117,14 +119,16 @@ fn rejects_foreign_claims_and_unsupported_algorithm() {
         clock_skew: Duration::from_secs(30),
     };
     let mut verifier = WorkloadIdentityVerifier::new(policy).expect("verifier creates");
-    assert!(verifier
-        .verify_authentication(
-            &authentication(FOREIGN_TOKEN.to_owned()),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(1_000),
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify_authentication(
+                &authentication(FOREIGN_TOKEN.to_owned()),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(1_000),
+            )
+            .is_err()
+    );
     server.join().expect("server joins");
 
     assert_eq!(
@@ -135,12 +139,14 @@ fn rejects_foreign_claims_and_unsupported_algorithm() {
     let unsupported_header =
         URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT","kid":"key-1"}"#);
     let unsupported = format!("{unsupported_header}.{remainder}");
-    assert!(verifier
-        .verify_authentication(
-            &authentication(unsupported),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(1_000),
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify_authentication(
+                &authentication(unsupported),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(1_000),
+            )
+            .is_err()
+    );
 }

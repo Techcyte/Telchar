@@ -1,16 +1,16 @@
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad_transfer_protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
-    InputTransferSession, LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet,
-    ProtocolLimits, ProtocolSession,
+    Authentication, AuthenticationProof, BuildOutcome, BuildResultMetadata, BuildStarted,
+    Direction, Frame, FrameKind, InputManifest, InputTransferSession, LogChunk, NarMetadata,
+    OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits, ProtocolSession, decode_metadata,
+    encode_metadata, read_frame, write_frame,
 };
 use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;

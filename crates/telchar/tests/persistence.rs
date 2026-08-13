@@ -32,9 +32,11 @@ fn requester_reference_is_deterministic_and_component_separated() {
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e"
     );
     assert_eq!(reference.len(), 64);
-    assert!(reference
-        .bytes()
-        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+    assert!(
+        reference
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    );
     assert_ne!(
         telchar::persistence::requester_reference(&telchar::ipc::RequesterMetadata {
             credential_id: "ab".into(),
@@ -70,8 +72,8 @@ fn requester_reference_is_deterministic_and_component_separated() {
 
 fn durable_build_request() -> telchar::build_request::BuildRequest {
     use nix_worker_protocol::{
-        write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-        WorkerReader,
+        ProtocolSessionLimits, WorkerOperation, WorkerReader, write_worker_byte_string,
+        write_worker_integer,
     };
 
     let derivation = b"/nix/store/11111111111111111111111111111111-shared.drv";
@@ -821,9 +823,11 @@ fn local_backend_execution_transitions_to_running_once() {
         running.state,
         telchar::persistence::LocalBackendExecutionState::Running
     );
-    assert!(running
-        .started_at
-        .is_some_and(|started_at| started_at >= accepted.created_at));
+    assert!(
+        running
+            .started_at
+            .is_some_and(|started_at| started_at >= accepted.created_at)
+    );
     assert!(running.completed_at.is_none());
     assert_eq!(
         telchar::persistence::record_local_backend_running(
@@ -953,13 +957,15 @@ fn request_attachment_persists_exact_pair_across_restart() {
         .expect("attachment reads"),
         Some(attached.clone())
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        &session.session_id,
-        "absent-request",
-    )
-    .expect("absent attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            &session.session_id,
+            "absent-request",
+        )
+        .expect("absent attachment reads")
+        .is_none()
+    );
 
     fixture.restart();
 
@@ -1121,9 +1127,11 @@ fn request_attachment_completed_delivery_survives_restart() {
         telchar::persistence::RequestAttachmentState::Delivered
     );
     assert!(delivered.detached_at.is_none());
-    assert!(delivered
-        .delivered_at
-        .is_some_and(|delivered_at| delivered_at >= attached.attached_at));
+    assert!(
+        delivered
+            .delivered_at
+            .is_some_and(|delivered_at| delivered_at >= attached.attached_at)
+    );
     fixture.restart();
     assert_eq!(
         telchar::persistence::read_request_attachment(
@@ -1217,9 +1225,11 @@ fn request_attachment_detaches_once_without_mutating_references() {
         telchar::persistence::RequestAttachmentState::Detached
     );
     assert_eq!(detached.attached_at, attached.attached_at);
-    assert!(detached
-        .detached_at
-        .is_some_and(|detached_at| detached_at >= attached.attached_at));
+    assert!(
+        detached
+            .detached_at
+            .is_some_and(|detached_at| detached_at >= attached.attached_at)
+    );
     assert_eq!(
         telchar::persistence::detach_request(fixture.url(), "missing", "request")
             .expect_err("missing attachment rejects")
@@ -1333,13 +1343,15 @@ fn attach_rejects_malformed_referenced_session() {
         .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "invalid-reference-session",
-        "invalid-reference-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "invalid-reference-session",
+            "invalid-reference-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
 }
 
 #[test]
@@ -1377,13 +1389,15 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
             .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "failure-session",
-        "failure-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "failure-session",
+            "failure-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
     client
         .batch_execute("DROP TRIGGER reject_attachment_insert ON request_attachments; DROP FUNCTION reject_attachment_insert()")
         .expect("insert failure trigger removes");
@@ -1715,9 +1729,11 @@ fn close_protocol_session_persists_exactly_once() {
         closed.state,
         telchar::persistence::ProtocolSessionState::Closed
     );
-    assert!(closed
-        .closed_at
-        .is_some_and(|closed_at| closed_at >= opened.created_at));
+    assert!(
+        closed
+            .closed_at
+            .is_some_and(|closed_at| closed_at >= opened.created_at)
+    );
     assert_eq!(
         telchar::persistence::close_protocol_session(fixture.url(), "session-1")
             .expect_err("closed session does not close again")
@@ -1991,9 +2007,11 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         released.state,
         telchar::persistence::StoreLeaseState::Released
     );
-    assert!(released
-        .released_at
-        .is_some_and(|at| at >= created.created_at));
+    assert!(
+        released
+            .released_at
+            .is_some_and(|at| at >= created.created_at)
+    );
     assert_eq!(
         telchar::persistence::release_store_lease(fixture.url(), "release-lease")
             .expect_err("released lease does not release again")
@@ -2180,19 +2198,25 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
         );
     });
     let events = captured.events();
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.created")
-            && event.contains("operation=\"create\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.released")
-            && event.contains("operation=\"release\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.failed")
-            && event.contains("operation=\"create\"")
-            && event.contains("failure_class=\"configuration\"")));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.created")
+                && event.contains("operation=\"create\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.released")
+                && event.contains("operation=\"release\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.failed")
+                && event.contains("operation=\"create\"")
+                && event.contains("failure_class=\"configuration\""))
+    );
     for forbidden in [
         fixture.url(),
         "sensitive-url",
@@ -3421,14 +3445,11 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
             .collect::<Vec<_>>(),
         vec!["expiry-b", "expiry-c"]
     );
-    assert!(telchar::persistence::release_expired_request_output_leases(
-        fixture.url(),
-        now,
-        None,
-        256,
-    )
-    .expect("released rows are not selected again")
-    .is_empty());
+    assert!(
+        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 256,)
+            .expect("released rows are not selected again")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -3452,14 +3473,16 @@ fn release_expired_output_leases_rejects_invalid_inputs_before_connection() {
 #[test]
 fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
     let _guard = TELEMETRY_TESTS.lock().expect("telemetry lock holds");
-    assert!(telchar::persistence::create_request_output_leases(
-        "postgresql://127.0.0.1:1/no-connection",
-        "output-empty-request",
-        Duration::from_secs(3_600),
-        &[],
-    )
-    .expect("empty output lease batch succeeds")
-    .is_empty());
+    assert!(
+        telchar::persistence::create_request_output_leases(
+            "postgresql://127.0.0.1:1/no-connection",
+            "output-empty-request",
+            Duration::from_secs(3_600),
+            &[],
+        )
+        .expect("empty output lease batch succeeds")
+        .is_empty()
+    );
 
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -3972,9 +3995,11 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leas
     let first = telchar::persistence::read_released_request_leases_page(fixture.url(), None, 999)
         .expect("first page reads");
     assert_eq!(first.len(), 256);
-    assert!(first
-        .windows(2)
-        .all(|window| window[0].lease_id < window[1].lease_id));
+    assert!(
+        first
+            .windows(2)
+            .all(|window| window[0].lease_id < window[1].lease_id)
+    );
     assert!(first.iter().all(|lease| {
         lease.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
             && lease.state == telchar::persistence::StoreLeaseState::Released

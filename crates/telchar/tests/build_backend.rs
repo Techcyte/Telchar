@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::backend::{
-    select_backend, BackendCapabilities, BackendKind, BackendPool, BackendTarget, BuildBackend,
-    BuildExecution, BuildResult, BuildStatus, CancellationCapability, ExecutionRecovery,
-    LogRecovery, OutputTrust,
+    BackendCapabilities, BackendKind, BackendPool, BackendTarget, BuildBackend, BuildExecution,
+    BuildResult, BuildStatus, CancellationCapability, ExecutionRecovery, LogRecovery, OutputTrust,
+    select_backend,
 };
 use telchar::build_request::BuildRequest;
 
@@ -118,9 +118,10 @@ fn backend_pool_times_out_and_releases_after_failure_paths() {
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(started.elapsed() >= Duration::from_millis(20));
     drop(held);
-    assert!(pool
-        .acquire("x86_64-linux", &["kvm"], Duration::from_millis(25))
-        .is_ok());
+    assert!(
+        pool.acquire("x86_64-linux", &["kvm"], Duration::from_millis(25))
+            .is_ok()
+    );
     assert_eq!(
         pool.acquire("aarch64-linux", &[], Duration::from_millis(25))
             .expect_err("incompatible backend is unavailable")

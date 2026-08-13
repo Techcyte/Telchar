@@ -75,13 +75,17 @@ fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
             .collect::<Vec<_>>()
     });
 
-    assert!(failures
-        .iter()
-        .all(|result| *result == Err(SharedBuildTerminalFailure::Backend)));
+    assert!(
+        failures
+            .iter()
+            .all(|result| *result == Err(SharedBuildTerminalFailure::Backend))
+    );
     assert_eq!(registry.active_build_count(), 0);
-    assert!(registry
-        .execute_or_wait("failed-build", successful_result)
-        .is_ok());
+    assert!(
+        registry
+            .execute_or_wait("failed-build", successful_result)
+            .is_ok()
+    );
 }
 
 #[test]

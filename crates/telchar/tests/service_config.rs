@@ -1217,9 +1217,11 @@ quota_subject = "replacement-team"
 
     let config = ServiceConfig::load().expect("configuration loads");
 
-    assert!(config
-        .credential_mapping("ssh-pubkey:SHA256:file")
-        .is_none());
+    assert!(
+        config
+            .credential_mapping("ssh-pubkey:SHA256:file")
+            .is_none()
+    );
     assert_eq!(
         config
             .credential_mapping("ssh-pubkey:SHA256:replacement")

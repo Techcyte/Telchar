@@ -1,7 +1,7 @@
 use std::time::{Duration, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -104,14 +104,16 @@ fn verifies_exact_hmac_callback_and_rejects_replay() {
             UNIX_EPOCH + Duration::from_secs(NOW),
         )
         .expect("exact callback verifies");
-    assert!(verifier
-        .verify(
-            &authentication,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW)
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &authentication,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW)
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -119,57 +121,67 @@ fn rejects_tampering_foreign_identity_and_wrong_callback_path() {
     let mut verifier = callback_verifier();
     let mut tampered = authentication("request-nonce-2", 900, 1_100);
     tampered.allocation_id = "foreign-allocation".to_owned();
-    assert!(verifier
-        .verify(
-            &tampered,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW)
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &tampered,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW)
+            )
+            .is_err()
+    );
 
     let mut verifier = callback_verifier();
-    assert!(verifier
-        .verify(
-            &authentication("request-nonce-3", 900, 1_100),
-            "POST",
-            "/foreign",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &authentication("request-nonce-3", 900, 1_100),
+                "POST",
+                "/foreign",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
 
     let mut verifier = callback_verifier();
     let mut foreign = authentication("request-nonce-4", 900, 1_100);
     foreign.backend = "foreign".to_owned();
-    assert!(verifier
-        .verify(
-            &foreign,
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW)
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &foreign,
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW)
+            )
+            .is_err()
+    );
 }
 
 #[test]
 fn enforces_capability_time_bounds_and_bounded_nonce_retention() {
     let mut verifier = callback_verifier();
-    assert!(verifier
-        .verify(
-            &authentication("expired", 800, 900),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
-    assert!(verifier
-        .verify(
-            &authentication("future", 1_031, 1_100),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &authentication("expired", 800, 900),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
+    assert!(
+        verifier
+            .verify(
+                &authentication("future", 1_031, 1_100),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
 
     for index in 0..8 {
         verifier
@@ -181,12 +193,14 @@ fn enforces_capability_time_bounds_and_bounded_nonce_retention() {
             )
             .expect("bounded nonce records");
     }
-    assert!(verifier
-        .verify(
-            &authentication("overflow", 900, 1_100),
-            "POST",
-            "/callback",
-            UNIX_EPOCH + Duration::from_secs(NOW),
-        )
-        .is_err());
+    assert!(
+        verifier
+            .verify(
+                &authentication("overflow", 900, 1_100),
+                "POST",
+                "/callback",
+                UNIX_EPOCH + Duration::from_secs(NOW),
+            )
+            .is_err()
+    );
 }

@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::thread;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use telchar::nomad_transfer_protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    BuildSpecification, Frame, FrameKind, InputManifest, NamedOutput, PathManifestEntry,
-    ProtocolLimits,
+    Authentication, AuthenticationProof, BuildSpecification, Frame, FrameKind, InputManifest,
+    NamedOutput, PathManifestEntry, ProtocolLimits, decode_metadata, encode_metadata, read_frame,
+    write_frame,
 };
-use telchar_nomad_worker::{authenticate, receive_manifest, WorkerConfig};
+use telchar_nomad_worker::{WorkerConfig, authenticate, receive_manifest};
 
 fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
     BTreeMap::from([

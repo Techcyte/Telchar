@@ -12,26 +12,30 @@ fn reserves_callback_nonce_once_and_survives_new_connections() {
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let expiry = SystemTime::now() + Duration::from_secs(600);
 
-    assert!(reserve_nomad_callback_nonce(
-        fixture.url(),
-        "nomad-primary",
-        "job-1",
-        "allocation-1",
-        "request-nonce-1",
-        expiry,
-        8,
-    )
-    .expect("first nonce reserves"));
-    assert!(!reserve_nomad_callback_nonce(
-        fixture.url(),
-        "nomad-primary",
-        "job-1",
-        "allocation-1",
-        "request-nonce-1",
-        expiry,
-        8,
-    )
-    .expect("replayed nonce rejects"));
+    assert!(
+        reserve_nomad_callback_nonce(
+            fixture.url(),
+            "nomad-primary",
+            "job-1",
+            "allocation-1",
+            "request-nonce-1",
+            expiry,
+            8,
+        )
+        .expect("first nonce reserves")
+    );
+    assert!(
+        !reserve_nomad_callback_nonce(
+            fixture.url(),
+            "nomad-primary",
+            "job-1",
+            "allocation-1",
+            "request-nonce-1",
+            expiry,
+            8,
+        )
+        .expect("replayed nonce rejects")
+    );
 
     let mut client = Client::connect(fixture.url(), NoTls).expect("PostgreSQL connects");
     let row = client
@@ -52,26 +56,30 @@ fn purges_expired_nonces_and_fails_closed_at_capacity() {
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let future = SystemTime::now() + Duration::from_secs(600);
 
-    assert!(reserve_nomad_callback_nonce(
-        fixture.url(),
-        "nomad-primary",
-        "job-1",
-        "allocation-1",
-        "request-nonce-1",
-        future,
-        1,
-    )
-    .expect("first nonce reserves"));
-    assert!(reserve_nomad_callback_nonce(
-        fixture.url(),
-        "nomad-primary",
-        "job-1",
-        "allocation-1",
-        "request-nonce-2",
-        future,
-        1,
-    )
-    .is_err());
+    assert!(
+        reserve_nomad_callback_nonce(
+            fixture.url(),
+            "nomad-primary",
+            "job-1",
+            "allocation-1",
+            "request-nonce-1",
+            future,
+            1,
+        )
+        .expect("first nonce reserves")
+    );
+    assert!(
+        reserve_nomad_callback_nonce(
+            fixture.url(),
+            "nomad-primary",
+            "job-1",
+            "allocation-1",
+            "request-nonce-2",
+            future,
+            1,
+        )
+        .is_err()
+    );
 
     let mut client = Client::connect(fixture.url(), NoTls).expect("PostgreSQL connects");
     client
@@ -80,14 +88,16 @@ fn purges_expired_nonces_and_fails_closed_at_capacity() {
             &[],
         )
         .expect("nonce expires");
-    assert!(reserve_nomad_callback_nonce(
-        fixture.url(),
-        "nomad-primary",
-        "job-1",
-        "allocation-1",
-        "request-nonce-2",
-        future,
-        1,
-    )
-    .expect("expired nonce capacity is reclaimed"));
+    assert!(
+        reserve_nomad_callback_nonce(
+            fixture.url(),
+            "nomad-primary",
+            "job-1",
+            "allocation-1",
+            "request-nonce-2",
+            future,
+            1,
+        )
+        .expect("expired nonce capacity is reclaimed")
+    );
 }

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };
-use crate::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
+use crate::ipc::{MAX_IPC_COMPONENT_BYTES, RequesterMetadata};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
 const RETAINED_INPUT_ADMISSION_LOCK_KEY: i64 = 0x5445_4c43_4841_5204_u64 as i64;
@@ -3858,16 +3858,20 @@ mod tests {
 
         assert_eq!(error.failure(), MigrationFailure::MigrationSql);
         let mut client = Client::connect(fixture.url(), NoTls).expect("test database reconnects");
-        assert!(client
-            .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
-            .expect("table lookup succeeds")
-            .get::<_, Option<String>>(0)
-            .is_none());
-        assert!(client
-            .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
-            .expect("ledger lookup succeeds")
-            .get::<_, Option<String>>(0)
-            .is_none());
+        assert!(
+            client
+                .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
+                .expect("table lookup succeeds")
+                .get::<_, Option<String>>(0)
+                .is_none()
+        );
+        assert!(
+            client
+                .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
+                .expect("ledger lookup succeeds")
+                .get::<_, Option<String>>(0)
+                .is_none()
+        );
     }
 
     #[test]

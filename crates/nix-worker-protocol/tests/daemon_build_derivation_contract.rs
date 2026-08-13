@@ -1,8 +1,9 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus, WorkerClient,
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT,
+    BuildDerivationClientRequest, BuildDerivationOutputRequest, CLIENT_WORKER_MAGIC,
+    LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT, WorkerBuildStatus,
+    WorkerClient,
 };
 
 const DRV: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-example.drv";

@@ -6,19 +6,19 @@ use std::time::{Instant, SystemTime};
 
 use crate::config::{NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication};
 use crate::nomad_callback::{
-    decode_authentication, CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
-    PostgresReplayAuthority,
+    CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
+    PostgresReplayAuthority, decode_authentication,
 };
-use crate::nomad_callback_http::{accept_connection, CallbackHttpLimits};
+use crate::nomad_callback_http::{CallbackHttpLimits, accept_connection};
 use crate::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad_transfer_protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
-    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
-    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
+    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
+    InputManifest, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
+    TransferSession, decode_metadata, encode_metadata, read_frame, write_frame,
 };
-use crate::store_closure::{backend_from_environment, StoreClosureBackend};
+use crate::store_closure::{StoreClosureBackend, backend_from_environment};
 use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 pub struct NomadCallbackService {

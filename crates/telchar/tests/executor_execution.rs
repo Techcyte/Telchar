@@ -14,8 +14,8 @@ use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
 use telchar::executor_service::{
-    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
-    EXECUTOR_PROTOCOL_VERSION,
+    EXECUTOR_PROTOCOL_VERSION, ExecutorExecutionState, ExecutorRequest, ExecutorResult,
+    ExecutorSpecification, send_request,
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -73,10 +73,12 @@ fn executor_owns_running_work_after_submitter_disconnects() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(executor
-        .try_wait()
-        .expect("executor status reads")
-        .is_none());
+    assert!(
+        executor
+            .try_wait()
+            .expect("executor status reads")
+            .is_none()
+    );
 
     fs::write(&release, b"release").expect("execution releases");
     let deadline = Instant::now() + Duration::from_secs(2);

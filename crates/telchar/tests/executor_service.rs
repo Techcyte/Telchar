@@ -12,8 +12,8 @@ use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build_request::BuildRequest;
 use telchar::executor_service::{
-    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
-    EXECUTOR_PROTOCOL_VERSION,
+    EXECUTOR_PROTOCOL_VERSION, ExecutorExecutionState, ExecutorRequest, ExecutorResult,
+    ExecutorSpecification, send_request,
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);

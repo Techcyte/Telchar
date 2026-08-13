@@ -7,7 +7,7 @@ use nix_worker_protocol::AddMultipleToStorePathInfo;
 
 use crate::store_daemon::GatewayStoreEndpoint;
 use crate::store_promotion::{
-    validate_and_promote_nar, DeclaredPathInfo, GatewayStorePromotionBackend,
+    DeclaredPathInfo, GatewayStorePromotionBackend, validate_and_promote_nar,
 };
 
 static IMPORT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);

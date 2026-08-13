@@ -24,11 +24,13 @@ fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {
 
 #[test]
 fn scheduler_construction_fails_when_durable_rotation_cannot_be_read() {
-    assert!(telchar::shared_build_scheduler::SharedBuildScheduler::new(
-        "postgresql://127.0.0.1:1/unavailable",
-        |_| SchedulingLimits::new(1, 1).expect("limits are valid"),
-    )
-    .is_err());
+    assert!(
+        telchar::shared_build_scheduler::SharedBuildScheduler::new(
+            "postgresql://127.0.0.1:1/unavailable",
+            |_| SchedulingLimits::new(1, 1).expect("limits are valid"),
+        )
+        .is_err()
+    );
 }
 
 #[test]
