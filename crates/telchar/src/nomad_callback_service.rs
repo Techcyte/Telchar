@@ -112,6 +112,14 @@ impl NomadCallbackService {
         })
     }
 
+    pub fn active_connections(&self) -> io::Result<usize> {
+        Ok(self
+            .connections
+            .lock()
+            .map_err(|_| io::Error::other("Nomad callback registry lock failed"))?
+            .len())
+    }
+
     pub fn shutdown(&mut self) -> io::Result<()> {
         self.shutdown.store(true, Ordering::Release);
         if let Some(listener) = self.listener.take() {
