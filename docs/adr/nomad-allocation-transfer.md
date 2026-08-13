@@ -10,7 +10,7 @@ Telchar submits one deterministic Nomad batch job for an admitted shared build. 
 
 Nomad clients may be long-lived machines with warm Nix stores or newly autoscaled machines with cold stores. Operators may provide ordinary Nix substituters, a host Nix daemon, container-local store access, credentials, proxies, mounts, or other setup. Telchar must use those facilities without making any binary cache mandatory and without giving an allocation arbitrary access to the gateway store.
 
-Nomad API traffic and allocation-to-Telchar traffic may run over HTTP on an operator-controlled trusted network or HTTPS where transport confidentiality and server authentication are required. Authentication remains mandatory even when the selected transport is HTTP.
+Nomad API traffic uses HTTP or HTTPS. Allocation-to-Telchar transfer uses WebSocket over `ws://` on an operator-controlled trusted network or `wss://` where transport confidentiality and server authentication are required. Authentication remains mandatory over either transfer scheme.
 
 ## Decision
 
@@ -38,17 +38,19 @@ A Nomad allocation reaching `complete` is not sufficient for build success. Telc
 
 ### Transfer transport
 
-The Nomad API endpoint and the allocation transfer endpoint are separate operator-controlled URLs. Each explicitly supports either `http://` or `https://`.
+The Nomad API endpoint and allocation transfer endpoint are separate operator-controlled URLs. The Nomad API supports `http://` or `https://`; the transfer endpoint supports `ws://` or `wss://` and requires the exact WebSocket subprotocol `telchar-nomad-transfer-v1`.
 
-Telchar does not redirect HTTP to HTTPS, infer a TLS requirement from Nomad configuration, or require TLS on a trusted network. HTTPS configuration fails closed on certificate or identity errors. HTTP provides no confidentiality; store paths, derivation metadata, logs, and NAR contents may be visible to the trusted network.
+The worker sends a TLNW `Authenticate` frame as the first binary WebSocket message. Text messages, the wrong subprotocol, invalid phase transitions, and oversized binary messages fail closed. WebSocket provides a load-balancer-compatible bidirectional byte-message transport; TLNW framing and typed session state remain protocol authority.
+
+Telchar does not redirect plaintext transport to TLS, infer a TLS requirement from Nomad configuration, or require TLS on a trusted network. `wss://` configuration fails closed on certificate or identity errors. `ws://` provides no confidentiality; bearer tokens, store paths, derivation metadata, logs, and NAR contents may be visible to the trusted network. HMAC provides authentication and integrity over plaintext transport, not confidentiality. TLS may terminate at an external or sibling load balancer. One transfer stays on one WebSocket connection, so load-balancer stickiness is unnecessary.
 
 ### Transfer authentication
 
 Each Nomad backend selects one transfer-authentication mode.
 
-`workload-identity` is the default. The operator configures the expected issuer, audience, and JWKS URL rather than requiring Telchar to infer a trust endpoint from the Nomad API URL. Telchar validates the JWT signature, issuer, audience, expiry, namespace, exact job ID, allocation ID, and task identity. HTTPS and custom CA settings for the JWKS endpoint are operator controlled. Workload identity over HTTP is permitted on a trusted network, but does not protect a bearer token from a network observer.
+`workload-identity` is the default. The operator configures the expected issuer, audience, and JWKS URL rather than requiring Telchar to infer a trust endpoint from the Nomad API URL. Telchar validates the JWT signature, issuer, audience, expiry, namespace, exact job ID, allocation ID, and task identity. HTTPS and custom CA settings for the JWKS endpoint are operator controlled. Workload identity over `ws://` is permitted on a trusted network, but does not protect a bearer token from a network observer.
 
-`hmac` is the built-in alternative. An operator-owned protected key file signs a short-lived, exact-build-scoped capability before Nomad creates the allocation. The capability binds the key ID, protocol version, backend name, namespace, job ID, shared-build digest, expiry, nonce, and an ephemeral request-signing key. It is embedded in the operator-controlled build task without exposing the backend signing key. Requests use the ephemeral key to bind the capability, method, path, body digest, expiry, and nonce. Because the allocation ID does not exist at submission time, it is not a capability claim. During callback authentication Telchar binds the session to the worker-reported allocation ID and verifies that allocation against the exact configured Nomad namespace, job, and build task before accepting transfer data. Telchar performs constant-time verification, bounded clock-skew checks, and replay rejection. The capability cannot enumerate or fetch paths outside the admitted closure and is never logged or stored in PostgreSQL. HMAC over HTTP provides authentication and integrity, not confidentiality.
+`hmac` is the built-in alternative. An operator-owned protected key file signs a short-lived, exact-build-scoped capability before Nomad creates the allocation. The capability binds the key ID, protocol version, backend name, namespace, job ID, shared-build digest, expiry, nonce, and an ephemeral request-signing key. It is embedded in the operator-controlled build task without exposing the backend signing key. The authentication message uses the ephemeral key to bind the capability, WebSocket upgrade method and path, body digest, expiry, and nonce. Because the allocation ID does not exist at submission time, it is not a capability claim. During callback authentication Telchar binds the session to the worker-reported allocation ID and verifies that allocation against the exact configured Nomad namespace, job, and build task before accepting transfer data. Telchar performs constant-time verification, bounded clock-skew checks, and replay rejection. The capability cannot enumerate or fetch paths outside the admitted closure and is never logged or stored in PostgreSQL.
 
 Authentication mode and credentials are backend configuration. Client request bytes cannot select them.
 
@@ -105,7 +107,7 @@ Executor trust does not bypass gateway transport and store validation. Classic i
 
 ### Durability and restart
 
-PostgreSQL stores bounded execution and transfer metadata, including the exact backend, Nomad job ID, allocation ID when known, transfer phase, manifest digests, and terminal outcome. It never stores credentials, NAR bodies, or log bytes.
+PostgreSQL stores bounded execution and transfer authority, including the exact backend, Nomad job ID, allocation ID when known, transfer phase, manifest digests, terminal outcome, and the normalized admitted `BuildDerivation` specification: named outputs, input sources, system, required features, builder, arguments, and environment. The durable specification is resolved through exact shared-build and execution identity, allowing callback processing after requester disconnect or daemon restart. PostgreSQL never stores credentials, capabilities, NAR bodies, or log bytes.
 
 After restart, Telchar checks exact gateway outputs first. Otherwise it reconnects only to the original configured Nomad backend and exact persisted job identity, verifies the allocation identity, and resumes monitoring or an idempotent transfer phase. Re-sending a hash-verified store object may be transport recovery. Launching another allocation or repeating `BuildDerivation` is an execution retry and is not automatic.
 
@@ -117,7 +119,7 @@ Existing retained-input accounting continues to protect gateway-store retention.
 
 ## Consequences
 
-Telchar can use persistent Nomad-client Nix stores and ordinary binary caches for efficiency while retaining a private-input fallback and exact gateway-store authority. Autoscaled cold nodes remain correct. Operators choose HTTP or HTTPS and choose workload identity or HMAC without exposing those choices to Nix clients.
+Telchar can use persistent Nomad-client Nix stores and ordinary binary caches for efficiency while retaining a private-input fallback and exact gateway-store authority. Autoscaled cold nodes remain correct. Operators choose `ws://` or `wss://` and choose workload identity or HMAC without exposing those choices to Nix clients.
 
 The design requires a small packaged Nomad allocation worker and a bounded authenticated transfer protocol. The worker does not schedule jobs, access PostgreSQL, choose stores or caches, provision infrastructure, or retry failed builds.
 
