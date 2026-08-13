@@ -170,6 +170,10 @@ args = ["--stdio"]
         "unix:///nix/var/nix/daemon-socket/socket"
     );
     assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_CHUNK_BYTES"],
+        "262144"
+    );
+    assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Env"],
         true
     );

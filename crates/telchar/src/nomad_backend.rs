@@ -360,6 +360,7 @@ fn render_job_at(
         "Env": {
             "TELCHAR_TRANSFER_ENDPOINT": config.transfer_endpoint(),
             "TELCHAR_NIX_STORE_URI": config.store().uri(),
+            "TELCHAR_TRANSFER_CHUNK_BYTES": config.transfer_limits().stream_buffer_bytes().to_string(),
         },
     });
     match config.transfer_authentication() {

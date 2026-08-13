@@ -31,6 +31,7 @@ pub struct WorkerSession {
     manifest: InputManifest,
     protocol: ProtocolSession,
     inputs: InputTransferSession,
+    transfer_chunk_bytes: usize,
 }
 
 impl WorkerSession {
@@ -182,8 +183,12 @@ impl WorkerSession {
                     .transpose()?,
             };
             self.send_metadata(FrameKind::OutputMetadata, &metadata)?;
-            let mut sink =
-                OutputNarWriter::new(&mut self.socket, &mut self.protocol, metadata.clone());
+            let mut sink = OutputNarWriter::new(
+                &mut self.socket,
+                &mut self.protocol,
+                metadata.clone(),
+                self.transfer_chunk_bytes,
+            );
             store
                 .nar_from_path(&path, metadata.nar_size, &mut sink)
                 .map_err(|_| io::Error::other("worker output export failed"))?;
@@ -284,6 +289,7 @@ struct OutputNarWriter<'a> {
     metadata: PathManifestEntry,
     offset: u64,
     buffered: Vec<u8>,
+    chunk_bytes: usize,
 }
 
 impl<'a> OutputNarWriter<'a> {
@@ -291,13 +297,15 @@ impl<'a> OutputNarWriter<'a> {
         socket: &'a mut WorkerSocket,
         protocol: &'a mut ProtocolSession,
         metadata: PathManifestEntry,
+        chunk_bytes: usize,
     ) -> Self {
         Self {
             socket,
             protocol,
             metadata,
             offset: 0,
-            buffered: Vec::with_capacity(MAXIMUM_NAR_CHUNK_BYTES),
+            buffered: Vec::with_capacity(chunk_bytes),
+            chunk_bytes,
         }
     }
 
@@ -324,7 +332,7 @@ impl<'a> OutputNarWriter<'a> {
         write_frame(
             &mut body,
             &frame,
-            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, MAXIMUM_NAR_CHUNK_BYTES),
+            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, self.chunk_bytes),
         )?;
         self.socket
             .send(tungstenite::Message::Binary(body.into()))
@@ -333,7 +341,7 @@ impl<'a> OutputNarWriter<'a> {
             .offset
             .checked_add(frame.payload().len() as u64)
             .ok_or_else(|| invalid("worker output NAR offset overflow"))?;
-        self.buffered = Vec::with_capacity(MAXIMUM_NAR_CHUNK_BYTES);
+        self.buffered = Vec::with_capacity(self.chunk_bytes);
         Ok(())
     }
 
@@ -349,11 +357,11 @@ impl io::Write for OutputNarWriter<'_> {
     fn write(&mut self, mut input: &[u8]) -> io::Result<usize> {
         let received = input.len();
         while !input.is_empty() {
-            let available = MAXIMUM_NAR_CHUNK_BYTES - self.buffered.len();
+            let available = self.chunk_bytes - self.buffered.len();
             let copied = available.min(input.len());
             self.buffered.extend_from_slice(&input[..copied]);
             input = &input[copied..];
-            if self.buffered.len() == MAXIMUM_NAR_CHUNK_BYTES
+            if self.buffered.len() == self.chunk_bytes
                 && self.offset + (self.buffered.len() as u64) < self.metadata.nar_size
             {
                 self.send_chunk(false)?;
@@ -371,6 +379,7 @@ impl io::Write for OutputNarWriter<'_> {
 pub struct WorkerConfig {
     endpoint: Url,
     store_uri: String,
+    transfer_chunk_bytes: usize,
     authentication: Authentication,
 }
 
@@ -392,6 +401,11 @@ impl WorkerConfig {
             return Err(invalid("worker callback endpoint is invalid"));
         }
         let store_uri = required(&mut lookup, "TELCHAR_NIX_STORE_URI")?;
+        let transfer_chunk_bytes = required(&mut lookup, "TELCHAR_TRANSFER_CHUNK_BYTES")?
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0 && *value <= MAXIMUM_NAR_CHUNK_BYTES)
+            .ok_or_else(|| invalid("worker transfer chunk limit is invalid"))?;
         let mode = required(&mut lookup, "TELCHAR_TRANSFER_AUTHENTICATION")?;
         let allocation_id = required(&mut lookup, "NOMAD_ALLOC_ID")?;
         let nomad_namespace = required(&mut lookup, "NOMAD_NAMESPACE")?;
@@ -472,6 +486,7 @@ impl WorkerConfig {
         Ok(Self {
             endpoint,
             store_uri,
+            transfer_chunk_bytes,
             authentication: Authentication {
                 backend,
                 namespace,
@@ -490,6 +505,10 @@ impl WorkerConfig {
 
     pub fn store_uri(&self) -> &str {
         &self.store_uri
+    }
+
+    pub fn transfer_chunk_bytes(&self) -> usize {
+        self.transfer_chunk_bytes
     }
 
     pub fn authentication(&self) -> &Authentication {
@@ -588,6 +607,7 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         manifest,
         protocol,
         inputs,
+        transfer_chunk_bytes: config.transfer_chunk_bytes(),
     })
 }
 

@@ -17,6 +17,10 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
         ("TELCHAR_TRANSFER_ENDPOINT".to_owned(), endpoint.to_owned()),
         ("TELCHAR_NIX_STORE_URI".to_owned(), "daemon".to_owned()),
         (
+            "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
+            "262144".to_owned(),
+        ),
+        (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
             "workload-identity".to_owned(),
         ),
@@ -43,6 +47,7 @@ fn parses_exact_workload_identity_environment() {
         .expect("worker environment parses");
 
     assert_eq!(config.store_uri(), "daemon");
+    assert_eq!(config.transfer_chunk_bytes(), 262_144);
     assert_eq!(config.endpoint().as_str(), "ws://127.0.0.1:1234/callback");
     assert_eq!(
         config.authentication(),
@@ -84,6 +89,10 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
             "wss://gateway.example/callback".to_owned(),
         ),
         ("TELCHAR_NIX_STORE_URI".to_owned(), "daemon".to_owned()),
+        (
+            "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
+            "262144".to_owned(),
+        ),
         (
             "TELCHAR_TRANSFER_AUTHENTICATION".to_owned(),
             "hmac".to_owned(),
