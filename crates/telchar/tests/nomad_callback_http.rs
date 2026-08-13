@@ -1,4 +1,8 @@
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
+
+use tungstenite::Message;
 
 use telchar::nomad_callback_http::{accept_connection, CallbackHttpLimits};
 
@@ -56,6 +60,44 @@ fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
     assert!(String::from_utf8(stream.output)
         .expect("response is UTF-8")
         .starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+}
+
+#[test]
+fn sends_ping_during_quiet_transfer_and_accepts_matching_pong() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let address = listener.local_addr().expect("address reads");
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("connection accepts");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("read timeout sets");
+        let mut socket = accept_connection(stream, CallbackHttpLimits::new(1024, 4096))
+            .expect("WebSocket accepts");
+        socket.configure_keepalive(
+            Duration::from_millis(100),
+            Instant::now() + Duration::from_secs(2),
+        );
+        socket.read_binary().expect("binary message reads")
+    });
+    let request = tungstenite::client::IntoClientRequest::into_client_request(format!(
+        "ws://{address}/callback"
+    ))
+    .expect("request creates");
+    let mut request = request;
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
+    );
+    let stream = TcpStream::connect(address).expect("client connects");
+    let (mut client, _) = tungstenite::client(request, stream).expect("client upgrades");
+    match client.read().expect("ping reads") {
+        Message::Ping(payload) => client.send(Message::Pong(payload)).expect("pong sends"),
+        message => panic!("expected ping, received {message:?}"),
+    }
+    client
+        .send(Message::Binary(vec![1, 2, 3].into()))
+        .expect("binary sends");
+    assert_eq!(server.join().expect("server joins"), vec![1, 2, 3]);
 }
 
 #[test]

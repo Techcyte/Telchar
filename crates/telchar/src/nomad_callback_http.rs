@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::time::{Duration, Instant};
 
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::{HeaderValue, StatusCode};
@@ -22,6 +23,14 @@ impl CallbackHttpLimits {
 pub struct CallbackSocket<S> {
     inner: WebSocket<HeaderLimitedStream<S>>,
     maximum_message_bytes: usize,
+    keepalive: Option<Keepalive>,
+}
+
+struct Keepalive {
+    _interval: Duration,
+    deadline: Instant,
+    issued_sequence: u64,
+    acknowledged_sequence: u64,
 }
 
 pub fn accept_connection<S: Read + Write>(
@@ -61,6 +70,7 @@ pub fn accept_connection<S: Read + Write>(
     Ok(CallbackSocket {
         inner,
         maximum_message_bytes: limits.maximum_message_bytes,
+        keepalive: None,
     })
 }
 
@@ -73,11 +83,36 @@ impl<S: Read + Write> CallbackSocket<S> {
         self.inner.into_inner().inner
     }
 
+    pub fn configure_keepalive(&mut self, interval: Duration, deadline: Instant) {
+        self.keepalive = Some(Keepalive {
+            _interval: interval,
+            deadline,
+            issued_sequence: 0,
+            acknowledged_sequence: 0,
+        });
+    }
+
     pub fn read_binary(&mut self) -> io::Result<Vec<u8>> {
         loop {
-            match self.inner.read().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "Nomad WebSocket read failed")
-            })? {
+            let message = match self.inner.read() {
+                Ok(message) => message,
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    self.send_keepalive_ping()?;
+                    continue;
+                }
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Nomad WebSocket read failed",
+                    ));
+                }
+            };
+            match message {
                 Message::Binary(bytes) if bytes.len() <= self.maximum_message_bytes => {
                     return Ok(bytes.to_vec());
                 }
@@ -85,6 +120,30 @@ impl<S: Read + Write> CallbackSocket<S> {
                     .inner
                     .send(Message::Pong(payload))
                     .map_err(|_| io::Error::other("Nomad WebSocket write failed"))?,
+                Message::Pong(payload) => {
+                    let keepalive = self.keepalive.as_mut().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected Nomad WebSocket pong",
+                        )
+                    })?;
+                    let sequence =
+                        u64::from_be_bytes(payload.as_ref().try_into().map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Nomad WebSocket pong is invalid",
+                            )
+                        })?);
+                    if sequence <= keepalive.acknowledged_sequence
+                        || sequence > keepalive.issued_sequence
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Nomad WebSocket pong is invalid",
+                        ));
+                    }
+                    keepalive.acknowledged_sequence = sequence;
+                }
                 Message::Close(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -97,7 +156,7 @@ impl<S: Read + Write> CallbackSocket<S> {
                         "Nomad WebSocket message exceeds limit",
                     ));
                 }
-                Message::Text(_) | Message::Pong(_) | Message::Frame(_) => {
+                Message::Text(_) | Message::Frame(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "Nomad WebSocket message is invalid",
@@ -105,6 +164,30 @@ impl<S: Read + Write> CallbackSocket<S> {
                 }
             }
         }
+    }
+
+    fn send_keepalive_ping(&mut self) -> io::Result<()> {
+        let keepalive = self.keepalive.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Nomad WebSocket transfer timed out",
+            )
+        })?;
+        if Instant::now() >= keepalive.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Nomad WebSocket keepalive timed out",
+            ));
+        }
+        keepalive.issued_sequence = keepalive
+            .issued_sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Nomad WebSocket keepalive sequence overflow"))?;
+        let payload = keepalive.issued_sequence.to_be_bytes().to_vec();
+        self.inner
+            .send(Message::Ping(payload.clone().into()))
+            .map_err(|_| io::Error::other("Nomad WebSocket keepalive failed"))?;
+        Ok(())
     }
 
     pub fn write_binary(&mut self, message: Vec<u8>) -> io::Result<()> {

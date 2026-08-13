@@ -289,9 +289,11 @@ pub fn serve_connection(
     let connection_deadline = Instant::now()
         .checked_add(limits.maximum_connection_lifetime())
         .ok_or_else(|| io::Error::other("Nomad connection lifetime is invalid"))?;
+    let keepalive_interval = limits.transfer_idle_timeout() / 2;
+    socket.configure_keepalive(keepalive_interval, connection_deadline);
     socket
         .inner_mut()
-        .set_read_timeout(Some(limits.transfer_idle_timeout()))?;
+        .set_read_timeout(Some(keepalive_interval))?;
     socket
         .inner_mut()
         .set_write_timeout(Some(limits.transfer_idle_timeout()))?;
