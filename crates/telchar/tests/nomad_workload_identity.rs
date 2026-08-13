@@ -7,6 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
+use telchar::nomad_callback::AuthenticationVerifier;
 use telchar::nomad_transfer_authentication::{WorkloadIdentityPolicy, WorkloadIdentityVerifier};
 use telchar::nomad_transfer_protocol::{Authentication, AuthenticationProof};
 
@@ -80,7 +81,7 @@ fn fetches_bounded_jwks_and_verifies_exact_nomad_claims() {
         )
         .expect("response writes");
     });
-    let verifier = WorkloadIdentityVerifier::new(WorkloadIdentityPolicy {
+    let mut verifier = WorkloadIdentityVerifier::new(WorkloadIdentityPolicy {
         issuer: "http://nomad.example:4646".to_owned(),
         jwks_url,
         audience: "telchar-transfer".to_owned(),
@@ -95,8 +96,10 @@ fn fetches_bounded_jwks_and_verifies_exact_nomad_claims() {
     .expect("verifier creates");
 
     verifier
-        .verify(
+        .verify_authentication(
             &authentication(token("allocation-1", Algorithm::RS256)),
+            "POST",
+            "/callback",
             UNIX_EPOCH + Duration::from_secs(1_000),
         )
         .expect("identity verifies");
@@ -136,10 +139,12 @@ fn rejects_foreign_claims_and_unsupported_algorithm() {
         maximum_jwks_bytes: 16 * 1024,
         clock_skew: Duration::from_secs(30),
     };
-    let verifier = WorkloadIdentityVerifier::new(policy).expect("verifier creates");
+    let mut verifier = WorkloadIdentityVerifier::new(policy).expect("verifier creates");
     assert!(verifier
-        .verify(
+        .verify_authentication(
             &authentication(token("foreign", Algorithm::RS256)),
+            "POST",
+            "/callback",
             UNIX_EPOCH + Duration::from_secs(1_000),
         )
         .is_err());
@@ -151,8 +156,10 @@ fn rejects_foreign_claims_and_unsupported_algorithm() {
         URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT","kid":"key-1"}"#);
     let unsupported = format!("{unsupported_header}.{remainder}");
     assert!(verifier
-        .verify(
+        .verify_authentication(
             &authentication(unsupported),
+            "POST",
+            "/callback",
             UNIX_EPOCH + Duration::from_secs(1_000),
         )
         .is_err());

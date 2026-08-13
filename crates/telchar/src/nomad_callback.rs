@@ -2,10 +2,12 @@ use std::io::{self, Cursor, Read};
 use std::time::SystemTime;
 
 use crate::nomad_backend::NomadClient;
-use crate::nomad_transfer_authentication::{HmacCallbackVerifier, VerifiedHmacRequest};
+use crate::nomad_transfer_authentication::{
+    HmacCallbackVerifier, VerifiedHmacRequest, WorkloadIdentityVerifier,
+};
 use crate::nomad_transfer_protocol::{
-    decode_metadata, read_frame, Authentication, Direction, FrameKind, ProtocolLimits,
-    ProtocolSession,
+    Authentication, Direction, FrameKind, ProtocolLimits, ProtocolSession, decode_metadata,
+    read_frame,
 };
 
 pub trait AllocationVerifier {
@@ -15,6 +17,47 @@ pub trait AllocationVerifier {
 impl AllocationVerifier for NomadClient {
     fn verify_allocation(&self, allocation_id: &str, job_id: &str, task: &str) -> io::Result<()> {
         NomadClient::verify_allocation(self, allocation_id, job_id, task)
+    }
+}
+
+pub enum AuthenticationVerification {
+    WorkloadIdentity,
+    Hmac(VerifiedHmacRequest),
+}
+
+pub trait AuthenticationVerifier {
+    fn verify_authentication(
+        &mut self,
+        authentication: &Authentication,
+        method: &str,
+        path: &str,
+        now: SystemTime,
+    ) -> io::Result<AuthenticationVerification>;
+}
+
+impl AuthenticationVerifier for HmacCallbackVerifier {
+    fn verify_authentication(
+        &mut self,
+        authentication: &Authentication,
+        method: &str,
+        path: &str,
+        now: SystemTime,
+    ) -> io::Result<AuthenticationVerification> {
+        self.verify(authentication, method, path, now)
+            .map(AuthenticationVerification::Hmac)
+    }
+}
+
+impl AuthenticationVerifier for WorkloadIdentityVerifier {
+    fn verify_authentication(
+        &mut self,
+        authentication: &Authentication,
+        _method: &str,
+        _path: &str,
+        now: SystemTime,
+    ) -> io::Result<AuthenticationVerification> {
+        self.verify(authentication, now)?;
+        Ok(AuthenticationVerification::WorkloadIdentity)
     }
 }
 
@@ -75,17 +118,19 @@ impl ReplayAuthority for ProcessReplayAuthority {
     }
 }
 
-pub struct CallbackAdmission<V, R = ProcessReplayAuthority> {
-    hmac: HmacCallbackVerifier,
+pub struct CallbackAdmission<A, V, R = ProcessReplayAuthority> {
+    authentication: A,
     allocation: V,
     replay: R,
     maximum_metadata_bytes: usize,
 }
 
-impl<V: AllocationVerifier> CallbackAdmission<V, ProcessReplayAuthority> {
-    pub fn new(hmac: HmacCallbackVerifier, allocation: V, maximum_metadata_bytes: usize) -> Self {
+impl<A: AuthenticationVerifier, V: AllocationVerifier>
+    CallbackAdmission<A, V, ProcessReplayAuthority>
+{
+    pub fn new(authentication: A, allocation: V, maximum_metadata_bytes: usize) -> Self {
         Self {
-            hmac,
+            authentication,
             allocation,
             replay: ProcessReplayAuthority,
             maximum_metadata_bytes,
@@ -93,15 +138,17 @@ impl<V: AllocationVerifier> CallbackAdmission<V, ProcessReplayAuthority> {
     }
 }
 
-impl<V: AllocationVerifier, R: ReplayAuthority> CallbackAdmission<V, R> {
+impl<A: AuthenticationVerifier, V: AllocationVerifier, R: ReplayAuthority>
+    CallbackAdmission<A, V, R>
+{
     pub fn with_replay(
-        hmac: HmacCallbackVerifier,
+        authentication: A,
         allocation: V,
         replay: R,
         maximum_metadata_bytes: usize,
     ) -> Self {
         Self {
-            hmac,
+            authentication,
             allocation,
             replay,
             maximum_metadata_bytes,
@@ -130,8 +177,12 @@ impl<V: AllocationVerifier, R: ReplayAuthority> CallbackAdmission<V, R> {
             decode_metadata::<Authentication>(frame.metadata(), self.maximum_metadata_bytes)?;
         let mut protocol = ProtocolSession::new();
         protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
-        let verified = self.hmac.verify(&authentication, method, path, now)?;
-        if !self.replay.reserve(&authentication, &verified)? {
+        let verified = self
+            .authentication
+            .verify_authentication(&authentication, method, path, now)?;
+        if let AuthenticationVerification::Hmac(verified) = &verified
+            && !self.replay.reserve(&authentication, verified)?
+        {
             return Err(invalid("Nomad callback request was replayed"));
         }
         self.allocation.verify_allocation(
