@@ -1,5 +1,5 @@
 use telchar::nomad_transfer_protocol::{
-    BuildOutcome, BuildResultMetadata, NarMetadata, OutputReceipt, OutputTransferSession,
+    BuildOutcome, BuildResultMetadata, OutputReceipt, OutputTransferSession, PathManifestEntry,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -17,12 +17,12 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             .expect("session creates");
 
     session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: first.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 10,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .expect("first output declares");
     session
@@ -42,12 +42,12 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
         .is_err());
 
     session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: second.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 20,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .expect("second output declares");
     session
@@ -79,41 +79,41 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
     let mut session =
         OutputTransferSession::new(vec![expected.clone()], 16, 16, 16).expect("session creates");
     assert!(session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: output("foreign"),
             nar_hash: HASH.to_owned(),
             nar_size: 1,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 1, true).is_err());
     assert!(session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 17,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .is_err());
 
     session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 16,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .expect("expected output declares");
     assert!(session
-        .declare(NarMetadata {
+        .declare(PathManifestEntry {
             path: expected.clone(),
             nar_hash: HASH.to_owned(),
             nar_size: 16,
-            offset: 0,
-            final_chunk: true,
+            references: vec![],
+            deriver: None,
         })
         .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 15, true).is_err());

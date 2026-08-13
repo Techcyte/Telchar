@@ -709,14 +709,11 @@ impl OutputTransferSession {
         })
     }
 
-    pub fn declare(&mut self, metadata: NarMetadata) -> io::Result<()> {
+    pub fn declare(&mut self, metadata: PathManifestEntry) -> io::Result<()> {
         if self.complete {
             return Err(invalid_data("Nomad output transfer is complete"));
         }
-        metadata.validate_against(
-            &self.outputs.keys().cloned().collect::<Vec<_>>(),
-            self.maximum_nar_bytes,
-        )?;
+        metadata.validate(self.outputs.len(), self.maximum_nar_bytes)?;
         let state = self
             .outputs
             .get_mut(&metadata.path)

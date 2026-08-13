@@ -123,12 +123,12 @@ fn validates_complete_selective_transfer_sequence() {
             Direction::WorkerToGateway,
             frame(
                 FrameKind::OutputMetadata,
-                &NarMetadata {
+                &PathManifestEntry {
                     path: output.clone(),
                     nar_hash: HASH.to_owned(),
                     nar_size: 12,
-                    offset: 0,
-                    final_chunk: true,
+                    references: vec![],
+                    deriver: None,
                 },
                 vec![],
             ),
