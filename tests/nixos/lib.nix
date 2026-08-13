@@ -583,7 +583,7 @@ rec {
               poll_interval_seconds = 1
               runtime_limit_seconds = 120
 
-              transfer_endpoint = "http://telchar.example:7443"
+              transfer_endpoint = "ws://telchar.example:7443"
 
               [backends.nomad.transfer_authentication]
               mode = "workload-identity"

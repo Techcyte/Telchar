@@ -43,7 +43,7 @@ driver = "raw_exec"
 job_name_scope = "telchar-prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -163,7 +163,7 @@ args = ["--stdio"]
     );
     assert_eq!(
         environment["TELCHAR_TRANSFER_ENDPOINT"],
-        "http://telchar.example:7443"
+        "ws://telchar.example:7443"
     );
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_NIX_STORE_URI"],
@@ -217,7 +217,7 @@ driver = "raw_exec"
 job_name_scope = "telchar-test"
 poll_interval_seconds = 1
 runtime_limit_seconds = 60
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "hmac"
@@ -420,7 +420,7 @@ driver = "raw_exec"
 job_name_scope = "telchar-test"
 poll_interval_seconds = 1
 runtime_limit_seconds = 60
-transfer_endpoint = "https://telchar.example:7443"
+transfer_endpoint = "wss://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -914,7 +914,7 @@ namespace = "telchar"
 job_name_scope = "telchar-test"
 poll_interval_seconds = 1
 runtime_limit_seconds = 60
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"

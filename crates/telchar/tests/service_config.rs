@@ -100,7 +100,7 @@ maximum_concurrent_builds = 2
     assert_eq!(config.nomad_callback().bind().to_string(), "0.0.0.0:7443");
     assert_eq!(
         config.nomad_callback().public_url(),
-        "http://127.0.0.1:7443/callback"
+        "ws://127.0.0.1:7443/callback"
     );
     assert_eq!(config.nomad_callback().maximum_connections(), 64);
     assert_eq!(config.nomad_callback().maximum_header_bytes(), 16 * 1024);
@@ -152,7 +152,7 @@ fn loads_configured_nomad_callback_service() {
         r#"
 [nomad_callback]
 bind = "127.0.0.1:17443"
-public_url = "http://gateway.internal:17443/build-callback"
+public_url = "wss://gateway.internal/build-callback"
 maximum_connections = 12
 maximum_header_bytes = 8192
 maximum_body_bytes = 32768
@@ -169,7 +169,7 @@ maximum_retained_nonces = 4096
     assert_eq!(callback.bind().to_string(), "127.0.0.1:17443");
     assert_eq!(
         callback.public_url(),
-        "http://gateway.internal:17443/build-callback"
+        "wss://gateway.internal/build-callback"
     );
     assert_eq!(callback.maximum_connections(), 12);
     assert_eq!(callback.maximum_header_bytes(), 8192);
@@ -192,7 +192,7 @@ fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
         &config_path,
         r#"
 [nomad_callback]
-public_url = "http://gateway.internal:17443/build-callback"
+public_url = "ws://gateway.internal:17443/build-callback"
 
 [[backends.nomad]]
 name = "nomad-primary"
@@ -251,7 +251,7 @@ maximum_diagnostic_bytes = 65536
     let config = ServiceConfig::load().expect("configuration loads");
     assert_eq!(
         config.nomad_backends()[0].transfer_endpoint(),
-        "http://gateway.internal:17443/build-callback"
+        "ws://gateway.internal:17443/build-callback"
     );
 
     restore_environment(saved);
@@ -267,7 +267,7 @@ fn rejects_invalid_nomad_callback_service_configuration() {
 
     for callback in [
         r#"bind = "gateway.example:7443""#,
-        r#"public_url = "file:///tmp/callback""#,
+        r#"public_url = "http://gateway.example/callback""#,
         "maximum_connections = 0",
         "maximum_header_bytes = 0",
         "maximum_body_bytes = 0",
@@ -375,7 +375,7 @@ job_name_scope = "prod-a"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
 
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -428,7 +428,7 @@ job_name_scope = "prod-b"
 poll_interval_seconds = 5
 runtime_limit_seconds = 1800
 
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -554,7 +554,7 @@ driver = "raw_exec"
 job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
-transfer_endpoint = "https://telchar.example:7443"
+transfer_endpoint = "wss://telchar.example:7443"
 
 [backends.nomad.resources]
 cpu_mhz = 1000
@@ -616,7 +616,7 @@ args = ["/alloc/data/nix"]
 
     let config = ServiceConfig::load().expect("configuration loads");
     let backend = &config.nomad_backends()[0];
-    assert_eq!(backend.transfer_endpoint(), "https://telchar.example:7443");
+    assert_eq!(backend.transfer_endpoint(), "wss://telchar.example:7443");
     let authentication = backend.transfer_authentication();
     assert_eq!(authentication.mode(), "workload-identity");
     assert_eq!(authentication.issuer(), Some("https://nomad.example:4646"));
@@ -674,7 +674,7 @@ driver = "raw_exec"
 job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 60
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.resources]
 cpu_mhz = 1000
@@ -769,7 +769,7 @@ job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 60
 
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -839,7 +839,7 @@ job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 60
 
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
@@ -919,7 +919,7 @@ job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 60
 
-transfer_endpoint = "http://telchar.example:7443"
+transfer_endpoint = "ws://telchar.example:7443"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"

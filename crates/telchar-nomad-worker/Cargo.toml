@@ -7,6 +7,7 @@ edition = "2024"
 telchar = { path = "../telchar" }
 base64 = "0.22"
 reqwest.workspace = true
+tungstenite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

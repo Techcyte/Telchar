@@ -1,5 +1,5 @@
 use std::io;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -10,11 +10,11 @@ use telchar::nomad_transfer_protocol::{
     encode_metadata, write_frame, Authentication, AuthenticationProof, Frame, FrameKind,
     ProtocolLimits,
 };
+use tungstenite::client::IntoClientRequest;
 use url::Url;
 
 const MAXIMUM_ENVIRONMENT_VALUE_BYTES: usize = 4096;
 const MAXIMUM_AUTHENTICATION_METADATA_BYTES: usize = 16 * 1024;
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -32,7 +32,7 @@ impl WorkerConfig {
         let endpoint = required(&mut lookup, "TELCHAR_TRANSFER_ENDPOINT")?;
         let endpoint =
             Url::parse(&endpoint).map_err(|_| invalid("worker callback endpoint is invalid"))?;
-        if !matches!(endpoint.scheme(), "http" | "https")
+        if !matches!(endpoint.scheme(), "ws" | "wss")
             || endpoint.host_str().is_none()
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
@@ -146,7 +146,9 @@ impl WorkerConfig {
     }
 }
 
-pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
+pub fn connect(
+    config: &WorkerConfig,
+) -> io::Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>> {
     let metadata = encode_metadata(
         config.authentication(),
         MAXIMUM_AUTHENTICATION_METADATA_BYTES,
@@ -157,26 +159,32 @@ pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
         &Frame::new(FrameKind::Authenticate, metadata, Vec::new()),
         ProtocolLimits::new(MAXIMUM_AUTHENTICATION_METADATA_BYTES, 0),
     )?;
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(CALLBACK_TIMEOUT)
-        .timeout(CALLBACK_TIMEOUT)
-        .build()
-        .map_err(|_| io::Error::other("worker callback client could not be created"))?;
-    let response = client
-        .post(config.endpoint().clone())
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            "application/vnd.telchar.nomad-transfer",
-        )
-        .body(body)
-        .send()
-        .map_err(|_| io::Error::other("worker callback authentication failed"))?;
-    if !response.status().is_success() {
-        return Err(io::Error::other(
-            "worker callback authentication was rejected",
-        ));
+    let mut request = config
+        .endpoint()
+        .as_str()
+        .into_client_request()
+        .map_err(|_| io::Error::other("worker callback request could not be created"))?;
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
+    );
+    let (mut socket, response) = tungstenite::connect(request)
+        .map_err(|_| io::Error::other("worker callback connection failed"))?;
+    if response.headers().get("sec-websocket-protocol")
+        != Some(&tungstenite::http::HeaderValue::from_static(
+            "telchar-nomad-transfer-v1",
+        ))
+    {
+        return Err(io::Error::other("worker callback protocol was rejected"));
     }
-    Ok(())
+    socket
+        .send(tungstenite::Message::Binary(body.into()))
+        .map_err(|_| io::Error::other("worker callback authentication failed"))?;
+    Ok(socket)
+}
+
+pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
+    connect(config).map(|_| ())
 }
 
 #[derive(Deserialize)]

@@ -15,7 +15,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/telchar/telchar.toml";
 const DEFAULT_MAXIMUM_IPC_SESSIONS: usize = 64;
 const MAXIMUM_IPC_SESSIONS: usize = 65_536;
 const DEFAULT_NOMAD_CALLBACK_BIND: &str = "0.0.0.0:7443";
-const DEFAULT_NOMAD_CALLBACK_PUBLIC_URL: &str = "http://127.0.0.1:7443/callback";
+const DEFAULT_NOMAD_CALLBACK_PUBLIC_URL: &str = "ws://127.0.0.1:7443/callback";
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_CONNECTIONS: usize = 64;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_HEADER_BYTES: usize = 16 * 1024;
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_BODY_BYTES: usize = 64 * 1024;
@@ -986,7 +986,7 @@ fn validate_nomad_callback(raw: RawNomadCallbackConfig) -> io::Result<NomadCallb
     let public_url = raw
         .public_url
         .unwrap_or_else(|| DEFAULT_NOMAD_CALLBACK_PUBLIC_URL.to_owned());
-    if !valid_nomad_endpoint(&public_url) {
+    if !valid_nomad_transfer_endpoint(&public_url) {
         return Err(invalid("Nomad callback public URL is invalid"));
     }
     let maximum_connections = raw
@@ -1189,7 +1189,7 @@ fn validate_nomad_backends(
         let transfer_endpoint = backend
             .transfer_endpoint
             .unwrap_or_else(|| default_transfer_endpoint.to_owned());
-        if !valid_nomad_endpoint(&transfer_endpoint) {
+        if !valid_nomad_transfer_endpoint(&transfer_endpoint) {
             return Err(invalid("Nomad transfer endpoint is invalid"));
         }
         let transfer_authentication =
@@ -1443,8 +1443,16 @@ fn toml_to_json(value: toml::Value, depth: usize) -> io::Result<serde_json::Valu
 }
 
 fn valid_nomad_endpoint(value: &str) -> bool {
+    valid_endpoint(value, &["http://", "https://"])
+}
+
+fn valid_nomad_transfer_endpoint(value: &str) -> bool {
+    valid_endpoint(value, &["ws://", "wss://"])
+}
+
+fn valid_endpoint(value: &str, schemes: &[&str]) -> bool {
     value.len() <= MAXIMUM_NOMAD_ENDPOINT_BYTES
-        && (value.starts_with("http://") || value.starts_with("https://"))
+        && schemes.iter().any(|scheme| value.starts_with(scheme))
         && value
             .bytes()
             .all(|byte| !byte.is_ascii_control() && !byte.is_ascii_whitespace())

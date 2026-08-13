@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
@@ -37,12 +36,12 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
 
 #[test]
 fn parses_exact_workload_identity_environment() {
-    let environment = workload_environment("http://127.0.0.1:1234/callback");
+    let environment = workload_environment("ws://127.0.0.1:1234/callback");
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
         .expect("worker environment parses");
 
     assert_eq!(config.store_uri(), "daemon");
-    assert_eq!(config.endpoint().as_str(), "http://127.0.0.1:1234/callback");
+    assert_eq!(config.endpoint().as_str(), "ws://127.0.0.1:1234/callback");
     assert_eq!(
         config.authentication(),
         &Authentication {
@@ -80,7 +79,7 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
     let environment = BTreeMap::from([
         (
             "TELCHAR_TRANSFER_ENDPOINT".to_owned(),
-            "https://gateway.example/callback".to_owned(),
+            "wss://gateway.example/callback".to_owned(),
         ),
         ("TELCHAR_NIX_STORE_URI".to_owned(), "daemon".to_owned()),
         (
@@ -109,11 +108,11 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
 
 #[test]
 fn rejects_missing_or_mismatched_identity_environment() {
-    let mut missing = workload_environment("http://127.0.0.1:1234/callback");
+    let mut missing = workload_environment("ws://127.0.0.1:1234/callback");
     missing.remove("NOMAD_ALLOC_ID");
     assert!(WorkerConfig::from_lookup(|name| missing.get(name).cloned()).is_err());
 
-    let mut mismatched = workload_environment("http://127.0.0.1:1234/callback");
+    let mut mismatched = workload_environment("ws://127.0.0.1:1234/callback");
     mismatched.insert("NOMAD_TASK_NAME".to_owned(), "foreign".to_owned());
     assert!(WorkerConfig::from_lookup(|name| mismatched.get(name).cloned()).is_err());
 
@@ -121,46 +120,46 @@ fn rejects_missing_or_mismatched_identity_environment() {
     assert!(WorkerConfig::from_lookup(|name| invalid_endpoint.get(name).cloned()).is_err());
     invalid_endpoint.insert(
         "TELCHAR_TRANSFER_ENDPOINT".to_owned(),
-        "http://gateway".to_owned(),
+        "ws://gateway".to_owned(),
     );
 }
 
 #[test]
-fn posts_one_bounded_authentication_frame() {
+fn sends_one_bounded_authentication_frame_over_websocket() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
-    let endpoint = format!(
-        "http://{}/callback",
-        listener.local_addr().expect("address")
-    );
+    let endpoint = format!("ws://{}/callback", listener.local_addr().expect("address"));
     let environment = workload_environment(&endpoint);
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
         .expect("worker environment parses");
+    #[allow(clippy::result_large_err)]
+    fn select_protocol(
+        request: &tungstenite::handshake::server::Request,
+        mut response: tungstenite::handshake::server::Response,
+    ) -> Result<
+        tungstenite::handshake::server::Response,
+        tungstenite::handshake::server::ErrorResponse,
+    > {
+        assert_eq!(
+            request.headers().get("sec-websocket-protocol"),
+            Some(&tungstenite::http::HeaderValue::from_static(
+                "telchar-nomad-transfer-v1"
+            ))
+        );
+        response.headers_mut().insert(
+            "sec-websocket-protocol",
+            tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
+        );
+        Ok(response)
+    }
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("callback accepted");
-        let mut headers = Vec::new();
-        let mut byte = [0_u8; 1];
-        while !headers.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).expect("header byte reads");
-            headers.push(byte[0]);
-        }
-        let headers = String::from_utf8(headers).expect("headers are UTF-8");
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length: ")
-                    .map(str::to_owned)
-            })
-            .expect("content length exists")
-            .parse::<usize>()
-            .expect("content length parses");
-        let mut body = vec![0_u8; content_length];
-        stream.read_exact(&mut body).expect("body reads");
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .expect("response writes");
+        let (stream, _) = listener.accept().expect("callback accepted");
+        let mut socket =
+            tungstenite::accept_hdr(stream, select_protocol).expect("WebSocket accepts");
+        let tungstenite::Message::Binary(body) = socket.read().expect("message reads") else {
+            panic!("expected binary authentication frame");
+        };
         let frame =
-            read_frame(&mut body.as_slice(), ProtocolLimits::new(4096, 0)).expect("frame reads");
+            read_frame(&mut body.as_ref(), ProtocolLimits::new(4096, 0)).expect("frame reads");
         assert_eq!(frame.kind(), FrameKind::Authenticate);
         decode_metadata::<Authentication>(frame.metadata(), 4096).expect("authentication decodes")
     });
