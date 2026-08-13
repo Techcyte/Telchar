@@ -1,5 +1,6 @@
 use telchar::nomad_transfer_protocol::{
-    InputManifest, InputTransferSession, NarMetadata, PathManifestEntry, PathSet,
+    BuildSpecification, InputManifest, InputTransferSession, NamedOutput, NarMetadata,
+    PathManifestEntry, PathSet,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -11,8 +12,28 @@ fn path(hash: char, name: &str) -> String {
 fn manifest() -> InputManifest {
     let first = path('a', "first");
     let second = path('b', "second");
+    let derivation_path = path('c', "build.drv");
+    let output = path('d', "output");
     InputManifest {
-        derivation_path: path('c', "build.drv"),
+        derivation_path: derivation_path.clone(),
+        build: BuildSpecification {
+            derivation_path: derivation_path.into_bytes(),
+            outputs: vec![NamedOutput {
+                name: b"out".to_vec(),
+                path: output.clone().into_bytes(),
+            }],
+            input_sources: vec![first.clone().into_bytes(), second.clone().into_bytes()],
+            system: "x86_64-linux".to_owned(),
+            required_system_features: vec![],
+            builder: b"/bin/sh".to_vec(),
+            arguments: vec![b"-e".to_vec()],
+            environment: vec![
+                (b"system".to_vec(), b"x86_64-linux".to_vec()),
+                (b"builder".to_vec(), b"/bin/sh".to_vec()),
+                (b"name".to_vec(), b"build".to_vec()),
+                (b"out".to_vec(), output.clone().into_bytes()),
+            ],
+        },
         paths: vec![
             PathManifestEntry {
                 path: first.clone(),
@@ -29,7 +50,7 @@ fn manifest() -> InputManifest {
                 deriver: None,
             },
         ],
-        outputs: vec![path('d', "output")],
+        outputs: vec![output],
     }
 }
 

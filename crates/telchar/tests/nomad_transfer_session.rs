@@ -1,6 +1,7 @@
 use telchar::nomad_transfer_protocol::{
-    encode_metadata, BuildOutcome, BuildResultMetadata, Direction, Frame, FrameKind, InputManifest,
-    LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, TransferSession,
+    encode_metadata, BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame,
+    FrameKind, InputManifest, LogChunk, NamedOutput, NarMetadata, OutputReceipt, PathManifestEntry,
+    PathSet, TransferSession,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -10,8 +11,28 @@ fn path(hash: char, name: &str) -> String {
 }
 
 fn manifest() -> InputManifest {
+    let derivation_path = path('a', "build.drv");
+    let output = path('c', "output");
     InputManifest {
-        derivation_path: path('a', "build.drv"),
+        derivation_path: derivation_path.clone(),
+        build: BuildSpecification {
+            derivation_path: derivation_path.into_bytes(),
+            outputs: vec![NamedOutput {
+                name: b"out".to_vec(),
+                path: output.clone().into_bytes(),
+            }],
+            input_sources: vec![path('b', "input").into_bytes()],
+            system: "x86_64-linux".to_owned(),
+            required_system_features: vec![],
+            builder: b"/bin/sh".to_vec(),
+            arguments: vec![b"-e".to_vec()],
+            environment: vec![
+                (b"system".to_vec(), b"x86_64-linux".to_vec()),
+                (b"builder".to_vec(), b"/bin/sh".to_vec()),
+                (b"name".to_vec(), b"build".to_vec()),
+                (b"out".to_vec(), output.clone().into_bytes()),
+            ],
+        },
         paths: vec![PathManifestEntry {
             path: path('b', "input"),
             nar_hash: HASH.to_owned(),
@@ -19,7 +40,7 @@ fn manifest() -> InputManifest {
             references: vec![],
             deriver: None,
         }],
-        outputs: vec![path('c', "output")],
+        outputs: vec![output],
     }
 }
 
@@ -29,6 +50,14 @@ fn frame<T: serde::Serialize>(kind: FrameKind, metadata: &T, payload: Vec<u8>) -
         encode_metadata(metadata, 4096).expect("metadata encodes"),
         payload,
     )
+}
+
+#[test]
+fn rejects_manifest_when_exact_build_specification_disagrees() {
+    let mut manifest = manifest();
+    manifest.build.outputs[0].path = path('d', "foreign").into_bytes();
+
+    assert!(TransferSession::new(manifest, 8, 32, 32, 32, 32, 16, 4096).is_err());
 }
 
 #[test]

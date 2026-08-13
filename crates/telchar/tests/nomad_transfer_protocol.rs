@@ -2,10 +2,31 @@ use std::io::Cursor;
 
 use telchar::nomad_transfer_protocol::{
     decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
-    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
-    LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
-    ProtocolSession, PROTOCOL_VERSION,
+    BuildOutcome, BuildResultMetadata, BuildSpecification, BuildStarted, Direction, Frame,
+    FrameKind, InputManifest, LogChunk, NamedOutput, NarMetadata, OutputReceipt, PathManifestEntry,
+    PathSet, ProtocolLimits, ProtocolSession, PROTOCOL_VERSION,
 };
+
+fn build_specification(derivation: &str, input: &str, output: &str) -> BuildSpecification {
+    BuildSpecification {
+        derivation_path: derivation.as_bytes().to_vec(),
+        outputs: vec![NamedOutput {
+            name: b"out".to_vec(),
+            path: output.as_bytes().to_vec(),
+        }],
+        input_sources: vec![input.as_bytes().to_vec()],
+        system: "x86_64-linux".to_owned(),
+        required_system_features: vec![],
+        builder: b"/bin/sh".to_vec(),
+        arguments: vec![b"-e".to_vec()],
+        environment: vec![
+            (b"system".to_vec(), b"x86_64-linux".to_vec()),
+            (b"builder".to_vec(), b"/bin/sh".to_vec()),
+            (b"name".to_vec(), b"build".to_vec()),
+            (b"out".to_vec(), output.as_bytes().to_vec()),
+        ],
+    }
+}
 
 #[test]
 fn round_trips_every_version_one_frame_kind() {
@@ -71,16 +92,20 @@ fn round_trips_typed_metadata_with_explicit_bounds() {
 
 #[test]
 fn round_trips_exact_transfer_metadata_contracts() {
+    let derivation_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned();
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();
     let manifest = InputManifest {
-        derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+        derivation_path: derivation_path.clone(),
+        build: build_specification(&derivation_path, &input, &output),
         paths: vec![PathManifestEntry {
-            path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned(),
+            path: input,
             nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             nar_size: 42,
             references: vec![],
             deriver: None,
         }],
-        outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+        outputs: vec![output],
     };
     let valid_paths = PathSet {
         paths: vec![manifest.paths[0].path.clone()],
@@ -128,8 +153,10 @@ fn round_trips_exact_transfer_metadata_contracts() {
 fn rejects_invalid_manifest_and_path_metadata() {
     let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
     let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();
+    let derivation_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned();
     let mut manifest = InputManifest {
-        derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+        derivation_path: derivation_path.clone(),
+        build: build_specification(&derivation_path, &input, &output),
         paths: vec![PathManifestEntry {
             path: input.clone(),
             nar_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),

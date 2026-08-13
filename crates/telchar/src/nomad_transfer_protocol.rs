@@ -4,6 +4,8 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::build_request::BuildRequest;
+
 const MAGIC: &[u8; 4] = b"TLNW";
 const HEADER_BYTES: usize = 16;
 
@@ -40,13 +42,40 @@ pub enum AuthenticationProof {
 #[serde(deny_unknown_fields)]
 pub struct InputManifest {
     pub derivation_path: String,
+    pub build: BuildSpecification,
     pub paths: Vec<PathManifestEntry>,
     pub outputs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildSpecification {
+    pub derivation_path: Vec<u8>,
+    pub outputs: Vec<NamedOutput>,
+    pub input_sources: Vec<Vec<u8>>,
+    pub system: String,
+    pub required_system_features: Vec<String>,
+    pub builder: Vec<u8>,
+    pub arguments: Vec<Vec<u8>>,
+    pub environment: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedOutput {
+    pub name: Vec<u8>,
+    pub path: Vec<u8>,
 }
 
 impl InputManifest {
     pub fn validate(&self, maximum_paths: usize, maximum_nar_bytes: u64) -> io::Result<()> {
         validate_store_path(&self.derivation_path, true)?;
+        self.build.validate(maximum_paths)?;
+        if self.build.derivation_path != self.derivation_path.as_bytes() {
+            return Err(invalid_data(
+                "Nomad transfer build derivation does not match manifest",
+            ));
+        }
         if self.paths.is_empty()
             || self.paths.len() > maximum_paths
             || self.outputs.is_empty()
@@ -76,6 +105,12 @@ impl InputManifest {
                 ));
             }
         }
+        let exact_outputs = self
+            .build
+            .outputs
+            .iter()
+            .map(|output| output.path.as_slice())
+            .collect::<BTreeSet<_>>();
         let mut outputs = BTreeSet::new();
         for output in &self.outputs {
             validate_store_path(output, false)?;
@@ -85,8 +120,118 @@ impl InputManifest {
                 ));
             }
         }
+        if outputs
+            .iter()
+            .map(|output| output.as_bytes())
+            .collect::<BTreeSet<_>>()
+            != exact_outputs
+        {
+            return Err(invalid_data(
+                "Nomad transfer build outputs do not match manifest",
+            ));
+        }
+        let admitted = self
+            .paths
+            .iter()
+            .map(|entry| entry.path.as_bytes())
+            .collect::<BTreeSet<_>>();
+        if self
+            .build
+            .input_sources
+            .iter()
+            .any(|input| !admitted.contains(input.as_slice()))
+        {
+            return Err(invalid_data(
+                "Nomad transfer build input source is not admitted",
+            ));
+        }
         Ok(())
     }
+}
+
+impl From<&BuildRequest> for BuildSpecification {
+    fn from(request: &BuildRequest) -> Self {
+        Self {
+            derivation_path: request.derivation_path().to_vec(),
+            outputs: request
+                .expected_outputs()
+                .iter()
+                .map(|(name, path)| NamedOutput {
+                    name: name.clone(),
+                    path: path.clone(),
+                })
+                .collect(),
+            input_sources: request.input_sources().to_vec(),
+            system: request.system().to_owned(),
+            required_system_features: request.required_system_features().to_vec(),
+            builder: request.builder().to_vec(),
+            arguments: request.arguments().to_vec(),
+            environment: request.environment().to_vec(),
+        }
+    }
+}
+
+impl BuildSpecification {
+    fn validate(&self, maximum_paths: usize) -> io::Result<()> {
+        validate_store_path_bytes(&self.derivation_path, true)?;
+        if self.outputs.is_empty()
+            || self.outputs.len() > maximum_paths
+            || self.input_sources.len() > maximum_paths
+            || self.system.is_empty()
+            || self.builder.is_empty()
+            || self.arguments.len() > maximum_paths
+            || self.environment.len() > maximum_paths
+        {
+            return Err(invalid_data(
+                "Nomad transfer build specification exceeds limit",
+            ));
+        }
+        let mut output_names = BTreeSet::new();
+        let mut output_paths = BTreeSet::new();
+        for output in &self.outputs {
+            if output.name.is_empty()
+                || !output_names.insert(output.name.as_slice())
+                || !output_paths.insert(output.path.as_slice())
+            {
+                return Err(invalid_data("Nomad transfer build output is invalid"));
+            }
+            validate_store_path_bytes(&output.path, false)?;
+            if environment_value(&self.environment, &output.name) != Some(output.path.as_slice()) {
+                return Err(invalid_data("Nomad transfer build output is inconsistent"));
+            }
+        }
+        let mut inputs = BTreeSet::new();
+        for input in &self.input_sources {
+            validate_store_path_bytes(input, input.ends_with(b".drv"))?;
+            if !inputs.insert(input.as_slice()) {
+                return Err(invalid_data("Nomad transfer build input is duplicated"));
+            }
+        }
+        if environment_value(&self.environment, b"system") != Some(self.system.as_bytes())
+            || environment_value(&self.environment, b"builder") != Some(self.builder.as_slice())
+            || self.environment.iter().any(|(name, _)| name.is_empty())
+        {
+            return Err(invalid_data(
+                "Nomad transfer build specification is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn environment_value<'a>(environment: &'a [(Vec<u8>, Vec<u8>)], name: &[u8]) -> Option<&'a [u8]> {
+    let mut values = environment
+        .iter()
+        .filter(|(candidate, _)| candidate.as_slice() == name)
+        .map(|(_, value)| value.as_slice());
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
+}
+
+fn validate_store_path_bytes(path: &[u8], derivation: bool) -> io::Result<()> {
+    let path = std::str::from_utf8(path)
+        .map_err(|_| invalid_data("Nomad transfer store path is invalid"))?;
+    validate_store_path(path, derivation)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -702,7 +847,7 @@ impl ProtocolSession {
             _ => {
                 return Err(invalid_data(
                     "Nomad transfer frame is invalid for protocol phase",
-                ))
+                ));
             }
         };
         self.phase = next;
