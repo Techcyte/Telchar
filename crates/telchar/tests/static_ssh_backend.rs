@@ -1,6 +1,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telchar::backend::{BuildBackend, BuildExecution};
@@ -12,6 +14,24 @@ use telchar::store_daemon::GatewayStoreEndpoint;
 mod build_request_support;
 
 use build_request_support::admitted_request;
+
+static CONFIG_ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+fn load_config<T>(path: &Path, select: impl FnOnce(ServiceConfig) -> T) -> T {
+    let _guard = CONFIG_ENVIRONMENT
+        .lock()
+        .expect("configuration environment lock");
+    let saved = std::env::var_os("TELCHAR_CONFIG");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", path) };
+    let config = select(ServiceConfig::load().expect("configuration loads"));
+    unsafe {
+        match saved {
+            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
+            None => std::env::remove_var("TELCHAR_CONFIG"),
+        }
+    }
+    config
+}
 
 #[test]
 fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
@@ -48,9 +68,7 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load_config(&config_path, std::convert::identity);
     let backend = StaticSshBackend::new(
         config.static_ssh_backends()[0].clone(),
         GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
@@ -59,12 +77,6 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
     let _execution_type = std::any::TypeId::of::<BuildExecution<'static>>();
     let _timeout = Duration::from_secs(30);
 
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
@@ -108,9 +120,7 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load_config(&config_path, std::convert::identity);
     let mut backend = StaticSshBackend::new(
         config.static_ssh_backends()[0].clone(),
         GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
@@ -139,12 +149,6 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
         "{logs}"
     );
 
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
@@ -228,18 +232,9 @@ impl BlockingTransportFixture {
             ),
         )
         .expect("configuration writes");
-        let saved = std::env::var_os("TELCHAR_CONFIG");
-        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-        let config = ServiceConfig::load()
-            .expect("configuration loads")
-            .static_ssh_backends()[0]
-            .clone();
-        unsafe {
-            match saved {
-                Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-                None => std::env::remove_var("TELCHAR_CONFIG"),
-            }
-        }
+        let config = load_config(&config_path, |config| {
+            config.static_ssh_backends()[0].clone()
+        });
         Self {
             root,
             config,
@@ -355,18 +350,9 @@ impl RecoveryTransportFixture {
             ),
         )
         .expect("configuration writes");
-        let saved = std::env::var_os("TELCHAR_CONFIG");
-        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-        let config = ServiceConfig::load()
-            .expect("configuration loads")
-            .static_ssh_backends()[0]
-            .clone();
-        unsafe {
-            match saved {
-                Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-                None => std::env::remove_var("TELCHAR_CONFIG"),
-            }
-        }
+        let config = load_config(&config_path, |config| {
+            config.static_ssh_backends()[0].clone()
+        });
         Self { root, config }
     }
 }
@@ -425,9 +411,7 @@ fn startup_verification_requires_a_compatible_reachable_nix_daemon() {
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load_config(&config_path, std::convert::identity);
 
     verify_configured_backends(config.static_ssh_backends(), Duration::from_secs(5))
         .expect("reachable compatible daemon verifies");
@@ -437,11 +421,5 @@ fn startup_verification_requires_a_compatible_reachable_nix_daemon() {
         verify_configured_backends(config.static_ssh_backends(), Duration::from_secs(1)).is_err()
     );
 
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     fs::remove_dir_all(root).expect("fixture removes");
 }
