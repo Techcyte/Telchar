@@ -237,4 +237,4 @@ Integration tests are organized by production concern. Most files directly match
 8. For backend changes, preserve exact persisted identity and fail-closed recovery.
 9. For NixOS or Nomad changes, run the matching VM derivation from `nix/checks/nixos.nix`.
 
-Every maintained Rust, Nix, SQL, and shell source file begins with a one-line purpose comment. `scripts/check-source-file-guides.sh` and the `source-file-guides` flake check keep that map from silently decaying.
+Maintained Rust, Nix, SQL, and shell source files begin with a one-line purpose comment to make unfamiliar files easier to place.

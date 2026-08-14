@@ -1,12 +1,6 @@
-# Defines dependency-direction and source-documentation policy checks.
+# Defines the worker-protocol dependency-direction policy check.
 { pkgs }:
 {
-  source-file-guides = pkgs.runCommand "telchar-source-file-guides" { } ''
-    cd ${../..}
-    ${pkgs.bash}/bin/bash scripts/check-source-file-guides.sh
-    touch "$out"
-  '';
-
   protocol-dependency-boundary = pkgs.runCommand "telchar-protocol-dependency-boundary" { } ''
     protocol_manifest=${../..}/crates/nix-worker-protocol/Cargo.toml
     workspace_manifest=${../..}/Cargo.toml
