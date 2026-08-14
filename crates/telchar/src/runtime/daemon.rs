@@ -123,6 +123,7 @@ pub(super) fn serve_accepted_connection(
         event = "ipc.daemon.session_started",
         "authenticated frontend session started"
     );
+    telchar::service::metrics::session_started();
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = gateway_store.query();
@@ -169,6 +170,7 @@ pub(super) fn serve_accepted_connection(
         )
         .run()
     })();
+    telchar::service::metrics::session_finished();
     match telchar::persistence::close_protocol_session(database_url, &session_id) {
         Ok(_) => tracing::info!(
             event = "database.protocol_session.closed",

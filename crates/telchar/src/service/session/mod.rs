@@ -82,6 +82,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 return reject(&mut output, "unknown-operation", "unknown worker operation");
             }
             Ok(WorkerOperation::BuildDerivation) => {
+                let request_started = std::time::Instant::now();
                 let request = match reader.complete_build_derivation() {
                     Ok(request) => request,
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {
@@ -389,6 +390,18 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     state = "attached",
                     "request attachment persisted"
                 );
+                crate::service::metrics::build_admitted(
+                    if request.build_mode() == 0 {
+                        "normal"
+                    } else {
+                        "unsupported"
+                    },
+                    admitted
+                        .output_authorities()
+                        .iter()
+                        .any(|authority| !authority.hash_algorithm().is_empty()),
+                    admitted.expected_outputs().len(),
+                );
                 tracing::info!(
                     event = "worker.build_derivation.admitted",
                     output_count = admitted.expected_outputs().len(),
@@ -446,6 +459,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     build_executor.execution_id(&selected_target, shared_build_key.as_bytes())?;
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
+                        crate::service::metrics::shared_build_leader();
+                        let execution_started = std::time::Instant::now();
                         let durable_claim = crate::persistence::claim_shared_build_with_request(
                             database_url,
                             derivation_path,
@@ -475,6 +490,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         {
                             match durable_claim.build.state {
                                 crate::persistence::SharedBuildState::Succeeded => {
+                                    crate::service::metrics::shared_build_reused_result();
                                     match durable_shared_build_result(&durable_claim.build) {
                                         Ok(result) => leader.complete(Ok(result)).map_err(|_| {
                                             io::Error::other(
@@ -550,6 +566,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             }
                         } else {
                             durable_execution_owned.set(true);
+                            let queue_started = std::time::Instant::now();
+                            crate::service::metrics::shared_build_enqueued();
                             if let Err(error) = crate::persistence::enqueue_shared_build(
                                 database_url,
                                 derivation_path,
@@ -576,11 +594,17 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     "shared build scheduling failed",
                                 );
                             }
+                            crate::service::metrics::shared_build_admitted(queue_started.elapsed());
+                            let substitution_started = std::time::Instant::now();
                             let result = match substitute_build_outputs(
                                 store_substitution,
                                 admitted.expected_outputs(),
                             ) {
                                 Some(result) => {
+                                    crate::service::metrics::cache_substitution_finished(
+                                        substitution_started.elapsed(),
+                                        "hit",
+                                    );
                                     tracing::info!(
                                         event = "worker.build_derivation.substituted",
                                         output_count = result.outputs().len(),
@@ -588,7 +612,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     );
                                     Ok(result)
                                 }
-                                None => build_executor.execute_with_logs(
+                                None => {
+                                    crate::service::metrics::cache_substitution_finished(
+                                        substitution_started.elapsed(),
+                                        "miss",
+                                    );
+                                    build_executor.execute_with_logs(
                             &execution,
                             &mut |chunk| {
                                 if requester_detached.get() {
@@ -629,13 +658,26 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                                 Ok(disconnected)
                             },
-                        ),
+                        )
+                                }
                             };
                             match result {
-                                Ok(result) => leader.complete(Ok(result)).map_err(|_| {
-                                    io::Error::other("shared BuildDerivation execution failed")
-                                }),
+                                Ok(result) => {
+                                    crate::service::metrics::build_execution_finished(
+                                        execution_started.elapsed(),
+                                        "succeeded",
+                                        None,
+                                    );
+                                    leader.complete(Ok(result)).map_err(|_| {
+                                        io::Error::other("shared BuildDerivation execution failed")
+                                    })
+                                }
                                 Err(error) => {
+                                    crate::service::metrics::build_execution_finished(
+                                        execution_started.elapsed(),
+                                        "failed",
+                                        Some(execution_error_reason(&error)),
+                                    );
                                     let _ = crate::persistence::complete_shared_build_failure(
                                         database_url,
                                         derivation_path,
@@ -655,6 +697,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         }
                     }
                     crate::shared_build::SharedBuildAccess::Follower(follower) => {
+                        crate::service::metrics::shared_build_follower();
                         nix_worker_protocol::write_stderr_frame(
                             &mut output,
                             nix_worker_protocol::StderrFrame::Next {
@@ -692,6 +735,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     Ok(result) => result,
                     Err(error) => {
                         let unavailable = error.kind() == io::ErrorKind::Unsupported;
+                        crate::service::metrics::build_request_finished(
+                            request_started.elapsed(),
+                            "failed",
+                            Some(if unavailable {
+                                "unavailable"
+                            } else {
+                                execution_error_reason(&error)
+                            }),
+                        );
                         tracing::error!(
                             event = if unavailable {
                                 "worker.build_derivation.execution_unavailable"
@@ -733,8 +785,25 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
-                let output_paths =
-                    validate_build_outputs(&result, &admitted, store_export);
+                let validation_started = std::time::Instant::now();
+                let output_paths = validate_build_outputs(&result, &admitted, store_export);
+                crate::service::metrics::store_validation_finished(
+                    validation_started.elapsed(),
+                    if output_paths.is_ok() {
+                        "succeeded"
+                    } else {
+                        "failed"
+                    },
+                    if admitted
+                        .output_authorities()
+                        .iter()
+                        .any(|authority| !authority.hash_algorithm().is_empty())
+                    {
+                        "fixed_output"
+                    } else {
+                        "input_addressed"
+                    },
+                );
                 let output_paths = match output_paths {
                     Ok(paths) => {
                         if durable_execution_owned.get() {
@@ -951,17 +1020,32 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     && let Some(publisher) = cache_publisher.cloned()
                 {
                     let publication_outputs = output_paths.clone();
-                    std::thread::spawn(move || match publisher.publish(&publication_outputs) {
-                        Ok(()) => tracing::info!(
-                            event = "worker.build_derivation.cache_published",
-                            output_count = publication_outputs.len(),
-                            "BuildDerivation outputs published"
-                        ),
-                        Err(_) => tracing::warn!(
-                            event = "worker.build_derivation.cache_publication_failed",
-                            output_count = publication_outputs.len(),
-                            "BuildDerivation cache publication failed"
-                        ),
+                    std::thread::spawn(move || {
+                        let started = std::time::Instant::now();
+                        match publisher.publish(&publication_outputs) {
+                            Ok(()) => {
+                                crate::service::metrics::cache_publication_finished(
+                                    started.elapsed(),
+                                    "succeeded",
+                                );
+                                tracing::info!(
+                                    event = "worker.build_derivation.cache_published",
+                                    output_count = publication_outputs.len(),
+                                    "BuildDerivation outputs published"
+                                )
+                            }
+                            Err(_) => {
+                                crate::service::metrics::cache_publication_finished(
+                                    started.elapsed(),
+                                    "failed",
+                                );
+                                tracing::warn!(
+                                    event = "worker.build_derivation.cache_publication_failed",
+                                    output_count = publication_outputs.len(),
+                                    "BuildDerivation cache publication failed"
+                                )
+                            }
+                        }
                     });
                 }
                 if !requester_detached.get() {
@@ -971,6 +1055,11 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         result.status() == BuildStatus::AlreadyValid,
                     )?;
                 }
+                crate::service::metrics::build_request_finished(
+                    request_started.elapsed(),
+                    "succeeded",
+                    None,
+                );
                 tracing::info!(
                     event = "worker.build_derivation.completed",
                     output_count = result.outputs().len(),
@@ -1499,11 +1588,8 @@ fn validate_build_outputs(
                 "build output authority mismatch",
             ));
         }
-        let metadata =
-            crate::store::export::validate_store_output(Path::new(path), store_export)?;
-        if metadata.content_address.as_deref()
-            != authority.expected_content_address().as_deref()
-        {
+        let metadata = crate::store::export::validate_store_output(Path::new(path), store_export)?;
+        if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "build output content address mismatch",

@@ -691,6 +691,7 @@ impl<W: Write> Write for LimitedWriter<'_, W> {
 }
 
 fn reject(direction: &'static str, scope: &'static str, limit: u64) {
+    crate::service::metrics::transfer_rejected(direction, scope);
     tracing::warn!(
         event = "worker.transfer.limit_rejected",
         direction,

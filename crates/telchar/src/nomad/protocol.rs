@@ -239,7 +239,7 @@ fn validate_output_authority(hash_algorithm: &[u8], hash: &[u8]) -> io::Result<(
         _ => {
             return Err(invalid_data(
                 "Nomad transfer build output hash algorithm is invalid",
-            ))
+            ));
         }
     };
     if hash.len() != expected_hex_bytes

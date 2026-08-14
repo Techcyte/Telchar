@@ -24,6 +24,14 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::StaticSsh => "static_ssh",
+            Self::Nomad => "nomad",
+        }
+    }
+
     pub fn capabilities(self) -> BackendCapabilities {
         match self {
             Self::Local | Self::StaticSsh => BackendCapabilities::new(
@@ -189,6 +197,13 @@ impl BackendPool {
                 "backend pool is invalid",
             ));
         }
+        for (target, maximum) in targets.iter().zip(&maximums) {
+            crate::service::metrics::backend_configured(
+                target.name(),
+                target.kind().as_str(),
+                *maximum as u64,
+            );
+        }
         Ok(Self {
             inner: Arc::new(BackendPoolInner {
                 targets,
@@ -213,17 +228,27 @@ impl BackendPool {
         required_features: &[&str],
         timeout: Duration,
     ) -> io::Result<BackendPermit> {
-        let index = self
+        let started = Instant::now();
+        let index = match self
             .inner
             .targets
             .iter()
             .position(|target| target.supports(system, required_features))
-            .ok_or_else(|| {
-                io::Error::new(
+        {
+            Some(index) => index,
+            None => {
+                crate::service::metrics::backend_selection(
+                    None,
+                    None,
+                    "failed",
+                    Some("no_compatible_backend"),
+                );
+                return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "compatible backend is unavailable",
-                )
-            })?;
+                ));
+            }
+        };
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -239,6 +264,18 @@ impl BackendPool {
             let selected = &mut permits[index];
             if selected.active < selected.maximum {
                 selected.active += 1;
+                let target = &self.inner.targets[index];
+                crate::service::metrics::backend_selection(
+                    Some(target.name()),
+                    Some(target.kind().as_str()),
+                    "selected",
+                    None,
+                );
+                crate::service::metrics::backend_permit_acquired(
+                    target.name(),
+                    target.kind().as_str(),
+                    started.elapsed(),
+                );
                 return Ok(BackendPermit {
                     pool: Arc::clone(&self.inner),
                     index,
@@ -246,6 +283,13 @@ impl BackendPool {
             }
             let now = Instant::now();
             if now >= deadline {
+                let target = &self.inner.targets[index];
+                crate::service::metrics::backend_selection(
+                    Some(target.name()),
+                    Some(target.kind().as_str()),
+                    "failed",
+                    Some("capacity_timeout"),
+                );
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "backend permit wait timed out",
@@ -258,6 +302,13 @@ impl BackendPool {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             permits = next;
             if result.timed_out() {
+                let target = &self.inner.targets[index];
+                crate::service::metrics::backend_selection(
+                    Some(target.name()),
+                    Some(target.kind().as_str()),
+                    "failed",
+                    Some("capacity_timeout"),
+                );
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "backend permit wait timed out",
@@ -287,6 +338,8 @@ impl Drop for BackendPermit {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         permits[self.index].active -= 1;
+        let target = &self.pool.targets[self.index];
+        crate::service::metrics::backend_permit_released(target.name(), target.kind().as_str());
         self.pool.changed.notify_all();
     }
 }

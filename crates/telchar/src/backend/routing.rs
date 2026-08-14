@@ -201,7 +201,10 @@ impl BuildBackend for BackendExecutor {
             &required_features,
             self.backends.inner.permit_wait,
         )?;
-        let mut backend: Box<dyn BuildBackend> = match permit.target().kind() {
+        let target_name = permit.target().name().to_owned();
+        let target_kind = permit.target().kind();
+        let started = std::time::Instant::now();
+        let mut backend: Box<dyn BuildBackend> = match target_kind {
             BackendKind::Local => match (
                 &self.backends.inner.local_build_helper,
                 &self.backends.inner.gateway_store,
@@ -240,14 +243,46 @@ impl BuildBackend for BackendExecutor {
                     .find(|config| config.target().name() == permit.target().name())
                     .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
                 let shared_build_key = execution.build().shared_build_key();
-                return crate::nomad::backend::NomadClient::new(config.clone())?.execute(
+                let result = crate::nomad::backend::NomadClient::new(config.clone())?.execute(
                     &self.database_url,
                     execution,
                     shared_build_key.as_bytes(),
                     cancelled,
                 );
+                crate::service::metrics::backend_execution_finished(
+                    &target_name,
+                    target_kind.as_str(),
+                    started.elapsed(),
+                    if result.is_ok() {
+                        "succeeded"
+                    } else {
+                        "failed"
+                    },
+                    result.as_ref().err().map(|error| match error.kind() {
+                        io::ErrorKind::TimedOut => "timeout",
+                        io::ErrorKind::Interrupted => "cancelled",
+                        _ => "infrastructure",
+                    }),
+                );
+                return result;
             }
         };
-        backend.execute_with_logs(execution, logs, cancelled)
+        let result = backend.execute_with_logs(execution, logs, cancelled);
+        crate::service::metrics::backend_execution_finished(
+            &target_name,
+            target_kind.as_str(),
+            started.elapsed(),
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            result.as_ref().err().map(|error| match error.kind() {
+                io::ErrorKind::TimedOut => "timeout",
+                io::ErrorKind::Interrupted => "cancelled",
+                _ => "infrastructure",
+            }),
+        );
+        result
     }
 }

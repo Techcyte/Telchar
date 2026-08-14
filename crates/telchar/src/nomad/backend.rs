@@ -285,21 +285,49 @@ impl NomadClient {
         shared_build_key: &[u8],
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
-        let submission = self.submit(shared_build_key)?;
+        let submission_started = Instant::now();
+        let submission = match self.submit(shared_build_key) {
+            Ok(submission) => {
+                crate::service::metrics::nomad_submission_finished(
+                    self.config.target().name(),
+                    submission_started.elapsed(),
+                    "succeeded",
+                );
+                submission
+            }
+            Err(error) => {
+                crate::service::metrics::nomad_submission_finished(
+                    self.config.target().name(),
+                    submission_started.elapsed(),
+                    "failed",
+                );
+                return Err(error);
+            }
+        };
+        crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
         let started = Instant::now();
-        loop {
+        let mut placement_recorded = false;
+        let result = loop {
             if cancelled()? {
                 self.stop(submission.job_id())?;
-                return Err(io::Error::new(
+                break Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "Nomad job execution cancelled",
                 ));
             }
             match self.status(submission.job_id())? {
                 NomadExecutionState::Monitoring => {}
-                NomadExecutionState::Succeeded => {}
+                NomadExecutionState::Succeeded => {
+                    if !placement_recorded {
+                        crate::service::metrics::nomad_placed(
+                            self.config.target().name(),
+                            started.elapsed(),
+                        );
+                        placement_recorded = true;
+                    }
+                }
                 NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                    return Err(io::Error::other("Nomad job execution failed"));
+                    break Err(io::Error::other("Nomad job execution failed"));
                 }
             }
             let derivation_path = std::str::from_utf8(execution.build().derivation_path())
@@ -309,14 +337,14 @@ impl NomadClient {
                 .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
             match build.state {
                 crate::persistence::SharedBuildState::Succeeded => {
-                    return BuildResult::new(
+                    break BuildResult::new(
                         BuildStatus::Built,
                         execution.build().expected_outputs().to_vec(),
                         OutputTrust::TrustedExecutor,
                     );
                 }
                 crate::persistence::SharedBuildState::Failed => {
-                    return Err(io::Error::other("Nomad build transfer failed"));
+                    break Err(io::Error::other("Nomad build transfer failed"));
                 }
                 crate::persistence::SharedBuildState::Claimed
                 | crate::persistence::SharedBuildState::Running
@@ -324,13 +352,24 @@ impl NomadClient {
             }
             if started.elapsed() >= execution.timeout() {
                 self.stop(submission.job_id())?;
-                return Err(io::Error::new(
+                break Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "Nomad job execution timed out",
                 ));
             }
             std::thread::sleep(self.config.poll_interval());
-        }
+        };
+        crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
+        crate::service::metrics::nomad_execution_finished(
+            self.config.target().name(),
+            started.elapsed(),
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+        );
+        result
     }
 
     fn stop(&self, job_id: &str) -> io::Result<()> {

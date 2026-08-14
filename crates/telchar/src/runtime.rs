@@ -478,6 +478,7 @@ fn run_daemon() -> io::Result<()> {
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
+    telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {

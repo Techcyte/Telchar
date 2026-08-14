@@ -85,19 +85,25 @@ impl NomadCallbackService {
                 let gateway_store = gateway_store.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
-                    if let Err(error) = serve_connection(
+                    crate::service::metrics::nomad_callback_started();
+                    let result = serve_connection(
                         &mut connection,
                         &callback,
                         &database_url,
                         &backends,
                         &gateway_store,
                         output_retention,
-                    ) {
-                        tracing::warn!(
-                            event = "nomad.callback.connection_failed",
-                            reason = error.to_string(),
-                            "Nomad callback connection failed"
-                        );
+                    );
+                    match result {
+                        Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
+                        Err(error) => {
+                            crate::service::metrics::nomad_callback_finished("failed");
+                            tracing::warn!(
+                                event = "nomad.callback.connection_failed",
+                                reason = error.to_string(),
+                                "Nomad callback connection failed"
+                            );
+                        }
                     }
                     if let Ok(mut connections) = connections.lock() {
                         connections.remove(&identity);
