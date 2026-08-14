@@ -33,8 +33,6 @@ struct Instruments {
     cache_publication_duration: Histogram<f64>,
     store_validations: Counter<u64>,
     store_validation_duration: Histogram<f64>,
-    retention_paths: Gauge<u64>,
-    retention_bytes: Gauge<u64>,
     transfer_objects: Counter<u64>,
     transfer_bytes: Counter<u64>,
     transfer_object_size: Histogram<u64>,
@@ -54,8 +52,6 @@ struct Instruments {
 struct GaugeState {
     service_sessions: u64,
     shared_build_queue_depth: u64,
-    retained_paths: u64,
-    retained_bytes: u64,
     backend_permits: BTreeMap<String, (String, u64, u64)>,
     nomad_pending: BTreeMap<String, u64>,
     nomad_callback_connections: u64,
@@ -165,14 +161,6 @@ fn instruments() -> &'static Instruments {
             store_validation_duration: meter
                 .f64_histogram("telchar.store.validation.duration")
                 .with_unit("s")
-                .build(),
-            retention_paths: meter
-                .u64_gauge("telchar.retention.paths")
-                .with_unit("{path}")
-                .build(),
-            retention_bytes: meter
-                .u64_gauge("telchar.retention.bytes")
-                .with_unit("By")
                 .build(),
             transfer_objects: meter
                 .u64_counter("telchar.transfer.objects")
@@ -325,6 +313,14 @@ pub fn shared_build_enqueued() {
 }
 
 pub fn shared_build_admitted(wait: Duration) {
+    shared_build_left_queue();
+    instruments().shared_build_queue_admissions.add(1, &[]);
+    instruments()
+        .shared_build_queue_wait_duration
+        .record(seconds(wait), &[]);
+}
+
+pub fn shared_build_left_queue() {
     let mut state = gauge_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -332,10 +328,6 @@ pub fn shared_build_admitted(wait: Duration) {
     instruments()
         .shared_build_queue_depth
         .record(state.shared_build_queue_depth, &[]);
-    instruments().shared_build_queue_admissions.add(1, &[]);
-    instruments()
-        .shared_build_queue_wait_duration
-        .record(seconds(wait), &[]);
 }
 
 pub fn backend_configured(name: &str, kind: &str, limit: u64) {
@@ -443,20 +435,6 @@ pub fn store_validation_finished(duration: Duration, outcome: &str, authority: &
     instruments()
         .store_validation_duration
         .record(seconds(duration), &attributes);
-}
-
-pub fn retention_changed(path_delta: i64, byte_delta: i64) {
-    let mut state = gauge_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.retained_paths = state.retained_paths.saturating_add_signed(path_delta);
-    state.retained_bytes = state.retained_bytes.saturating_add_signed(byte_delta);
-    instruments()
-        .retention_paths
-        .record(state.retained_paths, &[]);
-    instruments()
-        .retention_bytes
-        .record(state.retained_bytes, &[]);
 }
 
 pub fn transfer_finished(direction: &str, purpose: &str, bytes: u64, duration: Duration) {
@@ -574,8 +552,6 @@ pub fn emit_smoke_metrics() {
     cache_substitution_finished(Duration::from_millis(1), "miss");
     cache_publication_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");
-    retention_changed(1, 1024);
-    retention_changed(-1, -1024);
     transfer_finished("outbound", "output", 1024, Duration::from_millis(1));
     transfer_rejected("inbound", "limit");
     nomad_submission_finished("smoke", Duration::from_millis(1), "succeeded");

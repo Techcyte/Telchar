@@ -578,6 +578,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             .and_then(|_| {
                                 shared_build_scheduler.wait_for_admission(derivation_path)
                             }) {
+                                crate::service::metrics::shared_build_left_queue();
                                 let _ = crate::persistence::complete_shared_build_failure(
                                     database_url,
                                     derivation_path,

@@ -68,8 +68,6 @@ Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or 
 | `telchar.cache.publication.duration` | histogram | `s` | Publication hook runtime. |
 | `telchar.store.validations` | counter | `{validation}` | Output validation attempts by outcome and authority kind. |
 | `telchar.store.validation.duration` | histogram | `s` | Output validation duration. |
-| `telchar.retention.paths` | gauge | `{path}` | Paths currently retained by the running process. |
-| `telchar.retention.bytes` | gauge | `By` | Known NAR bytes retained by the running process. |
 
 Cache policy, substituter names, URLs, keys, and credentials are never attributes.
 
@@ -106,4 +104,4 @@ Useful service-level views include:
 - Nomad pending demand and placement latency;
 - fixed-output versus input-addressed validation outcomes.
 
-Counters and histograms are monotonic within a process lifetime. Gauges report current process-observed state. Backend limits and session limits are established during composition; active session, queue, permit, Nomad, callback, and retention gauges change as the running process performs those operations.
+Counters and histograms are monotonic within a process lifetime. Gauges report current process-observed state. Backend limits and session limits are established during composition; active session, queue, permit, Nomad, and callback gauges change as the running process performs those operations.
