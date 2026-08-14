@@ -19,6 +19,8 @@ struct Instruments {
     shared_build_followers: Counter<u64>,
     shared_build_reused_results: Counter<u64>,
     shared_build_queue_depth: Gauge<u64>,
+    shared_build_active: Gauge<u64>,
+    shared_build_collecting: Gauge<u64>,
     shared_build_queue_wait_duration: Histogram<f64>,
     shared_build_queue_admissions: Counter<u64>,
     backend_permits_active: Gauge<u64>,
@@ -104,6 +106,14 @@ fn instruments() -> &'static Instruments {
                 .build(),
             shared_build_queue_depth: meter
                 .u64_gauge("telchar.shared_build.queue.depth")
+                .with_unit("{build}")
+                .build(),
+            shared_build_active: meter
+                .u64_gauge("telchar.shared_build.active")
+                .with_unit("{build}")
+                .build(),
+            shared_build_collecting: meter
+                .u64_gauge("telchar.shared_build.collecting")
                 .with_unit("{build}")
                 .build(),
             shared_build_queue_wait_duration: meter
@@ -300,6 +310,24 @@ pub fn shared_build_follower() {
 
 pub fn shared_build_reused_result() {
     instruments().shared_build_reused_results.add(1, &[]);
+}
+
+pub fn record_shared_build_operational_counts(
+    counts: crate::persistence::SharedBuildOperationalCounts,
+) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_queue_depth = counts.queued;
+    instruments()
+        .shared_build_queue_depth
+        .record(counts.queued, &[]);
+    instruments()
+        .shared_build_active
+        .record(counts.running, &[]);
+    instruments()
+        .shared_build_collecting
+        .record(counts.collecting, &[]);
 }
 
 pub fn shared_build_enqueued() {
@@ -536,6 +564,11 @@ pub fn emit_smoke_metrics() {
     shared_build_leader();
     shared_build_follower();
     shared_build_reused_result();
+    record_shared_build_operational_counts(crate::persistence::SharedBuildOperationalCounts {
+        queued: 1,
+        running: 1,
+        collecting: 1,
+    });
     shared_build_enqueued();
     shared_build_admitted(Duration::from_millis(5));
     backend_configured("smoke", "local", 2);

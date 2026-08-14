@@ -357,6 +357,10 @@ fn run_daemon() -> io::Result<()> {
         monitoring_count = reconciliation.monitoring,
         "active shared builds reconciled"
     );
+    let operational_counts =
+        telchar::persistence::read_shared_build_operational_counts(&database_url)
+            .map_err(|_| invalid("shared build metric reconciliation failed"))?;
+    telchar::service::metrics::record_shared_build_operational_counts(operational_counts);
     let monitoring_derivations = reconciliation.monitoring_derivations;
     let backends = Arc::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());

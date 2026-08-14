@@ -92,6 +92,13 @@ pub struct SharedBuildQueueEntry {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SharedBuildOperationalCounts {
+    pub queued: u64,
+    pub running: u64,
+    pub collecting: u64,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SharedBuildAttemptState {
     Running,
     Collecting,
@@ -614,6 +621,37 @@ pub fn read_shared_build(
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .map(|row| decode_shared_build(&row).map_err(SharedBuildError))
         .transpose()
+}
+
+pub fn read_shared_build_operational_counts(
+    database_url: &str,
+) -> Result<SharedBuildOperationalCounts, SharedBuildError> {
+    if database_url.trim().is_empty() {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let row = client
+        .query_one(
+            "SELECT count(*) FILTER (WHERE state = 'claimed' AND queue_position IS NOT NULL),
+                    count(*) FILTER (WHERE state = 'running'),
+                    count(*) FILTER (WHERE state = 'collecting')
+             FROM shared_builds",
+            &[],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let count = |index| -> Result<u64, SharedBuildError> {
+        u64::try_from(
+            row.try_get::<_, i64>(index)
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?,
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))
+    };
+    Ok(SharedBuildOperationalCounts {
+        queued: count(0)?,
+        running: count(1)?,
+        collecting: count(2)?,
+    })
 }
 
 pub fn read_active_shared_builds(

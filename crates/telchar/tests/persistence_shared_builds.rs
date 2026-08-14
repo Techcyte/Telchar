@@ -125,6 +125,64 @@ fn durable_build_request() -> telchar::build::BuildRequest {
 }
 
 #[test]
+fn reads_authoritative_operational_shared_build_counts() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let request = durable_build_request();
+    let digest = request.shared_build_digest();
+    let derivation_path = "/nix/store/11111111111111111111111111111111-shared.drv";
+
+    telchar::persistence::claim_shared_build_with_request(
+        fixture.url(),
+        derivation_path,
+        &digest,
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("telchar-build-shared"),
+        &["/nix/store/22222222222222222222222222222222-shared"],
+        &request,
+    )
+    .expect("shared build claim succeeds");
+    telchar::persistence::enqueue_shared_build(fixture.url(), derivation_path, "subject", 1)
+        .expect("shared build enqueues");
+
+    assert_eq!(
+        telchar::persistence::read_shared_build_operational_counts(fixture.url())
+            .expect("operational counts read"),
+        telchar::persistence::SharedBuildOperationalCounts {
+            queued: 1,
+            running: 0,
+            collecting: 0,
+        }
+    );
+
+    telchar::persistence::start_queued_shared_build(fixture.url(), derivation_path, 1)
+        .expect("shared build starts");
+    assert_eq!(
+        telchar::persistence::read_shared_build_operational_counts(fixture.url())
+            .expect("operational counts read"),
+        telchar::persistence::SharedBuildOperationalCounts {
+            queued: 0,
+            running: 1,
+            collecting: 0,
+        }
+    );
+
+    telchar::persistence::collect_shared_build(fixture.url(), derivation_path)
+        .expect("shared build collects");
+    assert_eq!(
+        telchar::persistence::read_shared_build_operational_counts(fixture.url())
+            .expect("operational counts read"),
+        telchar::persistence::SharedBuildOperationalCounts {
+            queued: 0,
+            running: 0,
+            collecting: 1,
+        }
+    );
+}
+
+#[test]
 fn shared_build_persists_exact_admitted_build_request() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
