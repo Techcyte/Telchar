@@ -137,8 +137,18 @@ pub fn reconcile_shared_builds(
         }
         match build.capabilities.execution_recovery() {
             ExecutionRecovery::OutputOnly => {
-                let recovered = build.backend_kind == BackendKind::StaticSsh
-                    && backends.recover_outputs(&build).unwrap_or(false);
+                let recovered = match backends.recover_outputs(&build) {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        tracing::warn!(
+                            event = "database.shared_build.output_recovery_failed",
+                            backend_name = build.backend_name,
+                            reason = ?error.kind(),
+                            "shared build output recovery failed"
+                        );
+                        false
+                    }
+                };
                 if recovered {
                     complete_recovered_success(database_url, &build, retention)?;
                     outcome.succeeded += 1;

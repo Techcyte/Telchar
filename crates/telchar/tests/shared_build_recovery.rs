@@ -9,7 +9,7 @@ use std::time::Duration;
 use telchar::backend::{BackendCapabilities, BackendKind};
 use telchar::persistence::{SharedBuild, SharedBuildState};
 use telchar::shared_build_recovery::{
-    AdoptedExecution, RecoveryBackend, SharedBuildOutputStore, reconcile_active_shared_builds,
+    reconcile_active_shared_builds, AdoptedExecution, RecoveryBackend, SharedBuildOutputStore,
 };
 
 use support::postgres::PostgresFixture;
@@ -194,16 +194,19 @@ fn static_ssh_output_recovery_failure_fails_cleanly() {
 }
 
 #[test]
-fn output_only_execution_without_outputs_fails() {
+fn output_only_execution_uses_configured_backend_recovery_capability() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     claim(&fixture, "local", BackendKind::Local, None);
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION)
+        .expect("shared build starts");
     let mut outputs = OutputStore::default();
     let mut backends = Backends {
         capabilities: BTreeMap::from([(
             "local".to_owned(),
             (BackendKind::Local, BackendKind::Local.capabilities()),
         )]),
+        recovery_result: true,
         ..Backends::default()
     };
 
@@ -215,15 +218,12 @@ fn output_only_execution_without_outputs_fails() {
     )
     .expect("reconciliation succeeds");
 
-    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.succeeded, 1);
+    assert_eq!(backends.recovered_outputs, ["local"]);
     let build = telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
         .expect("shared build reads")
         .expect("shared build exists");
-    assert_eq!(build.state, SharedBuildState::Failed);
-    assert_eq!(
-        build.failure_classification.as_deref(),
-        Some("restart-recovery-failed")
-    );
+    assert_eq!(build.state, SharedBuildState::Succeeded);
 }
 
 #[test]
