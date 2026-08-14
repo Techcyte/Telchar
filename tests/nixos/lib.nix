@@ -193,6 +193,17 @@ let
     };
   };
 
+  lixRestrictedIngressClientModule = machineModule {
+    role = "lix-client";
+    extraConfig = {
+      nix.package = pkgs.lix;
+      environment.systemPackages = [
+        pkgs.lix
+        pkgs.openssh
+      ];
+    };
+  };
+
   staticSshBuilderModule =
     {
       role ? "static-ssh-builder",
@@ -808,6 +819,20 @@ rec {
         postgres = restartDatabaseModule;
         owner = restartDaemonModule { role = "owner"; };
         replacement = restartDaemonModule { role = "replacement"; };
+      };
+    };
+
+  mkLixGate3Test =
+    {
+      name,
+      testScript ? "",
+    }:
+    pkgs.testers.nixosTest {
+      inherit name testScript;
+      nodes = {
+        stock-client = lixRestrictedIngressClientModule;
+        gateway = restrictedIngressGatewayModule;
+        otlp-collector = collectorModule;
       };
     };
 
