@@ -40,6 +40,13 @@ enum OtlpTransport {
 }
 
 impl OtlpTransport {
+    fn endpoint(self, base: &str, signal: &str) -> String {
+        match self {
+            Self::Grpc => base.to_owned(),
+            Self::HttpProtobuf => format!("{}/v1/{signal}", base.trim_end_matches('/')),
+        }
+    }
+
     fn from_environment() -> Result<Self, Box<dyn Error + Send + Sync>> {
         Self::from_environment_value(std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").ok().as_deref())
     }
@@ -157,7 +164,7 @@ impl Telemetry {
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
                     .with_http()
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-                    .with_endpoint(endpoint.clone())
+                    .with_endpoint(transport.endpoint(&endpoint, "traces"))
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
             };
@@ -188,7 +195,7 @@ impl Telemetry {
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
                     .with_http()
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-                    .with_endpoint(endpoint.clone())
+                    .with_endpoint(transport.endpoint(&endpoint, "metrics"))
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
             };
@@ -213,7 +220,7 @@ impl Telemetry {
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::LogExporter::builder()
                     .with_http()
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-                    .with_endpoint(endpoint)
+                    .with_endpoint(transport.endpoint(&endpoint, "logs"))
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
             };
@@ -596,6 +603,109 @@ impl opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server:
 }
 
 #[cfg(test)]
+#[derive(Clone)]
+struct HttpCollector {
+    endpoint: String,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl HttpCollector {
+    fn endpoint(&self) -> String {
+        self.endpoint.clone()
+    }
+
+    fn has_all_signals(&self) -> bool {
+        let paths = self.paths.lock().expect("HTTP collector paths");
+        ["/v1/traces", "/v1/logs", "/v1/metrics"]
+            .iter()
+            .all(|expected| paths.iter().any(|path| path == expected))
+    }
+}
+
+#[cfg(test)]
+fn start_http_collector() -> HttpCollector {
+    use std::io::{Read as _, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("HTTP collector listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking HTTP collector listener");
+    let collector = HttpCollector {
+        endpoint: format!(
+            "http://{}",
+            listener.local_addr().expect("HTTP collector address")
+        ),
+        paths: Default::default(),
+    };
+    let paths = std::sync::Arc::clone(&collector.paths);
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => return,
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let Ok(read) = stream.read(&mut buffer) else {
+                    break None;
+                };
+                if read == 0 {
+                    break None;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    break Some(position + 4);
+                }
+                if request.len() > 64 * 1024 {
+                    break None;
+                }
+            };
+            let Some(header_end) = header_end else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let path = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_owned();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while request.len().saturating_sub(header_end) < content_length {
+                let Ok(read) = stream.read(&mut buffer) else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            paths.lock().expect("HTTP collector paths").push(path);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            );
+        }
+    });
+    collector
+}
+
+#[cfg(test)]
 fn start_collector() -> Collector {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("collector listener");
     let endpoint = format!(
@@ -632,7 +742,10 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::{start_collector, telemetry_tests, OtlpTransport, SERVICE_NAME};
+    use super::{
+        start_collector, start_http_collector, telemetry_tests, Collector, OtlpTransport,
+        SERVICE_NAME,
+    };
 
     #[test]
     fn selects_supported_otlp_transports() {
@@ -718,19 +831,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exports_otlp_signals_before_application_work() {
-        let _guard = telemetry_tests().lock().expect("telemetry test lock");
-        let collector = start_collector();
-        let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+    fn run_smoke(endpoint: String, protocol: &str) -> std::process::Output {
+        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args(["run", "--quiet", "--bin", "telchar", "--locked"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
             .env("TELCHAR_SMOKE_REQUEST_ID", "request-smoke-001")
             .env("TELCHAR_SMOKE_ERROR", "1")
             .env("TELCHAR_SMOKE_OPERATIONAL_METRICS", "1")
             .output()
-            .expect("Telchar process starts");
+            .expect("Telchar process starts")
+    }
+
+    fn assert_local_smoke_output(output: &std::process::Output) -> String {
         assert!(
             output.status.success(),
             "Telchar process failed: {output:?}"
@@ -758,6 +872,10 @@ mod tests {
             "missing local error: {output:?}"
         );
 
+        stderr.into_owned()
+    }
+
+    fn assert_grpc_signals(collector: &Collector, stderr: &str) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && !collector.has_all_signals() {
             std::thread::sleep(Duration::from_millis(10));
@@ -782,5 +900,31 @@ mod tests {
             );
         }
         collector.assert_metric_attributes_are_bounded();
+    }
+
+    #[test]
+    fn exports_otlp_signals_before_application_work() {
+        let _guard = telemetry_tests().lock().expect("telemetry test lock");
+        let collector = start_collector();
+        let output = run_smoke(collector.endpoint(), "grpc");
+        let stderr = assert_local_smoke_output(&output);
+        assert_grpc_signals(&collector, &stderr);
+    }
+
+    #[test]
+    fn exports_otlp_signals_over_http_protobuf() {
+        let _guard = telemetry_tests().lock().expect("telemetry test lock");
+        let collector = start_http_collector();
+        let output = run_smoke(collector.endpoint(), "http/protobuf");
+        assert_local_smoke_output(&output);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !collector.has_all_signals() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            collector.has_all_signals(),
+            "HTTP collector missed OTLP signals: {:?}",
+            collector.paths.lock().expect("HTTP collector paths")
+        );
     }
 }

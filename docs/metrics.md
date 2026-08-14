@@ -14,7 +14,7 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 ```
 
-If no endpoint is configured, the transport defaults are `http://127.0.0.1:4317` for gRPC and `http://127.0.0.1:4318` for HTTP. Unsupported protocol values fail startup.
+For OTLP/HTTP, Telchar appends the standard `/v1/traces`, `/v1/logs`, and `/v1/metrics` paths to the configured base endpoint. If no endpoint is configured, the transport defaults are `http://127.0.0.1:4317` for gRPC and `http://127.0.0.1:4318` for HTTP. Unsupported protocol values fail startup.
 
 Metric attributes must have bounded cardinality. Allowed dimensions describe configured or enumerated behavior, such as backend name and kind, operation, outcome, failure class, transfer direction, cache result, build mode, and fixed-output presence. Metrics must never contain requester identity, quota subject, request ID, trace ID, derivation or store path, shared-build key, execution ID, allocation ID, credential identity, endpoint, namespace, or arbitrary error text.
 
