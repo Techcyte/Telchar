@@ -15,6 +15,8 @@ fn build_specification(derivation: &str, input: &str, output: &str) -> BuildSpec
         outputs: vec![NamedOutput {
             name: b"out".to_vec(),
             path: output.as_bytes().to_vec(),
+            hash_algorithm: Vec::new(),
+            hash: Vec::new(),
         }],
         input_sources: vec![input.as_bytes().to_vec()],
         system: "x86_64-linux".to_owned(),
@@ -28,6 +30,41 @@ fn build_specification(derivation: &str, input: &str, output: &str) -> BuildSpec
             (b"out".to_vec(), output.as_bytes().to_vec()),
         ],
     }
+}
+
+#[test]
+fn manifest_preserves_fixed_output_authority() {
+    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv";
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input";
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output";
+    let mut build = build_specification(derivation, input, output);
+    build.outputs[0].hash_algorithm = b"r:sha256".to_vec();
+    build.outputs[0].hash =
+        b"0000000000000000000000000000000000000000000000000000000000000000".to_vec();
+    let manifest = InputManifest {
+        derivation_path: derivation.to_owned(),
+        build,
+        paths: vec![PathManifestEntry {
+            path: input.to_owned(),
+            nar_hash: "0".repeat(64),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+        }],
+        outputs: vec![output.to_owned()],
+    };
+
+    manifest
+        .validate(8, 1024)
+        .expect("fixed-output authority validates");
+    let encoded = encode_metadata(&manifest, 16 * 1024).expect("manifest encodes");
+    let decoded: InputManifest = decode_metadata(&encoded, 16 * 1024).expect("manifest decodes");
+
+    assert_eq!(decoded.build.outputs[0].hash_algorithm, b"r:sha256");
+    assert_eq!(
+        decoded.build.outputs[0].hash,
+        b"0000000000000000000000000000000000000000000000000000000000000000"
+    );
 }
 
 #[test]

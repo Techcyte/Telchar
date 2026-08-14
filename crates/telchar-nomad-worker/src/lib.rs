@@ -100,8 +100,8 @@ impl WorkerSession {
             .map(|output| nix_worker_protocol::BuildDerivationOutputRequest {
                 name: &output.name,
                 path: &output.path,
-                hash_algorithm: b"",
-                hash: b"",
+                hash_algorithm: &output.hash_algorithm,
+                hash: &output.hash,
             })
             .collect::<Vec<_>>();
         let request = nix_worker_protocol::BuildDerivationClientRequest {

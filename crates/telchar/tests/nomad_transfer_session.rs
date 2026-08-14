@@ -22,6 +22,8 @@ fn manifest() -> InputManifest {
             outputs: vec![NamedOutput {
                 name: b"out".to_vec(),
                 path: output.clone().into_bytes(),
+                hash_algorithm: Vec::new(),
+                hash: Vec::new(),
             }],
             input_sources: vec![path('b', "input").into_bytes()],
             system: "x86_64-linux".to_owned(),

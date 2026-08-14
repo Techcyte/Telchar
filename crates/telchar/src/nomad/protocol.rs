@@ -67,6 +67,8 @@ pub struct BuildSpecification {
 pub struct NamedOutput {
     pub name: Vec<u8>,
     pub path: Vec<u8>,
+    pub hash_algorithm: Vec<u8>,
+    pub hash: Vec<u8>,
 }
 
 impl InputManifest {
@@ -156,11 +158,13 @@ impl From<&BuildRequest> for BuildSpecification {
         Self {
             derivation_path: request.derivation_path().to_vec(),
             outputs: request
-                .expected_outputs()
+                .output_authorities()
                 .iter()
-                .map(|(name, path)| NamedOutput {
-                    name: name.clone(),
-                    path: path.clone(),
+                .map(|output| NamedOutput {
+                    name: output.name().to_vec(),
+                    path: output.path().to_vec(),
+                    hash_algorithm: output.hash_algorithm().to_vec(),
+                    hash: output.hash().to_vec(),
                 })
                 .collect(),
             input_sources: request.input_sources().to_vec(),
@@ -198,6 +202,7 @@ impl BuildSpecification {
                 return Err(invalid_data("Nomad transfer build output is invalid"));
             }
             validate_store_path_bytes(&output.path, false)?;
+            validate_output_authority(&output.hash_algorithm, &output.hash)?;
             if environment_value(&self.environment, &output.name) != Some(output.path.as_slice()) {
                 return Err(invalid_data("Nomad transfer build output is inconsistent"));
             }
@@ -219,6 +224,32 @@ impl BuildSpecification {
         }
         Ok(())
     }
+}
+
+fn validate_output_authority(hash_algorithm: &[u8], hash: &[u8]) -> io::Result<()> {
+    if hash_algorithm.is_empty() && hash.is_empty() {
+        return Ok(());
+    }
+    let algorithm = hash_algorithm.strip_prefix(b"r:").unwrap_or(hash_algorithm);
+    let expected_hex_bytes = match algorithm {
+        b"md5" => 32,
+        b"sha1" => 40,
+        b"sha256" => 64,
+        b"sha512" => 128,
+        _ => {
+            return Err(invalid_data(
+                "Nomad transfer build output hash algorithm is invalid",
+            ))
+        }
+    };
+    if hash.len() != expected_hex_bytes
+        || !hash
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(invalid_data("Nomad transfer build output hash is invalid"));
+    }
+    Ok(())
 }
 
 fn environment_value<'a>(environment: &'a [(Vec<u8>, Vec<u8>)], name: &[u8]) -> Option<&'a [u8]> {
