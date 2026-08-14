@@ -63,6 +63,7 @@ pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
     maximum_retained_input_bytes: u64,
+    cache_publisher: Option<crate::service::cache_publication::CachePublisher>,
     database_url: Option<String>,
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
@@ -98,6 +99,10 @@ impl ServiceConfig {
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
         self.maximum_retained_input_bytes
+    }
+
+    pub fn cache_publisher(&self) -> Option<&crate::service::cache_publication::CachePublisher> {
+        self.cache_publisher.as_ref()
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -216,6 +221,18 @@ impl ServiceConfig {
             return Err(invalid("retained input byte limit is invalid"));
         }
 
+        let cache_publisher = raw
+            .cache_publication
+            .map(|config| {
+                crate::service::cache_publication::CachePublisher::new(
+                    config.executable,
+                    config.arguments,
+                    Duration::from_secs(config.timeout_seconds.unwrap_or(300)),
+                    config.maximum_input_bytes.unwrap_or(64 * 1024),
+                )
+            })
+            .transpose()?;
+
         let running_disconnect_policy = environment_string("TELCHAR_RUNNING_DISCONNECT_POLICY")?
             .or(raw.running_disconnect_policy)
             .map(|value| RunningDisconnectPolicy::parse(&value))
@@ -290,6 +307,7 @@ impl ServiceConfig {
             running_disconnect_policy,
             output_retention,
             maximum_retained_input_bytes,
+            cache_publisher,
             database_url,
             ipc_socket,
             maximum_ipc_sessions,

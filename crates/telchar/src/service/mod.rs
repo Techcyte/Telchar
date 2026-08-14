@@ -1,5 +1,6 @@
 //! Exposes daemon configuration, ingress, session, lifecycle, and resource-policy services.
 
+pub mod cache_publication;
 pub mod config;
 pub mod daemon_services;
 pub mod deployment;

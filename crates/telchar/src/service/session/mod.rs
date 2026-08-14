@@ -53,6 +53,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_builds,
         shared_build_scheduler,
         scheduling_limits,
+        cache_publisher,
     } = context;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
         transfer_limits.maximum_inbound_session_bytes,
@@ -942,6 +943,24 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "shared-build-state",
                         &format!("shared build completion failed: {:?}", error.failure()),
                     );
+                }
+                if durable_execution_owned.get()
+                    && !build_already_succeeded
+                    && let Some(publisher) = cache_publisher.cloned()
+                {
+                    let publication_outputs = output_paths.clone();
+                    std::thread::spawn(move || match publisher.publish(&publication_outputs) {
+                        Ok(()) => tracing::info!(
+                            event = "worker.build_derivation.cache_published",
+                            output_count = publication_outputs.len(),
+                            "BuildDerivation outputs published"
+                        ),
+                        Err(_) => tracing::warn!(
+                            event = "worker.build_derivation.cache_publication_failed",
+                            output_count = publication_outputs.len(),
+                            "BuildDerivation cache publication failed"
+                        ),
+                    });
                 }
                 if !requester_detached.get() {
                     nix_worker_protocol::write_build_derivation_success_response(

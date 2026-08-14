@@ -161,6 +161,7 @@ pub(super) fn serve_accepted_connection(
         )
         .transfer_admission(transfer_limits, object_admission, rate_admission)
         .disk_admission(disk_reserve, disk_probe)
+        .cache_publisher(service_config.cache_publisher())
         .shared_builds(
             shared_builds,
             shared_build_scheduler,
