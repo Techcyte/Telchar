@@ -4,12 +4,11 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
+use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
-use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
 };
@@ -17,14 +16,15 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
 };
+use opentelemetry_sdk::Resource;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::writer::MakeWriter;
+use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: &str = "telchar";
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -32,6 +32,26 @@ const EXPORT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUE_SIZE: usize = 256;
 const MAX_EXPORT_BATCH_SIZE: usize = 64;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OtlpTransport {
+    Grpc,
+    HttpProtobuf,
+}
+
+impl OtlpTransport {
+    fn from_environment() -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::from_environment_value(std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").ok().as_deref())
+    }
+
+    fn from_environment_value(value: Option<&str>) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        match value.unwrap_or("grpc") {
+            "grpc" => Ok(Self::Grpc),
+            "http/protobuf" => Ok(Self::HttpProtobuf),
+            _ => Err("unsupported OTLP transport protocol".into()),
+        }
+    }
+}
 
 struct LocalFormat;
 
@@ -108,12 +128,19 @@ pub struct Telemetry {
 
 impl Telemetry {
     pub fn initialize() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-            .unwrap_or_else(|_| "http://127.0.0.1:4317".to_owned());
-        Self::initialize_with_endpoint(endpoint)
+        let transport = OtlpTransport::from_environment()?;
+        let endpoint =
+            std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| match transport {
+                OtlpTransport::Grpc => "http://127.0.0.1:4317".to_owned(),
+                OtlpTransport::HttpProtobuf => "http://127.0.0.1:4318".to_owned(),
+            });
+        Self::initialize_with_endpoint(endpoint, transport)
     }
 
-    fn initialize_with_endpoint(endpoint: String) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    fn initialize_with_endpoint(
+        endpoint: String,
+        transport: OtlpTransport,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let runtime = tokio::runtime::Runtime::new()?;
         let resource = Resource::builder()
             .with_service_name(SERVICE_NAME)
@@ -121,11 +148,19 @@ impl Telemetry {
             .build();
 
         let tracer_provider = runtime.block_on(async {
-            let exporter = opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                .with_endpoint(endpoint.clone())
-                .with_timeout(EXPORT_TIMEOUT)
-                .build()?;
+            let exporter = match transport {
+                OtlpTransport::Grpc => opentelemetry_otlp::SpanExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(endpoint.clone())
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+                OtlpTransport::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
+                    .with_http()
+                    .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                    .with_endpoint(endpoint.clone())
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+            };
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkTracerProvider::builder()
                     .with_resource(resource.clone())
@@ -144,11 +179,19 @@ impl Telemetry {
             )
         })?;
         let meter_provider = runtime.block_on(async {
-            let exporter = opentelemetry_otlp::MetricExporter::builder()
-                .with_tonic()
-                .with_endpoint(endpoint.clone())
-                .with_timeout(EXPORT_TIMEOUT)
-                .build()?;
+            let exporter = match transport {
+                OtlpTransport::Grpc => opentelemetry_otlp::MetricExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(endpoint.clone())
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+                OtlpTransport::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
+                    .with_http()
+                    .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                    .with_endpoint(endpoint.clone())
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+            };
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkMeterProvider::builder()
                     .with_resource(resource.clone())
@@ -161,11 +204,19 @@ impl Telemetry {
             )
         })?;
         let logger_provider = runtime.block_on(async {
-            let exporter = opentelemetry_otlp::LogExporter::builder()
-                .with_tonic()
-                .with_endpoint(endpoint)
-                .with_timeout(EXPORT_TIMEOUT)
-                .build()?;
+            let exporter = match transport {
+                OtlpTransport::Grpc => opentelemetry_otlp::LogExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(endpoint)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+                OtlpTransport::HttpProtobuf => opentelemetry_otlp::LogExporter::builder()
+                    .with_http()
+                    .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                    .with_endpoint(endpoint)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()?,
+            };
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkLoggerProvider::builder()
                     .with_resource(resource)
@@ -292,6 +343,76 @@ impl Collector {
             .flat_map(|resource| &resource.scope_logs)
             .flat_map(|scope| &scope.log_records)
             .any(|record| Self::has_attribute(&record.attributes, "event", event))
+    }
+
+    fn metric_names(&self) -> std::collections::BTreeSet<String> {
+        self.metric_requests
+            .lock()
+            .expect("metric requests")
+            .iter()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .map(|metric| metric.name.clone())
+            .collect()
+    }
+
+    fn assert_metric_attributes_are_bounded(&self) {
+        let forbidden = [
+            "request_id",
+            "trace_id",
+            "derivation_path",
+            "store_path",
+            "shared_build_key",
+            "execution_id",
+            "allocation_id",
+            "quota_subject",
+            "endpoint",
+            "namespace",
+        ];
+        let metric_requests = self.metric_requests.lock().expect("metric requests");
+        for metric in metric_requests
+            .iter()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+        {
+            for attribute in Self::metric_attributes(metric) {
+                assert!(
+                    !forbidden.contains(&attribute.key.as_str()),
+                    "metric {} contains forbidden attribute {}",
+                    metric.name,
+                    attribute.key
+                );
+            }
+        }
+    }
+
+    fn metric_attributes(
+        metric: &opentelemetry_proto::tonic::metrics::v1::Metric,
+    ) -> Box<dyn Iterator<Item = &opentelemetry_proto::tonic::common::v1::KeyValue> + '_> {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+        match metric.data.as_ref() {
+            Some(Data::Gauge(gauge)) => Box::new(
+                gauge
+                    .data_points
+                    .iter()
+                    .flat_map(|point| point.attributes.iter()),
+            ),
+            Some(Data::Sum(sum)) => Box::new(
+                sum.data_points
+                    .iter()
+                    .flat_map(|point| point.attributes.iter()),
+            ),
+            Some(Data::Histogram(histogram)) => Box::new(
+                histogram
+                    .data_points
+                    .iter()
+                    .flat_map(|point| point.attributes.iter()),
+            ),
+            _ => Box::new(std::iter::empty()),
+        }
     }
 
     fn assert_correlated(&self, request_id: &str, service_name: &str) -> String {
@@ -511,7 +632,25 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::{SERVICE_NAME, start_collector, telemetry_tests};
+    use super::{start_collector, telemetry_tests, OtlpTransport, SERVICE_NAME};
+
+    #[test]
+    fn selects_supported_otlp_transports() {
+        assert_eq!(
+            OtlpTransport::from_environment_value(None).expect("default transport"),
+            OtlpTransport::Grpc
+        );
+        assert_eq!(
+            OtlpTransport::from_environment_value(Some("grpc")).expect("gRPC transport"),
+            OtlpTransport::Grpc
+        );
+        assert_eq!(
+            OtlpTransport::from_environment_value(Some("http/protobuf")).expect("HTTP transport"),
+            OtlpTransport::HttpProtobuf
+        );
+        assert!(OtlpTransport::from_environment_value(Some("http/json")).is_err());
+        assert!(OtlpTransport::from_environment_value(Some("prometheus")).is_err());
+    }
 
     #[test]
     fn exports_set_options_event_to_otlp() {
@@ -589,6 +728,7 @@ mod tests {
             .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
             .env("TELCHAR_SMOKE_REQUEST_ID", "request-smoke-001")
             .env("TELCHAR_SMOKE_ERROR", "1")
+            .env("TELCHAR_SMOKE_OPERATIONAL_METRICS", "1")
             .output()
             .expect("Telchar process starts");
         assert!(
@@ -625,5 +765,22 @@ mod tests {
 
         let trace_id = collector.assert_correlated("request-smoke-001", SERVICE_NAME);
         assert!(stderr.contains(&format!("trace_id={trace_id}")));
+        let names = collector.metric_names();
+        for expected in [
+            "telchar.build.requests",
+            "telchar.build.request.duration",
+            "telchar.shared_build.queue.depth",
+            "telchar.backend.permits.active",
+            "telchar.backend.permit.wait.duration",
+            "telchar.cache.substitutions",
+            "telchar.transfer.bytes",
+            "telchar.nomad.pending",
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing OTLP metric {expected}: {names:?}"
+            );
+        }
+        collector.assert_metric_attributes_are_bounded();
     }
 }

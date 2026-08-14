@@ -8,6 +8,7 @@ pub mod disk_reserve;
 pub mod executor_service;
 pub mod identity;
 pub mod ipc;
+pub mod metrics;
 pub mod session;
 pub mod singleton_ownership;
 pub mod transfer_limits;

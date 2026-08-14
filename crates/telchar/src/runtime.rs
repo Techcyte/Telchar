@@ -168,6 +168,9 @@ pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .u64_counter("telchar.smoke.events")
             .build()
             .add(1, &[]);
+        if std::env::var_os("TELCHAR_SMOKE_OPERATIONAL_METRICS").is_some() {
+            telchar::service::metrics::emit_smoke_metrics();
+        }
         if std::env::var_os("TELCHAR_SMOKE_ERROR").is_some() {
             tracing::error!(event = "smoke.error", request_id = %request_id, "smoke error");
         }
