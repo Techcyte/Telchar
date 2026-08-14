@@ -502,12 +502,26 @@ fn run_daemon() -> io::Result<()> {
         },
     )?;
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
+    let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    signal_hook::flag::register(
+        signal_hook::consts::SIGTERM,
+        Arc::clone(&shutdown_requested),
+    )?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown_requested))?;
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
     telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
+        if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
+            shutdown_daemon_services(
+                &mut callback_service,
+                &mut maintenance_service,
+                &mut recovery_services,
+            )?;
+            return Ok(());
+        }
         if let Err(error) = maintenance_service.check() {
             tracing::error!(
                 event = "gateway.output_retention.maintenance_failed",

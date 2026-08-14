@@ -41,11 +41,23 @@ let
     ];
     passthru.imageConfig = {
       Entrypoint = [ "/bin/telchar" ];
-      Cmd = [ "daemon" ];
+      Cmd = [
+        "daemon"
+        "--socket"
+        "/run/telchar/daemon.sock"
+        "--frontend-uid"
+        "0"
+      ];
     };
     config = {
       Entrypoint = [ "/bin/telchar" ];
-      Cmd = [ "daemon" ];
+      Cmd = [
+        "daemon"
+        "--socket"
+        "/run/telchar/daemon.sock"
+        "--frontend-uid"
+        "0"
+      ];
       Env = [
         "PATH=/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"

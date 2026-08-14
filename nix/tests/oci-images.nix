@@ -7,7 +7,14 @@
 assert telcharImage.imageName == "telchar";
 assert telcharImage.imageTag == "latest";
 assert telcharImage.imageConfig.Entrypoint == [ "/bin/telchar" ];
-assert telcharImage.imageConfig.Cmd == [ "daemon" ];
+assert
+  telcharImage.imageConfig.Cmd == [
+    "daemon"
+    "--socket"
+    "/run/telchar/daemon.sock"
+    "--frontend-uid"
+    "0"
+  ];
 assert nomadWorkerImage.imageName == "telchar-nomad-worker";
 assert nomadWorkerImage.imageTag == "latest";
 assert nomadWorkerImage.imageConfig.Entrypoint == [ "/bin/telchar-nomad-worker" ];

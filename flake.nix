@@ -44,6 +44,8 @@
           inherit pkgs system;
           telchar = self.packages.${system}.telchar;
           nomadWorker = self.packages.${system}.telchar-nomad-worker;
+          telcharImage = self.packages.${system}.telchar-oci;
+          nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           telcharModule = self.nixosModules.telchar;
         }
         // {
