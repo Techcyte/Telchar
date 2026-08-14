@@ -40,6 +40,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         store_import,
         store_closure,
         store_retention,
+        store_substitution,
         database_url,
         session_id,
         audit_subject,
@@ -574,7 +575,19 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     "shared build scheduling failed",
                                 );
                             }
-                            let result = build_executor.execute_with_logs(
+                            let result = match substitute_build_outputs(
+                                store_substitution,
+                                admitted.expected_outputs(),
+                            ) {
+                                Some(result) => {
+                                    tracing::info!(
+                                        event = "worker.build_derivation.substituted",
+                                        output_count = result.outputs().len(),
+                                        "BuildDerivation outputs substituted through gateway store"
+                                    );
+                                    Ok(result)
+                                }
+                                None => build_executor.execute_with_logs(
                             &execution,
                             &mut |chunk| {
                                 if requester_detached.get() {
@@ -615,7 +628,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                                 Ok(disconnected)
                             },
-                        );
+                        ),
+                            };
                             match result {
                                 Ok(result) => leader.complete(Ok(result)).map_err(|_| {
                                     io::Error::other("shared BuildDerivation execution failed")
@@ -1419,6 +1433,28 @@ fn wait_for_shared_build_terminal(database_url: &str, derivation_path: &str) -> 
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn substitute_build_outputs(
+    store: &mut dyn crate::store::substitution::StoreSubstitutionBackend,
+    expected_outputs: &[(Vec<u8>, Vec<u8>)],
+) -> Option<crate::backend::BuildResult> {
+    for (_, path) in expected_outputs {
+        if let Err(error) = store.ensure_path(path) {
+            tracing::info!(
+                event = "worker.build_derivation.substitution_missed",
+                reason = execution_error_reason(&error),
+                "BuildDerivation output substitution did not complete"
+            );
+            return None;
+        }
+    }
+    crate::backend::BuildResult::new(
+        crate::backend::BuildStatus::AlreadyValid,
+        expected_outputs.to_vec(),
+        crate::backend::OutputTrust::TrustedExecutor,
+    )
+    .ok()
 }
 
 fn validate_build_outputs(

@@ -17,6 +17,9 @@ use crate::store::query::GatewayStoreQuery;
 use crate::store::retention::{
     backend_for_gateway_store, filesystem_backend, StoreRetentionBackend,
 };
+use crate::store::substitution::{
+    GatewayStoreSubstitution, StoreSubstitutionBackend, UnavailableStoreSubstitution,
+};
 
 #[derive(Clone)]
 pub struct GatewayStoreRuntime {
@@ -88,6 +91,13 @@ impl GatewayStoreRuntime {
         match &self.endpoint {
             Some(endpoint) => Box::new(GatewayStoreClosureBackend::new(endpoint.clone())),
             None => Box::new(UnavailableStoreClosureBackend),
+        }
+    }
+
+    pub fn substitution(&self) -> Box<dyn StoreSubstitutionBackend> {
+        match (&self.build_helper, &self.endpoint) {
+            (None, Some(endpoint)) => Box::new(GatewayStoreSubstitution::new(endpoint.clone())),
+            _ => Box::new(UnavailableStoreSubstitution),
         }
     }
 

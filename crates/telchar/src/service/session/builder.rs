@@ -14,6 +14,7 @@ pub struct SessionBuilder<'a> {
     store_import: Option<&'a mut dyn crate::store::import::StoreImportBackend>,
     store_closure: Option<&'a mut dyn crate::store::closure::StoreClosureBackend>,
     store_retention: Option<&'a mut dyn crate::store::retention::StoreRetentionBackend>,
+    store_substitution: Option<&'a mut dyn crate::store::substitution::StoreSubstitutionBackend>,
     database_url: Option<&'a str>,
     session_id: Option<&'a str>,
     audit_subject: Option<&'a str>,
@@ -42,6 +43,7 @@ pub(super) struct SessionContext<'a> {
     pub store_import: &'a mut dyn crate::store::import::StoreImportBackend,
     pub store_closure: &'a mut dyn crate::store::closure::StoreClosureBackend,
     pub store_retention: &'a mut dyn crate::store::retention::StoreRetentionBackend,
+    pub store_substitution: &'a mut dyn crate::store::substitution::StoreSubstitutionBackend,
     pub database_url: &'a str,
     pub session_id: &'a str,
     pub audit_subject: &'a str,
@@ -76,6 +78,7 @@ impl<'a> SessionBuilder<'a> {
             store_import: None,
             store_closure: None,
             store_retention: None,
+            store_substitution: None,
             database_url: None,
             session_id: None,
             audit_subject: None,
@@ -118,12 +121,14 @@ impl<'a> SessionBuilder<'a> {
         import: &'a mut dyn crate::store::import::StoreImportBackend,
         closure: &'a mut dyn crate::store::closure::StoreClosureBackend,
         retention: &'a mut dyn crate::store::retention::StoreRetentionBackend,
+        substitution: &'a mut dyn crate::store::substitution::StoreSubstitutionBackend,
     ) -> Self {
         self.store_query = Some(query);
         self.store_export = Some(export);
         self.store_import = Some(import);
         self.store_closure = Some(closure);
         self.store_retention = Some(retention);
+        self.store_substitution = Some(substitution);
         self
     }
     pub fn build_executor(mut self, value: &'a mut dyn BuildBackend) -> Self {
@@ -200,6 +205,7 @@ impl<'a> SessionBuilder<'a> {
             store_import: self.store_import.ok_or_else(missing)?,
             store_closure: self.store_closure.ok_or_else(missing)?,
             store_retention: self.store_retention.ok_or_else(missing)?,
+            store_substitution: self.store_substitution.ok_or_else(missing)?,
             database_url: self.database_url.ok_or_else(missing)?,
             session_id: self.session_id.ok_or_else(missing)?,
             audit_subject: self.audit_subject.ok_or_else(missing)?,

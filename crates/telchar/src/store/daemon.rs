@@ -114,6 +114,12 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())
     }
 
+    pub fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
+        self.client
+            .ensure_path(path)
+            .map_err(|_| connection_error())
+    }
+
     pub fn build_derivation(
         &mut self,
         request: &BuildDerivationClientRequest<'_>,

@@ -131,6 +131,7 @@ pub(super) fn serve_accepted_connection(
         let mut store_import = gateway_store.import()?;
         let mut store_closure = gateway_store.closure();
         let mut store_retention = gateway_store.retention()?;
+        let mut store_substitution = gateway_store.substitution();
         let backend_targets = service_config
             .backend_targets()
             .cloned()
@@ -149,6 +150,7 @@ pub(super) fn serve_accepted_connection(
             store_import.as_mut(),
             store_closure.as_mut(),
             store_retention.as_mut(),
+            store_substitution.as_mut(),
         )
         .build_executor(&mut build_executor)
         .identity(

@@ -9,5 +9,6 @@ pub mod promotion;
 pub mod query;
 pub mod retention;
 pub mod runtime;
+pub mod substitution;
 
 pub use daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
