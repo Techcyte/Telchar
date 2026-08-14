@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use telchar::identity::{IdentityInput, normalize_requester};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+use telchar::identity::{normalize_requester, IdentityInput};
+use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
@@ -265,7 +265,7 @@ fn run_daemon() -> io::Result<()> {
         .to_owned();
     tracing::info!(
         event = "database.migration.started",
-        latest_migration_version = 13_i64,
+        latest_migration_version = telchar::persistence::latest_migration_version(),
         "database migration started"
     );
     let migration = match telchar::persistence::migrate(&database_url) {
@@ -281,7 +281,7 @@ fn run_daemon() -> io::Result<()> {
     };
     tracing::info!(
         event = "database.migration.completed",
-        latest_migration_version = 13_i64,
+        latest_migration_version = telchar::persistence::latest_migration_version(),
         previously_applied_count = migration.previously_applied,
         applied_this_run_count = migration.applied_this_run,
         resulting_schema_version = migration.resulting_version,
