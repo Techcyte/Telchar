@@ -37,6 +37,27 @@ impl OutputAuthority {
     pub fn hash(&self) -> &[u8] {
         &self.hash
     }
+
+    pub fn expected_content_address(&self) -> Option<String> {
+        if self.hash_algorithm.is_empty() {
+            return None;
+        }
+        let method = if self.hash_algorithm.starts_with(b"r:") {
+            "fixed:r:"
+        } else {
+            "fixed:"
+        };
+        let algorithm = self
+            .hash_algorithm
+            .strip_prefix(b"r:")
+            .unwrap_or(&self.hash_algorithm);
+        let hash = decode_hex(&self.hash)?;
+        Some(format!(
+            "{method}{}:{}",
+            std::str::from_utf8(algorithm).ok()?,
+            encode_nix_base32(&hash)
+        ))
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -206,6 +227,36 @@ impl BuildRequest {
     pub fn environment(&self) -> &[(Vec<u8>, Vec<u8>)] {
         &self.environment
     }
+}
+
+fn decode_hex(value: &[u8]) -> Option<Vec<u8>> {
+    value
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16)? as u8;
+            let low = (pair[1] as char).to_digit(16)? as u8;
+            Some((high << 4) | low)
+        })
+        .collect()
+}
+
+fn encode_nix_base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let length = (bytes.len() * 8).div_ceil(5);
+    let mut encoded = String::with_capacity(length);
+    for index in (0..length).rev() {
+        let bit = index * 5;
+        let byte = bit / 8;
+        let shift = bit % 8;
+        let value = (bytes[byte] >> shift)
+            | bytes
+                .get(byte + 1)
+                .copied()
+                .unwrap_or_default()
+                .wrapping_shl((8 - shift) as u32);
+        encoded.push(ALPHABET[(value & 0x1f) as usize] as char);
+    }
+    encoded
 }
 
 fn update_digest_strings(digest: &mut Sha256, values: &[String]) {

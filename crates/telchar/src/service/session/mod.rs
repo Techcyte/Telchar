@@ -733,7 +733,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
-                let output_paths = validate_build_outputs(&result, store_export);
+                let output_paths =
+                    validate_build_outputs(&result, &admitted, store_export);
                 let output_paths = match output_paths {
                     Ok(paths) => {
                         if durable_execution_owned.get() {
@@ -1478,6 +1479,7 @@ fn substitute_build_outputs(
 
 fn validate_build_outputs(
     result: &crate::backend::BuildResult,
+    request: &crate::build::BuildRequest,
     store_export: &mut dyn crate::store::export::StoreExportBackend,
 ) -> io::Result<Vec<String>> {
     let paths = result
@@ -1489,9 +1491,24 @@ fn validate_build_outputs(
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid output path"))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    paths.iter().try_for_each(|path| {
-        crate::store::export::validate_store_output(Path::new(path), store_export).map(|_| ())
-    })?;
+    for (path, authority) in paths.iter().zip(request.output_authorities()) {
+        if path.as_bytes() != authority.path() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "build output authority mismatch",
+            ));
+        }
+        let metadata =
+            crate::store::export::validate_store_output(Path::new(path), store_export)?;
+        if metadata.content_address.as_deref()
+            != authority.expected_content_address().as_deref()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "build output content address mismatch",
+            ));
+        }
+    }
     Ok(paths)
 }
 

@@ -130,6 +130,18 @@ fn preserves_fixed_output_authority_in_shared_build_identity() {
 
     assert_eq!(first.output_authorities().len(), 1);
     assert_eq!(first.output_authorities()[0].hash_algorithm(), b"sha256");
+    assert_eq!(
+        first.output_authorities()[0]
+            .expected_content_address()
+            .as_deref(),
+        Some("fixed:sha256:0000000000000000000000000000000000000000000000000000")
+    );
+    assert_eq!(
+        second.output_authorities()[0]
+            .expected_content_address()
+            .as_deref(),
+        Some("fixed:r:sha256:0000000000000000000000000000000000000000000000000000")
+    );
     assert_ne!(first.shared_build_key(), second.shared_build_key());
 }
 
