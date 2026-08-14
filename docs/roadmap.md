@@ -48,7 +48,7 @@ Add Kubernetes, cloud batch, or another scheduler only for a real fleet. Preserv
 
 ### OCI images
 
-Publish images only with proven signal handling, filesystem ownership, secret delivery, Nix daemon access, and upgrade behavior. Images must run the same Telchar binaries and do not create a container-specific product mode.
+The executable Docker-backed fixture now proves archive loading, declared entrypoints, gateway startup, PostgreSQL migration, IPC socket creation, bounded missing-configuration failure, and graceful `SIGTERM` shutdown. Before publishing images broadly, add non-root filesystem ownership, production Nix-daemon socket access, secret delivery, and upgrade/rollback evidence. Images continue to run the same Telchar binaries without a container-specific product mode.
 
 ### Soak and load qualification
 

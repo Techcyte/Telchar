@@ -84,11 +84,14 @@ Reproducible OCI image archives are also flake packages:
 
 ```bash
 nix build .#telchar-oci
+podman load < result
 nix build .#telchar-nomad-worker-oci
 podman load < result
 ```
 
-The gateway image starts `telchar daemon`; the worker image starts `telchar-nomad-worker`. Runtime configuration, credentials, PostgreSQL, gateway-store access, and callback networking remain operator responsibilities.
+The gateway image starts `telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 0`; override the command when the frontend runs under another UID. Mount `/etc/telchar`, `/run/telchar`, persistent import and GC-root state, and the gateway Nix daemon socket. Supply PostgreSQL, credentials, configuration, and OTLP settings through operator-owned files or environment variables. The worker image starts `telchar-nomad-worker` and expects the bounded Nomad allocation environment documented in [Nomad backend](docs/nomad.md).
+
+Executable release coverage loads both archives into Docker, starts the gateway image against PostgreSQL, verifies migration and IPC socket creation, checks bounded worker startup failure, and proves graceful `SIGTERM` shutdown.
 
 ## Documentation
 
