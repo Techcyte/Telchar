@@ -3,8 +3,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST, WorkerClient,
-    WorkerVersion,
+    WorkerClient, WorkerVersion, CLIENT_WORKER_MAGIC, SERVER_WORKER_MAGIC, STDERR_ERROR,
+    STDERR_LAST,
 };
 
 struct ScriptedStream {
@@ -61,6 +61,30 @@ fn successful_daemon_response(operation_count: usize) -> Vec<u8> {
         integer(&mut response, 1);
     }
     response
+}
+
+#[test]
+fn ensure_path_uses_cache_only_worker_operation() {
+    let stream = ScriptedStream::new(successful_daemon_response(1));
+    let mut client = WorkerClient::connect(stream).expect("client handshake succeeds");
+
+    client
+        .ensure_path(b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cached")
+        .expect("substitution succeeds");
+
+    let stream = client.into_inner();
+    let mut expected = Vec::new();
+    integer(&mut expected, CLIENT_WORKER_MAGIC);
+    integer(&mut expected, WorkerVersion::new(1, 38).to_wire());
+    integer(&mut expected, 0);
+    integer(&mut expected, 0);
+    integer(&mut expected, 0);
+    integer(&mut expected, 10);
+    byte_string(
+        &mut expected,
+        b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cached",
+    );
+    assert_eq!(stream.output, expected);
 }
 
 #[test]

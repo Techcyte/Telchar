@@ -318,6 +318,12 @@ impl<S: Read + Write> WorkerClient<S> {
         read_operation_frames(&mut self.stream, self.profile.version)
     }
 
+    pub fn ensure_path(&mut self, store_path: &[u8]) -> io::Result<()> {
+        validate_store_path_in_directory(store_path, &self.store_directory)
+            .map_err(|_| protocol_client_error())?;
+        self.execute_path_operation(WorkerOperation::EnsurePath, store_path)
+    }
+
     pub fn add_temporary_root(&mut self, store_path: &[u8]) -> io::Result<()> {
         validate_store_path_in_directory(store_path, &self.store_directory)
             .map_err(|_| protocol_client_error())?;
