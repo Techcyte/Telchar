@@ -35,7 +35,10 @@ Start with:
 
 Worker-wire implementation is split across:
 
-- `crates/nix-worker-protocol/src/lib.rs`: protocol types, primitives, and server-side decoding;
+- `crates/nix-worker-protocol/src/lib.rs`: server-side decoding and intentional public re-exports;
+- `protocol.rs`: versions, operations, limits, and allocation budgets;
+- `requests.rs`: transfer and derivation request models;
+- `stderr.rs`: structured worker stderr and activity frames;
 - `client.rs`: typed daemon-client operations;
 - `fixture.rs`: reusable protocol fixtures;
 - `tests.rs` and `tests/*_contract.rs`: unit and exact byte contracts.
@@ -55,7 +58,7 @@ The public crate API is grouped by domain rather than mirroring every source fil
 - `telchar::fixture`: real-Nix and trace test infrastructure;
 - `telchar::persistence`: durable domain operations.
 
-`build/request.rs` validates `BuildDerivation` shape and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
+`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
 
 ### 4. Gateway store
 
@@ -69,6 +72,7 @@ Key modules:
 - `store/promotion.rs`: metadata validation and typed import;
 - `store/import.rs`, `store/export.rs`: transfer adapters;
 - `store/retention.rs`: GC roots and output retention;
+- `store/substitution.rs`: cache-only `EnsurePath` requests;
 - `store/runtime.rs`: composition-time store dependencies;
 - `service/disk_reserve.rs`, `service/transfer_limits.rs`: resource admission.
 
@@ -121,7 +125,7 @@ See [Nomad](nomad.md) for deployment and protocol detail.
 
 ### 8. Ownership and maintenance
 
-`service/singleton_ownership.rs` holds PostgreSQL advisory-lock connections. Lock loss fences the process. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` starts them only after configuration, migration, reconciliation, and ownership succeed.
+`service/singleton_ownership.rs` holds PostgreSQL advisory-lock connections. Lock loss fences the process. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` owns top-level composition; `runtime/daemon.rs` owns daemon socket, accepted-connection, and session lifecycle. Services start only after configuration, migration, reconciliation, and ownership succeed.
 
 Never edit an applied migration. Add the next numbered migration and tests.
 
@@ -131,7 +135,9 @@ Integration tests are organized by behavior. Larger suites use a small root fixt
 
 - `operation_dispatch.rs` with `operation_dispatch/{protocol,store_transfer,build_lifecycle,scheduling,disconnect,validation}.rs`;
 - the four `persistence_*.rs` suites listed above;
-- `service_config.rs`, `nomad_backend.rs`, and `ipc_frontend.rs` for their respective process and configuration boundaries.
+- `service_config.rs` with `service_config/{core,environment,nomad,static_ssh}.rs`;
+- `nomad_backend.rs` with `nomad_backend/{client,execution,identity,rendering}.rs`;
+- `ipc_frontend.rs` with `ipc_frontend/{handshake,ownership,readiness,sessions,socket}.rs`.
 
 Shared PostgreSQL and admitted-request helpers live under `tests/support/`.
 

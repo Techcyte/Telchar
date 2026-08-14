@@ -100,7 +100,9 @@ Malformed data, metadata disagreement, missing references, interruption, or daem
 
 Transfers are streamed with bounded memory. Store leases and GC roots keep paths alive while requests, active executions, transfers, or configured output retention still require them. Telchar controls eligibility; Nix garbage collection performs deletion.
 
-Classic input-addressed output validation proves transport and store consistency with a trusted executor. It is not cryptographic proof that the executor built honestly.
+Classic input-addressed output validation proves transport and store consistency with a trusted executor. Fixed-output validation additionally requires the registered Nix content address to match the admitted method, algorithm, and digest. It is not cryptographic proof that the executor built honestly.
+
+After durable shared-build leadership and subject admission, Telchar may ask the gateway Nix daemon to `EnsurePath` expected outputs before acquiring backend capacity. Complete hits use the same validation and retention path; misses fall through to execution. Optional cache publication runs only after durable success and cannot change the Nix result.
 
 ## Backends
 

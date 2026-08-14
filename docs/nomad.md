@@ -69,7 +69,7 @@ After the complete input closure is valid, the worker runs normal-mode `BuildDer
 
 Logs are bounded and delivered only to clients attached at the time. Slow or disconnected clients cannot block the worker. Telchar does not store log bytes in PostgreSQL or replay them after reconnect.
 
-After `BuildDerivation` succeeds, the worker returns only the exact declared output paths. Telchar checks metadata, references, NAR identity and structure, expected path set, and gateway-store registration before acknowledging each output.
+After `BuildDerivation` succeeds, the worker returns only the exact declared output paths. Fixed-output method, algorithm, digest, and Nix content-address metadata remain bound to the admitted build specification through the job and callback protocol. Telchar checks metadata, references, NAR identity and structure, expected path set, admitted content authority, and gateway-store registration before acknowledging each output.
 
 Missing, extra, corrupt, duplicate, oversized, out-of-order, or rejected output data fails the build.
 
@@ -83,9 +83,9 @@ Timeout and cancellation purge only the persisted deterministic job. Missing job
 
 ## Cache publication
 
-Telchar does not publish to a binary cache. Operators may use Attic, `nix copy`, or ordinary post-build tooling after gateway success. Publication failure must not change a build that Telchar has already validated and completed.
+An optional bounded post-success executable may invoke operator tooling such as Attic or `nix copy`. Publication failure does not change a build Telchar has already validated and completed.
 
-Cache credentials and trust policy stay outside client requests and outside generated Nix configuration.
+Cache credentials and trust policy stay outside client requests and outside generated Nix configuration. Telchar still does not implement a binary-cache protocol.
 
 ## Configuration shape
 

@@ -15,11 +15,11 @@ stock Nix client
 
 ## Status
 
-The MVP supports classic input-addressed derivations in normal build mode. It includes durable PostgreSQL coordination, duplicate suppression, per-subject queue limits, exact-target restart recovery, bounded transfers, and client-independent execution.
+The MVP supports classic input-addressed and fixed-output derivations in normal build mode. It includes durable PostgreSQL coordination, duplicate suppression, gateway cache substitution, per-subject queue limits, exact-target restart recovery, bounded transfers, and client-independent execution.
 
 Current limits:
 
-- fixed-output and content-addressed derivations are not supported;
+- floating content-addressed derivations are not supported;
 - authenticated clients share one trusted store domain;
 - builds are not retried automatically;
 - logs are live and bounded, with no replay;

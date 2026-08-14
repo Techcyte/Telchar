@@ -65,7 +65,7 @@ Recovery checks exact gateway-store outputs first. Static SSH recovery remains b
 
 ## Stores and retention
 
-The gateway Nix daemon is trusted authority. The Telchar account needs the operations required for closure queries, NAR import/export, builds, and GC-root retention.
+The gateway Nix daemon is trusted authority. The Telchar account needs the operations required for closure queries, NAR import/export, builds, substitution through `EnsurePath`, and GC-root retention. Substituters, cache credentials, trusted keys, signature policy, and store registration remain Nix-daemon configuration.
 
 Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
 
@@ -86,6 +86,20 @@ nix build \
 The Nix builder entry describes the requested system and features. It cannot select a Telchar backend, cluster, store, credential, driver, quota, or cache policy.
 
 Requester disconnect normally leaves admitted execution running. Followers share the same execution and do not consume another execution slot or backend permit.
+
+## Cache publication
+
+Optional post-success publication is configured in strict TOML:
+
+```toml
+[cache_publication]
+executable = "/run/current-system/sw/bin/nix"
+arguments = ["copy", "--to", "https://cache.example"]
+timeout_seconds = 300
+maximum_input_bytes = 65536
+```
+
+Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded; subprocess output is suppressed. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
 
 ## Logs and telemetry
 
@@ -120,12 +134,14 @@ Before upgrading:
 Verification commands:
 
 ```bash
-nix flake check
-nix develop -c cargo test --locked --workspace
-./scripts/check-release.sh
+nix develop -c cargo fmt --all -- --check
+nix develop -c cargo check --locked --workspace
+nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
+nix develop -c cargo test --locked --workspace -- --test-threads=1
+NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 ```
 
-The release script covers formatting, tests, clippy, packages, the public NixOS module, stock-Nix local builds, static SSH, Nomad, duplicate coalescing, requester disconnect, output reuse, and restart recovery.
+Build release artifacts and selected VM checks directly from their flake attributes. The suite covers packages, the public NixOS module, stock-Nix local and fixed-output builds, static SSH, Nomad, duplicate coalescing, requester disconnect, output reuse, and restart recovery.
 
 ## Unsupported expectations
 
@@ -134,8 +150,8 @@ Do not rely on Telchar for:
 - hostile tenant isolation;
 - automatic build retries;
 - log replay;
-- cache publication;
-- fixed-output or content-addressed derivations;
+- Telchar-owned binary-cache protocols;
+- floating content-addressed derivations;
 - active/active scheduling;
 - client-selected infrastructure;
 - native TLS termination.
