@@ -31,7 +31,7 @@ pub trait StoreImportBackend {
     ) -> io::Result<()>;
 }
 
-struct UnavailableStoreImport;
+pub struct UnavailableStoreImport;
 
 impl StoreImportBackend for UnavailableStoreImport {
     fn staging_directory(&self) -> Option<&Path> {

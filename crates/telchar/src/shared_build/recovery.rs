@@ -14,11 +14,17 @@ pub trait SharedBuildOutputStore {
 }
 
 pub struct GatewaySharedBuildOutputStore {
-    endpoint: GatewayStoreEndpoint,
+    endpoint: Option<GatewayStoreEndpoint>,
 }
 
 impl GatewaySharedBuildOutputStore {
     pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self {
+            endpoint: Some(endpoint),
+        }
+    }
+
+    pub fn with_endpoint(endpoint: Option<GatewayStoreEndpoint>) -> Self {
         Self { endpoint }
     }
 
@@ -39,7 +45,13 @@ impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
         if outputs.is_empty() {
             return Ok(true);
         }
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
+        let endpoint = self.endpoint.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })?;
+        let mut connection = GatewayStoreConnection::connect(endpoint)?;
         for output in outputs {
             if connection.query_path_info(output.as_bytes())?.is_none() {
                 return Ok(false);

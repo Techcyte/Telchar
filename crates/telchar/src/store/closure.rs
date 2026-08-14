@@ -29,7 +29,7 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
     Ok(Box::new(GatewayStoreClosureBackend::new(endpoint)))
 }
 
-struct UnavailableStoreClosureBackend;
+pub struct UnavailableStoreClosureBackend;
 
 impl StoreClosureBackend for UnavailableStoreClosureBackend {
     fn input_closure(&mut self, roots: &[Vec<u8>]) -> io::Result<Vec<ClosurePath>> {

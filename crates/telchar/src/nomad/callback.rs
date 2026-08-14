@@ -8,10 +8,10 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
-use crate::nomad::backend::NomadClient;
 use crate::nomad::authentication::{
     HmacCallbackVerifier, VerifiedHmacRequest, WorkloadIdentityVerifier,
 };
+use crate::nomad::backend::NomadClient;
 use crate::nomad::protocol::{
     Authentication, Direction, FrameKind, ProtocolLimits, ProtocolSession, decode_metadata,
     read_frame,

@@ -53,10 +53,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_build_scheduler,
         scheduling_limits,
     } = context;
-    let mut inbound_budget =
-        crate::service::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
-    let mut outbound_budget =
-        crate::service::transfer_limits::TransferBudget::new(transfer_limits.maximum_outbound_session_bytes);
+    let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
+        transfer_limits.maximum_inbound_session_bytes,
+    );
+    let mut outbound_budget = crate::service::transfer_limits::TransferBudget::new(
+        transfer_limits.maximum_outbound_session_bytes,
+    );
     let mut object_counts = crate::service::transfer_limits::ObjectSessionCounts::default();
     let mut cancellation_input = input.try_clone()?;
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
@@ -1084,7 +1086,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         if let Some(staging_directory) = staging_directory.as_deref()
                             && let Err(error) = disk_reserve.admit_transfer(
                                 disk_probe,
-                                std::path::Path::new(crate::service::disk_reserve::GATEWAY_STORE_DIRECTORY),
+                                std::path::Path::new(
+                                    crate::service::disk_reserve::GATEWAY_STORE_DIRECTORY,
+                                ),
                                 staging_directory,
                                 info.nar_size(),
                             )
@@ -1286,7 +1290,9 @@ fn retention_batch_event(
 
 fn disk_reserve_error(error: crate::service::disk_reserve::AdmissionFailure) -> &'static str {
     match error.reason() {
-        crate::service::disk_reserve::RejectionReason::InsufficientSpace => "gateway disk reserve exceeded",
+        crate::service::disk_reserve::RejectionReason::InsufficientSpace => {
+            "gateway disk reserve exceeded"
+        }
         crate::service::disk_reserve::RejectionReason::ProbeFailed
         | crate::service::disk_reserve::RejectionReason::ArithmeticOverflow => {
             "gateway disk reserve check failed"

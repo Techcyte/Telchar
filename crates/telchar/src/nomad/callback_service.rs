@@ -428,6 +428,7 @@ enum BuildCollectionOutcome {
     Failed { diagnostic: Option<String> },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn receive_build_outputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad::callback_http::CallbackSocket<S>,
     session: &mut TransferSession,

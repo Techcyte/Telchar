@@ -15,6 +15,7 @@ pub trait QueryValidPathsStore {
 pub struct GatewayStoreQuery {
     executable: String,
     store_uri: Option<String>,
+    environment: Vec<(String, String)>,
 }
 
 impl GatewayStoreQuery {
@@ -22,9 +23,25 @@ impl GatewayStoreQuery {
         executable: impl Into<String>,
         endpoint: crate::store::daemon::GatewayStoreEndpoint,
     ) -> Self {
+        Self::with_endpoint(executable, Some(endpoint))
+    }
+
+    pub fn with_endpoint(
+        executable: impl Into<String>,
+        endpoint: Option<crate::store::daemon::GatewayStoreEndpoint>,
+    ) -> Self {
+        Self::with_endpoint_and_environment(executable, endpoint, [])
+    }
+
+    pub fn with_endpoint_and_environment(
+        executable: impl Into<String>,
+        endpoint: Option<crate::store::daemon::GatewayStoreEndpoint>,
+        environment: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
         Self {
             executable: executable.into(),
-            store_uri: Some(endpoint.to_string()),
+            store_uri: endpoint.map(|endpoint| endpoint.to_string()),
+            environment: environment.into_iter().collect(),
         }
     }
 
@@ -32,6 +49,7 @@ impl GatewayStoreQuery {
         Self {
             executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
             store_uri: std::env::var("TELCHAR_GATEWAY_STORE_URI").ok(),
+            environment: Vec::new(),
         }
     }
 }
@@ -65,6 +83,11 @@ impl QueryValidPathsStore for GatewayStoreQuery {
                 paths
                     .iter()
                     .map(|path| String::from_utf8_lossy(path).into_owned()),
+            )
+            .envs(
+                self.environment
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

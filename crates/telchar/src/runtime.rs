@@ -314,18 +314,22 @@ fn run_daemon() -> io::Result<()> {
         config.static_ssh_backends(),
         Duration::from_secs(10),
     )?;
-    let mut configured_backends = telchar::backend::routing::ConfiguredBackends::new(
-        &config,
-        gateway_store.endpoint().clone(),
-    )?;
+    let mut configured_backends =
+        telchar::backend::routing::ConfiguredBackends::with_local_build_helper(
+            &config,
+            gateway_store.endpoint().cloned(),
+            gateway_store
+                .build_helper()
+                .map(std::path::Path::to_path_buf),
+        )?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let reconciliation = if active_shared_builds.is_empty() {
         telchar::shared_build::recovery::ReconciliationOutcome::default()
     } else {
         let mut shared_build_outputs =
-            telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(
-                gateway_store.endpoint().clone(),
+            telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
+                gateway_store.endpoint().cloned(),
             );
         telchar::shared_build::recovery::reconcile_shared_builds(
             &database_url,
@@ -358,14 +362,14 @@ fn run_daemon() -> io::Result<()> {
         let database_url = database_url.clone();
         let backends = Arc::clone(&backends);
         let retention = output_retention.duration();
-        let gateway_store = gateway_store.endpoint().clone();
+        let gateway_store = gateway_store.endpoint().cloned();
         recovery_services.push(
             telchar::service::daemon_services::RecoveryMonitorService::start(
                 Duration::from_millis(100),
                 move || {
                     let mut configured_backends = (*backends).clone();
                     let mut outputs =
-                        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(
+                        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
                             gateway_store.clone(),
                         );
                     let outcome = telchar::shared_build::recovery::reconcile_adopted_shared_builds(
@@ -391,7 +395,10 @@ fn run_daemon() -> io::Result<()> {
                 config.nomad_callback().clone(),
                 database_url.clone(),
                 config.nomad_backends().to_vec(),
-                gateway_store.endpoint().clone(),
+                gateway_store
+                    .endpoint()
+                    .cloned()
+                    .ok_or_else(|| invalid("gateway store endpoint is not configured"))?,
                 output_retention.duration(),
             )?,
         )

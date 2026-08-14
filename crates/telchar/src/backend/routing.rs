@@ -1,6 +1,7 @@
 //! Constructs configured backend executors and dispatches admitted builds to the selected target.
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::{
@@ -17,13 +18,26 @@ pub struct ConfiguredBackends {
 struct ConfiguredBackendsInner {
     pool: BackendPool,
     permit_wait: std::time::Duration,
-    gateway_store: GatewayStoreEndpoint,
+    gateway_store: Option<GatewayStoreEndpoint>,
+    local_build_helper: Option<PathBuf>,
     static_ssh: Vec<StaticSshBackendConfig>,
     nomad: Vec<NomadBackendConfig>,
 }
 
 impl ConfiguredBackends {
-    pub fn new(config: &ServiceConfig, gateway_store: GatewayStoreEndpoint) -> io::Result<Self> {
+    pub fn new(
+        config: &ServiceConfig,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+    ) -> io::Result<Self> {
+        Self::with_local_build_helper(config, gateway_store, None)
+    }
+
+    pub fn with_local_build_helper(
+        config: &ServiceConfig,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        local_build_helper: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let gateway_store = gateway_store.into();
         let mut targets = Vec::new();
         let mut maximums = Vec::new();
         if let Some(local) = config.local_backend() {
@@ -43,6 +57,7 @@ impl ConfiguredBackends {
                 pool: BackendPool::new(targets, maximums)?,
                 permit_wait: config.backend_permit_wait(),
                 gateway_store,
+                local_build_helper,
                 static_ssh: config.static_ssh_backends().to_vec(),
                 nomad: config.nomad_backends().to_vec(),
             }),
@@ -76,9 +91,14 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
             .iter()
             .find(|config| config.target().name() == build.backend_name)
             .ok_or_else(|| io::Error::other("static SSH backend is not configured"))?;
+        let gateway_store = self
+            .inner
+            .gateway_store
+            .as_ref()
+            .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))?;
         crate::backend::static_ssh::recover_outputs(
             config,
-            &self.inner.gateway_store,
+            gateway_store,
             &build.expected_outputs,
             std::time::Duration::from_secs(10),
         )?;
@@ -182,9 +202,18 @@ impl BuildBackend for BackendExecutor {
             self.backends.inner.permit_wait,
         )?;
         let mut backend: Box<dyn BuildBackend> = match permit.target().kind() {
-            BackendKind::Local => Box::new(crate::backend::local::GatewayStoreExecutor::new(
-                self.backends.inner.gateway_store.clone(),
-            )),
+            BackendKind::Local => match (
+                &self.backends.inner.local_build_helper,
+                &self.backends.inner.gateway_store,
+            ) {
+                (Some(helper), Some(endpoint)) => Box::new(
+                    crate::backend::local::NixStoreExecutor::new(helper, endpoint.to_string())?,
+                ),
+                (None, Some(endpoint)) => Box::new(
+                    crate::backend::local::GatewayStoreExecutor::new(endpoint.clone()),
+                ),
+                _ => Box::new(crate::backend::local::UnavailableBuildExecutor),
+            },
             BackendKind::StaticSsh => {
                 let config = self
                     .backends
@@ -193,9 +222,13 @@ impl BuildBackend for BackendExecutor {
                     .iter()
                     .find(|config| config.target().name() == permit.target().name())
                     .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
+                let gateway_store =
+                    self.backends.inner.gateway_store.as_ref().ok_or_else(|| {
+                        io::Error::other("gateway store endpoint is not configured")
+                    })?;
                 Box::new(crate::backend::static_ssh::StaticSshBackend::new(
                     config.clone(),
-                    self.backends.inner.gateway_store.clone(),
+                    gateway_store.clone(),
                 ))
             }
             BackendKind::Nomad => {
