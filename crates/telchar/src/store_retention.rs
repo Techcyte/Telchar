@@ -123,6 +123,28 @@ pub fn reconcile_output_retention(
     result
 }
 
+pub(crate) fn unavailable_backend() -> Box<dyn StoreRetentionBackend> {
+    Box::new(UnavailableStoreRetentionBackend)
+}
+
+pub(crate) fn filesystem_backend(
+    root_directory: impl Into<PathBuf>,
+) -> io::Result<Box<dyn StoreRetentionBackend>> {
+    Ok(Box::new(FilesystemStoreRetentionBackend::new(
+        root_directory,
+    )?))
+}
+
+pub(crate) fn backend_for_gateway_store(
+    store_uri: impl Into<String>,
+    root_directory: impl Into<PathBuf>,
+) -> io::Result<Box<dyn StoreRetentionBackend>> {
+    Ok(Box::new(NixStoreRetentionBackend::new(
+        store_uri,
+        root_directory,
+    )?))
+}
+
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> {
     let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").ok();
     let root_directory = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
@@ -130,15 +152,12 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> 
         (Some(_), Some(root_directory))
             if std::env::var_os("TELCHAR_TEST_STORE_RETENTION").is_some() =>
         {
-            Ok(Box::new(FilesystemStoreRetentionBackend::new(
-                root_directory,
-            )?))
+            filesystem_backend(root_directory)
         }
-        (Some(store_uri), Some(root_directory)) => Ok(Box::new(NixStoreRetentionBackend::new(
-            store_uri,
-            root_directory,
-        )?)),
-        _ => Ok(Box::new(UnavailableStoreRetentionBackend)),
+        (Some(store_uri), Some(root_directory)) => {
+            backend_for_gateway_store(store_uri, root_directory)
+        }
+        _ => Ok(unavailable_backend()),
     }
 }
 

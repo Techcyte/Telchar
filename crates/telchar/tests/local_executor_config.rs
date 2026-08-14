@@ -27,6 +27,26 @@ fn deployment_environment_selects_the_gateway_executor() {
 }
 
 #[test]
+fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
+    unsafe { std::env::remove_var("TELCHAR_GATEWAY_STORE_URI") };
+    let endpoint = telchar::store_daemon::GatewayStoreEndpoint::parse(
+        "unix:///nix/var/nix/daemon-socket/socket",
+    )
+    .expect("endpoint is valid");
+
+    let _query = telchar::store_query::GatewayStoreQuery::new("nix", endpoint.clone());
+    let _import =
+        telchar::store_import::GatewayStoreImport::new(endpoint.clone()).expect("importer creates");
+    let _outputs =
+        telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(endpoint.clone());
+    let _executor = telchar::local_executor::GatewayStoreExecutor::new(endpoint);
+
+    restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
+}
+
+#[test]
 fn configured_executor_rejects_an_inaccessible_gateway_store() {
     let endpoint = telchar::store_daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",

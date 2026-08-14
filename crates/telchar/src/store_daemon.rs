@@ -46,6 +46,12 @@ impl GatewayStoreEndpoint {
     }
 }
 
+impl fmt::Display for GatewayStoreEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "unix://{}", self.socket_path.display())
+    }
+}
+
 impl fmt::Debug for GatewayStoreEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

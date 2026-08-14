@@ -8,19 +8,19 @@ use std::time::{Instant, SystemTime};
 
 use crate::config::{NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication};
 use crate::nomad_callback::{
-    CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
-    PostgresReplayAuthority, decode_authentication,
+    decode_authentication, CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
+    PostgresReplayAuthority,
 };
-use crate::nomad_callback_http::{CallbackHttpLimits, accept_connection};
+use crate::nomad_callback_http::{accept_connection, CallbackHttpLimits};
 use crate::nomad_transfer_authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad_transfer_protocol::{
-    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
-    InputManifest, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
-    TransferSession, decode_metadata, encode_metadata, read_frame, write_frame,
+    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
+    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
+    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
 };
-use crate::store_closure::{StoreClosureBackend, backend_from_environment};
+use crate::store_closure::{GatewayStoreClosureBackend, StoreClosureBackend};
 use crate::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 pub struct NomadCallbackService {
@@ -37,6 +37,7 @@ impl NomadCallbackService {
         callback: NomadCallbackConfig,
         database_url: String,
         backends: Vec<NomadBackendConfig>,
+        gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
@@ -79,6 +80,7 @@ impl NomadCallbackService {
                 let database_url = database_url.clone();
                 let backends = backends.clone();
                 let connections = Arc::clone(&listener_connections);
+                let gateway_store = gateway_store.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     if let Err(error) = serve_connection(
@@ -86,6 +88,7 @@ impl NomadCallbackService {
                         &callback,
                         &database_url,
                         &backends,
+                        &gateway_store,
                         output_retention,
                     ) {
                         tracing::warn!(
@@ -177,6 +180,7 @@ pub fn serve_connection(
     callback: &NomadCallbackConfig,
     database_url: &str,
     backends: &[NomadBackendConfig],
+    gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
 ) -> io::Result<()> {
     let namespaces = backends
@@ -299,8 +303,8 @@ pub fn serve_connection(
     socket
         .inner_mut()
         .set_write_timeout(Some(limits.transfer_idle_timeout()))?;
-    let mut closure = backend_from_environment()?;
-    let manifest = input_manifest(build_request, closure.as_mut())?;
+    let mut closure = GatewayStoreClosureBackend::new(gateway_store.clone());
+    let manifest = input_manifest(build_request, &mut closure)?;
     let mut session = TransferSession::new(
         manifest.clone(),
         limits.maximum_manifest_paths(),
@@ -344,6 +348,7 @@ pub fn serve_connection(
         &mut session,
         &manifest,
         &requested,
+        gateway_store,
         limits,
         connection_deadline,
     )?;
@@ -353,6 +358,7 @@ pub fn serve_connection(
         database_url,
         derivation_path,
         build_request,
+        gateway_store,
         limits,
         connection_deadline,
     ) {
@@ -426,10 +432,10 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     database_url: &str,
     derivation_path: &str,
     build_request: &crate::build_request::BuildRequest,
+    gateway_store: &GatewayStoreEndpoint,
     limits: crate::config::NomadTransferLimits,
     connection_deadline: Instant,
 ) -> io::Result<BuildCollectionOutcome> {
-    let endpoint = gateway_store_endpoint()?;
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
     loop {
@@ -463,7 +469,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
                 session.accept(Direction::WorkerToGateway, frame)?;
                 current = Some(OutputImport::new(
-                    &endpoint,
+                    gateway_store,
                     metadata,
                     limits.stream_buffer_bytes(),
                 )?);
@@ -507,7 +513,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     });
                 }
                 for (_, path) in build_request.expected_outputs() {
-                    let mut store = GatewayStoreConnection::connect(&endpoint)?;
+                    let mut store = GatewayStoreConnection::connect(gateway_store)?;
                     if !store.is_valid_path(path)? {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -547,11 +553,11 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     session: &mut TransferSession,
     manifest: &InputManifest,
     requested: &PathSet,
+    gateway_store: &GatewayStoreEndpoint,
     limits: crate::config::NomadTransferLimits,
     connection_deadline: Instant,
 ) -> io::Result<()> {
-    let endpoint = gateway_store_endpoint()?;
-    let mut store = GatewayStoreConnection::connect(&endpoint)?;
+    let mut store = GatewayStoreConnection::connect(gateway_store)?;
     for requested_path in &requested.paths {
         ensure_before(connection_deadline)?;
         let entry = manifest
@@ -659,12 +665,6 @@ fn ensure_before(deadline: Instant) -> io::Result<()> {
         ));
     }
     Ok(())
-}
-
-fn gateway_store_endpoint() -> io::Result<GatewayStoreEndpoint> {
-    std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
-        .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))
-        .and_then(|value| GatewayStoreEndpoint::parse_os(&value))
 }
 
 struct OutputImport {

@@ -242,6 +242,7 @@ fn run_daemon() -> io::Result<()> {
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
     let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
+    let gateway_store = telchar::store_runtime::GatewayStoreRuntime::from_environment()?;
     let database_url = config
         .require_database_url()
         .map_err(|_| invalid("database migration failed"))?
@@ -292,7 +293,7 @@ fn run_daemon() -> io::Result<()> {
                 return Err(invalid("singleton daemon ownership refused"));
             }
         };
-    let mut store_retention = telchar::store_retention::backend_from_environment()?;
+    let mut store_retention = gateway_store.retention()?;
     telchar::store_retention::reconcile_output_retention(
         &database_url,
         store_retention.as_mut(),
@@ -311,14 +312,19 @@ fn run_daemon() -> io::Result<()> {
         config.static_ssh_backends(),
         Duration::from_secs(10),
     )?;
-    let mut configured_backends = telchar::backend_routing::ConfiguredBackends::new(&config)?;
+    let mut configured_backends = telchar::backend_routing::ConfiguredBackends::new(
+        &config,
+        gateway_store.endpoint().clone(),
+    )?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let reconciliation = if active_shared_builds.is_empty() {
         telchar::shared_build_recovery::ReconciliationOutcome::default()
     } else {
         let mut shared_build_outputs =
-            telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment()?;
+            telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(
+                gateway_store.endpoint().clone(),
+            );
         telchar::shared_build_recovery::reconcile_shared_builds(
             &database_url,
             output_retention.duration(),
@@ -350,13 +356,16 @@ fn run_daemon() -> io::Result<()> {
         let database_url = database_url.clone();
         let backends = Arc::clone(&backends);
         let retention = output_retention.duration();
+        let gateway_store = gateway_store.endpoint().clone();
         recovery_services.push(
             telchar::daemon_services::RecoveryMonitorService::start(
                 Duration::from_millis(100),
                 move || {
                     let mut configured_backends = (*backends).clone();
-                    let mut outputs = telchar::shared_build_recovery::GatewaySharedBuildOutputStore::from_environment()
-                        .map_err(|_| io::Error::other("shared build recovery monitor failed"))?;
+                    let mut outputs =
+                        telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(
+                            gateway_store.clone(),
+                        );
                     let outcome = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
                         &database_url,
                         retention,
@@ -380,6 +389,7 @@ fn run_daemon() -> io::Result<()> {
                 config.nomad_callback().clone(),
                 database_url.clone(),
                 config.nomad_backends().to_vec(),
+                gateway_store.endpoint().clone(),
                 output_retention.duration(),
             )?,
         )
@@ -420,6 +430,7 @@ fn run_daemon() -> io::Result<()> {
             &backends,
             &shared_builds,
             &shared_build_scheduler,
+            &gateway_store,
         );
         if let Some(service) = callback_service.as_mut() {
             service.shutdown()?;
@@ -430,9 +441,10 @@ fn run_daemon() -> io::Result<()> {
         return result;
     }
     let maintenance_database_url = database_url.clone();
+    let maintenance_gateway_store = gateway_store.clone();
     let mut maintenance_service =
         telchar::daemon_services::MaintenanceService::start(Duration::from_secs(60), move || {
-            let mut backend = telchar::store_retention::backend_from_environment()?;
+            let mut backend = maintenance_gateway_store.retention()?;
             telchar::store_retention::reconcile_output_retention(
                 &maintenance_database_url,
                 backend.as_mut(),
@@ -530,6 +542,7 @@ fn run_daemon() -> io::Result<()> {
         let backends = Arc::clone(&backends);
         let shared_builds = Arc::clone(&shared_builds);
         let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
+        let gateway_store = gateway_store.clone();
         std::thread::spawn(move || {
             let _permit = permit;
             let result = connection
@@ -550,6 +563,7 @@ fn run_daemon() -> io::Result<()> {
                         &backends,
                         &shared_builds,
                         &shared_build_scheduler,
+                        &gateway_store,
                     )
                 });
             if let Err(error) = result {
@@ -596,6 +610,7 @@ fn serve_connection(
     backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
     shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
+    gateway_store: &telchar::store_runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
@@ -612,6 +627,7 @@ fn serve_connection(
         backends,
         shared_builds,
         shared_build_scheduler,
+        gateway_store,
     )
 }
 
@@ -631,6 +647,7 @@ fn serve_accepted_connection(
     backends: &telchar::backend_routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
     shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
+    gateway_store: &telchar::store_runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -674,12 +691,12 @@ fn serve_accepted_connection(
     );
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
-        let mut store_query = telchar::store_query::GatewayStoreQuery::from_environment();
+        let mut store_query = gateway_store.query();
         let mut build_executor = backends.executor(database_url)?;
-        let mut store_export = telchar::store_export::backend_from_environment()?;
-        let mut store_import = telchar::store_import::importer_from_environment()?;
-        let mut store_closure = telchar::store_closure::backend_from_environment()?;
-        let mut store_retention = telchar::store_retention::backend_from_environment()?;
+        let mut store_export = gateway_store.export();
+        let mut store_import = gateway_store.import()?;
+        let mut store_closure = gateway_store.closure();
+        let mut store_retention = gateway_store.retention()?;
         let backend_targets = service_config
             .backend_targets()
             .cloned()

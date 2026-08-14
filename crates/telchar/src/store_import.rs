@@ -9,7 +9,7 @@ use nix_worker_protocol::AddMultipleToStorePathInfo;
 
 use crate::store_daemon::GatewayStoreEndpoint;
 use crate::store_promotion::{
-    DeclaredPathInfo, GatewayStorePromotionBackend, validate_and_promote_nar,
+    validate_and_promote_nar, DeclaredPathInfo, GatewayStorePromotionBackend,
 };
 
 static IMPORT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -53,13 +53,7 @@ pub struct GatewayStoreImport {
 }
 
 impl GatewayStoreImport {
-    pub fn from_environment() -> io::Result<Self> {
-        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
-            .ok_or_else(|| unavailable("gateway store endpoint is not configured"))
-            .and_then(|value| {
-                GatewayStoreEndpoint::parse_os(&value)
-                    .map_err(|_| unavailable("gateway store endpoint is invalid"))
-            })?;
+    pub fn new(endpoint: GatewayStoreEndpoint) -> io::Result<Self> {
         let staging_root = std::env::temp_dir();
         std::fs::create_dir_all(&staging_root).map_err(|error| {
             io::Error::new(
@@ -89,6 +83,16 @@ impl GatewayStoreImport {
             backend: GatewayStorePromotionBackend::new(endpoint),
             staging_directory,
         })
+    }
+
+    pub fn from_environment() -> io::Result<Self> {
+        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
+            .ok_or_else(|| unavailable("gateway store endpoint is not configured"))
+            .and_then(|value| {
+                GatewayStoreEndpoint::parse_os(&value)
+                    .map_err(|_| unavailable("gateway store endpoint is invalid"))
+            })?;
+        Self::new(endpoint)
     }
 }
 

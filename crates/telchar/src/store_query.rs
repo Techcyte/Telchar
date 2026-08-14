@@ -18,6 +18,16 @@ pub struct GatewayStoreQuery {
 }
 
 impl GatewayStoreQuery {
+    pub fn new(
+        executable: impl Into<String>,
+        endpoint: crate::store_daemon::GatewayStoreEndpoint,
+    ) -> Self {
+        Self {
+            executable: executable.into(),
+            store_uri: Some(endpoint.to_string()),
+        }
+    }
+
     pub fn from_environment() -> Self {
         Self {
             executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),

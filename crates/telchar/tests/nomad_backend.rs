@@ -7,8 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use serde_json::Value;
@@ -19,12 +19,19 @@ use telchar::backend::{
 use telchar::backend_routing::ConfiguredBackends;
 use telchar::config::ServiceConfig;
 use telchar::nomad_backend::{
-    NomadClient, NomadExecutionState, deterministic_job_name, render_job,
+    deterministic_job_name, render_job, NomadClient, NomadExecutionState,
 };
 
 mod support;
 
 static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gateway_store_endpoint() -> telchar::store_daemon::GatewayStoreEndpoint {
+    telchar::store_daemon::GatewayStoreEndpoint::parse(
+        "unix:///definitely-missing/telchar-gateway.sock",
+    )
+    .expect("gateway endpoint is valid")
+}
 
 #[test]
 fn renders_operator_selected_driver_and_stable_backend_bound_job() {
@@ -318,11 +325,9 @@ command = "/opt/telchar/bin/worker"
         URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
     );
     assert!(claims["allocation_id"].is_null());
-    assert!(
-        claims["request_key"]
-            .as_str()
-            .is_some_and(|key| !key.is_empty())
-    );
+    assert!(claims["request_key"]
+        .as_str()
+        .is_some_and(|key| !key.is_empty()));
     assert!(
         claims["expires_at"].as_u64().expect("expiry is numeric")
             > claims["issued_at"].as_u64().expect("issue time is numeric")
@@ -568,10 +573,8 @@ fn verifies_exact_callback_allocation_identity() {
     let client = NomadClient::new(config).expect("Nomad client constructs");
     let server = thread::spawn(move || {
         let (mut request, _) = listener.accept().expect("allocation request accepts");
-        assert!(
-            read_http_request(&mut request)
-                .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n")
-        );
+        assert!(read_http_request(&mut request)
+            .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n"));
         write_json_response(
             &mut request,
             200,
@@ -764,7 +767,8 @@ fn configured_backend_exposes_deterministic_execution_identity_before_submission
     let root = fixture_root();
     let config = load_service_config(&root, "http://127.0.0.1:4646", None);
     let backend = config.nomad_backends()[0].clone();
-    let configured = ConfiguredBackends::new(&config).expect("backends configure");
+    let configured =
+        ConfiguredBackends::new(&config, gateway_store_endpoint()).expect("backends configure");
     let executor = configured
         .executor("postgresql://fixture")
         .expect("executor configures");
@@ -1012,7 +1016,7 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         Duration::from_secs(60),
     )
     .expect("shared build completes");
-    let mut executor = ConfiguredBackends::new(&config)
+    let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
         .executor(database.url())
         .expect("executor configures");
@@ -1060,7 +1064,8 @@ fn configured_backend_adopts_exact_nomad_execution() {
             r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#,
         );
     });
-    let mut configured = ConfiguredBackends::new(&config).expect("backends configure");
+    let mut configured =
+        ConfiguredBackends::new(&config, gateway_store_endpoint()).expect("backends configure");
     let build = telchar::persistence::SharedBuild {
         derivation_path: "/nix/store/00000000000000000000000000000000-build.drv".to_owned(),
         request_digest: [7; 32],

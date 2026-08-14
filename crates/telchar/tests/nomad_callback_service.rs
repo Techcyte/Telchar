@@ -57,6 +57,10 @@ maximum_retained_nonces = 65536
         config.nomad_callback().clone(),
         database.url().to_owned(),
         vec![],
+        telchar::store_daemon::GatewayStoreEndpoint::parse(
+            "unix:///definitely-missing/telchar-gateway.sock",
+        )
+        .expect("gateway endpoint is valid"),
         Duration::from_secs(60),
     )
     .expect("service starts");

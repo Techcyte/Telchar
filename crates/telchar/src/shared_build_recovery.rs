@@ -18,6 +18,10 @@ pub struct GatewaySharedBuildOutputStore {
 }
 
 impl GatewaySharedBuildOutputStore {
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self { endpoint }
+    }
+
     pub fn from_environment() -> io::Result<Self> {
         let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
             io::Error::new(
@@ -26,7 +30,7 @@ impl GatewaySharedBuildOutputStore {
             )
         })?;
         let endpoint = GatewayStoreEndpoint::parse_os(&endpoint)?;
-        Ok(Self { endpoint })
+        Ok(Self::new(endpoint))
     }
 }
 

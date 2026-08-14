@@ -17,12 +17,13 @@ pub struct ConfiguredBackends {
 struct ConfiguredBackendsInner {
     pool: BackendPool,
     permit_wait: std::time::Duration,
+    gateway_store: GatewayStoreEndpoint,
     static_ssh: Vec<StaticSshBackendConfig>,
     nomad: Vec<NomadBackendConfig>,
 }
 
 impl ConfiguredBackends {
-    pub fn new(config: &ServiceConfig) -> io::Result<Self> {
+    pub fn new(config: &ServiceConfig, gateway_store: GatewayStoreEndpoint) -> io::Result<Self> {
         let mut targets = Vec::new();
         let mut maximums = Vec::new();
         if let Some(local) = config.local_backend() {
@@ -41,6 +42,7 @@ impl ConfiguredBackends {
             inner: Arc::new(ConfiguredBackendsInner {
                 pool: BackendPool::new(targets, maximums)?,
                 permit_wait: config.backend_permit_wait(),
+                gateway_store,
                 static_ssh: config.static_ssh_backends().to_vec(),
                 nomad: config.nomad_backends().to_vec(),
             }),
@@ -74,15 +76,9 @@ impl crate::shared_build_recovery::RecoveryBackend for ConfiguredBackends {
             .iter()
             .find(|config| config.target().name() == build.backend_name)
             .ok_or_else(|| io::Error::other("static SSH backend is not configured"))?;
-        let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "gateway store endpoint is not configured",
-            )
-        })?;
         crate::static_ssh_backend::recover_outputs(
             config,
-            &GatewayStoreEndpoint::parse_os(&endpoint)?,
+            &self.inner.gateway_store,
             &build.expected_outputs,
             std::time::Duration::from_secs(10),
         )?;
@@ -186,7 +182,9 @@ impl BuildBackend for BackendExecutor {
             self.backends.inner.permit_wait,
         )?;
         let mut backend: Box<dyn BuildBackend> = match permit.target().kind() {
-            BackendKind::Local => crate::local_executor::executor_from_environment()?,
+            BackendKind::Local => Box::new(crate::local_executor::GatewayStoreExecutor::new(
+                self.backends.inner.gateway_store.clone(),
+            )),
             BackendKind::StaticSsh => {
                 let config = self
                     .backends
@@ -195,15 +193,9 @@ impl BuildBackend for BackendExecutor {
                     .iter()
                     .find(|config| config.target().name() == permit.target().name())
                     .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
-                let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI").ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "gateway store endpoint is not configured",
-                    )
-                })?;
                 Box::new(crate::static_ssh_backend::StaticSshBackend::new(
                     config.clone(),
-                    GatewayStoreEndpoint::parse_os(&endpoint)?,
+                    self.backends.inner.gateway_store.clone(),
                 ))
             }
             BackendKind::Nomad => {
