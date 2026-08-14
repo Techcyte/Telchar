@@ -301,13 +301,13 @@ fn execute_remote_build(
         "static SSH inputs staged"
     );
     let outputs = build
-        .expected_outputs()
+        .output_authorities()
         .iter()
-        .map(|(name, path)| BuildDerivationOutputRequest {
-            name: name.as_slice(),
-            path: path.as_slice(),
-            hash_algorithm: b"",
-            hash: b"",
+        .map(|output| BuildDerivationOutputRequest {
+            name: output.name(),
+            path: output.path(),
+            hash_algorithm: output.hash_algorithm(),
+            hash: output.hash(),
         })
         .collect::<Vec<_>>();
     let request = BuildDerivationClientRequest {
