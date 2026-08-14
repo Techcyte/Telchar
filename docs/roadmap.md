@@ -6,7 +6,7 @@ This is a ranked list, not a release promise. New work should solve a concrete o
 
 ### Broaden Nix compatibility
 
-Test selected stock Nix releases with the complete local, static SSH, and Nomad gateway flows. Treat Lix as a separate target with its own traces and fixtures.
+Expand beyond the executable stock Nix 2.34.8 and Lix 2.94.2 local-backend fixtures. Test selected client releases with complete static SSH and Nomad gateway flows; keep each client and release as separate evidence.
 
 ### Add read-only operator tooling
 

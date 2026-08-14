@@ -4,11 +4,12 @@ Telchar's compatibility promise is deliberately narrow. A worker-protocol versio
 
 ## Verified client
 
-The release suite uses stock Nix from the flake lock on `x86_64-linux` and exercises trusted and untrusted `ssh-ng` sessions with classic input-addressed derivations. Stock-Nix local-backend fixtures additionally cover correct flat and recursive SHA-256 fixed-output derivations and an incorrect-hash failure.
+The release suite uses stock Nix 2.34.8 and Lix 2.94.2 from the flake lock on `x86_64-linux`. Both clients exercise `ssh-ng` ingress and the local backend with classic input-addressed derivations, correct flat and recursive SHA-256 fixed-output derivations, and an incorrect-hash failure.
 
 Supported behavior:
 
-- stock Nix `ssh-ng` ingress;
+- stock Nix 2.34.8 `ssh-ng` ingress;
+- Lix 2.94.2 `ssh-ng` ingress;
 - worker-protocol negotiation through version 1.38;
 - normal build mode (`0`);
 - classic input-addressed and fixed-output `BuildDerivation` requests;
@@ -19,7 +20,8 @@ Not supported:
 
 - repair and check build modes;
 - floating content-addressed derivations;
-- Lix clients;
+- Lix releases other than the exact release named above;
+- Lix static SSH and Nomad backend fixtures;
 - protocol flows without typed coverage and a real-client fixture.
 
 ## Gateway Nix daemon
@@ -43,4 +45,4 @@ A compatibility addition needs:
 5. a complete real-client or real-daemon fixture;
 6. release-suite coverage before the support table widens.
 
-Lix and floating content-addressed behavior are separate targets rather than assumed consequences of sharing protocol numbers with Nix. Static SSH and Nomad fixed-output propagation has focused executable protocol/backend coverage; the stock-Nix fixed-output VM fixture currently exercises the local backend.
+Lix and floating content-addressed behavior remain separate targets rather than assumed consequences of sharing protocol numbers with Nix. The Lix fixture is independent executable evidence for the local backend; it does not widen static SSH or Nomad compatibility. Static SSH and Nomad fixed-output propagation retains focused executable protocol/backend coverage with stock-Nix end-to-end evidence limited to the local backend.
