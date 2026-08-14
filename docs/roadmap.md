@@ -18,7 +18,9 @@ Add an optional compressed local spool keyed by execution identity, with byte li
 
 ### Support fixed-output derivations
 
-Carry output-hash authority through admission, shared-build identity, persistence, every backend, output validation, and recovery. Require stock-Nix fixtures for both correct and incorrect hashes.
+Treat fixed-output derivations as an end-to-end compatibility feature rather than a protocol-parser exception. Confirm flat and recursive hashing semantics against pinned Nix sources and real stock-Nix traces before implementation. Carry typed hash mode, algorithm, and digest authority through admission, shared-build identity, persistence, local and static SSH execution, Nomad job and callback protocols, gateway-store validation, and exact-target recovery.
+
+Deliver support in test-led vertical slices, beginning with local execution and then extending the same authority to static SSH and Nomad. Require real fixtures for correct hashes, incorrect hashes, malformed authority, already-valid outputs, substituter-provided outputs, restart recovery, and shared-build coalescing. Do not advertise support until every configured backend and recovery path validates the admitted content authority.
 
 ### Export autoscaling demand metrics
 
@@ -26,7 +28,9 @@ Expose bounded signals that distinguish subject admission, backend permit waits,
 
 ### Add a cache publication hook
 
-After durable gateway success, optionally invoke an operator-controlled command with bounded output identities. Publication remains best-effort and cannot change the Nix build result.
+After output validation, gateway-store import, and durable build success, optionally invoke one operator-controlled executable with bounded output identities. Pass identities without shell interpolation, bound runtime and output, inherit no client-controlled credentials or policy, and emit telemetry for failures. Publication remains best-effort, has no automatic retry queue, and cannot change the Nix build result.
+
+The hook may run operator tooling such as `nix copy`, Attic, or Cachix, but Telchar does not become a binary-cache service. External cache lookup before scheduling is separate work: current client and backend Nix stores already use operator-configured substituters, while Telchar itself only checks gateway-store validity, coalesces equivalent work, and performs exact recovery.
 
 ## Later
 
