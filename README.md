@@ -73,12 +73,6 @@ nix flake check
 nix develop -c cargo test --locked --workspace
 ```
 
-Run the complete release suite on a Nix-enabled Linux host:
-
-```bash
-./scripts/check-release.sh
-```
-
 Useful packages:
 
 ```bash
@@ -105,9 +99,9 @@ The gateway image starts `telchar daemon`; the worker image starts `telchar-noma
 - [Nix compatibility](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
 
-## AI usage
+## AI Usage Disclosure
 
-Telchar's initial design was planned by a human with AI assistance, and most of the first implementation was written through an AI coding agent. The project is an experiment in whether careful up-front constraints and executable verification can make that workflow produce useful software.
+The original implementation for Telchar was planned out by a human with AI assistance for all the features. Actual coding took place almost entirely with an AI agent for the initial implementation. I was curious if I could actually make something useful by planning something out before-hand and then giving that to an LLM to completely implement (with guidance when ambiguity came up), time will tell if that was a horrible idea or not.
 
 ## License
 
