@@ -142,6 +142,17 @@
           outputHash = "fb0394a19d9c14fcf296ae79ea0a8ede66eafe00fd8904dac9046f1245f7a435";
         }
       '';
+      incorrect = pkgs.writeText "telchar-fixed-output-incorrect.nix" ''
+        derivation {
+          name = "telchar-fixed-incorrect";
+          system = builtins.currentSystem;
+          builder = builtins.storePath "${pkgs.runtimeShell}";
+          args = [ "-c" "printf incorrect > $out" ];
+          outputHashMode = "flat";
+          outputHashAlgo = "sha256";
+          outputHash = "0000000000000000000000000000000000000000000000000000000000000000";
+        }
+      '';
     in
     harness.mkGate3Test {
       name = "telchar-nixos-fixed-output-local";
@@ -162,6 +173,13 @@
             command = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${system}' '" + derivation_path + "^*'"
             output_path = stock_client.succeed(command).strip()
             gateway.succeed("test \"$(cat '" + output_path + "')\" = " + expected)
+        stock_client.succeed("cp ${incorrect} /tmp/fixed-output-incorrect.nix")
+        incorrect_derivation = stock_client.succeed("nix-instantiate /tmp/fixed-output-incorrect.nix").strip()
+        incorrect_export = stock_client.succeed("nix-store --export '" + incorrect_derivation + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
+        gateway.succeed("printf '%s' '" + incorrect_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
+        incorrect_command = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${system}' '" + incorrect_derivation + "^*'"
+        stock_client.fail(incorrect_command)
+        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select state from shared_builds where derivation_path = '" + incorrect_derivation + "'\" | grep -qx failed")
       '';
     };
   nixos-nomad-fixture =

@@ -75,8 +75,11 @@ fn durable_build_request() -> telchar::build::BuildRequest {
     write_worker_integer(&mut wire, 1);
     write_worker_byte_string(&mut wire, b"out");
     write_worker_byte_string(&mut wire, output);
-    write_worker_byte_string(&mut wire, b"");
-    write_worker_byte_string(&mut wire, b"");
+    write_worker_byte_string(&mut wire, b"r:sha256");
+    write_worker_byte_string(
+        &mut wire,
+        b"0000000000000000000000000000000000000000000000000000000000000000",
+    );
     write_worker_integer(&mut wire, 1);
     write_worker_byte_string(
         &mut wire,
@@ -159,6 +162,16 @@ fn shared_build_persists_exact_admitted_build_request() {
     .expect("shared build reads")
     .expect("shared build exists");
     assert_eq!(loaded.build_request.as_ref(), Some(&request));
+    let authority = &loaded
+        .build_request
+        .as_ref()
+        .expect("build request persists")
+        .output_authorities()[0];
+    assert_eq!(authority.hash_algorithm(), b"r:sha256");
+    assert_eq!(
+        authority.hash(),
+        b"0000000000000000000000000000000000000000000000000000000000000000"
+    );
 }
 
 #[test]
