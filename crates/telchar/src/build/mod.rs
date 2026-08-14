@@ -13,10 +13,37 @@ use crate::backend::BackendTarget;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputAuthority {
+    name: Vec<u8>,
+    path: Vec<u8>,
+    hash_algorithm: Vec<u8>,
+    hash: Vec<u8>,
+}
+
+impl OutputAuthority {
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
+    pub fn hash_algorithm(&self) -> &[u8] {
+        &self.hash_algorithm
+    }
+
+    pub fn hash(&self) -> &[u8] {
+        &self.hash
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BuildRequest {
     derivation_path: Vec<u8>,
     expected_outputs: Vec<(Vec<u8>, Vec<u8>)>,
+    output_authorities: Vec<OutputAuthority>,
     input_sources: Vec<Vec<u8>>,
     system: String,
     required_system_features: Vec<String>,
@@ -60,6 +87,7 @@ impl BuildRequest {
             ));
         }
         let mut expected_outputs = Vec::with_capacity(request.outputs().len());
+        let mut output_authorities = Vec::with_capacity(request.outputs().len());
         for output in request.outputs() {
             if environment_value(environment, output.name()) != Some(output.path()) {
                 return Err(io::Error::new(
@@ -68,10 +96,17 @@ impl BuildRequest {
                 ));
             }
             expected_outputs.push((output.name().to_vec(), output.path().to_vec()));
+            output_authorities.push(OutputAuthority {
+                name: output.name().to_vec(),
+                path: output.path().to_vec(),
+                hash_algorithm: output.hash_algorithm().to_vec(),
+                hash: output.hash().to_vec(),
+            });
         }
         Ok(Self {
             derivation_path: request.drv_path().to_vec(),
             expected_outputs,
+            output_authorities,
             input_sources: request.input_sources().to_vec(),
             system: system.to_owned(),
             required_system_features,
@@ -90,6 +125,12 @@ impl BuildRequest {
             || environment_value(&self.environment, b"name")
                 != derivation_name(&self.derivation_path)
             || self.expected_outputs.is_empty()
+            || self.output_authorities.len() != self.expected_outputs.len()
+            || self
+                .output_authorities
+                .iter()
+                .zip(&self.expected_outputs)
+                .any(|(authority, (name, path))| authority.name != *name || authority.path != *path)
             || self.expected_outputs.iter().any(|(name, path)| {
                 name.is_empty()
                     || path.is_empty()
@@ -106,9 +147,9 @@ impl BuildRequest {
 
     pub fn shared_build_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
-        digest.update(b"telchar-shared-build-v1\0");
+        digest.update(b"telchar-shared-build-v2\0");
         update_digest_bytes(&mut digest, &self.derivation_path);
-        update_digest_pairs(&mut digest, &self.expected_outputs);
+        update_digest_output_authorities(&mut digest, &self.output_authorities);
         update_digest_values(&mut digest, &self.input_sources);
         update_digest_bytes(&mut digest, self.system.as_bytes());
         update_digest_strings(&mut digest, &self.required_system_features);
@@ -136,6 +177,10 @@ impl BuildRequest {
 
     pub fn expected_outputs(&self) -> &[(Vec<u8>, Vec<u8>)] {
         &self.expected_outputs
+    }
+
+    pub fn output_authorities(&self) -> &[OutputAuthority] {
+        &self.output_authorities
     }
 
     pub fn input_sources(&self) -> &[Vec<u8>] {
@@ -177,6 +222,16 @@ fn update_digest_values(digest: &mut Sha256, values: &[Vec<u8>]) {
     }
 }
 
+fn update_digest_output_authorities(digest: &mut Sha256, values: &[OutputAuthority]) {
+    digest.update((values.len() as u64).to_le_bytes());
+    for value in values {
+        update_digest_bytes(digest, &value.name);
+        update_digest_bytes(digest, &value.path);
+        update_digest_bytes(digest, &value.hash_algorithm);
+        update_digest_bytes(digest, &value.hash);
+    }
+}
+
 fn update_digest_pairs(digest: &mut Sha256, values: &[(Vec<u8>, Vec<u8>)]) {
     digest.update((values.len() as u64).to_le_bytes());
     for (name, value) in values {
@@ -196,6 +251,7 @@ impl fmt::Debug for BuildRequest {
             .debug_struct("BuildRequest")
             .field("derivation_path", &self.derivation_path)
             .field("expected_outputs", &self.expected_outputs)
+            .field("output_authorities", &self.output_authorities)
             .field("input_sources", &self.input_sources)
             .field("system", &self.system)
             .field("required_system_features", &self.required_system_features)

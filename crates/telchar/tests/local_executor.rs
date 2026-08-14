@@ -430,6 +430,27 @@ fn executor_times_out_and_reaps_the_helper() {
 }
 
 #[test]
+fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
+    let fixture = NixFixture::create().expect("Nix fixture creates");
+    let mut store = fixture
+        .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
+        .expect("Nix daemon starts");
+    let build = admitted_fixed_output_request();
+    let request = BuildExecution::new("fixed-output", &build, Duration::from_secs(30))
+        .expect("execution request is valid");
+    let endpoint = GatewayStoreEndpoint::parse(&store.store_url()).expect("endpoint parses");
+    let mut executor = GatewayStoreExecutor::new(endpoint);
+
+    let error = executor
+        .execute(&request)
+        .expect_err("incorrect fixed-output content must be rejected by Nix");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    store.stop().expect("daemon stops");
+    fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
 fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let mut store = fixture
@@ -454,14 +475,30 @@ fn admitted_request() -> BuildRequest {
     admitted_request_with_builder(b"printf telchar-local-executor > $out")
 }
 
+fn admitted_fixed_output_request() -> BuildRequest {
+    admitted_request_with_authority(
+        b"printf wrong-fixed-output > $out",
+        b"sha256",
+        b"0000000000000000000000000000000000000000000000000000000000000000",
+    )
+}
+
 fn admitted_request_with_builder(builder_command: &[u8]) -> BuildRequest {
+    admitted_request_with_authority(builder_command, b"", b"")
+}
+
+fn admitted_request_with_authority(
+    builder_command: &[u8],
+    hash_algorithm: &[u8],
+    hash: &[u8],
+) -> BuildRequest {
     let mut wire = Vec::new();
     write_string(&mut wire, DERIVATION_PATH);
     write_integer(&mut wire, 1);
     write_string(&mut wire, b"out");
     write_string(&mut wire, OUTPUT_PATH);
-    write_string(&mut wire, b"");
-    write_string(&mut wire, b"");
+    write_string(&mut wire, hash_algorithm);
+    write_string(&mut wire, hash);
     write_integer(&mut wire, 0);
     write_string(&mut wire, b"x86_64-linux");
     write_string(&mut wire, b"/bin/sh");

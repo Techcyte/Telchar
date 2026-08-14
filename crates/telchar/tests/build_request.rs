@@ -109,6 +109,31 @@ fn rejects_unsupported_or_malformed_required_system_features() {
 }
 
 #[test]
+fn preserves_fixed_output_authority_in_shared_build_identity() {
+    let backends = backends("x86_64-linux", &[]);
+    let first = BuildRequest::from_worker_request(
+        &decode_request_with_hash(
+            b"sha256",
+            b"0000000000000000000000000000000000000000000000000000000000000000",
+        ),
+        &backends,
+    )
+    .expect("flat fixed-output request admits");
+    let second = BuildRequest::from_worker_request(
+        &decode_request_with_hash(
+            b"r:sha256",
+            b"0000000000000000000000000000000000000000000000000000000000000000",
+        ),
+        &backends,
+    )
+    .expect("recursive fixed-output request admits");
+
+    assert_eq!(first.output_authorities().len(), 1);
+    assert_eq!(first.output_authorities()[0].hash_algorithm(), b"sha256");
+    assert_ne!(first.shared_build_key(), second.shared_build_key());
+}
+
+#[test]
 fn equivalent_requests_have_the_same_shared_build_key() {
     let backends = backends("x86_64-linux", &[]);
     let first =
@@ -231,6 +256,21 @@ fn decode_request(
         .expect("worker request decodes for admission test")
 }
 
+fn decode_request_with_hash(
+    hash_algorithm: &[u8],
+    hash: &[u8],
+) -> nix_worker_protocol::BuildDerivationRequest {
+    decode_wire(build_request_wire_with_output_authority(
+        "x86_64-linux",
+        output_path(),
+        0,
+        "printf telchar-remote-build > $out",
+        None,
+        hash_algorithm,
+        hash,
+    ))
+}
+
 fn decode_request_with_features(features: &str) -> nix_worker_protocol::BuildDerivationRequest {
     let wire = build_request_wire_with_environment(
         "x86_64-linux",
@@ -286,14 +326,34 @@ fn build_request_wire_with_environment(
     command: &str,
     required_system_features: Option<&str>,
 ) -> Vec<u8> {
+    build_request_wire_with_output_authority(
+        system,
+        environment_output,
+        mode,
+        command,
+        required_system_features,
+        b"",
+        b"",
+    )
+}
+
+fn build_request_wire_with_output_authority(
+    system: &str,
+    environment_output: &[u8],
+    mode: u64,
+    command: &str,
+    required_system_features: Option<&str>,
+    hash_algorithm: &[u8],
+    hash: &[u8],
+) -> Vec<u8> {
     let mut wire = Vec::new();
     write_worker_integer(&mut wire, 36);
     write_worker_byte_string(&mut wire, drv_path());
     write_worker_integer(&mut wire, 1);
     write_worker_byte_string(&mut wire, b"out");
     write_worker_byte_string(&mut wire, output_path());
-    write_worker_byte_string(&mut wire, b"");
-    write_worker_byte_string(&mut wire, b"");
+    write_worker_byte_string(&mut wire, hash_algorithm);
+    write_worker_byte_string(&mut wire, hash);
     write_worker_integer(&mut wire, 0);
     write_worker_byte_string(&mut wire, system.as_bytes());
     write_worker_byte_string(&mut wire, b"/bin/sh");

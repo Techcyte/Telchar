@@ -73,13 +73,13 @@ impl GatewayStoreExecutor {
         let shutdown = connection.shutdown_handle()?;
         let outputs = request
             .build()
-            .expected_outputs()
+            .output_authorities()
             .iter()
-            .map(|(name, path)| BuildDerivationOutputRequest {
-                name: name.as_slice(),
-                path: path.as_slice(),
-                hash_algorithm: b"",
-                hash: b"",
+            .map(|output| BuildDerivationOutputRequest {
+                name: output.name(),
+                path: output.path(),
+                hash_algorithm: output.hash_algorithm(),
+                hash: output.hash(),
             })
             .collect::<Vec<_>>();
         let build = request.build();
