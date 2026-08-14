@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use telchar::disk_reserve::{
-    DEFAULT_GATEWAY_DISK_RESERVE_BYTES, DiskReserve, DiskReserveProbe, Filesystem, ProbeError,
-    RejectionReason,
+use telchar::service::disk_reserve::{
+    DiskReserve, DiskReserveProbe, Filesystem, ProbeError, RejectionReason,
+    DEFAULT_GATEWAY_DISK_RESERVE_BYTES,
 };
 
 struct ControlledProbe {

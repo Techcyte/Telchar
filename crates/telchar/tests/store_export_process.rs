@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use telchar::store_export::{NixStoreExportBackend, StoreExportBackend, StoreExportRequest};
+use telchar::store::export::{NixStoreExportBackend, StoreExportBackend, StoreExportRequest};
 
 #[test]
 fn oversized_helper_stderr_is_drained_bounded_and_helper_is_reaped() {

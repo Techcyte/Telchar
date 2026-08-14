@@ -21,7 +21,7 @@ static TELEMETRY_TESTS: Mutex<()> = Mutex::new(());
 
 #[test]
 fn requester_reference_is_deterministic_and_component_separated() {
-    let requester = telchar::ipc::RequesterMetadata {
+    let requester = telchar::service::ipc::RequesterMetadata {
         credential_id: "ssh-pubkey:fixture".into(),
         audit_subject: "fixture".into(),
         quota_subject: "ssh-pubkey:fixture".into(),
@@ -38,27 +38,27 @@ fn requester_reference_is_deterministic_and_component_separated() {
         .bytes()
         .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
     assert_ne!(
-        telchar::persistence::requester_reference(&telchar::ipc::RequesterMetadata {
+        telchar::persistence::requester_reference(&telchar::service::ipc::RequesterMetadata {
             credential_id: "ab".into(),
             audit_subject: "c".into(),
             quota_subject: "quota".into(),
         }),
-        telchar::persistence::requester_reference(&telchar::ipc::RequesterMetadata {
+        telchar::persistence::requester_reference(&telchar::service::ipc::RequesterMetadata {
             credential_id: "a".into(),
             audit_subject: "bc".into(),
             quota_subject: "quota".into(),
         })
     );
     for requester in [
-        telchar::ipc::RequesterMetadata {
+        telchar::service::ipc::RequesterMetadata {
             credential_id: "other-credential".into(),
             ..requester.clone()
         },
-        telchar::ipc::RequesterMetadata {
+        telchar::service::ipc::RequesterMetadata {
             audit_subject: "other-audit".into(),
             ..requester.clone()
         },
-        telchar::ipc::RequesterMetadata {
+        telchar::service::ipc::RequesterMetadata {
             quota_subject: "other-quota".into(),
             ..requester.clone()
         },
@@ -70,7 +70,7 @@ fn requester_reference_is_deterministic_and_component_separated() {
     }
 }
 
-fn durable_build_request() -> telchar::build_request::BuildRequest {
+fn durable_build_request() -> telchar::build::BuildRequest {
     use nix_worker_protocol::{
         write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
         WorkerReader,
@@ -117,7 +117,7 @@ fn durable_build_request() -> telchar::build_request::BuildRequest {
     let request = reader
         .complete_build_derivation()
         .expect("build request decodes");
-    telchar::build_request::BuildRequest::from_worker_request(
+    telchar::build::BuildRequest::from_worker_request(
         &request,
         &[telchar::backend::BackendTarget::new(
             "nomad",
@@ -602,9 +602,9 @@ fn open_and_read_protocol_session_persist_requested_state() {
 fn protocol_session_operation_rejects_unbounded_audit_metadata_before_connection() {
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
     let long_credential_id =
-        "ssh-pubkey:".to_owned() + &"c".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES);
-    let long_audit_subject = "a".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1);
-    let long_quota_subject = "q".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
+        "ssh-pubkey:".to_owned() + &"c".repeat(telchar::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES);
+    let long_audit_subject = "a".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1);
+    let long_quota_subject = "q".repeat(telchar::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
     for (credential_id, audit_subject, quota_subject) in [
         ("credential", "audit", "quota"),
         ("ssh-pubkey:", "audit", "quota"),
@@ -711,8 +711,8 @@ fn create_and_read_build_request_persist_immutable_state() {
 #[test]
 fn build_request_operation_rejects_unbounded_subjects_before_connection() {
     let path = "/nix/store/11111111111111111111111111111111-bounded-request.drv";
-    let long_audit_subject = "a".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1);
-    let long_quota_subject = "q".repeat(telchar::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
+    let long_audit_subject = "a".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1);
+    let long_quota_subject = "q".repeat(telchar::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES + 1);
     for (audit_subject, quota_subject) in [
         ("", "quota"),
         ("audit", ""),
@@ -1025,14 +1025,14 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
         (fixture.url(), "", "request"),
         (
             fixture.url(),
-            &"x".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1),
+            &"x".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1),
             "request",
         ),
         (fixture.url(), "open-session", ""),
         (
             fixture.url(),
             "open-session",
-            &"x".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1),
+            &"x".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1),
         ),
         ("", "open-session", "request"),
     ] {
@@ -1460,7 +1460,7 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
         (fixture.url(), "", path, "x86_64-linux"),
         (
             fixture.url(),
-            &"x".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1),
+            &"x".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1),
             path,
             "x86_64-linux",
         ),
@@ -1476,7 +1476,7 @@ fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
             fixture.url(),
             "oversized-system",
             path,
-            &"x".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1),
+            &"x".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1),
         ),
         ("", "missing-url", path, "x86_64-linux"),
     ] {
@@ -1658,7 +1658,7 @@ fn duplicate_and_invalid_protocol_session_opens_reject_without_mutation() {
     for (session_id, reference) in [
         ("", requester_reference),
         (
-            &"x".repeat(telchar::ipc::MAX_IPC_COMPONENT_BYTES + 1),
+            &"x".repeat(telchar::service::ipc::MAX_IPC_COMPONENT_BYTES + 1),
             requester_reference,
         ),
         ("other", "not-hex"),

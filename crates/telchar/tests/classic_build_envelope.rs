@@ -11,7 +11,7 @@ const STDERR_NEXT: u64 = 0x6f6c_6d67;
 const STDERR_START_ACTIVITY: u64 = 0x5354_5254;
 const STDERR_STOP_ACTIVITY: u64 = 0x5354_4f50;
 const STDERR_RESULT: u64 = 0x5253_4c54;
-use telchar::nix_fixture::{NixFixture, TrustMode};
+use telchar::fixture::nix::{NixFixture, TrustMode};
 
 const BUFFER_BYTES: usize = 4096;
 const CLASSIC_BUILD_EXPRESSION: &str = "derivation { name = \"telchar-classic-fixture\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf telchar-classic-fixture > \\\"$out\\\"\" ]; }";

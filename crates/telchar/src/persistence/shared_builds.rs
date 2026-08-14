@@ -67,7 +67,7 @@ pub struct SharedBuild {
     pub capabilities: BackendCapabilities,
     pub backend_execution_id: Option<String>,
     pub expected_outputs: Vec<String>,
-    pub build_request: Option<crate::build_request::BuildRequest>,
+    pub build_request: Option<crate::build::BuildRequest>,
     pub result_metadata: Option<serde_json::Value>,
     pub failure_classification: Option<String>,
     pub created_at: SystemTime,
@@ -130,7 +130,7 @@ pub fn enqueue_shared_build(
 ) -> Result<SharedBuildQueueEntry, SharedBuildError> {
     validate_shared_build_identity(database_url, derivation_path)?;
     if quota_subject.is_empty()
-        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || quota_subject.contains('\0')
         || maximum_queued_builds == 0
         || maximum_queued_builds > 65_536
@@ -299,7 +299,7 @@ pub fn record_shared_build_scheduler_subject(
 ) -> Result<(), SharedBuildError> {
     if database_url.trim().is_empty()
         || quota_subject.is_empty()
-        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || quota_subject.contains('\0')
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
@@ -327,7 +327,7 @@ pub fn read_next_queued_shared_build(
         || maximum_subjects > 256
         || after_quota_subject.is_some_and(|subject| {
             subject.is_empty()
-                || subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+                || subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
                 || subject.contains('\0')
         })
     {
@@ -413,7 +413,7 @@ pub fn claim_shared_build_with_request(
     capabilities: BackendCapabilities,
     backend_execution_id: Option<&str>,
     expected_outputs: &[&str],
-    build_request: &crate::build_request::BuildRequest,
+    build_request: &crate::build::BuildRequest,
 ) -> Result<SharedBuildClaim, SharedBuildError> {
     if build_request.validate_for_execution().is_err()
         || build_request.derivation_path() != derivation_path.as_bytes()
@@ -449,7 +449,7 @@ fn claim_shared_build_inner(
     capabilities: BackendCapabilities,
     backend_execution_id: Option<&str>,
     expected_outputs: &[&str],
-    build_request: Option<&crate::build_request::BuildRequest>,
+    build_request: Option<&crate::build::BuildRequest>,
 ) -> Result<SharedBuildClaim, SharedBuildError> {
     validate_shared_build_claim(
         database_url,
@@ -1092,7 +1092,7 @@ fn decode_shared_build(row: &Row) -> Result<SharedBuild, SharedBuildFailure> {
         "failed" => SharedBuildState::Failed,
         _ => return Err(SharedBuildFailure::Query),
     };
-    let build_request: Option<crate::build_request::BuildRequest> = build_request
+    let build_request: Option<crate::build::BuildRequest> = build_request
         .map(|request| serde_json::from_str(&request).map_err(|_| SharedBuildFailure::Query))
         .transpose()?;
     if build_request.as_ref().is_some_and(|request| {

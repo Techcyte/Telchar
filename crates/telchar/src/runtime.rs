@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::telemetry;
-use telchar::identity::{normalize_requester, IdentityInput};
-use telchar::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
+use telchar::service::identity::{normalize_requester, IdentityInput};
+use telchar::service::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
 
 pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let telemetry = telemetry::Telemetry::initialize()?;
@@ -20,8 +20,8 @@ pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 }
 
 fn run_executor() -> io::Result<()> {
-    let config =
-        telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
+    let config = telchar::service::config::ServiceConfig::load()
+        .map_err(|_| invalid("database migration failed"))?;
     let database_url = config
         .require_database_url()
         .map_err(|_| invalid("database migration failed"))?
@@ -29,8 +29,10 @@ fn run_executor() -> io::Result<()> {
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
     let _ownership =
-        telchar::singleton_ownership::SingletonOwnership::acquire_local_executor(&database_url)
-            .map_err(|_| invalid("local executor ownership refused"))?;
+        telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
+            &database_url,
+        )
+        .map_err(|_| invalid("local executor ownership refused"))?;
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
     let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw());
     prepare_socket_path(&socket)?;
@@ -38,16 +40,16 @@ fn run_executor() -> io::Result<()> {
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
     let executor = Arc::new(Mutex::new(
-        telchar::local_executor::executor_from_environment()?,
+        telchar::backend::local::executor_from_environment()?,
     ));
     for connection in listener.incoming() {
         let mut stream = connection?;
-        if telchar::ipc::authorize_peer(&stream, expected_uid).is_err() {
+        if telchar::service::ipc::authorize_peer(&stream, expected_uid).is_err() {
             continue;
         }
         let mut submit =
             |backend_execution_id: &str,
-             specification: &telchar::executor_service::ExecutorSpecification,
+             specification: &telchar::service::executor_service::ExecutorSpecification,
              execution: &telchar::persistence::LocalBackendExecution| {
                 specification.build.validate_for_execution()?;
                 if execution.state != telchar::persistence::LocalBackendExecutionState::Accepted {
@@ -128,7 +130,7 @@ fn run_executor() -> io::Result<()> {
                 });
                 Ok(())
             };
-        if let Err(error) = telchar::executor_service::handle_connection_with_submit(
+        if let Err(error) = telchar::service::executor_service::handle_connection_with_submit(
             &database_url,
             &mut stream,
             &mut submit,
@@ -183,7 +185,7 @@ pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Syn
 }
 
 fn run_frontend() -> io::Result<()> {
-    let config = telchar::config::ServiceConfig::load()?;
+    let config = telchar::service::config::ServiceConfig::load()?;
     let socket = config.require_ipc_socket()?;
     let fingerprint = required_string("TELCHAR_AUTHENTICATED_KEY")?;
     let credential_id = format!("ssh-pubkey:{fingerprint}");
@@ -206,7 +208,7 @@ fn run_frontend() -> io::Result<()> {
 
     let mut request = daemon.try_clone()?;
     std::thread::spawn(move || {
-        let result = telchar::ipc::copy_bounded(io::stdin().lock(), &mut request);
+        let result = telchar::service::ipc::copy_bounded(io::stdin().lock(), &mut request);
         let _ = request.shutdown(std::net::Shutdown::Write);
         if let Err(error) = result {
             tracing::warn!(
@@ -216,7 +218,7 @@ fn run_frontend() -> io::Result<()> {
             );
         }
     });
-    telchar::ipc::copy_bounded(daemon, io::stdout().lock())?;
+    telchar::service::ipc::copy_bounded(daemon, io::stdout().lock())?;
     Ok(())
 }
 
@@ -235,14 +237,14 @@ pub(crate) fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_daemon() -> io::Result<()> {
-    let config =
-        telchar::config::ServiceConfig::load().map_err(|_| invalid("database migration failed"))?;
+    let config = telchar::service::config::ServiceConfig::load()
+        .map_err(|_| invalid("database migration failed"))?;
     let running_disconnect_policy = config.running_disconnect_policy();
     let output_retention = config.output_retention();
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
-    let transfer_limits = telchar::transfer_limits::TransferLimits::from_environment()?;
-    let disk_reserve = telchar::disk_reserve::DiskReserve::from_environment()?;
-    let gateway_store = telchar::store_runtime::GatewayStoreRuntime::from_environment()?;
+    let transfer_limits = telchar::service::transfer_limits::TransferLimits::from_environment()?;
+    let disk_reserve = telchar::service::disk_reserve::DiskReserve::from_environment()?;
+    let gateway_store = telchar::store::runtime::GatewayStoreRuntime::from_environment()?;
     let database_url = config
         .require_database_url()
         .map_err(|_| invalid("database migration failed"))?
@@ -272,7 +274,7 @@ fn run_daemon() -> io::Result<()> {
         "database migration completed"
     );
     let mut singleton_ownership =
-        match telchar::singleton_ownership::SingletonOwnership::acquire(&database_url) {
+        match telchar::service::singleton_ownership::SingletonOwnership::acquire(&database_url) {
             Ok(ownership) => {
                 tracing::info!(
                     event = "database.singleton_ownership.acquired",
@@ -294,7 +296,7 @@ fn run_daemon() -> io::Result<()> {
             }
         };
     let mut store_retention = gateway_store.retention()?;
-    telchar::store_retention::reconcile_output_retention(
+    telchar::store::retention::reconcile_output_retention(
         &database_url,
         store_retention.as_mut(),
         SystemTime::now(),
@@ -307,25 +309,25 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
-    let disk_probe = telchar::disk_reserve::OsDiskReserveProbe;
-    telchar::static_ssh_backend::verify_configured_backends(
+    let disk_probe = telchar::service::disk_reserve::OsDiskReserveProbe;
+    telchar::backend::static_ssh::verify_configured_backends(
         config.static_ssh_backends(),
         Duration::from_secs(10),
     )?;
-    let mut configured_backends = telchar::backend_routing::ConfiguredBackends::new(
+    let mut configured_backends = telchar::backend::routing::ConfiguredBackends::new(
         &config,
         gateway_store.endpoint().clone(),
     )?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let reconciliation = if active_shared_builds.is_empty() {
-        telchar::shared_build_recovery::ReconciliationOutcome::default()
+        telchar::shared_build::recovery::ReconciliationOutcome::default()
     } else {
         let mut shared_build_outputs =
-            telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(
+            telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(
                 gateway_store.endpoint().clone(),
             );
-        telchar::shared_build_recovery::reconcile_shared_builds(
+        telchar::shared_build::recovery::reconcile_shared_builds(
             &database_url,
             output_retention.duration(),
             active_shared_builds,
@@ -345,7 +347,7 @@ fn run_daemon() -> io::Result<()> {
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let scheduling_config = config.clone();
     let shared_build_scheduler = Arc::new(
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(
             database_url.clone(),
             move |quota_subject| scheduling_config.scheduling_limits(quota_subject),
         )
@@ -358,15 +360,15 @@ fn run_daemon() -> io::Result<()> {
         let retention = output_retention.duration();
         let gateway_store = gateway_store.endpoint().clone();
         recovery_services.push(
-            telchar::daemon_services::RecoveryMonitorService::start(
+            telchar::service::daemon_services::RecoveryMonitorService::start(
                 Duration::from_millis(100),
                 move || {
                     let mut configured_backends = (*backends).clone();
                     let mut outputs =
-                        telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(
+                        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(
                             gateway_store.clone(),
                         );
-                    let outcome = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
+                    let outcome = telchar::shared_build::recovery::reconcile_adopted_shared_builds(
                         &database_url,
                         retention,
                         std::slice::from_ref(&derivation_path),
@@ -384,7 +386,7 @@ fn run_daemon() -> io::Result<()> {
     } else {
         let callback_listener = std::net::TcpListener::bind(config.nomad_callback().bind())?;
         Some(
-            telchar::nomad_callback_service::NomadCallbackService::start(
+            telchar::nomad::callback_service::NomadCallbackService::start(
                 callback_listener,
                 config.nomad_callback().clone(),
                 database_url.clone(),
@@ -394,8 +396,10 @@ fn run_daemon() -> io::Result<()> {
             )?,
         )
     };
-    let object_admission = telchar::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
-    let rate_admission = telchar::transfer_limits::RateAdmissionState::new(&transfer_limits);
+    let object_admission =
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
+    let rate_admission =
+        telchar::service::transfer_limits::RateAdmissionState::new(&transfer_limits);
     tracing::info!(
         event = "backend.fleet.configured",
         backend_count = config.backend_targets().count(),
@@ -442,15 +446,17 @@ fn run_daemon() -> io::Result<()> {
     }
     let maintenance_database_url = database_url.clone();
     let maintenance_gateway_store = gateway_store.clone();
-    let mut maintenance_service =
-        telchar::daemon_services::MaintenanceService::start(Duration::from_secs(60), move || {
+    let mut maintenance_service = telchar::service::daemon_services::MaintenanceService::start(
+        Duration::from_secs(60),
+        move || {
             let mut backend = maintenance_gateway_store.retention()?;
-            telchar::store_retention::reconcile_output_retention(
+            telchar::store::retention::reconcile_output_retention(
                 &maintenance_database_url,
                 backend.as_mut(),
                 SystemTime::now(),
             )
-        })?;
+        },
+    )?;
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
@@ -559,7 +565,7 @@ fn run_daemon() -> io::Result<()> {
                         &object_admission,
                         &rate_admission,
                         disk_reserve,
-                        &telchar::disk_reserve::OsDiskReserveProbe,
+                        &telchar::service::disk_reserve::OsDiskReserveProbe,
                         &backends,
                         &shared_builds,
                         &shared_build_scheduler,
@@ -579,9 +585,9 @@ fn run_daemon() -> io::Result<()> {
 }
 
 fn shutdown_daemon_services(
-    callback: &mut Option<telchar::nomad_callback_service::NomadCallbackService>,
-    maintenance: &mut telchar::daemon_services::MaintenanceService,
-    recovery: &mut [telchar::daemon_services::RecoveryMonitorService],
+    callback: &mut Option<telchar::nomad::callback_service::NomadCallbackService>,
+    maintenance: &mut telchar::service::daemon_services::MaintenanceService,
+    recovery: &mut [telchar::service::daemon_services::RecoveryMonitorService],
 ) -> io::Result<()> {
     if let Some(service) = callback.as_mut() {
         service.shutdown()?;
@@ -598,19 +604,19 @@ fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
     database_url: &str,
-    service_config: &telchar::config::ServiceConfig,
-    running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
-    output_retention: telchar::deployment::OutputRetention,
+    service_config: &telchar::service::config::ServiceConfig,
+    running_disconnect_policy: telchar::service::deployment::RunningDisconnectPolicy,
+    output_retention: telchar::service::deployment::OutputRetention,
     maximum_retained_input_bytes: u64,
-    transfer_limits: &telchar::transfer_limits::TransferLimits,
-    object_admission: &telchar::transfer_limits::ObjectAdmissionState,
-    rate_admission: &telchar::transfer_limits::RateAdmissionState,
-    disk_reserve: telchar::disk_reserve::DiskReserve,
-    disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
-    backends: &telchar::backend_routing::ConfiguredBackends,
+    transfer_limits: &telchar::service::transfer_limits::TransferLimits,
+    object_admission: &telchar::service::transfer_limits::ObjectAdmissionState,
+    rate_admission: &telchar::service::transfer_limits::RateAdmissionState,
+    disk_reserve: telchar::service::disk_reserve::DiskReserve,
+    disk_probe: &dyn telchar::service::disk_reserve::DiskReserveProbe,
+    backends: &telchar::backend::routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
-    shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
-    gateway_store: &telchar::store_runtime::GatewayStoreRuntime,
+    shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
+    gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
@@ -633,21 +639,21 @@ fn serve_connection(
 
 #[allow(clippy::too_many_arguments)]
 fn serve_accepted_connection(
-    mut connection: telchar::ipc::IpcConnection,
+    mut connection: telchar::service::ipc::IpcConnection,
     database_url: &str,
-    service_config: &telchar::config::ServiceConfig,
-    running_disconnect_policy: telchar::deployment::RunningDisconnectPolicy,
-    output_retention: telchar::deployment::OutputRetention,
+    service_config: &telchar::service::config::ServiceConfig,
+    running_disconnect_policy: telchar::service::deployment::RunningDisconnectPolicy,
+    output_retention: telchar::service::deployment::OutputRetention,
     maximum_retained_input_bytes: u64,
-    transfer_limits: &telchar::transfer_limits::TransferLimits,
-    object_admission: &telchar::transfer_limits::ObjectAdmissionState,
-    rate_admission: &telchar::transfer_limits::RateAdmissionState,
-    disk_reserve: telchar::disk_reserve::DiskReserve,
-    disk_probe: &dyn telchar::disk_reserve::DiskReserveProbe,
-    backends: &telchar::backend_routing::ConfiguredBackends,
+    transfer_limits: &telchar::service::transfer_limits::TransferLimits,
+    object_admission: &telchar::service::transfer_limits::ObjectAdmissionState,
+    rate_admission: &telchar::service::transfer_limits::RateAdmissionState,
+    disk_reserve: telchar::service::disk_reserve::DiskReserve,
+    disk_probe: &dyn telchar::service::disk_reserve::DiskReserveProbe,
+    backends: &telchar::backend::routing::ConfiguredBackends,
     shared_builds: &telchar::shared_build::SharedBuildRegistry,
-    shared_build_scheduler: &telchar::shared_build_scheduler::SharedBuildScheduler,
-    gateway_store: &telchar::store_runtime::GatewayStoreRuntime,
+    shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
+    gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
     if connection.envelope().error.is_some() {
         tracing::warn!(
@@ -701,7 +707,7 @@ fn serve_accepted_connection(
             .backend_targets()
             .cloned()
             .collect::<Vec<_>>();
-        telchar::session::SessionBuilder::new(
+        telchar::service::session::SessionBuilder::new(
             input,
             connection.stream_mut().try_clone()?,
             protocol_session_limits(),

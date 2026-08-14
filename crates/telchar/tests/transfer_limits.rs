@@ -19,7 +19,7 @@ impl ManualClock {
     }
 }
 
-impl telchar::transfer_limits::MonotonicClock for ManualClock {
+impl telchar::service::transfer_limits::MonotonicClock for ManualClock {
     fn elapsed_nanoseconds(&self) -> u128 {
         *self.0.lock().expect("clock state available")
     }
@@ -81,7 +81,7 @@ impl Write for ShortWriter {
     }
 }
 
-use telchar::transfer_limits::{
+use telchar::service::transfer_limits::{
     LimitedReader, LimitedWriter, ObjectAdmissionState, TransferBudget, TransferLimits,
 };
 
@@ -123,7 +123,7 @@ fn inbound_rate_boundary_rejects_excess_byte_before_importer_use() {
         inbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut session = TransferBudget::new(10);
     let mut reader = LimitedReader::with_rate(Cursor::new([1, 2, 3, 4]), 10, &mut session, rates);
     let mut output = Vec::new();
@@ -145,7 +145,7 @@ fn exhausted_inbound_rate_uses_one_excess_probe_without_draining_source() {
         inbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut session = TransferBudget::new(10);
     let counts = Arc::new(Mutex::new((0, 0)));
     let source = CountingReader::new(vec![1, 2, 3, 4, 5, 6], Arc::clone(&counts));
@@ -171,7 +171,8 @@ fn rate_refill_accumulates_fractional_credit_and_never_exceeds_burst() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock.clone());
+    let rates =
+        telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock.clone());
     let mut session = TransferBudget::new(20);
     let mut drained = Vec::new();
     LimitedWriter::with_rate(&mut drained, 20, &mut session, rates.clone())
@@ -221,7 +222,7 @@ fn short_writes_return_unused_shared_capacity_and_charge_only_written_bytes() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut session = TransferBudget::new(10);
     let mut sink = ShortWriter(Vec::new());
     let written = LimitedWriter::with_rate(&mut sink, 10, &mut session, rates.clone())
@@ -247,7 +248,7 @@ fn completed_write_remains_charged_after_later_sink_failure() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut session = TransferBudget::new(10);
     let mut sink = FailAfterWrite {
         bytes: Vec::new(),
@@ -276,9 +277,8 @@ fn concurrent_reservations_cannot_exceed_shared_burst() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = Arc::new(telchar::transfer_limits::RateAdmissionState::with_clock(
-        &limits, clock,
-    ));
+    let rates =
+        Arc::new(telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock));
     let first = Arc::clone(&rates);
     let second = Arc::clone(&rates);
     let first = std::thread::spawn(move || first.reserve_outbound(3).unwrap());
@@ -305,7 +305,7 @@ fn shared_state_depletes_across_writers_but_directions_remain_independent() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut first_session = TransferBudget::new(10);
     let mut first_output = Vec::new();
     LimitedWriter::with_rate(&mut first_output, 10, &mut first_session, rates.clone())
@@ -336,7 +336,7 @@ fn outbound_rate_boundary_rejects_before_excess_reaches_sink() {
         outbound_burst_bytes: 3,
         ..TransferLimits::default()
     };
-    let rates = telchar::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
+    let rates = telchar::service::transfer_limits::RateAdmissionState::with_clock(&limits, clock);
     let mut session = TransferBudget::new(10);
     let mut output = Vec::new();
     let mut writer = LimitedWriter::with_rate(&mut output, 10, &mut session, rates);

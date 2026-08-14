@@ -2,7 +2,7 @@
 
 use std::os::unix::net::UnixStream;
 
-use telchar::ipc::authorize_peer;
+use telchar::service::ipc::authorize_peer;
 
 #[test]
 fn accepts_socket_peer_with_expected_uid() {

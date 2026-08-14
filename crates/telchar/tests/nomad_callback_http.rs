@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use tungstenite::Message;
 
-use telchar::nomad_callback_http::{CallbackHttpLimits, accept_connection};
+use telchar::nomad::callback_http::{accept_connection, CallbackHttpLimits};
 
 struct FragmentedStream {
     input: Vec<u8>,
@@ -64,11 +64,9 @@ fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
     let socket =
         accept_connection(stream, CallbackHttpLimits::new(1024, 4096)).expect("WebSocket accepts");
     let stream = socket.into_inner();
-    assert!(
-        String::from_utf8(stream.output)
-            .expect("response is UTF-8")
-            .starts_with("HTTP/1.1 101 Switching Protocols\r\n")
-    );
+    assert!(String::from_utf8(stream.output)
+        .expect("response is UTF-8")
+        .starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
 }
 
 #[test]

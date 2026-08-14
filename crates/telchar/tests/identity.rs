@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use telchar::identity::{CertificateIdentity, IdentityInput, normalize_requester};
+use telchar::service::identity::{normalize_requester, CertificateIdentity, IdentityInput};
 
 #[test]
 fn normalizes_public_key_and_certificate_requesters_deterministically() {
@@ -144,7 +144,9 @@ fn rejects_empty_authenticated_identity_components() {
     for (input, component) in cases {
         assert_eq!(
             normalize_requester(input),
-            Err(telchar::identity::NormalizeError::EmptyComponent(component))
+            Err(telchar::service::identity::NormalizeError::EmptyComponent(
+                component
+            ))
         );
     }
 
@@ -158,7 +160,7 @@ fn rejects_empty_authenticated_identity_components() {
     };
     assert_eq!(
         normalize_requester(empty_principals),
-        Err(telchar::identity::NormalizeError::EmptyPrincipal)
+        Err(telchar::service::identity::NormalizeError::EmptyPrincipal)
     );
 }
 
@@ -211,9 +213,7 @@ fn rejects_oversized_authenticated_identity_components() {
     for (input, component) in cases {
         assert_eq!(
             normalize_requester(input),
-            Err(telchar::identity::NormalizeError::OversizedComponent(
-                component
-            ))
+            Err(telchar::service::identity::NormalizeError::OversizedComponent(component))
         );
     }
 }

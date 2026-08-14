@@ -199,11 +199,11 @@ fn validate_protocol_session_inputs(
         .ok_or(ProtocolSessionError(ProtocolSessionFailure::Configuration))?;
     if database_url.trim().is_empty()
         || !is_requester_reference(requester_reference)
-        || credential_id.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || credential_id.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || audit_subject.is_empty()
         || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
         || quota_subject.is_empty()
-        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
     {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
@@ -261,7 +261,7 @@ pub(super) fn decode_protocol_session(
                 && !audit_subject.is_empty()
                 && audit_subject.len() <= MAX_IPC_COMPONENT_BYTES
                 && !quota_subject.is_empty()
-                && quota_subject.len() <= crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
+                && quota_subject.len() <= crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
         {
             ProtocolSessionState::Open
         }
@@ -271,7 +271,7 @@ pub(super) fn decode_protocol_session(
                 && !audit_subject.is_empty()
                 && audit_subject.len() <= MAX_IPC_COMPONENT_BYTES
                 && !quota_subject.is_empty()
-                && quota_subject.len() <= crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
+                && quota_subject.len() <= crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES =>
         {
             ProtocolSessionState::Closed
         }

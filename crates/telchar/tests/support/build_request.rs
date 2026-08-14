@@ -2,7 +2,7 @@
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::backend::{BackendKind, BackendTarget};
-use telchar::build_request::BuildRequest;
+use telchar::build::BuildRequest;
 
 pub fn admitted_request() -> BuildRequest {
     let output = b"/nix/store/11111111111111111111111111111111-static-ssh-output";

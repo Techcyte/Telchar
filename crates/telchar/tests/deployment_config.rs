@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use telchar::deployment::{OutputRetention, RunningDisconnectPolicy};
+use telchar::service::deployment::{OutputRetention, RunningDisconnectPolicy};
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 

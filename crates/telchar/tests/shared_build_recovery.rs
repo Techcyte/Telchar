@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use telchar::backend::{BackendCapabilities, BackendKind};
 use telchar::persistence::{SharedBuild, SharedBuildState};
-use telchar::shared_build_recovery::{
+use telchar::shared_build::recovery::{
     reconcile_active_shared_builds, AdoptedExecution, RecoveryBackend, SharedBuildOutputStore,
 };
 
@@ -289,7 +289,7 @@ fn adopted_execution_can_be_reconciled_to_terminal_state() {
         ..Backends::default()
     };
 
-    let outcome = telchar::shared_build_recovery::reconcile_adopted_shared_builds(
+    let outcome = telchar::shared_build::recovery::reconcile_adopted_shared_builds(
         fixture.url(),
         Duration::from_secs(3_600),
         &[DERIVATION.to_owned()],

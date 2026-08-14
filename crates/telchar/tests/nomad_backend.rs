@@ -13,21 +13,21 @@ use hmac::{Hmac, Mac};
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use telchar::backend::routing::ConfiguredBackends;
 use telchar::backend::{
     BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildStatus, OutputTrust,
 };
-use telchar::backend_routing::ConfiguredBackends;
-use telchar::config::ServiceConfig;
-use telchar::nomad_backend::{
+use telchar::nomad::backend::{
     deterministic_job_name, render_job, NomadClient, NomadExecutionState,
 };
+use telchar::service::config::ServiceConfig;
 
 mod support;
 
 static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn gateway_store_endpoint() -> telchar::store_daemon::GatewayStoreEndpoint {
-    telchar::store_daemon::GatewayStoreEndpoint::parse(
+fn gateway_store_endpoint() -> telchar::store::daemon::GatewayStoreEndpoint {
+    telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",
     )
     .expect("gateway endpoint is valid")
@@ -1031,7 +1031,7 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
 
 #[test]
 fn configured_backend_adopts_exact_nomad_execution() {
-    use telchar::shared_build_recovery::{AdoptedExecution, RecoveryBackend};
+    use telchar::shared_build::recovery::{AdoptedExecution, RecoveryBackend};
 
     let _guard = CONFIGURATION_TESTS
         .lock()
@@ -1231,11 +1231,11 @@ fn load_nomad_config(
     root: &std::path::Path,
     endpoint: &str,
     token_file: Option<&std::path::Path>,
-) -> telchar::config::NomadBackendConfig {
+) -> telchar::service::config::NomadBackendConfig {
     load_service_config(root, endpoint, token_file).nomad_backends()[0].clone()
 }
 
-fn admitted_request() -> telchar::build_request::BuildRequest {
+fn admitted_request() -> telchar::build::BuildRequest {
     let output = b"/nix/store/11111111111111111111111111111111-output";
     let mut wire = Vec::new();
     write_worker_string(
@@ -1275,8 +1275,7 @@ fn admitted_request() -> telchar::build_request::BuildRequest {
         std::iter::empty::<&str>(),
     )
     .expect("target creates");
-    telchar::build_request::BuildRequest::from_worker_request(&request, &[backend])
-        .expect("request admits")
+    telchar::build::BuildRequest::from_worker_request(&request, &[backend]).expect("request admits")
 }
 
 fn write_worker_integer(output: &mut Vec<u8>, value: u64) {

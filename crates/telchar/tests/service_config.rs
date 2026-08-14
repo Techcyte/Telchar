@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use telchar::backend::BackendKind;
-use telchar::config::ServiceConfig;
+use telchar::service::config::ServiceConfig;
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 const VARIABLES: &[&str] = &[
@@ -86,7 +86,7 @@ maximum_concurrent_builds = 2
     assert_eq!(config.backend_targets().count(), 1);
     assert_eq!(
         config.running_disconnect_policy(),
-        telchar::deployment::RunningDisconnectPolicy::CancelRunning
+        telchar::service::deployment::RunningDisconnectPolicy::CancelRunning
     );
     assert_eq!(config.output_retention().seconds(), 7200);
     assert_eq!(config.maximum_retained_input_bytes(), 1_048_576);
@@ -119,11 +119,11 @@ maximum_concurrent_builds = 2
     assert_eq!(config.backend_permit_wait().as_secs(), 30);
     assert_eq!(
         config.scheduling_limits("unknown-subject"),
-        telchar::config::SchedulingLimits::new(20, 4).expect("limits are valid")
+        telchar::service::config::SchedulingLimits::new(20, 4).expect("limits are valid")
     );
     assert_eq!(
         config.scheduling_limits("release-engineering"),
-        telchar::config::SchedulingLimits::new(100, 16).expect("limits are valid")
+        telchar::service::config::SchedulingLimits::new(100, 16).expect("limits are valid")
     );
     let local = config.local_backend().expect("local backend exists");
     assert_eq!(local.target().name(), "local");
@@ -1133,7 +1133,7 @@ maximum_concurrent_builds = 1
     );
     assert_eq!(
         config.running_disconnect_policy(),
-        telchar::deployment::RunningDisconnectPolicy::CancelRunning
+        telchar::service::deployment::RunningDisconnectPolicy::CancelRunning
     );
     assert_eq!(config.output_retention().seconds(), 60);
     assert_eq!(config.database_url(), Some("postgresql://environment/db"));
@@ -1219,11 +1219,9 @@ quota_subject = "replacement-team"
 
     let config = ServiceConfig::load().expect("configuration loads");
 
-    assert!(
-        config
-            .credential_mapping("ssh-pubkey:SHA256:file")
-            .is_none()
-    );
+    assert!(config
+        .credential_mapping("ssh-pubkey:SHA256:file")
+        .is_none());
     assert_eq!(
         config
             .credential_mapping("ssh-pubkey:SHA256:replacement")

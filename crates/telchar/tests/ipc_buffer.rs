@@ -5,7 +5,7 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
-use telchar::ipc::{MAX_FRONTEND_BUFFER_BYTES, relay_bounded};
+use telchar::service::ipc::{relay_bounded, MAX_FRONTEND_BUFFER_BYTES};
 
 #[test]
 fn slow_daemon_observes_bounded_frontend_buffer() {

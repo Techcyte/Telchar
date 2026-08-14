@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use support::postgres::PostgresFixture;
 use telchar::backend::BackendKind;
-use telchar::config::SchedulingLimits;
+use telchar::service::config::SchedulingLimits;
 
 fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {
     telchar::persistence::claim_shared_build(
@@ -26,13 +26,11 @@ fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {
 
 #[test]
 fn scheduler_construction_fails_when_durable_rotation_cannot_be_read() {
-    assert!(
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(
-            "postgresql://127.0.0.1:1/unavailable",
-            |_| SchedulingLimits::new(1, 1).expect("limits are valid"),
-        )
-        .is_err()
-    );
+    assert!(telchar::shared_build::scheduler::SharedBuildScheduler::new(
+        "postgresql://127.0.0.1:1/unavailable",
+        |_| SchedulingLimits::new(1, 1).expect("limits are valid"),
+    )
+    .is_err());
 }
 
 #[test]
@@ -49,7 +47,7 @@ fn waiting_build_starts_after_subject_capacity_is_released() {
         .expect("second build enqueues");
 
     let scheduler = Arc::new(
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
         })
         .expect("scheduler creates"),
@@ -100,7 +98,7 @@ fn subject_rotation_survives_scheduler_restart() {
         .expect("Alice first enqueues");
 
     let scheduler =
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
         })
         .expect("scheduler creates");
@@ -122,7 +120,7 @@ fn subject_rotation_survives_scheduler_restart() {
         .expect("Bob first enqueues");
 
     let restarted =
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
         })
         .expect("scheduler restarts");
@@ -159,7 +157,7 @@ fn saturated_subject_does_not_block_another_subject() {
         .expect("Alice build starts");
 
     let scheduler =
-        telchar::shared_build_scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
             SchedulingLimits::new(2, 1).expect("limits are valid")
         })
         .expect("scheduler creates");

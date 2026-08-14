@@ -20,7 +20,7 @@ fn deployment_environment_selects_the_gateway_executor() {
     }
 
     let executor =
-        telchar::local_executor::executor_from_environment().expect("configured executor creates");
+        telchar::backend::local::executor_from_environment().expect("configured executor creates");
 
     let _backend: &dyn BuildBackend = executor.as_ref();
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
@@ -31,28 +31,28 @@ fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
     unsafe { std::env::remove_var("TELCHAR_GATEWAY_STORE_URI") };
-    let endpoint = telchar::store_daemon::GatewayStoreEndpoint::parse(
+    let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///nix/var/nix/daemon-socket/socket",
     )
     .expect("endpoint is valid");
 
-    let _query = telchar::store_query::GatewayStoreQuery::new("nix", endpoint.clone());
-    let _import =
-        telchar::store_import::GatewayStoreImport::new(endpoint.clone()).expect("importer creates");
+    let _query = telchar::store::query::GatewayStoreQuery::new("nix", endpoint.clone());
+    let _import = telchar::store::import::GatewayStoreImport::new(endpoint.clone())
+        .expect("importer creates");
     let _outputs =
-        telchar::shared_build_recovery::GatewaySharedBuildOutputStore::new(endpoint.clone());
-    let _executor = telchar::local_executor::GatewayStoreExecutor::new(endpoint);
+        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(endpoint.clone());
+    let _executor = telchar::backend::local::GatewayStoreExecutor::new(endpoint);
 
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
 #[test]
 fn configured_executor_rejects_an_inaccessible_gateway_store() {
-    let endpoint = telchar::store_daemon::GatewayStoreEndpoint::parse(
+    let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",
     )
     .expect("endpoint is valid");
-    let mut executor = telchar::local_executor::GatewayStoreExecutor::new(endpoint);
+    let mut executor = telchar::backend::local::GatewayStoreExecutor::new(endpoint);
     let build = admitted_request();
     let request = BuildExecution::new(
         "inaccessible-store",
@@ -82,14 +82,14 @@ fn absent_gateway_selects_execution_unavailable_without_store_fallback() {
     }
 
     let executor =
-        telchar::local_executor::executor_from_environment().expect("unavailable executor creates");
+        telchar::backend::local::executor_from_environment().expect("unavailable executor creates");
 
     let _backend: &dyn BuildBackend = executor.as_ref();
     restore("TELCHAR_TEST_BUILD_HELPER", saved_helper);
     restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
-fn admitted_request() -> telchar::build_request::BuildRequest {
+fn admitted_request() -> telchar::build::BuildRequest {
     let mut wire = Vec::new();
     write_integer(&mut wire, 36);
     write_string(
@@ -135,7 +135,7 @@ fn admitted_request() -> telchar::build_request::BuildRequest {
     let request = reader
         .complete_build_derivation()
         .expect("worker request parses");
-    telchar::build_request::BuildRequest::from_worker_request(
+    telchar::build::BuildRequest::from_worker_request(
         &request,
         &[telchar::backend::BackendTarget::new(
             "fixture",

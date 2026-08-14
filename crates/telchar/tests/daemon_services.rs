@@ -2,10 +2,10 @@
 
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use telchar::daemon_services::{MaintenanceService, RecoveryMonitorService};
+use telchar::service::daemon_services::{MaintenanceService, RecoveryMonitorService};
 
 #[test]
 fn maintenance_shutdown_interrupts_wait_and_joins_worker() {

@@ -7,10 +7,10 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use telchar::backend::static_ssh::{verify_configured_backends, StaticSshBackend};
 use telchar::backend::{BuildBackend, BuildExecution};
-use telchar::config::ServiceConfig;
-use telchar::static_ssh_backend::{StaticSshBackend, verify_configured_backends};
-use telchar::store_daemon::GatewayStoreEndpoint;
+use telchar::service::config::ServiceConfig;
+use telchar::store::daemon::GatewayStoreEndpoint;
 
 #[path = "support/build_request.rs"]
 mod build_request_support;
@@ -190,7 +190,7 @@ fn cancellation_terminates_the_static_ssh_process_group() {
 
 struct BlockingTransportFixture {
     root: std::path::PathBuf,
-    config: telchar::config::StaticSshBackendConfig,
+    config: telchar::service::config::StaticSshBackendConfig,
     pid_path: std::path::PathBuf,
 }
 
@@ -281,7 +281,7 @@ impl Drop for BlockingTransportFixture {
 fn malformed_worker_protocol_fails_output_recovery_cleanly() {
     let fixture = RecoveryTransportFixture::new("malformed", "printf 'not-worker-protocol'");
 
-    let error = telchar::static_ssh_backend::recover_outputs(
+    let error = telchar::backend::static_ssh::recover_outputs(
         &fixture.config,
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],
@@ -303,7 +303,7 @@ fn missing_exact_remote_output_fails_before_gateway_import() {
             .as_nanos()
     );
 
-    let error = telchar::static_ssh_backend::recover_outputs(
+    let error = telchar::backend::static_ssh::recover_outputs(
         &fixture.config,
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &[missing],
@@ -317,7 +317,7 @@ fn missing_exact_remote_output_fails_before_gateway_import() {
 
 struct RecoveryTransportFixture {
     root: std::path::PathBuf,
-    config: telchar::config::StaticSshBackendConfig,
+    config: telchar::service::config::StaticSshBackendConfig,
 }
 
 impl RecoveryTransportFixture {
@@ -369,7 +369,7 @@ impl Drop for RecoveryTransportFixture {
 fn output_recovery_timeout_terminates_the_static_ssh_process_group() {
     let fixture = BlockingTransportFixture::new("recovery-timeout");
 
-    let error = telchar::static_ssh_backend::recover_outputs(
+    let error = telchar::backend::static_ssh::recover_outputs(
         &fixture.config,
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],

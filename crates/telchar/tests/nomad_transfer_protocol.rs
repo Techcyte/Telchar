@@ -2,11 +2,11 @@
 
 use std::io::Cursor;
 
-use telchar::nomad_transfer_protocol::{
-    Authentication, AuthenticationProof, BuildOutcome, BuildResultMetadata, BuildSpecification,
-    BuildStarted, Direction, Frame, FrameKind, InputManifest, LogChunk, NamedOutput, NarMetadata,
-    OutputReceipt, PROTOCOL_VERSION, PathManifestEntry, PathSet, ProtocolLimits, ProtocolSession,
-    decode_metadata, encode_metadata, read_frame, write_frame,
+use telchar::nomad::protocol::{
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildOutcome, BuildResultMetadata, BuildSpecification, BuildStarted, Direction, Frame,
+    FrameKind, InputManifest, LogChunk, NamedOutput, NarMetadata, OutputReceipt, PathManifestEntry,
+    PathSet, ProtocolLimits, ProtocolSession, PROTOCOL_VERSION,
 };
 
 fn build_specification(derivation: &str, input: &str, output: &str) -> BuildSpecification {
@@ -233,61 +233,39 @@ fn rejects_invalid_manifest_and_path_metadata() {
 #[test]
 fn enforces_direction_and_transfer_phase_order() {
     let mut session = ProtocolSession::new();
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::ValidPaths)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::GatewayToWorker, FrameKind::InputNar)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::BuildStarted)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::LogChunk)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::OutputMetadata)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::OutputNar)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::GatewayToWorker, FrameKind::OutputReceipt)
-            .is_ok()
-    );
-    assert!(
-        session
-            .accept(Direction::WorkerToGateway, FrameKind::BuildResult)
-            .is_ok()
-    );
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::ValidPaths)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::InputNar)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildStarted)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::LogChunk)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::OutputMetadata)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::OutputNar)
+        .is_ok());
+    assert!(session
+        .accept(Direction::GatewayToWorker, FrameKind::OutputReceipt)
+        .is_ok());
+    assert!(session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildResult)
+        .is_ok());
     assert!(session.is_complete());
 
     let mut unauthenticated = ProtocolSession::new();

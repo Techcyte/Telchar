@@ -3,13 +3,13 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use telchar::nix_fixture::{NixFixture, TrustMode};
-use telchar::store_export::{
-    GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
+use telchar::fixture::nix::{NixFixture, TrustMode};
+use telchar::service::transfer_limits::{TransferBudget, TransferLimits};
+use telchar::store::export::{
     export_verified_nar, export_verified_nar_with_limits, validate_store_output,
+    GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
 };
-use telchar::store_promotion::RegisteredPathInfo;
-use telchar::transfer_limits::{TransferBudget, TransferLimits};
+use telchar::store::promotion::RegisteredPathInfo;
 
 const CONTENT: &[u8] = b"telchar-classic-fixture";
 const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture";

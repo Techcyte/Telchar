@@ -10,12 +10,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, WorkerTrust,
+    WorkerTrust, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
 };
 
 const STORE_PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
 const NAR_HASH: &[u8] = b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1";
-use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
+use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 struct SocketFixture {
     root: PathBuf,
@@ -248,11 +248,9 @@ fn malformed_handshake_closes_socket_and_redacts_peer_bytes() {
 
     assert_eq!(error.to_string(), "gateway Nix daemon connection failed");
     assert!(!error.to_string().contains("dead"));
-    assert!(
-        closed_receiver
-            .recv_timeout(Duration::from_secs(2))
-            .expect("peer observes closure")
-    );
+    assert!(closed_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("peer observes closure"));
     server.join().expect("server joins");
 }
 

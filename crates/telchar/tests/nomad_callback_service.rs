@@ -5,8 +5,8 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use telchar::config::ServiceConfig;
-use telchar::nomad_callback_service::NomadCallbackService;
+use telchar::nomad::callback_service::NomadCallbackService;
+use telchar::service::config::ServiceConfig;
 
 mod support;
 
@@ -57,7 +57,7 @@ maximum_retained_nonces = 65536
         config.nomad_callback().clone(),
         database.url().to_owned(),
         vec![],
-        telchar::store_daemon::GatewayStoreEndpoint::parse(
+        telchar::store::daemon::GatewayStoreEndpoint::parse(
             "unix:///definitely-missing/telchar-gateway.sock",
         )
         .expect("gateway endpoint is valid"),

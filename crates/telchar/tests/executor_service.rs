@@ -12,10 +12,10 @@ mod support;
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
-use telchar::build_request::BuildRequest;
-use telchar::executor_service::{
-    EXECUTOR_PROTOCOL_VERSION, ExecutorExecutionState, ExecutorRequest, ExecutorResult,
-    ExecutorSpecification, send_request,
+use telchar::build::BuildRequest;
+use telchar::service::executor_service::{
+    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
+    EXECUTOR_PROTOCOL_VERSION,
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -201,7 +201,7 @@ fn write_string(bytes: &mut Vec<u8>, value: &[u8]) {
 fn request(
     socket: &Path,
     request: &ExecutorRequest,
-) -> telchar::executor_service::ExecutorResponse {
+) -> telchar::service::executor_service::ExecutorResponse {
     let mut stream = UnixStream::connect(socket).expect("executor connects");
     send_request(&mut stream, request).expect("executor responds")
 }

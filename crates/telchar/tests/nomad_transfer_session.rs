@@ -1,9 +1,9 @@
 //! Tests nomad transfer session contracts and failure boundaries, including path.
 
-use telchar::nomad_transfer_protocol::{
-    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
-    InputManifest, LogChunk, NamedOutput, NarMetadata, OutputReceipt, PathManifestEntry, PathSet,
-    TransferSession, encode_metadata,
+use telchar::nomad::protocol::{
+    encode_metadata, BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame,
+    FrameKind, InputManifest, LogChunk, NamedOutput, NarMetadata, OutputReceipt, PathManifestEntry,
+    PathSet, TransferSession,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -214,43 +214,37 @@ fn rejects_log_sequence_gaps_payload_misuse_and_early_success() {
             frame(FrameKind::BuildStarted, &json_build_started(), vec![]),
         )
         .expect("build starts");
-    assert!(
-        session
-            .accept(
-                Direction::WorkerToGateway,
-                frame(
-                    FrameKind::LogChunk,
-                    &LogChunk { sequence: 1 },
-                    b"gap".to_vec()
-                ),
-            )
-            .is_err()
-    );
-    assert!(
-        session
-            .accept(
-                Direction::WorkerToGateway,
-                frame(
-                    FrameKind::LogChunk,
-                    &LogChunk { sequence: 0 },
-                    b"large".to_vec()
-                ),
-            )
-            .is_err()
-    );
-    assert!(
-        session
-            .accept(
-                Direction::WorkerToGateway,
-                frame(
-                    FrameKind::BuildResult,
-                    &BuildResultMetadata {
-                        outcome: BuildOutcome::Built,
-                        diagnostic: None,
-                    },
-                    vec![],
-                ),
-            )
-            .is_err()
-    );
+    assert!(session
+        .accept(
+            Direction::WorkerToGateway,
+            frame(
+                FrameKind::LogChunk,
+                &LogChunk { sequence: 1 },
+                b"gap".to_vec()
+            ),
+        )
+        .is_err());
+    assert!(session
+        .accept(
+            Direction::WorkerToGateway,
+            frame(
+                FrameKind::LogChunk,
+                &LogChunk { sequence: 0 },
+                b"large".to_vec()
+            ),
+        )
+        .is_err());
+    assert!(session
+        .accept(
+            Direction::WorkerToGateway,
+            frame(
+                FrameKind::BuildResult,
+                &BuildResultMetadata {
+                    outcome: BuildOutcome::Built,
+                    diagnostic: None,
+                },
+                vec![],
+            ),
+        )
+        .is_err());
 }

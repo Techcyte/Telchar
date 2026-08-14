@@ -8,25 +8,26 @@ use support::postgres::PostgresFixture;
 fn only_one_owner_acquires_the_database_lifetime_lock() {
     let fixture = PostgresFixture::start();
 
-    let owner = telchar::singleton_ownership::SingletonOwnership::acquire(fixture.url())
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url())
         .expect("first daemon acquires ownership");
     assert_eq!(
-        telchar::singleton_ownership::SingletonOwnership::acquire(fixture.url())
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url())
             .expect_err("second daemon is refused")
             .failure(),
-        telchar::singleton_ownership::SingletonOwnershipFailure::Contended
+        telchar::service::singleton_ownership::SingletonOwnershipFailure::Contended
     );
 
     drop(owner);
-    telchar::singleton_ownership::SingletonOwnership::acquire(fixture.url())
+    telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url())
         .expect("replacement acquires after authoritative release");
 }
 
 #[test]
 fn ownership_check_fails_after_database_connection_loss() {
     let mut fixture = PostgresFixture::start();
-    let mut owner = telchar::singleton_ownership::SingletonOwnership::acquire(fixture.url())
-        .expect("daemon acquires ownership");
+    let mut owner =
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url())
+            .expect("daemon acquires ownership");
 
     fixture.restart();
 
@@ -35,8 +36,8 @@ fn ownership_check_fails_after_database_connection_loss() {
             .check()
             .expect_err("dead lifetime connection fences owner")
             .failure(),
-        telchar::singleton_ownership::SingletonOwnershipFailure::Connection
+        telchar::service::singleton_ownership::SingletonOwnershipFailure::Connection
     );
-    telchar::singleton_ownership::SingletonOwnership::acquire(fixture.url())
+    telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url())
         .expect("replacement acquires after PostgreSQL releases dead session");
 }

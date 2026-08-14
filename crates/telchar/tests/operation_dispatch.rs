@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use nix_worker_protocol::{
     CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
 };
-use telchar::nix_fixture::{NixFixture, TrustMode};
+use telchar::fixture::nix::{NixFixture, TrustMode};
 
 mod support;
 
@@ -2181,7 +2181,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
         .as_str()
         .expect("helper request ID is a string");
     assert!(request_id.starts_with("request-"), "{request_id}");
-    assert!(request_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+    assert!(request_id.len() <= telchar::service::ipc::MAX_IPC_COMPONENT_BYTES);
     let persisted = telchar::persistence::read_build_request(fixture.database.url(), request_id)
         .expect("build request reads")
         .expect("build request exists before helper result");
@@ -2267,7 +2267,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
     assert_ne!(request_ids[0], request_ids[1]);
     for request_id in &request_ids {
         assert!(request_id.starts_with("request-"), "{request_id}");
-        assert!(request_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+        assert!(request_id.len() <= telchar::service::ipc::MAX_IPC_COMPONENT_BYTES);
         assert_eq!(
             telchar::persistence::read_build_request(fixture.database.url(), request_id)
                 .expect("build request reads")
@@ -2291,7 +2291,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
     for (lease_id, request_id) in leases {
         assert!(lease_id.starts_with("lease-"), "{lease_id}");
         assert_ne!(lease_id, request_id);
-        assert!(lease_id.len() <= telchar::ipc::MAX_IPC_COMPONENT_BYTES);
+        assert!(lease_id.len() <= telchar::service::ipc::MAX_IPC_COMPONENT_BYTES);
     }
     let stderr = fixture.finish();
     assert!(

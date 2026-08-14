@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use telchar::nar::stage_nar;
+use telchar::store::nar::stage_nar;
 
 const NAR_MAGIC: &[u8] = b"nix-archive-1";
 const CONTENT: &[u8] = b"telchar-classic-fixture";

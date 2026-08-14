@@ -4,10 +4,10 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use nix_worker_protocol::{
-    LATEST_WORKER_VERSION, PathInfoResponse, STDERR_LAST, write_query_path_info_response,
+    write_query_path_info_response, PathInfoResponse, LATEST_WORKER_VERSION, STDERR_LAST,
 };
-use telchar::nix_fixture::{NixFixture, TrustMode};
-use telchar::store_export::query_path_info;
+use telchar::fixture::nix::{NixFixture, TrustMode};
+use telchar::store::export::query_path_info;
 
 #[test]
 #[ignore = "private fixture paths are outside the production /nix/store namespace"]
@@ -77,11 +77,9 @@ fn missing_gateway_path_encodes_absence() {
         .export_backend()
         .expect("gateway export backend creates");
 
-    assert!(
-        query_path_info(&missing, &mut backend)
-            .expect("absence is not failure")
-            .is_none()
-    );
+    assert!(query_path_info(&missing, &mut backend)
+        .expect("absence is not failure")
+        .is_none());
 
     daemon.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");

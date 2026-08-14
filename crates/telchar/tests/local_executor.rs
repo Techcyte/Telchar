@@ -7,13 +7,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
+use telchar::backend::local::{GatewayStoreExecutor, NixStoreExecutor, UnavailableBuildExecutor};
 use telchar::backend::{
     BackendKind, BackendTarget, BuildBackend, BuildExecution, BuildStatus, OutputTrust,
 };
-use telchar::build_request::BuildRequest;
-use telchar::local_executor::{GatewayStoreExecutor, NixStoreExecutor, UnavailableBuildExecutor};
-use telchar::nix_fixture::NixFixture;
-use telchar::store_daemon::GatewayStoreEndpoint;
+use telchar::build::BuildRequest;
+use telchar::fixture::nix::NixFixture;
+use telchar::store::daemon::GatewayStoreEndpoint;
 
 const DERIVATION_PATH: &[u8] =
     b"/nix/store/00000000000000000000000000000000-telchar-local-executor.drv";
@@ -433,7 +433,7 @@ fn executor_times_out_and_reaps_the_helper() {
 fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let mut store = fixture
-        .start_daemon(telchar::nix_fixture::TrustMode::Trusted)
+        .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
         .expect("Nix daemon starts");
     let build = admitted_request_with_builder(b"exit 0");
     let request = BuildExecution::new("missing-output", &build, Duration::from_secs(30))

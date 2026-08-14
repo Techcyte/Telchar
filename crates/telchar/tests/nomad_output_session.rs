@@ -1,6 +1,6 @@
 //! Tests nomad output session contracts and failure boundaries, including output.
 
-use telchar::nomad_transfer_protocol::{
+use telchar::nomad::protocol::{
     BuildOutcome, BuildResultMetadata, OutputReceipt, OutputTransferSession, PathManifestEntry,
 };
 
@@ -36,14 +36,12 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             accepted: true,
         })
         .expect("first receipt records");
-    assert!(
-        session
-            .finish(&BuildResultMetadata {
-                outcome: BuildOutcome::Built,
-                diagnostic: None,
-            })
-            .is_err()
-    );
+    assert!(session
+        .finish(&BuildResultMetadata {
+            outcome: BuildOutcome::Built,
+            diagnostic: None,
+        })
+        .is_err());
 
     session
         .declare(PathManifestEntry {
@@ -82,29 +80,25 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
     let expected = output("expected");
     let mut session =
         OutputTransferSession::new(vec![expected.clone()], 16, 16, 16).expect("session creates");
-    assert!(
-        session
-            .declare(PathManifestEntry {
-                path: output("foreign"),
-                nar_hash: HASH.to_owned(),
-                nar_size: 1,
-                references: vec![],
-                deriver: None,
-            })
-            .is_err()
-    );
+    assert!(session
+        .declare(PathManifestEntry {
+            path: output("foreign"),
+            nar_hash: HASH.to_owned(),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+        })
+        .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 1, true).is_err());
-    assert!(
-        session
-            .declare(PathManifestEntry {
-                path: expected.clone(),
-                nar_hash: HASH.to_owned(),
-                nar_size: 17,
-                references: vec![],
-                deriver: None,
-            })
-            .is_err()
-    );
+    assert!(session
+        .declare(PathManifestEntry {
+            path: expected.clone(),
+            nar_hash: HASH.to_owned(),
+            nar_size: 17,
+            references: vec![],
+            deriver: None,
+        })
+        .is_err());
 
     session
         .declare(PathManifestEntry {
@@ -115,30 +109,26 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             deriver: None,
         })
         .expect("expected output declares");
-    assert!(
-        session
-            .declare(PathManifestEntry {
-                path: expected.clone(),
-                nar_hash: HASH.to_owned(),
-                nar_size: 16,
-                references: vec![],
-                deriver: None,
-            })
-            .is_err()
-    );
+    assert!(session
+        .declare(PathManifestEntry {
+            path: expected.clone(),
+            nar_hash: HASH.to_owned(),
+            nar_size: 16,
+            references: vec![],
+            deriver: None,
+        })
+        .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 15, true).is_err());
     session
         .receive_nar_chunk(&expected, 0, 16, true)
         .expect("exact NAR receives");
     assert!(session.receive_nar_chunk(&expected, 0, 16, true).is_err());
-    assert!(
-        session
-            .record_receipt(OutputReceipt {
-                path: expected.clone(),
-                accepted: false,
-            })
-            .is_err()
-    );
+    assert!(session
+        .record_receipt(OutputReceipt {
+            path: expected.clone(),
+            accepted: false,
+        })
+        .is_err());
     session
         .record_receipt(OutputReceipt {
             path: expected,
@@ -161,12 +151,10 @@ fn permits_bounded_terminal_failure_without_outputs() {
 
     let mut oversized =
         OutputTransferSession::new(vec![output("expected")], 16, 16, 16).expect("session creates");
-    assert!(
-        oversized
-            .finish(&BuildResultMetadata {
-                outcome: BuildOutcome::Failed,
-                diagnostic: Some("x".repeat(17)),
-            })
-            .is_err()
-    );
+    assert!(oversized
+        .finish(&BuildResultMetadata {
+            outcome: BuildOutcome::Failed,
+            diagnostic: Some("x".repeat(17)),
+        })
+        .is_err());
 }

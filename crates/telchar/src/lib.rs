@@ -1,38 +1,10 @@
-//! Exports Telchar service modules for the daemon binary and integration tests.
+//! Exports Telchar domain namespaces for the daemon binary and integration tests.
 
 pub mod backend;
-pub mod backend_routing;
-pub mod build_request;
-pub mod config;
-pub mod daemon_services;
-pub mod deployment;
-pub mod disk_reserve;
-pub mod executor_service;
-pub mod identity;
-pub mod ipc;
-pub mod local_executor;
-pub mod nar;
-pub mod nix_fixture;
-pub mod nomad_backend;
-pub mod nomad_callback;
-pub mod nomad_callback_http;
-pub mod nomad_callback_service;
-pub mod nomad_transfer_authentication;
-pub mod nomad_transfer_protocol;
+pub mod build;
+pub mod fixture;
+pub mod nomad;
 pub mod persistence;
-pub mod session;
+pub mod service;
 pub mod shared_build;
-pub mod shared_build_recovery;
-pub mod shared_build_scheduler;
-pub mod singleton_ownership;
-pub mod static_ssh_backend;
-pub mod store_closure;
-pub mod store_daemon;
-pub mod store_export;
-pub mod store_import;
-pub mod store_promotion;
-pub mod store_query;
-pub mod store_retention;
-pub mod store_runtime;
-pub mod transfer_limits;
-pub mod worker_trace;
+pub mod store;

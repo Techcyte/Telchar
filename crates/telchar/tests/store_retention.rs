@@ -5,12 +5,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use telchar::nix_fixture::{NixDaemon, NixFixture, TrustMode};
+use telchar::fixture::nix::{NixDaemon, NixFixture, TrustMode};
 
 mod support;
 
 use support::postgres::PostgresFixture;
-use telchar::store_retention::{
+use telchar::store::retention::{
     NixStoreRetentionBackend, ReleasedRetentionEntry, RetentionEntry, StoreRetentionBackend,
 };
 
@@ -23,12 +23,10 @@ fn empty_retention_set_does_not_connect_to_daemon() {
     let mut backend =
         NixStoreRetentionBackend::new("unix:///missing", &root).expect("backend configures");
 
-    assert!(
-        backend
-            .retain(&[])
-            .expect("empty retain succeeds")
-            .is_empty()
-    );
+    assert!(backend
+        .retain(&[])
+        .expect("empty retain succeeds")
+        .is_empty());
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -115,16 +113,12 @@ fn released_root_is_collectable_while_active_root_survives_private_gc() {
         .expect("released root removes");
     daemon.collect_garbage().expect("private GC succeeds");
 
-    assert!(
-        !daemon
-            .is_valid_path(&released)
-            .expect("released path validity reads")
-    );
-    assert!(
-        daemon
-            .is_valid_path(&active)
-            .expect("active path validity reads")
-    );
+    assert!(!daemon
+        .is_valid_path(&released)
+        .expect("released path validity reads"));
+    assert!(daemon
+        .is_valid_path(&active)
+        .expect("active path validity reads"));
     daemon.stop().expect("fixture daemon stops");
     fixture.cleanup().expect("fixture cleans up");
 }
@@ -191,7 +185,7 @@ fn reconciliation_removes_only_durable_released_roots() {
     let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
         .expect("retention backend configures");
 
-    telchar::store_retention::reconcile_released_request_leases(fixture.url(), &mut backend)
+    telchar::store::retention::reconcile_released_request_leases(fixture.url(), &mut backend)
         .expect("released roots reconcile");
 
     assert!(fs::symlink_metadata(root_directory.join("reconcile-released")).is_err());
@@ -259,7 +253,7 @@ fn expiry_pass_releases_due_output_and_preserves_future_output() {
     let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
         .expect("retention backend configures");
 
-    telchar::store_retention::reconcile_output_retention(fixture.url(), &mut backend, due)
+    telchar::store::retention::reconcile_output_retention(fixture.url(), &mut backend, due)
         .expect("output expiry reconciles");
 
     assert!(fs::symlink_metadata(root_directory.join("expiry-retention-due")).is_err());
@@ -318,10 +312,12 @@ fn committed_expiry_retries_root_removal_from_released_row() {
         .expect("retention backend configures");
     let now = lease.expires_at.expect("deadline exists");
 
-    assert!(
-        telchar::store_retention::reconcile_output_retention(fixture.url(), &mut backend, now)
-            .is_err()
-    );
+    assert!(telchar::store::retention::reconcile_output_retention(
+        fixture.url(),
+        &mut backend,
+        now
+    )
+    .is_err());
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.url(), "expiry-retry-output")
             .expect("lease reads")
@@ -336,7 +332,7 @@ fn committed_expiry_retries_root_removal_from_released_row() {
     )
     .expect("matching root creates");
 
-    telchar::store_retention::reconcile_output_retention(
+    telchar::store::retention::reconcile_output_retention(
         fixture.url(),
         &mut backend,
         SystemTime::now(),
@@ -415,14 +411,12 @@ fn release_rejects_conflicts_without_removing_any_root() {
     fs::remove_file(&root).expect("root removes");
     std::os::unix::fs::symlink(&other, &root).expect("conflicting root creates");
 
-    assert!(
-        backend
-            .release(&[ReleasedRetentionEntry::new(
-                "release-conflict",
-                released.to_string_lossy(),
-            )])
-            .is_err()
-    );
+    assert!(backend
+        .release(&[ReleasedRetentionEntry::new(
+            "release-conflict",
+            released.to_string_lossy(),
+        )])
+        .is_err());
     assert_eq!(fs::read_link(&root).expect("conflict persists"), other);
     daemon.stop().expect("fixture daemon stops");
     fixture.cleanup().expect("fixture cleans up");
@@ -514,11 +508,9 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
         "initial retain fails"
     );
     daemon.collect_garbage().expect("first private GC succeeds");
-    assert!(
-        daemon
-            .is_valid_path(&leased)
-            .expect("first GC preserves lease")
-    );
+    assert!(daemon
+        .is_valid_path(&leased)
+        .expect("first GC preserves lease"));
     daemon.stop().expect("fixture daemon stops");
 
     let mut restarted = fixture
@@ -528,11 +520,9 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     restarted
         .collect_garbage()
         .expect("second private GC succeeds");
-    assert!(
-        restarted
-            .is_valid_path(&leased)
-            .expect("second GC preserves lease")
-    );
+    assert!(restarted
+        .is_valid_path(&leased)
+        .expect("second GC preserves lease"));
     assert_eq!(fs::read(&leased).expect("leased content reads"), b"restart");
 
     restarted.stop().expect("restarted daemon stops");
@@ -552,16 +542,12 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
 
-    assert!(
-        daemon
-            .is_valid_path(&leased)
-            .expect("leased path valid before GC")
-    );
-    assert!(
-        daemon
-            .is_valid_path(&control)
-            .expect("control path valid before GC")
-    );
+    assert!(daemon
+        .is_valid_path(&leased)
+        .expect("leased path valid before GC"));
+    assert!(daemon
+        .is_valid_path(&control)
+        .expect("control path valid before GC"));
 
     let mut backend = NixStoreRetentionBackend::new_with_store_directory(
         daemon.store_url(),
@@ -582,11 +568,9 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     daemon
         .collect_garbage()
         .expect("private store garbage collects");
-    assert!(
-        daemon
-            .is_valid_path(&leased)
-            .expect("leased path valid after GC")
-    );
+    assert!(daemon
+        .is_valid_path(&leased)
+        .expect("leased path valid after GC"));
     assert_eq!(fs::read(&leased).expect("leased path reads"), b"leased");
     assert!(
         !daemon

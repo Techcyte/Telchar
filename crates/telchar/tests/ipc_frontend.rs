@@ -16,7 +16,7 @@ mod support;
 use support::postgres::PostgresFixture;
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
-use telchar::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};
+use telchar::service::ipc::{IpcEnvelope, IpcError, IpcListener, RequesterMetadata, IPC_VERSION};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

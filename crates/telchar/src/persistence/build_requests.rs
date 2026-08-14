@@ -129,7 +129,7 @@ fn validate_build_request_inputs(
         || audit_subject.is_empty()
         || audit_subject.len() > MAX_IPC_COMPONENT_BYTES
         || quota_subject.is_empty()
-        || quota_subject.len() > crate::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
+        || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
     {
         return Err(BuildRequestError(BuildRequestFailure::Configuration));
     }

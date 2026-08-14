@@ -3,18 +3,18 @@
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use telchar::nomad_transfer_protocol::{
-    Authentication, AuthenticationProof, BuildOutcome, BuildResultMetadata, BuildStarted,
-    Direction, Frame, FrameKind, InputManifest, InputTransferSession, LogChunk, NarMetadata,
-    OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits, ProtocolSession, decode_metadata,
-    encode_metadata, read_frame, write_frame,
+use telchar::nomad::protocol::{
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
+    InputTransferSession, LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet,
+    ProtocolLimits, ProtocolSession,
 };
-use telchar::store_daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
+use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
 use url::Url;
 
@@ -720,7 +720,7 @@ struct InputNarReader<'a> {
     socket: &'a mut WorkerSocket,
     protocol: &'a mut ProtocolSession,
     inputs: &'a mut InputTransferSession,
-    entry: &'a telchar::nomad_transfer_protocol::PathManifestEntry,
+    entry: &'a telchar::nomad::protocol::PathManifestEntry,
     chunk: std::io::Cursor<Vec<u8>>,
     complete: bool,
 }
@@ -730,7 +730,7 @@ impl<'a> InputNarReader<'a> {
         socket: &'a mut WorkerSocket,
         protocol: &'a mut ProtocolSession,
         inputs: &'a mut InputTransferSession,
-        entry: &'a telchar::nomad_transfer_protocol::PathManifestEntry,
+        entry: &'a telchar::nomad::protocol::PathManifestEntry,
     ) -> Self {
         Self {
             socket,
