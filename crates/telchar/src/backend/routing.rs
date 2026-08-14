@@ -120,7 +120,8 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
             .as_deref()
             .ok_or_else(|| io::Error::other("Nomad execution identity is unavailable"))?;
         match crate::nomad::backend::NomadClient::new(config.clone())?.status(execution_id)? {
-            crate::nomad::backend::NomadExecutionState::Monitoring => {
+            crate::nomad::backend::NomadExecutionState::Pending
+            | crate::nomad::backend::NomadExecutionState::Placed => {
                 Ok(crate::shared_build::recovery::AdoptedExecution::Monitoring)
             }
             crate::nomad::backend::NomadExecutionState::Succeeded => {

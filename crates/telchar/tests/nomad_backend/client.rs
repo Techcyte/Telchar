@@ -164,6 +164,8 @@ fn maps_allocation_terminal_states_and_missing_jobs() {
         .lock()
         .expect("configuration lock holds");
     for (status, expected) in [
+        ("pending", NomadExecutionState::Placed),
+        ("running", NomadExecutionState::Placed),
         ("complete", NomadExecutionState::Succeeded),
         ("failed", NomadExecutionState::Failed),
     ] {
@@ -200,6 +202,37 @@ fn maps_allocation_terminal_states_and_missing_jobs() {
         server.join().expect("HTTP fixture joins");
         fs::remove_dir_all(root).expect("fixture removes");
     }
+
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let config = load_nomad_config(&root, &endpoint, None);
+    let job_id = deterministic_job_name(&config, b"shared-build-key");
+    let expected_job_id = job_id.clone();
+    let server = thread::spawn(move || {
+        let (mut job_request, _) = listener.accept().expect("job request accepts");
+        let _ = read_http_request(&mut job_request);
+        write_json_response(
+            &mut job_request,
+            200,
+            &format!(
+                r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+        let (mut allocations_request, _) = listener.accept().expect("allocations request accepts");
+        let _ = read_http_request(&mut allocations_request);
+        write_json_response(&mut allocations_request, 200, "[]");
+    });
+    let client = NomadClient::new(config).expect("Nomad client constructs");
+    assert_eq!(
+        client.status(&job_id).expect("pending status reads"),
+        NomadExecutionState::Pending
+    );
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
 
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");

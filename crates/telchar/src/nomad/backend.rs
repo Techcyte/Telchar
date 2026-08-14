@@ -26,7 +26,8 @@ pub struct NomadClient {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NomadExecutionState {
-    Monitoring,
+    Pending,
+    Placed,
     Succeeded,
     Failed,
     Missing,
@@ -261,7 +262,7 @@ impl NomadClient {
             "Nomad job monitoring failed",
         )?;
         if allocations.is_empty() {
-            return Ok(NomadExecutionState::Monitoring);
+            return Ok(NomadExecutionState::Pending);
         }
         if allocations
             .iter()
@@ -275,7 +276,7 @@ impl NomadClient {
         {
             return Ok(NomadExecutionState::Succeeded);
         }
-        Ok(NomadExecutionState::Monitoring)
+        Ok(NomadExecutionState::Placed)
     }
 
     pub fn execute(
@@ -306,59 +307,61 @@ impl NomadClient {
         };
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
         let started = Instant::now();
-        let mut placement_recorded = false;
-        let result = loop {
-            if cancelled()? {
-                self.stop(submission.job_id())?;
-                break Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Nomad job execution cancelled",
-                ));
-            }
-            match self.status(submission.job_id())? {
-                NomadExecutionState::Monitoring => {}
-                NomadExecutionState::Succeeded => {
-                    if !placement_recorded {
-                        crate::service::metrics::nomad_placed(
-                            self.config.target().name(),
-                            started.elapsed(),
-                        );
-                        placement_recorded = true;
+        let result = (|| {
+            let mut placement_recorded = false;
+            loop {
+                if cancelled()? {
+                    self.stop(submission.job_id())?;
+                    break Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Nomad job execution cancelled",
+                    ));
+                }
+                match self.status(submission.job_id())? {
+                    NomadExecutionState::Pending => {}
+                    NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
+                        if !placement_recorded {
+                            crate::service::metrics::nomad_placed(
+                                self.config.target().name(),
+                                started.elapsed(),
+                            );
+                            placement_recorded = true;
+                        }
+                    }
+                    NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                        break Err(io::Error::other("Nomad job execution failed"));
                     }
                 }
-                NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                    break Err(io::Error::other("Nomad job execution failed"));
+                let derivation_path = std::str::from_utf8(execution.build().derivation_path())
+                    .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
+                let build = crate::persistence::read_shared_build(database_url, derivation_path)
+                    .map_err(|_| io::Error::other("Nomad shared build state is unavailable"))?
+                    .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
+                match build.state {
+                    crate::persistence::SharedBuildState::Succeeded => {
+                        break BuildResult::new(
+                            BuildStatus::Built,
+                            execution.build().expected_outputs().to_vec(),
+                            OutputTrust::TrustedExecutor,
+                        );
+                    }
+                    crate::persistence::SharedBuildState::Failed => {
+                        break Err(io::Error::other("Nomad build transfer failed"));
+                    }
+                    crate::persistence::SharedBuildState::Claimed
+                    | crate::persistence::SharedBuildState::Running
+                    | crate::persistence::SharedBuildState::Collecting => {}
                 }
-            }
-            let derivation_path = std::str::from_utf8(execution.build().derivation_path())
-                .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
-            let build = crate::persistence::read_shared_build(database_url, derivation_path)
-                .map_err(|_| io::Error::other("Nomad shared build state is unavailable"))?
-                .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
-            match build.state {
-                crate::persistence::SharedBuildState::Succeeded => {
-                    break BuildResult::new(
-                        BuildStatus::Built,
-                        execution.build().expected_outputs().to_vec(),
-                        OutputTrust::TrustedExecutor,
-                    );
+                if started.elapsed() >= execution.timeout() {
+                    self.stop(submission.job_id())?;
+                    break Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Nomad job execution timed out",
+                    ));
                 }
-                crate::persistence::SharedBuildState::Failed => {
-                    break Err(io::Error::other("Nomad build transfer failed"));
-                }
-                crate::persistence::SharedBuildState::Claimed
-                | crate::persistence::SharedBuildState::Running
-                | crate::persistence::SharedBuildState::Collecting => {}
+                std::thread::sleep(self.config.poll_interval());
             }
-            if started.elapsed() >= execution.timeout() {
-                self.stop(submission.job_id())?;
-                break Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Nomad job execution timed out",
-                ));
-            }
-            std::thread::sleep(self.config.poll_interval());
-        };
+        })();
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
         crate::service::metrics::nomad_execution_finished(
             self.config.target().name(),

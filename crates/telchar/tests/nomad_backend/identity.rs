@@ -44,7 +44,7 @@ fn monitors_only_the_exact_backend_bound_job() {
     let client = NomadClient::new(config).expect("Nomad client constructs");
     assert_eq!(
         client.status(&job_id).expect("Nomad job status reads"),
-        NomadExecutionState::Monitoring
+        NomadExecutionState::Placed
     );
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
