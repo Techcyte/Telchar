@@ -15,6 +15,7 @@ pub struct ClosurePath {
     pub nar_size: u64,
     pub references: Vec<String>,
     pub deriver: Option<String>,
+    pub content_address: Option<String>,
 }
 
 pub trait StoreClosureBackend: Send {
@@ -67,6 +68,7 @@ struct ClosurePathInfo {
     nar_size: u64,
     references: Vec<Vec<u8>>,
     deriver: Option<Vec<u8>>,
+    content_address: Option<Vec<u8>>,
 }
 
 trait PathInfoQuery {
@@ -81,6 +83,7 @@ impl PathInfoQuery for GatewayStoreConnection {
                 nar_size: info.nar_size(),
                 references: info.references().to_vec(),
                 deriver: info.deriver().map(ToOwned::to_owned),
+                content_address: info.content_address().map(ToOwned::to_owned),
             })
         })
     }
@@ -135,6 +138,10 @@ fn compute_input_closure(
                 deriver: info
                     .deriver
                     .map(|deriver| String::from_utf8(deriver).map_err(|_| query_error()))
+                    .transpose()?,
+                content_address: info
+                    .content_address
+                    .map(|address| String::from_utf8(address).map_err(|_| query_error()))
                     .transpose()?,
             })
         })
@@ -221,6 +228,7 @@ mod tests {
                     nar_size: 1,
                     references,
                     deriver: None,
+                    content_address: None,
                 }))
         }
     }
@@ -261,6 +269,7 @@ mod tests {
                         .map(|reference| String::from_utf8(reference).unwrap())
                         .collect(),
                     deriver: None,
+                    content_address: None,
                 })
                 .collect::<Vec<_>>()
         );

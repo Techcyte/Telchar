@@ -206,6 +206,13 @@ impl WorkerSession {
                             .map_err(|_| invalid("worker output deriver is invalid"))
                     })
                     .transpose()?,
+                content_address: info
+                    .content_address()
+                    .map(|address| {
+                        String::from_utf8(address.to_vec())
+                            .map_err(|_| invalid("worker output content address is invalid"))
+                    })
+                    .transpose()?,
             };
             self.send_metadata(FrameKind::OutputMetadata, &metadata)?;
             let mut sink = OutputNarWriter::new(

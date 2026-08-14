@@ -43,6 +43,7 @@ fn manifest() -> InputManifest {
             nar_size: 10,
             references: vec![],
             deriver: None,
+            content_address: None,
         }],
         outputs: vec![output],
     }
@@ -133,6 +134,7 @@ fn validates_complete_selective_transfer_sequence() {
                     nar_size: 12,
                     references: vec![],
                     deriver: None,
+                    content_address: None,
                 },
                 vec![],
             ),

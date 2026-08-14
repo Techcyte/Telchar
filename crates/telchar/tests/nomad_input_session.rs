@@ -45,6 +45,7 @@ fn manifest() -> InputManifest {
                 nar_size: 10,
                 references: vec![],
                 deriver: None,
+                content_address: None,
             },
             PathManifestEntry {
                 path: second,
@@ -52,6 +53,7 @@ fn manifest() -> InputManifest {
                 nar_size: 20,
                 references: vec![first],
                 deriver: None,
+                content_address: None,
             },
         ],
         outputs: vec![output],

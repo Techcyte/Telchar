@@ -275,6 +275,7 @@ pub struct PathManifestEntry {
     pub nar_size: u64,
     pub references: Vec<String>,
     pub deriver: Option<String>,
+    pub content_address: Option<String>,
 }
 
 impl PathManifestEntry {
@@ -295,6 +296,11 @@ impl PathManifestEntry {
         }
         if let Some(deriver) = &self.deriver {
             validate_store_path(deriver, true)?;
+        }
+        if self.content_address.as_deref().is_some_and(|address| {
+            address.is_empty() || address.len() > 256 || address.contains('\0')
+        }) {
+            return Err(invalid_data("Nomad transfer content address is invalid"));
         }
         Ok(())
     }

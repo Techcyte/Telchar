@@ -34,6 +34,7 @@ pub struct PromotionRequest {
     pub nar_size: u64,
     pub references: Vec<PathBuf>,
     pub deriver: Option<PathBuf>,
+    pub content_address: Option<String>,
     pub nar_path: PathBuf,
 }
 
@@ -97,7 +98,7 @@ impl StorePromotionBackend for GatewayStorePromotionBackend {
             nar_size: request.nar_size,
             ultimate: false,
             signatures: &[],
-            content_address: None,
+            content_address: request.content_address.as_deref().map(str::as_bytes),
         };
         let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
         connection.add_to_store_nar(&info, &mut nar, false, true)
@@ -444,6 +445,7 @@ fn promote_staged(
         nar_size: declared.nar_size,
         references: declared.references.clone(),
         deriver: declared.deriver.clone(),
+        content_address: declared.content_address.clone(),
         nar_path: nar_path.to_path_buf(),
     };
     backend.before_promote(&request)?;
@@ -475,8 +477,15 @@ fn promote_staged(
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
-    if declared.content_address.is_some() || !declared.signatures.is_empty() || declared.ultimate {
+    if !declared.signatures.is_empty() || declared.ultimate {
         return Err(invalid("unsupported classic path metadata"));
+    }
+    if declared
+        .content_address
+        .as_deref()
+        .is_some_and(|address| !valid_fixed_content_address(address))
+    {
+        return Err(invalid("invalid fixed-output content address"));
     }
     if declared.references.len() > MAXIMUM_PROMOTION_REFERENCES {
         return Err(invalid("too many references"));
@@ -493,6 +502,27 @@ fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> 
         validate_store_path(deriver, store_directory, true)?;
     }
     Ok(())
+}
+
+fn valid_fixed_content_address(address: &str) -> bool {
+    let Some(rest) = address.strip_prefix("fixed:") else {
+        return false;
+    };
+    let rest = rest.strip_prefix("r:").unwrap_or(rest);
+    let Some((algorithm, hash)) = rest.split_once(':') else {
+        return false;
+    };
+    let expected_length = match algorithm {
+        "md5" => 26,
+        "sha1" => 32,
+        "sha256" => 52,
+        "sha512" => 103,
+        _ => return false,
+    };
+    hash.len() == expected_length
+        && hash
+            .bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
 }
 
 fn validate_store_path(path: &Path, store_directory: &Path, deriver: bool) -> io::Result<()> {

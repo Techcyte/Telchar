@@ -734,7 +734,7 @@ impl OutputImport {
             nar_size: self.metadata.nar_size,
             ultimate: false,
             signatures: &[],
-            content_address: None,
+            content_address: self.metadata.content_address.as_deref().map(str::as_bytes),
         };
         self.store
             .add_to_store_nar(&info, &mut self.temporary, false, true)?;
@@ -779,6 +779,7 @@ fn input_manifest(
             nar_size: path.nar_size,
             references: path.references,
             deriver: path.deriver,
+            content_address: path.content_address,
         })
         .collect();
     let derivation_path = std::str::from_utf8(build_request.derivation_path())

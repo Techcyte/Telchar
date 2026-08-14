@@ -25,6 +25,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             nar_size: 10,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .expect("first output declares");
     session
@@ -50,6 +51,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             nar_size: 20,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .expect("second output declares");
     session
@@ -87,6 +89,7 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             nar_size: 1,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 1, true).is_err());
@@ -97,6 +100,7 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             nar_size: 17,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .is_err());
 
@@ -107,6 +111,7 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             nar_size: 16,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .expect("expected output declares");
     assert!(session
@@ -116,6 +121,7 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
             nar_size: 16,
             references: vec![],
             deriver: None,
+            content_address: None,
         })
         .is_err());
     assert!(session.receive_nar_chunk(&expected, 0, 15, true).is_err());

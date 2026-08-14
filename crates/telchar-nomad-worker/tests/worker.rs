@@ -232,6 +232,7 @@ fn manifest() -> InputManifest {
             nar_size: 42,
             references: vec![],
             deriver: None,
+            content_address: None,
         }],
         outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
     }

@@ -249,12 +249,38 @@ fn rejects_declared_size_mismatch_before_helper_invocation() {
 }
 
 #[test]
+fn preserves_fixed_output_content_address_during_promotion() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.content_address =
+        Some("fixed:r:sha256:0000000000000000000000000000000000000000000000000000".into());
+    let mut registered = registered_path_info();
+    registered.content_address = declared.content_address.clone();
+    let mut backend = RecordingBackend::accepting(registered.clone());
+
+    let result = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect("fixed-output metadata promotes");
+
+    assert_eq!(result.content_address, registered.content_address);
+    assert_eq!(
+        backend
+            .request
+            .as_ref()
+            .expect("promotion invoked")
+            .content_address,
+        declared.content_address
+    );
+}
+
+#[test]
 fn rejects_unsupported_classic_metadata_before_staging() {
     let cases: Vec<(&str, DeclarationMutation)> = vec![
-        (
-            "content address",
-            Box::new(|info| info.content_address = Some("fixed:r:sha256:00".into())),
-        ),
         (
             "signature",
             Box::new(|info| info.signatures.push("sig".into())),

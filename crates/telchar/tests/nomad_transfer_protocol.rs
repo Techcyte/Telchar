@@ -50,6 +50,7 @@ fn manifest_preserves_fixed_output_authority() {
             nar_size: 1,
             references: vec![],
             deriver: None,
+            content_address: None,
         }],
         outputs: vec![output.to_owned()],
     };
@@ -143,6 +144,7 @@ fn round_trips_exact_transfer_metadata_contracts() {
             nar_size: 42,
             references: vec![],
             deriver: None,
+            content_address: None,
         }],
         outputs: vec![output],
     };
@@ -204,6 +206,7 @@ fn rejects_invalid_manifest_and_path_metadata() {
             nar_size: 42,
             references: vec![],
             deriver: None,
+            content_address: None,
         }],
         outputs: vec![output.clone()],
     };
