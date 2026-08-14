@@ -77,11 +77,17 @@ Cache policy, substituter names, URLs, keys, and credentials are never attribute
 
 | Instrument | Kind | Unit | Meaning |
 | --- | --- | --- | --- |
-| `telchar.transfer.objects` | counter | `{object}` | Completed transfer objects by direction and purpose. |
-| `telchar.transfer.bytes` | counter | `By` | Completed transfer bytes by direction and purpose. |
+| `telchar.transfer.active` | gauge | `{transfer}` | Active NAR transfers by direction, purpose, and transport. |
+| `telchar.transfer.objects` | counter | `{object}` | Completed transfer objects by direction, purpose, and transport. |
+| `telchar.transfer.bytes` | counter | `By` | Completed transfer bytes by direction, purpose, and transport. |
 | `telchar.transfer.object.size` | histogram | `By` | Completed object size. |
-| `telchar.transfer.duration` | histogram | `s` | Transfer operation duration. |
+| `telchar.transfer.duration` | histogram | `s` | Successful and failed transfer duration. |
+| `telchar.transfer.failures` | counter | `{failure}` | Terminal transfer failures by bounded failure class. |
 | `telchar.transfer.rejections` | counter | `{rejection}` | Transfer admission or protocol rejections by bounded reason. |
+| `telchar.recovery.attempts` | counter | `{attempt}` | Startup and monitor reconciliation attempts. |
+| `telchar.recovery.duration` | histogram | `s` | Reconciliation attempt duration. |
+| `telchar.recovery.outcomes` | counter | `{build}` | Reconciled builds by terminal or monitoring outcome. |
+| `telchar.recovery.monitoring` | gauge | `{build}` | Adopted builds currently monitored after startup recovery. |
 | `telchar.nomad.submissions` | counter | `{submission}` | Nomad submissions by outcome and backend. |
 | `telchar.nomad.submission.duration` | histogram | `s` | Nomad submission request duration. |
 | `telchar.nomad.pending` | gauge | `{allocation}` | Submitted jobs not yet observed complete or failed. |
@@ -90,6 +96,10 @@ Cache policy, substituter names, URLs, keys, and credentials are never attribute
 | `telchar.nomad.execution.duration` | histogram | `s` | Nomad job lifetime observed by Telchar. |
 | `telchar.nomad.callback.connections` | gauge | `{connection}` | Active callback connections. |
 | `telchar.nomad.callback.outcomes` | counter | `{connection}` | Callback connection terminal outcomes. |
+
+Transfer attributes are bounded enums: `direction`, `purpose`, `transport`, and optional `failure_class`. Instrumented transports are gateway-store worker protocol, static SSH worker protocol, and Nomad callback transfer. Object bytes are recorded only when the exact NAR size is known and transfer succeeds.
+
+Recovery attributes are bounded `operation`, `outcome`, and optional `failure_class`. Startup outcomes count durable builds reconciled as succeeded, failed, or still monitoring. Monitor demand is balanced across terminal completion, monitor failure, and daemon shutdown.
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
@@ -102,7 +112,8 @@ Useful service-level views include:
 - backend permit utilization, permit wait, execution rate, failure rate, and execution latency by backend;
 - leader-to-follower ratio and durable result reuse;
 - cache hit ratio and substitution latency;
-- transfer throughput, object-size distribution, and rejection rate;
+- transfer concurrency, throughput, object-size distribution, failure rate, and rejection rate;
+- recovery throughput, failures, duration, and current monitoring demand;
 - Nomad pending demand and placement latency;
 - fixed-output versus input-addressed validation outcomes.
 
