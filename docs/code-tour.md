@@ -1,240 +1,185 @@
 # Code tour
 
-This guide maps Telchar's source tree to the behavior an operator or contributor sees. Read [Architecture](design.md) first for the system contract; use this document to find its implementation.
+This guide maps Telchar's source tree to stable architectural boundaries. Read [Architecture](design.md) first for system contracts.
 
 ## Fast orientation
 
 Telchar has three Rust crates:
 
-- `crates/nix-worker-protocol` implements bounded, typed Nix worker-protocol I/O. It deliberately knows nothing about Telchar identity, scheduling, PostgreSQL, or backends.
-- `crates/telchar` implements the gateway daemon, restricted frontend, durable coordinator, gateway-store boundary, and backends.
-- `crates/telchar-nomad-worker` is the small allocation-side process used only by the Nomad backend.
+- `crates/nix-worker-protocol` provides bounded, typed Nix worker-protocol I/O without Telchar policy.
+- `crates/telchar` provides ingress, daemon composition, durable coordination, store access, and backend execution.
+- `crates/telchar-nomad-worker` provides the allocation-side Nomad worker.
 
-Nix packaging and VM tests live under `nix/` and `tests/nixos/`. PostgreSQL schema changes live in `crates/telchar/migrations/`. Rust integration tests usually mirror the production module they exercise.
+PostgreSQL migrations live in `crates/telchar/migrations/`. Nix packaging and executable system tests live under `nix/` and `tests/nixos/`.
 
-## Follow a build through the system
+## Follow a build
 
-### 1. Client ingress
+### 1. Ingress and daemon composition
 
-A stock Nix client connects to OpenSSH. The NixOS module in `nix/nixos-module.nix` configures the restricted user and forced command. The forced command runs:
+A stock Nix client reaches the restricted `telchar serve-stdio` command configured by `nix/nixos-module.nix`. `crates/telchar/src/main.rs` performs CLI dispatch; `runtime.rs` owns frontend and daemon process composition. Identity normalization and the bounded local envelope live under `service::identity` and `service::ipc`.
 
-```text
-telchar serve-stdio
-```
+Production environment configuration is captured at composition. In particular, `store/runtime.rs` parses the optional gateway-store endpoint once and constructs explicit query, import, export, closure, retention, and local-build dependencies. Lower-level environment constructors remain convenience APIs, not production orchestration.
 
-`crates/telchar/src/main.rs` implements that command. It reads authenticated identity supplied by the operator-controlled ingress, normalizes it through `identity.rs`, creates a bounded `IpcEnvelope` from `ipc.rs`, and relays the worker-protocol byte stream to the daemon's Unix socket.
+Start with:
 
-Start here when debugging SSH connection failures, forced-command behavior, daemon socket setup, peer UID checks, or process shutdown:
-
-- `nix/nixos-module.nix`
 - `crates/telchar/src/main.rs`
-- `crates/telchar/src/identity.rs`
-- `crates/telchar/src/ipc.rs`
+- `crates/telchar/src/runtime.rs`
+- `crates/telchar/src/service/identity.rs`
+- `crates/telchar/src/service/ipc.rs`
 - `crates/telchar/tests/openssh_ingress.rs`
 - `crates/telchar/tests/ipc_frontend.rs`
 
 ### 2. Worker-protocol session
 
-The daemon accepts the authenticated IPC envelope and calls `session::run_worker_session`. `crates/telchar/src/session.rs` is the main request orchestrator. It negotiates the protocol, dispatches supported operations, manages leases and attachments, admits builds, waits for shared results, and writes ordinary Nix responses.
+`service::session::SessionBuilder` assembles one authenticated session. `service/session/mod.rs` preserves the ordered transaction: negotiate, decode, validate, persist, retain, admit, execute or follow, validate outputs, release resources, and write a normal Nix response. `builder.rs` assembles dependencies; `input.rs` owns bounded input timing.
 
-Wire parsing and encoding come from `crates/nix-worker-protocol/src/lib.rs`. That large module owns protocol versions, bounded readers and writers, operation types, daemon-client operations, activity frames, and `BuildResult` encoding. Contract tests in `crates/nix-worker-protocol/tests/` pin exact byte behavior.
+Worker-wire implementation is split across:
 
-Start here for an unsupported operation, framing error, protocol-version disagreement, or incorrect client-visible result:
+- `crates/nix-worker-protocol/src/lib.rs`: protocol types, primitives, and server-side decoding;
+- `client.rs`: typed daemon-client operations;
+- `fixture.rs`: reusable protocol fixtures;
+- `tests.rs` and `tests/*_contract.rs`: unit and exact byte contracts.
 
-- `crates/telchar/src/session.rs`
-- `crates/nix-worker-protocol/src/lib.rs`
-- the matching file under `crates/nix-worker-protocol/tests/`
-- `crates/telchar/tests/operation_dispatch.rs`
-- `crates/telchar/tests/stdio_handshake.rs`
+For operation behavior, see `crates/telchar/tests/operation_dispatch.rs` and its behavior modules under `tests/operation_dispatch/`.
 
-### 3. Build validation and identity
+### 3. Validation, configuration, and backend selection
 
-`crates/telchar/src/build_request.rs` converts a decoded `BuildDerivation` into Telchar's bounded admitted request. It validates build mode, system, required features, outputs, and request shapes, then computes the semantic digest used to reject inconsistent requests for the same derivation.
+The public crate API is grouped by domain rather than mirroring every source file:
 
-`config.rs` loads strict TOML and constructs the operator-owned backend fleet and limits. `backend.rs` defines backend capabilities, target compatibility, permits, execution requests, logs, and terminal results. `backend_routing.rs` binds configured targets to concrete executors.
+- `telchar::backend`: backend contracts plus local, static SSH, and routing APIs;
+- `telchar::build`: admitted build requests;
+- `telchar::service`: configuration, ingress, sessions, limits, lifecycle services, and deployment policy;
+- `telchar::store`: typed daemon access, transfer, validation, retention, and composition;
+- `telchar::shared_build`: in-process coalescing, durable scheduling, and recovery;
+- `telchar::nomad`: Nomad execution, authentication, callback, and transfer protocol;
+- `telchar::fixture`: real-Nix and trace test infrastructure;
+- `telchar::persistence`: durable domain operations.
 
-Start here for admission rejection, wrong backend selection, feature mismatch, or configuration parsing:
+`build/request.rs` validates `BuildDerivation` shape and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
 
-- `crates/telchar/src/build_request.rs`
-- `crates/telchar/src/config.rs`
-- `crates/telchar/src/backend.rs`
-- `crates/telchar/src/backend_routing.rs`
-- `crates/telchar/tests/build_request.rs`
-- `crates/telchar/tests/build_backend.rs`
-- `crates/telchar/tests/service_config.rs`
+### 4. Gateway store
 
-### 4. Input closure and gateway store
+`store/daemon.rs` is the typed Nix daemon connection. Production store operations do not use the Nix C++ ABI.
 
-The gateway store is reached through the typed Nix daemon connection in `store_daemon.rs`. Production code does not use the Nix C++ ABI or shell commands for store operations.
+Key modules:
 
-Input handling crosses these modules:
+- `store/query.rs`: exact path validity;
+- `store/closure.rs`: bounded transitive input closure;
+- `store/nar.rs`: NAR staging and validation;
+- `store/promotion.rs`: metadata validation and typed import;
+- `store/import.rs`, `store/export.rs`: transfer adapters;
+- `store/retention.rs`: GC roots and output retention;
+- `store/runtime.rs`: composition-time store dependencies;
+- `service/disk_reserve.rs`, `service/transfer_limits.rs`: resource admission.
 
-- `store_query.rs` answers exact validity queries.
-- `store_closure.rs` walks references to compute the admitted transitive closure.
-- `nar.rs` validates and stages an incoming NAR.
-- `store_promotion.rs` validates declared metadata, imports with `AddToStoreNar`, and confirms registration.
-- `store_import.rs` provides the typed import adapter.
-- `store_export.rs` streams registered NARs and verifies their metadata.
-- `store_retention.rs` owns durable GC roots and output retention.
-- `disk_reserve.rs` rejects work before reserved storage would be consumed.
-- `transfer_limits.rs` enforces counts, bytes, rates, and time bounds.
+Backend success is insufficient. Every expected output must be transferred, validated, registered in the gateway store, and durably recorded.
 
-A useful correctness rule: a successful backend result is not enough. Every exact declared output must pass the export/import and gateway-store confirmation path before durable success.
+### 5. Shared-build durability
 
-### 5. Shared-build coordination
+`shared_build/mod.rs` coalesces equivalent requests inside one daemon. `shared_build/scheduler.rs` applies round-robin admission across quota subjects and FIFO order within a subject. Queue admission and backend capacity remain separate gates.
 
-Equivalent builds meet in two layers:
+`persistence/` is split by durable aggregate:
 
-- `shared_build.rs` coalesces requests within the running daemon and gives callers leader or follower roles.
-- `persistence.rs` stores the durable shared-build row, queue position, attempt, admitted specification, backend identity, and terminal result.
+- `migrations.rs`;
+- `shared_builds.rs`;
+- `build_requests.rs`;
+- `executor.rs`;
+- `attachments.rs`;
+- `sessions.rs`;
+- `leases.rs`;
+- `callback_nonces.rs`.
 
-`shared_build_scheduler.rs` applies round-robin admission across quota subjects and FIFO order within each subject. Queue admission and backend permits are separate. The first requester remains quota owner through terminal completion; followers do not consume another execution allocation or backend permit.
+`shared_build/recovery.rs` first trusts exact valid gateway outputs; otherwise it follows only the persisted backend name and execution identity.
 
-`shared_build_recovery.rs` reconciles nonterminal rows after restart. Exact valid gateway outputs win first. Otherwise recovery follows only the persisted backend and execution identity.
+Persistence integration authority is split into:
 
-Start here for duplicate builds, stuck queues, quota accounting, follower behavior, or recovery:
-
-- `crates/telchar/src/shared_build.rs`
-- `crates/telchar/src/shared_build_scheduler.rs`
-- `crates/telchar/src/shared_build_recovery.rs`
-- `crates/telchar/src/persistence.rs`
-- `crates/telchar/migrations/0009_shared_builds.sql` through `0015_shared_build_specification.sql`
-- matching `shared_build_*` and `persistence.rs` integration tests
+- `persistence_shared_builds.rs`;
+- `persistence_sessions.rs`;
+- `persistence_migrations.rs`;
+- `persistence_leases.rs`.
 
 ### 6. Backend execution
 
-#### Local
+- `backend/local.rs`: gateway-daemon or helper-driven local execution, bounded logs, cancellation, and output trust.
+- `backend/static_ssh.rs`: configured SSH identity, transfer, execution, and exact-target recovery.
+- `nomad/backend.rs`: deterministic jobs, submission, monitoring, adoption, and exact cancellation.
 
-`local_executor.rs` invokes normal-mode `BuildDerivation` against the configured gateway-side Nix daemon. It bounds logs and diagnostics, owns child cancellation and reaping, checks the exact output set, and reports output trust. `executor_service.rs` is the bounded idempotent IPC service used by the local executor path.
+The local executor IPC service lives under `service/executor_service.rs`. Backend registration remains deliberately direct; no speculative plugin framework exists.
 
-#### Static SSH
+### 7. Nomad callback
 
-`static_ssh_backend.rs` uses only the configured SSH destination, identity, host-key file, and helper command. It copies admitted paths to the remote store, executes, streams logs, imports every expected output, and recovers only through that exact configured backend.
+Nomad security and transfer boundaries are separate:
 
-#### Nomad
+- `nomad/callback_http.rs`: bounded WebSocket transport;
+- `nomad/callback.rs`: exact execution resolution and replay admission;
+- `nomad/authentication.rs`: workload JWT or scoped HMAC verification;
+- `nomad/protocol.rs`: bounded TLNW frames and phases;
+- `nomad/callback_service.rs`: listener lifecycle, input transfer, logs, outputs, receipts, and durable completion;
+- `crates/telchar-nomad-worker/src/lib.rs`: allocation-side session.
 
-`nomad_backend.rs` renders deterministic jobs, submits them, monitors exact allocations, adopts persisted executions, and purges exact jobs on cancellation or timeout. Data does not travel through the Nomad API. The allocation connects to Telchar's callback service.
+See [Nomad](nomad.md) for deployment and protocol detail.
 
-See the [Nomad guide](nomad.md) for deployment details.
+### 8. Ownership and maintenance
 
-### 7. Nomad callback and transfer
+`service/singleton_ownership.rs` holds PostgreSQL advisory-lock connections. Lock loss fences the process. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` starts them only after configuration, migration, reconciliation, and ownership succeed.
 
-The callback path is split so each security boundary is visible:
+Never edit an applied migration. Add the next numbered migration and tests.
 
-- `nomad_callback_http.rs` handles bounded WebSocket upgrade, exact subprotocol, binary messages, and keepalive.
-- `nomad_callback.rs` resolves authentication to one exact active durable execution and reserves replay authority.
-- `nomad_transfer_authentication.rs` verifies workload-identity JWTs or scoped HMAC capabilities.
-- `nomad_transfer_protocol.rs` defines every bounded TLNW frame and phase type.
-- `nomad_callback_service.rs` owns listener lifetime and drives input requests, build start, logs, output receipts, and durable completion.
-- `crates/telchar-nomad-worker/src/lib.rs` implements the allocation side of the same session.
+## Test and release authority
 
-When debugging Nomad, separate three classes first:
+Integration tests are organized by behavior. Larger suites use a small root fixture module plus focused files:
 
-1. job submission or allocation identity: `nomad_backend.rs`;
-2. WebSocket or authentication: callback HTTP, callback admission, and authentication modules;
-3. input, build, log, or output phase: transfer protocol, callback service, and allocation worker.
+- `operation_dispatch.rs` with `operation_dispatch/{protocol,store_transfer,build_lifecycle,scheduling,disconnect,validation}.rs`;
+- the four `persistence_*.rs` suites listed above;
+- `service_config.rs`, `nomad_backend.rs`, and `ipc_frontend.rs` for their respective process and configuration boundaries.
 
-### 8. Durability, ownership, and maintenance
+Shared PostgreSQL and admitted-request helpers live under `tests/support/`.
 
-`persistence.rs` is the database authority. It is intentionally large because transactions encode cross-table lifecycle invariants. Search it by the public operation name used by the caller rather than reading from top to bottom.
+Release-relevant files:
 
-`singleton_ownership.rs` holds the dedicated PostgreSQL advisory-lock connection. Lock loss fences the process permanently. `daemon_services.rs` owns cancellable maintenance and recovery threads. `main.rs` starts these services only after configuration, migration, store reconciliation, and singleton ownership succeed.
+- `flake.nix`: output composition;
+- `nix/packages.nix`: packages and OCI archives;
+- `nix/checks/rust.nix`: sandbox-compatible Rust checks;
+- `nix/checks/policy.nix`: dependency and policy checks;
+- `nix/checks/nixos.nix`: VM integration derivations;
+- `nix/tests/oci-images.nix`: OCI metadata and loadability contract;
+- `tests/nixos/lib.nix`: reusable VM topology.
 
-The migration ledger is ordered. Never edit an applied migration; add the next numbered file and corresponding persistence tests.
+Full process and PostgreSQL authority remains:
 
-## Source tree reference
+```text
+nix develop -c cargo test --locked --workspace
+```
 
-### `crates/nix-worker-protocol`
+Flake evaluation authority remains:
 
-- `src/lib.rs`: complete reusable worker-wire implementation.
-- `tests/*_contract.rs`: exact operation and daemon-client byte contracts.
-- `fuzz/fuzz_targets/primitive_framing.rs`: hostile primitive-framing fuzz target.
-
-This crate must stay free of Telchar policy and infrastructure dependencies. `scripts/check-protocol-boundary.sh` enforces that rule.
-
-### `crates/telchar/src`
-
-- `main.rs`: binary entry points and daemon lifecycle.
-- `lib.rs`: public module surface used by integration tests.
-- `session.rs`: one client session and supported operation dispatch.
-- `config.rs`: strict service configuration.
-- `persistence.rs`: migrations and durable lifecycle transactions.
-- `backend.rs`, `backend_routing.rs`: backend-neutral contract and configured dispatch.
-- `local_executor.rs`, `static_ssh_backend.rs`, `nomad_backend.rs`: concrete backend implementations.
-- `nomad_callback*.rs`, `nomad_transfer*.rs`: allocation callback security and data protocol.
-- `store_*.rs`, `nar.rs`: gateway-store queries, closure, transfer, validation, import, export, and retention.
-- `shared_build*.rs`: coalescing, fair scheduling, and exact recovery.
-- `identity.rs`, `ipc.rs`: authenticated frontend boundary.
-- `telemetry.rs`: structured local and OTLP signals.
-- `transfer_limits.rs`, `disk_reserve.rs`: resource bounds.
-- `nix_fixture.rs`, `worker_trace.rs`: real-Nix test infrastructure and compatibility traces.
-
-### `crates/telchar/tests`
-
-Integration tests are organized by production concern. Most files directly match a module name. Large suites worth knowing:
-
-- `operation_dispatch.rs`: supported stock-Nix operations, limits, timeouts, and cleanup.
-- `ipc_frontend.rs`: real frontend/daemon process behavior and ownership fencing.
-- `persistence.rs`: schema and transactional lifecycle authority.
-- `service_config.rs`: complete strict configuration coverage.
-- `nomad_backend.rs`: job rendering, API behavior, exact adoption, timeout, and cancellation.
-- `nix_fixture.rs`: real private Nix daemon, store, build, import, export, and GC behavior.
-
-`tests/support/postgres.rs` provisions isolated test databases. `tests/support/build_request.rs` creates admitted requests without duplicating parsing setup.
-
-### `crates/telchar-nomad-worker`
-
-- `src/lib.rs`: allocation session implementation.
-- `src/main.rs`: environment-driven executable entry point.
-- `tests/worker.rs`: end-to-end worker behavior against bounded fake sockets and Nix endpoints.
-
-### PostgreSQL migrations
-
-- `0001`–`0008`: protocol sessions, request lifecycle, leases, local execution, credentials, and retained-size accounting.
-- `0009`–`0013`: shared-build authority, fair scheduling, and backend attempts.
-- `0014`: Nomad callback replay protection.
-- `0015`: exact durable admitted build specification.
-
-### Nix and release files
-
-- `flake.nix`: thin output composition only.
-- `nix/packages.nix`: Rust packages and OCI image archives.
-- `nix/nixos-module.nix`: production NixOS service module.
-- `nix/checks/rust.nix`: sandbox-compatible Rust checks.
-- `nix/checks/policy.nix`: dependency and documentation policy checks.
-- `nix/checks/nixos.nix`: VM integration derivations.
-- `nix/tests/oci-images.nix`: OCI output contract.
-- `tests/nixos/lib.nix`: reusable VM topology constructors.
-- `scripts/check-release.sh`: authoritative selected release suite.
+```text
+NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
+```
 
 ## Finding common behavior
 
 | Question | Start with |
 | --- | --- |
-| Why did a client request fail? | `session.rs`, then the matching protocol operation in `nix-worker-protocol` |
-| Why was a backend incompatible? | `build_request.rs`, `backend.rs`, `backend_routing.rs` |
-| Why is a build queued? | `shared_build_scheduler.rs`, persistence queue operations, scheduling tests |
-| Why did duplicate requests execute once or twice? | `shared_build.rs`, shared-build claims in `persistence.rs` |
-| Why did restart mark work failed? | `shared_build_recovery.rs`, persisted attempt/backend fields |
-| Why is an output rejected? | `store_export.rs`, `store_promotion.rs`, `nar.rs` |
-| Why is a store path still retained? | `store_retention.rs`, `store_leases` persistence operations |
-| Why did SSH ingress reject a client? | NixOS module, `identity.rs`, `ipc.rs`, `openssh_ingress.rs` |
-| Why did a Nomad callback fail? | callback HTTP → callback admission/authentication → callback service |
-| Why was a Nomad job not adopted? | `nomad_backend.rs`, `shared_build_recovery.rs` |
-| Where is a configuration key defined? | public structs and raw structs in `config.rs`; examples in `service_config.rs` |
-| Where is a database column used? | migration introducing it, then search `persistence.rs` and its tests |
-| Which test is release-authoritative? | `scripts/check-release.sh`, then `nix/checks/nixos.nix` |
+| Why did a client request fail? | `service/session/`, then the matching worker-protocol operation |
+| Why was a backend incompatible? | `build/request.rs`, `backend/mod.rs`, `backend/routing.rs` |
+| Why is a build queued? | `shared_build/scheduler.rs`, shared-build persistence, scheduling tests |
+| Why did duplicate requests execute once or twice? | `shared_build/mod.rs`, shared-build claims in `persistence/shared_builds.rs` |
+| Why did restart mark work failed? | `shared_build/recovery.rs`, persisted backend and attempt fields |
+| Why is an output rejected? | `store/export.rs`, `store/promotion.rs`, `store/nar.rs` |
+| Why is a path retained? | `store/retention.rs`, `persistence/leases.rs` |
+| Why did SSH ingress reject a client? | NixOS module, `service/identity.rs`, `service/ipc.rs` |
+| Why did a Nomad callback fail? | callback HTTP → callback/authentication → callback service |
+| Where is a configuration key defined? | `service/config/model.rs`, `raw.rs`, and `validation.rs` |
+| Where is a database column used? | introducing migration, matching `persistence/` domain, integration suite |
 
 ## Safe change workflow
 
-1. Identify the owning boundary from this tour.
-2. Read the complete production symbol and its closest integration tests.
-3. Add a failing test at the narrowest authoritative level.
-4. Change the smallest production surface.
-5. Run the focused test, LSP diagnostics, workspace checks, and relevant Nix check.
-6. For protocol changes, update exact byte-contract tests and real-Nix fixtures.
-7. For schema changes, add a migration and persistence failure/restart coverage.
+1. Identify the owning boundary.
+2. Read the production symbol and closest integration test.
+3. Add the narrowest failing authoritative test.
+4. Make the smallest production change.
+5. Run focused tests, diagnostics, workspace checks, and relevant Nix checks.
+6. For protocol changes, update exact byte contracts and real-Nix fixtures.
+7. For schema changes, add a migration plus failure and restart coverage.
 8. For backend changes, preserve exact persisted identity and fail-closed recovery.
-9. For NixOS or Nomad changes, run the matching VM derivation from `nix/checks/nixos.nix`.
-
-Maintained Rust, Nix, SQL, and shell source files begin with a one-line purpose comment to make unfamiliar files easier to place.
