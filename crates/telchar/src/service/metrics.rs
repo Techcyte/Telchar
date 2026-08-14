@@ -35,11 +35,17 @@ struct Instruments {
     cache_publication_duration: Histogram<f64>,
     store_validations: Counter<u64>,
     store_validation_duration: Histogram<f64>,
+    transfer_active: Gauge<u64>,
     transfer_objects: Counter<u64>,
     transfer_bytes: Counter<u64>,
     transfer_object_size: Histogram<u64>,
     transfer_duration: Histogram<f64>,
     transfer_rejections: Counter<u64>,
+    transfer_failures: Counter<u64>,
+    recovery_attempts: Counter<u64>,
+    recovery_duration: Histogram<f64>,
+    recovery_outcomes: Counter<u64>,
+    recovery_monitoring: Gauge<u64>,
     nomad_submissions: Counter<u64>,
     nomad_submission_duration: Histogram<f64>,
     nomad_pending: Gauge<u64>,
@@ -55,6 +61,8 @@ struct GaugeState {
     service_sessions: u64,
     shared_build_queue_depth: u64,
     backend_permits: BTreeMap<String, (String, u64, u64)>,
+    transfer_active: BTreeMap<(String, String, String), u64>,
+    recovery_monitoring: u64,
     nomad_pending: BTreeMap<String, u64>,
     nomad_callback_connections: u64,
 }
@@ -172,6 +180,10 @@ fn instruments() -> &'static Instruments {
                 .f64_histogram("telchar.store.validation.duration")
                 .with_unit("s")
                 .build(),
+            transfer_active: meter
+                .u64_gauge("telchar.transfer.active")
+                .with_unit("{transfer}")
+                .build(),
             transfer_objects: meter
                 .u64_counter("telchar.transfer.objects")
                 .with_unit("{object}")
@@ -191,6 +203,26 @@ fn instruments() -> &'static Instruments {
             transfer_rejections: meter
                 .u64_counter("telchar.transfer.rejections")
                 .with_unit("{rejection}")
+                .build(),
+            transfer_failures: meter
+                .u64_counter("telchar.transfer.failures")
+                .with_unit("{failure}")
+                .build(),
+            recovery_attempts: meter
+                .u64_counter("telchar.recovery.attempts")
+                .with_unit("{attempt}")
+                .build(),
+            recovery_duration: meter
+                .f64_histogram("telchar.recovery.duration")
+                .with_unit("s")
+                .build(),
+            recovery_outcomes: meter
+                .u64_counter("telchar.recovery.outcomes")
+                .with_unit("{build}")
+                .build(),
+            recovery_monitoring: meter
+                .u64_gauge("telchar.recovery.monitoring")
+                .with_unit("{build}")
                 .build(),
             nomad_submissions: meter
                 .u64_counter("telchar.nomad.submissions")
@@ -235,6 +267,24 @@ fn gauge_state() -> &'static Mutex<GaugeState> {
 
 fn seconds(duration: Duration) -> f64 {
     duration.as_secs_f64()
+}
+
+pub fn io_failure_class(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::TimedOut => "timeout",
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => "validation",
+        std::io::ErrorKind::NotFound => "missing",
+        std::io::ErrorKind::PermissionDenied => "permission",
+        std::io::ErrorKind::WouldBlock => "capacity",
+        std::io::ErrorKind::Interrupted => "cancelled",
+        std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::ConnectionRefused
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::NotConnected => "transport",
+        _ => "internal",
+    }
 }
 
 fn backend_attributes(name: &str, kind: &str) -> [KeyValue; 2] {
@@ -465,11 +515,39 @@ pub fn store_validation_finished(duration: Duration, outcome: &str, authority: &
         .record(seconds(duration), &attributes);
 }
 
-pub fn transfer_finished(direction: &str, purpose: &str, bytes: u64, duration: Duration) {
-    let attributes = [
+fn transfer_attributes(direction: &str, purpose: &str, transport: &str) -> [KeyValue; 3] {
+    [
         KeyValue::new("direction", direction.to_owned()),
         KeyValue::new("purpose", purpose.to_owned()),
-    ];
+        KeyValue::new("transport", transport.to_owned()),
+    ]
+}
+
+pub fn transfer_started(direction: &str, purpose: &str, transport: &str) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (
+        direction.to_owned(),
+        purpose.to_owned(),
+        transport.to_owned(),
+    );
+    let active = state.transfer_active.entry(key).or_default();
+    *active = active.saturating_add(1);
+    instruments()
+        .transfer_active
+        .record(*active, &transfer_attributes(direction, purpose, transport));
+}
+
+pub fn transfer_finished(
+    direction: &str,
+    purpose: &str,
+    transport: &str,
+    bytes: u64,
+    duration: Duration,
+) {
+    transfer_left(direction, purpose, transport);
+    let attributes = transfer_attributes(direction, purpose, transport);
     instruments().transfer_objects.add(1, &attributes);
     instruments().transfer_bytes.add(bytes, &attributes);
     instruments()
@@ -480,6 +558,38 @@ pub fn transfer_finished(direction: &str, purpose: &str, bytes: u64, duration: D
         .record(seconds(duration), &attributes);
 }
 
+pub fn transfer_failed(
+    direction: &str,
+    purpose: &str,
+    transport: &str,
+    failure_class: &str,
+    duration: Duration,
+) {
+    transfer_left(direction, purpose, transport);
+    let mut attributes = transfer_attributes(direction, purpose, transport).to_vec();
+    attributes.push(KeyValue::new("failure_class", failure_class.to_owned()));
+    instruments().transfer_failures.add(1, &attributes);
+    instruments()
+        .transfer_duration
+        .record(seconds(duration), &attributes);
+}
+
+fn transfer_left(direction: &str, purpose: &str, transport: &str) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (
+        direction.to_owned(),
+        purpose.to_owned(),
+        transport.to_owned(),
+    );
+    let active = state.transfer_active.entry(key).or_default();
+    *active = active.saturating_sub(1);
+    instruments()
+        .transfer_active
+        .record(*active, &transfer_attributes(direction, purpose, transport));
+}
+
 pub fn transfer_rejected(direction: &str, reason: &str) {
     instruments().transfer_rejections.add(
         1,
@@ -488,6 +598,63 @@ pub fn transfer_rejected(direction: &str, reason: &str) {
             KeyValue::new("reason", reason.to_owned()),
         ],
     );
+}
+
+pub fn recovery_started(operation: &str) {
+    instruments()
+        .recovery_attempts
+        .add(1, &[KeyValue::new("operation", operation.to_owned())]);
+}
+
+pub fn recovery_finished(
+    operation: &str,
+    duration: Duration,
+    succeeded: usize,
+    failed: usize,
+    monitoring: usize,
+) {
+    let operation_attribute = KeyValue::new("operation", operation.to_owned());
+    instruments().recovery_duration.record(
+        seconds(duration),
+        std::slice::from_ref(&operation_attribute),
+    );
+    for (outcome, count) in [
+        ("succeeded", succeeded),
+        ("failed", failed),
+        ("monitoring", monitoring),
+    ] {
+        if count > 0 {
+            instruments().recovery_outcomes.add(
+                u64::try_from(count).unwrap_or(u64::MAX),
+                &[
+                    operation_attribute.clone(),
+                    KeyValue::new("outcome", outcome),
+                ],
+            );
+        }
+    }
+}
+
+pub fn recovery_failed(operation: &str, duration: Duration, failure_class: &str) {
+    let attributes = [
+        KeyValue::new("operation", operation.to_owned()),
+        KeyValue::new("outcome", "failed"),
+        KeyValue::new("failure_class", failure_class.to_owned()),
+    ];
+    instruments().recovery_outcomes.add(1, &attributes);
+    instruments()
+        .recovery_duration
+        .record(seconds(duration), &attributes);
+}
+
+pub fn recovery_monitoring_changed(delta: i64) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.recovery_monitoring = state.recovery_monitoring.saturating_add_signed(delta);
+    instruments()
+        .recovery_monitoring
+        .record(state.recovery_monitoring, &[]);
 }
 
 pub fn nomad_submission_finished(backend: &str, duration: Duration, outcome: &str) {
@@ -585,8 +752,27 @@ pub fn emit_smoke_metrics() {
     cache_substitution_finished(Duration::from_millis(1), "miss");
     cache_publication_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");
-    transfer_finished("outbound", "output", 1024, Duration::from_millis(1));
+    transfer_started("outbound", "output", "smoke");
+    transfer_finished(
+        "outbound",
+        "output",
+        "smoke",
+        1024,
+        Duration::from_millis(1),
+    );
+    transfer_started("inbound", "output", "smoke");
+    transfer_failed(
+        "inbound",
+        "output",
+        "smoke",
+        "protocol",
+        Duration::from_millis(1),
+    );
     transfer_rejected("inbound", "limit");
+    recovery_started("startup");
+    recovery_finished("startup", Duration::from_millis(2), 1, 1, 1);
+    recovery_monitoring_changed(1);
+    recovery_monitoring_changed(-1);
     nomad_submission_finished("smoke", Duration::from_millis(1), "succeeded");
     nomad_pending_changed("smoke", 1);
     nomad_placed("smoke", Duration::from_millis(3));

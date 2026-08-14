@@ -370,10 +370,15 @@ fn copy_gateway_path_to_remote(
     path: &[u8],
     metadata: &WorkerPathInfo,
 ) -> io::Result<()> {
-    let mut nar = create_staging_file()?;
-    gateway.nar_from_path(path, metadata.nar_size(), &mut nar)?;
-    nar.rewind()?;
-    remote.add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
+    let started = Instant::now();
+    crate::service::metrics::transfer_started("outbound", "build_input", "static_ssh");
+    let result = (|| {
+        let mut nar = create_staging_file()?;
+        gateway.nar_from_path(path, metadata.nar_size(), &mut nar)?;
+        nar.rewind()?;
+        remote.add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
+    })();
+    record_static_ssh_transfer(result, "outbound", "build_input", metadata, started)
 }
 
 fn copy_remote_path_to_gateway(
@@ -382,29 +387,60 @@ fn copy_remote_path_to_gateway(
     path: &[u8],
     metadata: &WorkerPathInfo,
 ) -> io::Result<()> {
-    let mut nar = create_staging_file()?;
-    tracing::info!(
-        event = "backend.static_ssh.output_export_started",
-        "static SSH output export started"
-    );
-    remote.nar_from_path(path, metadata.nar_size(), &mut nar)?;
-    tracing::info!(
-        event = "backend.static_ssh.output_export_completed",
-        "static SSH output export completed"
-    );
-    nar.rewind()?;
-    tracing::info!(
-        event = "backend.static_ssh.output_import_connect_started",
-        "static SSH output import connection started"
-    );
-    let mut destination = GatewayStoreConnection::connect(gateway)?;
-    tracing::info!(
-        event = "backend.static_ssh.output_import_started",
-        "static SSH output import started"
-    );
-    destination
-        .add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
-        .map_err(|error| io::Error::new(error.kind(), "static SSH output import failed"))
+    let started = Instant::now();
+    crate::service::metrics::transfer_started("inbound", "build_output", "static_ssh");
+    let result = (|| {
+        let mut nar = create_staging_file()?;
+        tracing::info!(
+            event = "backend.static_ssh.output_export_started",
+            "static SSH output export started"
+        );
+        remote.nar_from_path(path, metadata.nar_size(), &mut nar)?;
+        tracing::info!(
+            event = "backend.static_ssh.output_export_completed",
+            "static SSH output export completed"
+        );
+        nar.rewind()?;
+        tracing::info!(
+            event = "backend.static_ssh.output_import_connect_started",
+            "static SSH output import connection started"
+        );
+        let mut destination = GatewayStoreConnection::connect(gateway)?;
+        tracing::info!(
+            event = "backend.static_ssh.output_import_started",
+            "static SSH output import started"
+        );
+        destination
+            .add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
+            .map_err(|error| io::Error::new(error.kind(), "static SSH output import failed"))
+    })();
+    record_static_ssh_transfer(result, "inbound", "build_output", metadata, started)
+}
+
+fn record_static_ssh_transfer(
+    result: io::Result<()>,
+    direction: &str,
+    purpose: &str,
+    metadata: &WorkerPathInfo,
+    started: Instant,
+) -> io::Result<()> {
+    match &result {
+        Ok(()) => crate::service::metrics::transfer_finished(
+            direction,
+            purpose,
+            "static_ssh",
+            metadata.nar_size(),
+            started.elapsed(),
+        ),
+        Err(error) => crate::service::metrics::transfer_failed(
+            direction,
+            purpose,
+            "static_ssh",
+            crate::service::metrics::io_failure_class(error),
+            started.elapsed(),
+        ),
+    }
+    result
 }
 
 fn create_staging_file() -> io::Result<std::fs::File> {

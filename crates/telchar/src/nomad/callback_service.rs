@@ -574,16 +574,37 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
             .iter()
             .find(|entry| &entry.path == requested_path)
             .ok_or_else(|| io::Error::other("Nomad input request is not admitted"))?;
-        let mut sink = InputNarSink {
-            socket,
-            session,
-            entry,
-            offset: 0,
-            chunk: Vec::with_capacity(limits.stream_buffer_bytes()),
-            maximum_metadata_bytes: limits.maximum_frame_metadata_bytes(),
-        };
-        store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)?;
-        sink.finish()?;
+        let started = Instant::now();
+        crate::service::metrics::transfer_started("outbound", "build_input", "nomad_callback");
+        let result = (|| {
+            let mut sink = InputNarSink {
+                socket,
+                session,
+                entry,
+                offset: 0,
+                chunk: Vec::with_capacity(limits.stream_buffer_bytes()),
+                maximum_metadata_bytes: limits.maximum_frame_metadata_bytes(),
+            };
+            store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)?;
+            sink.finish()
+        })();
+        match &result {
+            Ok(()) => crate::service::metrics::transfer_finished(
+                "outbound",
+                "build_input",
+                "nomad_callback",
+                entry.nar_size,
+                started.elapsed(),
+            ),
+            Err(error) => crate::service::metrics::transfer_failed(
+                "outbound",
+                "build_input",
+                "nomad_callback",
+                crate::service::metrics::io_failure_class(error),
+                started.elapsed(),
+            ),
+        }
+        result?;
     }
     Ok(())
 }
@@ -681,6 +702,8 @@ struct OutputImport {
     store: GatewayStoreConnection,
     temporary: tempfile::SpooledTempFile,
     received: u64,
+    started: Instant,
+    metric_finished: bool,
 }
 
 impl OutputImport {
@@ -689,12 +712,28 @@ impl OutputImport {
         metadata: PathManifestEntry,
         memory_bytes: usize,
     ) -> io::Result<Self> {
-        Ok(Self {
-            metadata,
-            store: GatewayStoreConnection::connect(endpoint)?,
-            temporary: tempfile::SpooledTempFile::new(memory_bytes),
-            received: 0,
-        })
+        crate::service::metrics::transfer_started("inbound", "build_output", "nomad_callback");
+        let started = Instant::now();
+        let result = (|| {
+            Ok(Self {
+                metadata,
+                store: GatewayStoreConnection::connect(endpoint)?,
+                temporary: tempfile::SpooledTempFile::new(memory_bytes),
+                received: 0,
+                started,
+                metric_finished: false,
+            })
+        })();
+        if let Err(error) = &result {
+            crate::service::metrics::transfer_failed(
+                "inbound",
+                "build_output",
+                "nomad_callback",
+                crate::service::metrics::io_failure_class(error),
+                started.elapsed(),
+            );
+        }
+        result
     }
 
     fn receive(&mut self, metadata: &NarMetadata, payload: &[u8]) -> io::Result<()> {
@@ -750,10 +789,32 @@ impl OutputImport {
                 "Nomad output import verification failed",
             ));
         }
+        self.metric_finished = true;
+        crate::service::metrics::transfer_finished(
+            "inbound",
+            "build_output",
+            "nomad_callback",
+            self.metadata.nar_size,
+            self.started.elapsed(),
+        );
         Ok(OutputReceipt {
             path: self.metadata.path.clone(),
             accepted: true,
         })
+    }
+}
+
+impl Drop for OutputImport {
+    fn drop(&mut self) {
+        if !self.metric_finished {
+            crate::service::metrics::transfer_failed(
+                "inbound",
+                "build_output",
+                "nomad_callback",
+                "protocol",
+                self.started.elapsed(),
+            );
+        }
     }
 }
 

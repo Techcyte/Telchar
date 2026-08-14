@@ -369,6 +369,7 @@ pub fn export_verified_nar_with_limits_and_rate(
     rates: &crate::service::transfer_limits::RateAdmissionState,
 ) -> io::Result<VerifiedStoreExport> {
     let started = std::time::Instant::now();
+    crate::service::metrics::transfer_started("outbound", "store_nar", "gateway_store");
     let mut limited_sink = crate::service::transfer_limits::LimitedWriter::with_rate(
         sink,
         limits.maximum_object_bytes,
@@ -376,13 +377,21 @@ pub fn export_verified_nar_with_limits_and_rate(
         rates.clone(),
     );
     let result = verify_exported_nar(path, &mut limited_sink, backend);
-    if let Ok(exported) = &result {
-        crate::service::metrics::transfer_finished(
+    match &result {
+        Ok(exported) => crate::service::metrics::transfer_finished(
             "outbound",
             "store_nar",
+            "gateway_store",
             exported.nar_size,
             started.elapsed(),
-        );
+        ),
+        Err(error) => crate::service::metrics::transfer_failed(
+            "outbound",
+            "store_nar",
+            "gateway_store",
+            crate::service::metrics::io_failure_class(error),
+            started.elapsed(),
+        ),
     }
     result
 }

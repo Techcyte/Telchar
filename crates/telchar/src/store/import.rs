@@ -106,21 +106,42 @@ impl StoreImportBackend for GatewayStoreImport {
         info: &AddMultipleToStorePathInfo,
         source: &mut dyn Read,
     ) -> io::Result<()> {
-        let declared = declared_path_info(info)?;
-        validate_and_promote_nar(
-            source,
-            &self.staging_directory,
-            Path::new("/nix/store"),
-            &declared,
-            &mut self.backend,
-        )
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("store input promotion failed: {error}"),
+        let started = std::time::Instant::now();
+        crate::service::metrics::transfer_started("inbound", "store_nar", "gateway_store");
+        let result = (|| {
+            let declared = declared_path_info(info)?;
+            validate_and_promote_nar(
+                source,
+                &self.staging_directory,
+                Path::new("/nix/store"),
+                &declared,
+                &mut self.backend,
             )
-        })?;
-        Ok(())
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("store input promotion failed: {error}"),
+                )
+            })?;
+            Ok(())
+        })();
+        match &result {
+            Ok(()) => crate::service::metrics::transfer_finished(
+                "inbound",
+                "store_nar",
+                "gateway_store",
+                info.nar_size(),
+                started.elapsed(),
+            ),
+            Err(error) => crate::service::metrics::transfer_failed(
+                "inbound",
+                "store_nar",
+                "gateway_store",
+                crate::service::metrics::io_failure_class(error),
+                started.elapsed(),
+            ),
+        }
+        result
     }
 }
 

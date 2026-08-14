@@ -891,7 +891,13 @@ mod tests {
             "telchar.backend.permits.active",
             "telchar.backend.permit.wait.duration",
             "telchar.cache.substitutions",
+            "telchar.transfer.active",
             "telchar.transfer.bytes",
+            "telchar.transfer.failures",
+            "telchar.recovery.attempts",
+            "telchar.recovery.duration",
+            "telchar.recovery.outcomes",
+            "telchar.recovery.monitoring",
             "telchar.nomad.pending",
         ] {
             assert!(
