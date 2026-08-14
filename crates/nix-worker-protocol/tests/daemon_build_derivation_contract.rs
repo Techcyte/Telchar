@@ -3,9 +3,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    BuildDerivationClientRequest, BuildDerivationOutputRequest, CLIENT_WORKER_MAGIC,
-    LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT, WorkerBuildStatus,
-    WorkerClient,
+    BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus, WorkerClient,
+    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT,
 };
 
 const DRV: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-example.drv";
@@ -102,6 +101,8 @@ fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
     let outputs = [BuildDerivationOutputRequest {
         name: b"out",
         path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
     }];
     let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
     let mut logs = Vec::new();
@@ -136,6 +137,44 @@ fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
 }
 
 #[test]
+fn writes_exact_fixed_output_authority() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 2); // AlreadyValid
+    string(&mut input, b"");
+    integer(&mut input, 0);
+    integer(&mut input, 1);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    integer(&mut input, 0); // no built outputs
+    let hash = b"0000000000000000000000000000000000000000000000000000000000000000";
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"r:sha256",
+        hash,
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap();
+
+    let wire = client.into_inner().output;
+    let mut authority = Vec::new();
+    string(&mut authority, b"out");
+    string(&mut authority, OUTPUT);
+    string(&mut authority, b"r:sha256");
+    string(&mut authority, hash);
+    assert!(wire
+        .windows(authority.len())
+        .any(|window| window == authority));
+}
+
+#[test]
 fn accepts_store_relative_realisation_output_paths() {
     let mut input = Vec::new();
     handshake(&mut input, 1);
@@ -160,6 +199,8 @@ fn accepts_store_relative_realisation_output_paths() {
     let outputs = [BuildDerivationOutputRequest {
         name: b"out",
         path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
     }];
     let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
 
@@ -177,6 +218,8 @@ fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
     let outputs = [BuildDerivationOutputRequest {
         name: b"out",
         path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
     }];
     let client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
     let handshake_bytes = client.into_inner().output;
@@ -204,6 +247,8 @@ fn malformed_result_and_log_writer_failure_are_redacted() {
         let outputs = [BuildDerivationOutputRequest {
             name: b"out",
             path: OUTPUT,
+            hash_algorithm: b"",
+            hash: b"",
         }];
         let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
 

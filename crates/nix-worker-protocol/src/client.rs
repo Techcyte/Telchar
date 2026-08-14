@@ -105,6 +105,8 @@ pub struct WorkerClientProfile {
 pub struct BuildDerivationOutputRequest<'a> {
     pub name: &'a [u8],
     pub path: &'a [u8],
+    pub hash_algorithm: &'a [u8],
+    pub hash: &'a [u8],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,8 +242,8 @@ impl<S: Read + Write> WorkerClient<S> {
         for output in request.outputs {
             write_worker_byte_string_to(&mut self.stream, output.name)?;
             write_worker_byte_string_to(&mut self.stream, output.path)?;
-            write_worker_byte_string_to(&mut self.stream, b"")?;
-            write_worker_byte_string_to(&mut self.stream, b"")?;
+            write_worker_byte_string_to(&mut self.stream, output.hash_algorithm)?;
+            write_worker_byte_string_to(&mut self.stream, output.hash)?;
         }
         write_byte_string_collection(&mut self.stream, request.input_sources)?;
         write_worker_byte_string_to(&mut self.stream, request.platform)?;
@@ -404,6 +406,7 @@ fn validate_build_derivation_request(
             return Err(protocol_client_error());
         }
         validate_store_path(output.path)?;
+        validate_build_output_hash(output.hash_algorithm, output.hash)?;
         output_names.push(output.name);
     }
     for path in request.input_sources {

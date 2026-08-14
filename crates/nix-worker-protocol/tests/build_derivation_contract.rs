@@ -4,8 +4,8 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    ProtocolSessionLimits, WorkerOperation, WorkerReader, write_worker_byte_string,
-    write_worker_integer,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
+    WorkerReader,
 };
 
 #[test]
@@ -21,11 +21,9 @@ fn decodes_gate_3_build_derivation() {
         .complete_build_derivation()
         .expect("Gate 3 derivation decodes");
 
-    assert!(
-        request
-            .drv_path()
-            .ends_with(b"-telchar-gate-3-contract.drv")
-    );
+    assert!(request
+        .drv_path()
+        .ends_with(b"-telchar-gate-3-contract.drv"));
     assert_eq!(request.outputs().len(), 1);
     let output = &request.outputs()[0];
     assert_eq!(output.name(), b"out");
@@ -90,11 +88,49 @@ fn rejects_duplicate_outputs_inputs_and_environment_keys() {
 }
 
 #[test]
+fn decodes_flat_and_recursive_fixed_output_authority() {
+    for (algorithm, hash) in [
+        (
+            b"sha256".as_slice(),
+            b"0000000000000000000000000000000000000000000000000000000000000000".as_slice(),
+        ),
+        (
+            b"r:sha256".as_slice(),
+            b"1111111111111111111111111111111111111111111111111111111111111111".as_slice(),
+        ),
+    ] {
+        let wire = request_with_output(b"out", output_path(), algorithm, hash);
+        let mut reader = reader(&wire);
+        assert_eq!(
+            reader.read_operation().unwrap(),
+            WorkerOperation::BuildDerivation
+        );
+        let request = reader
+            .complete_build_derivation()
+            .expect("fixed-output authority decodes");
+        assert_eq!(request.outputs()[0].hash_algorithm(), algorithm);
+        assert_eq!(request.outputs()[0].hash(), hash);
+    }
+}
+
+#[test]
 fn rejects_malformed_paths_unsupported_output_forms_and_build_modes() {
     for wire in [
         request_with_drv_path(b"/tmp/not-a-derivation.drv"),
         request_with_output(b"out", b"not-a-store-path", b"", b""),
         request_with_output(b"out", output_path(), b"sha256", b"00"),
+        request_with_output(
+            b"out",
+            output_path(),
+            b"sha256",
+            b"gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        ),
+        request_with_output(
+            b"out",
+            output_path(),
+            b"text:sha256",
+            b"0000000000000000000000000000000000000000000000000000000000000000",
+        ),
         gate_3_request("x86_64-linux", 1),
         gate_3_request("x86_64-linux", 2),
         gate_3_request("x86_64-linux", 3),

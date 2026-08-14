@@ -361,12 +361,8 @@ impl<R: WorkerInput> WorkerReader<R> {
                 MAXIMUM_BUILD_DERIVATION_HASH_BYTES,
                 &self.budget,
             )?;
-            if !hash_algorithm.is_empty() || !hash.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid BuildDerivation request",
-                ));
-            }
+            validate_build_output_hash(&hash_algorithm, &hash)
+                .map_err(|_| invalid("invalid BuildDerivation request"))?;
             output_values.push(BuildDerivationOutput {
                 name,
                 path,
@@ -764,6 +760,36 @@ fn validate_build_store_path(path: &[u8]) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid store path",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_build_output_hash(hash_algorithm: &[u8], hash: &[u8]) -> io::Result<()> {
+    if hash_algorithm.is_empty() && hash.is_empty() {
+        return Ok(());
+    }
+    let algorithm = hash_algorithm.strip_prefix(b"r:").unwrap_or(hash_algorithm);
+    let expected_hex_bytes = match algorithm {
+        b"md5" => 32,
+        b"sha1" => 40,
+        b"sha256" => 64,
+        b"sha512" => 128,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported BuildDerivation output hash algorithm",
+            ));
+        }
+    };
+    if hash.len() != expected_hex_bytes
+        || !hash
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid BuildDerivation output hash",
         ));
     }
     Ok(())

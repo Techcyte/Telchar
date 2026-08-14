@@ -306,6 +306,8 @@ fn execute_remote_build(
         .map(|(name, path)| BuildDerivationOutputRequest {
             name: name.as_slice(),
             path: path.as_slice(),
+            hash_algorithm: b"",
+            hash: b"",
         })
         .collect::<Vec<_>>();
     let request = BuildDerivationClientRequest {
