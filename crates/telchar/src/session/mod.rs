@@ -18,110 +18,41 @@ static BUILD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static DERIVATION_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static OUTPUT_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub struct SessionInput {
-    input: std::os::unix::net::UnixStream,
-    idle_timeout: Duration,
-    deadline: Option<std::time::Instant>,
-}
+mod builder;
+mod input;
 
-impl SessionInput {
-    pub fn new(input: std::os::unix::net::UnixStream, idle_timeout: Duration) -> Self {
-        Self {
-            input,
-            idle_timeout,
-            deadline: None,
-        }
-    }
-}
+pub use builder::SessionBuilder;
+use builder::SessionContext;
+use input::{SessionInput, requester_disconnected};
 
-fn requester_disconnected(stream: &mut std::os::unix::net::UnixStream) -> io::Result<bool> {
-    let mut descriptor = [rustix::event::PollFd::new(
-        &*stream,
-        rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
-    )];
-    let timeout = rustix::time::Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    rustix::event::poll(&mut descriptor, Some(&timeout))?;
-    let events = descriptor[0].revents();
-    if events.contains(rustix::event::PollFlags::HUP) {
-        return Ok(true);
-    }
-    if events.contains(rustix::event::PollFlags::IN) {
-        let mut byte = [std::mem::MaybeUninit::uninit(); 1];
-        match rustix::net::recv(
-            &*stream,
-            &mut byte,
-            rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
-        ) {
-            Ok((_, 0)) => return Ok(true),
-            Ok(_) => {}
-            Err(rustix::io::Errno::WOULDBLOCK) => {}
-            Err(error) => return Err(io::Error::from(error)),
-        }
-    }
-    Ok(false)
-}
-
-impl io::Read for SessionInput {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let timeout = self
-            .deadline
-            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-        self.input.set_read_timeout(timeout)?;
-        let received = self.input.read(buffer).map_err(|error| {
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) {
-                io::Error::new(io::ErrorKind::TimedOut, "worker protocol input timed out")
-            } else {
-                error
-            }
-        })?;
-        if received > 0 {
-            self.deadline = Some(std::time::Instant::now() + self.idle_timeout);
-        }
-        Ok(received)
-    }
-}
-
-impl WorkerInput for SessionInput {
-    fn complete_message(&mut self) {
-        self.deadline = None;
-        let _ = self.input.set_read_timeout(None);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_worker_session(
-    input: std::os::unix::net::UnixStream,
-    mut output: std::os::unix::net::UnixStream,
-    limits: ProtocolSessionLimits,
-    backend_targets: &[crate::backend::BackendTarget],
-    running_disconnect_policy: crate::deployment::RunningDisconnectPolicy,
-    output_retention: crate::deployment::OutputRetention,
-    maximum_retained_input_bytes: u64,
-    store_query: &mut dyn QueryValidPathsStore,
-    build_executor: &mut dyn BuildBackend,
-    store_export: &mut dyn crate::store_export::StoreExportBackend,
-    store_import: &mut dyn crate::store_import::StoreImportBackend,
-    store_closure: &mut dyn crate::store_closure::StoreClosureBackend,
-    store_retention: &mut dyn crate::store_retention::StoreRetentionBackend,
-    database_url: &str,
-    session_id: &str,
-    audit_subject: &str,
-    quota_subject: &str,
-    transfer_limits: &crate::transfer_limits::TransferLimits,
-    object_admission: &crate::transfer_limits::ObjectAdmissionState,
-    rate_admission: &crate::transfer_limits::RateAdmissionState,
-    disk_reserve: crate::disk_reserve::DiskReserve,
-    disk_probe: &dyn crate::disk_reserve::DiskReserveProbe,
-    shared_builds: &crate::shared_build::SharedBuildRegistry,
-    shared_build_scheduler: &crate::shared_build_scheduler::SharedBuildScheduler,
-    scheduling_limits: crate::config::SchedulingLimits,
-) -> io::Result<()> {
+fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
+    let SessionContext {
+        input,
+        mut output,
+        limits,
+        backend_targets,
+        running_disconnect_policy,
+        output_retention,
+        maximum_retained_input_bytes,
+        store_query,
+        build_executor,
+        store_export,
+        store_import,
+        store_closure,
+        store_retention,
+        database_url,
+        session_id,
+        audit_subject,
+        quota_subject,
+        transfer_limits,
+        object_admission,
+        rate_admission,
+        disk_reserve,
+        disk_probe,
+        shared_builds,
+        shared_build_scheduler,
+        scheduling_limits,
+    } = context;
     let mut inbound_budget =
         crate::transfer_limits::TransferBudget::new(transfer_limits.maximum_inbound_session_bytes);
     let mut outbound_budget =

@@ -701,33 +701,36 @@ fn serve_accepted_connection(
             .backend_targets()
             .cloned()
             .collect::<Vec<_>>();
-        telchar::session::run_worker_session(
+        telchar::session::SessionBuilder::new(
             input,
             connection.stream_mut().try_clone()?,
             protocol_session_limits(),
-            &backend_targets,
-            running_disconnect_policy,
-            output_retention,
-            maximum_retained_input_bytes,
+        )
+        .backend_targets(&backend_targets)
+        .disconnect_policy(running_disconnect_policy)
+        .retention(output_retention, maximum_retained_input_bytes)
+        .stores(
             &mut store_query,
-            &mut build_executor,
             store_export.as_mut(),
             store_import.as_mut(),
             store_closure.as_mut(),
             store_retention.as_mut(),
+        )
+        .build_executor(&mut build_executor)
+        .identity(
             database_url,
             &session_id,
             &connection.envelope().requester.audit_subject,
             &connection.envelope().requester.quota_subject,
-            transfer_limits,
-            object_admission,
-            rate_admission,
-            disk_reserve,
-            disk_probe,
+        )
+        .transfer_admission(transfer_limits, object_admission, rate_admission)
+        .disk_admission(disk_reserve, disk_probe)
+        .shared_builds(
             shared_builds,
             shared_build_scheduler,
             service_config.scheduling_limits(&connection.envelope().requester.quota_subject),
         )
+        .run()
     })();
     match telchar::persistence::close_protocol_session(database_url, &session_id) {
         Ok(_) => tracing::info!(
