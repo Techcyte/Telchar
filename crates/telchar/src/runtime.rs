@@ -335,8 +335,10 @@ fn run_daemon() -> io::Result<()> {
         )?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
-    let reconciliation = if active_shared_builds.is_empty() {
-        telchar::shared_build::recovery::ReconciliationOutcome::default()
+    let recovery_started = std::time::Instant::now();
+    telchar::service::metrics::recovery_started("startup");
+    let reconciliation_result = if active_shared_builds.is_empty() {
+        Ok(telchar::shared_build::recovery::ReconciliationOutcome::default())
     } else {
         let mut shared_build_outputs =
             telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
@@ -348,7 +350,27 @@ fn run_daemon() -> io::Result<()> {
             active_shared_builds,
             &mut shared_build_outputs,
             &mut configured_backends,
-        )?
+        )
+    };
+    let reconciliation = match reconciliation_result {
+        Ok(outcome) => {
+            telchar::service::metrics::recovery_finished(
+                "startup",
+                recovery_started.elapsed(),
+                outcome.succeeded,
+                outcome.failed,
+                outcome.monitoring,
+            );
+            outcome
+        }
+        Err(error) => {
+            telchar::service::metrics::recovery_failed(
+                "startup",
+                recovery_started.elapsed(),
+                telchar::service::metrics::io_failure_class(&error),
+            );
+            return Err(error);
+        }
     };
     tracing::info!(
         event = "database.shared_build.reconciled",

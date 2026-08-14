@@ -119,21 +119,72 @@ impl MaintenanceService {
     }
 }
 
-pub struct RecoveryMonitorService(BackgroundService);
+pub struct RecoveryMonitorService {
+    service: BackgroundService,
+    monitoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl RecoveryMonitorService {
-    pub fn start<F>(interval: Duration, reconcile: F) -> io::Result<Self>
+    pub fn start<F>(interval: Duration, mut reconcile: F) -> io::Result<Self>
     where
         F: FnMut() -> io::Result<bool> + Send + 'static,
     {
-        BackgroundService::start(interval, RECOVERY_FAILURE, reconcile).map(Self)
+        crate::service::metrics::recovery_monitoring_changed(1);
+        let monitoring = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let worker_monitoring = std::sync::Arc::clone(&monitoring);
+        let service = BackgroundService::start(interval, RECOVERY_FAILURE, move || {
+            let started = std::time::Instant::now();
+            crate::service::metrics::recovery_started("monitor");
+            match reconcile() {
+                Ok(monitoring) => {
+                    crate::service::metrics::recovery_finished(
+                        "monitor",
+                        started.elapsed(),
+                        usize::from(!monitoring),
+                        0,
+                        usize::from(monitoring),
+                    );
+                    if !monitoring
+                        && worker_monitoring.swap(false, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        crate::service::metrics::recovery_monitoring_changed(-1);
+                    }
+                    Ok(monitoring)
+                }
+                Err(error) => {
+                    crate::service::metrics::recovery_failed(
+                        "monitor",
+                        started.elapsed(),
+                        crate::service::metrics::io_failure_class(&error),
+                    );
+                    if worker_monitoring.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                        crate::service::metrics::recovery_monitoring_changed(-1);
+                    }
+                    Err(error)
+                }
+            }
+        });
+        if service.is_err() {
+            crate::service::metrics::recovery_monitoring_changed(-1);
+        }
+        service.map(|service| Self {
+            service,
+            monitoring,
+        })
     }
 
     pub fn check(&mut self) -> io::Result<bool> {
-        self.0.check()
+        self.service.check()
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
-        self.0.shutdown()
+        let result = self.service.shutdown();
+        if self
+            .monitoring
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            crate::service::metrics::recovery_monitoring_changed(-1);
+        }
+        result
     }
 }
