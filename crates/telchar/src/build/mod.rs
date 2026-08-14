@@ -249,11 +249,11 @@ fn encode_nix_base32(bytes: &[u8]) -> String {
         let byte = bit / 8;
         let shift = bit % 8;
         let value = (bytes[byte] >> shift)
-            | bytes
-                .get(byte + 1)
-                .copied()
-                .unwrap_or_default()
-                .wrapping_shl((8 - shift) as u32);
+            | if shift == 0 {
+                0
+            } else {
+                bytes.get(byte + 1).copied().unwrap_or_default() << (8 - shift)
+            };
         encoded.push(ALPHABET[(value & 0x1f) as usize] as char);
     }
     encoded

@@ -772,6 +772,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         tracing::error!(
                             event = "worker.build_derivation.output_validation_failed",
                             reason = execution_error_reason(&error),
+                            diagnostic = %error,
                             "BuildDerivation output validation failed"
                         );
                         if let Err(release_error) = release_attached_request_leases(
