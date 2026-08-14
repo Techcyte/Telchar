@@ -58,7 +58,7 @@ The public crate API is grouped by domain rather than mirroring every source fil
 - `telchar::fixture`: real-Nix and trace test infrastructure;
 - `telchar::persistence`: durable domain operations.
 
-`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
+`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/metrics.rs` defines bounded-cardinality OTLP instruments used across scheduling, backends, cache, transfer, retention, and Nomad. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
 
 ### 4. Gateway store
 

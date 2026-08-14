@@ -1,6 +1,20 @@
 # OTLP metrics
 
-Telchar exports metrics only through OTLP over gRPC. It does not expose a Prometheus endpoint or implement a second metrics transport.
+Telchar exports metrics only through OTLP. Both OTLP/gRPC and OTLP/HTTP with protobuf encoding are supported. Telchar does not expose a Prometheus endpoint or implement a non-OTLP metrics transport.
+
+Select transport with standard OpenTelemetry environment variables:
+
+```bash
+# Default
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
+
+# OTLP/HTTP protobuf
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+```
+
+If no endpoint is configured, the transport defaults are `http://127.0.0.1:4317` for gRPC and `http://127.0.0.1:4318` for HTTP. Unsupported protocol values fail startup.
 
 Metric attributes must have bounded cardinality. Allowed dimensions describe configured or enumerated behavior, such as backend name and kind, operation, outcome, failure class, transfer direction, cache result, build mode, and fixed-output presence. Metrics must never contain requester identity, quota subject, request ID, trace ID, derivation or store path, shared-build key, execution ID, allocation ID, credential identity, endpoint, namespace, or arbitrary error text.
 
@@ -54,8 +68,8 @@ Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or 
 | `telchar.cache.publication.duration` | histogram | `s` | Publication hook runtime. |
 | `telchar.store.validations` | counter | `{validation}` | Output validation attempts by outcome and authority kind. |
 | `telchar.store.validation.duration` | histogram | `s` | Output validation duration. |
-| `telchar.retention.paths` | gauge | `{path}` | Paths currently retained by Telchar. |
-| `telchar.retention.bytes` | gauge | `By` | Known retained NAR bytes. |
+| `telchar.retention.paths` | gauge | `{path}` | Paths currently retained by the running process. |
+| `telchar.retention.bytes` | gauge | `By` | Known NAR bytes retained by the running process. |
 
 Cache policy, substituter names, URLs, keys, and credentials are never attributes.
 
@@ -92,4 +106,4 @@ Useful service-level views include:
 - Nomad pending demand and placement latency;
 - fixed-output versus input-addressed validation outcomes.
 
-Counters and histograms are monotonic within a process lifetime. Gauges report current process-observed state and are re-established during daemon composition or durable reconciliation where applicable.
+Counters and histograms are monotonic within a process lifetime. Gauges report current process-observed state. Backend limits and session limits are established during composition; active session, queue, permit, Nomad, callback, and retention gauges change as the running process performs those operations.

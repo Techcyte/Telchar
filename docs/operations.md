@@ -105,7 +105,16 @@ Telchar invokes the absolute executable directly without a shell and sends a JSO
 
 Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.
 
-Send systemd journals and OTLP signals to operator-owned systems. Telchar telemetry is bounded and omits protocol bodies, NAR contents, secrets, and raw authentication material.
+Send systemd journals and OTLP signals to operator-owned systems. Telchar supports OTLP/gRPC and OTLP/HTTP with protobuf encoding:
+
+```bash
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
+```
+
+Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail startup. Telchar exposes no Prometheus endpoint. Telemetry is bounded and omits protocol bodies, NAR contents, secrets, raw authentication material, request identities, derivation paths, and execution identities from metric attributes.
+
+See [OTLP metrics](metrics.md) for instrument names, dimensions, autoscaling signals, and interpretation.
 
 ## TLS and callbacks
 

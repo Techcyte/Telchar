@@ -97,6 +97,7 @@ The gateway image starts `telchar daemon`; the worker image starts `telchar-noma
 - [Operator guide](docs/operations.md)
 - [Nomad backend](docs/nomad.md)
 - [Nix compatibility](docs/compatibility.md)
+- [OTLP metrics](docs/metrics.md)
 - [Roadmap](docs/roadmap.md)
 
 ## AI Usage Disclosure

@@ -16,10 +16,6 @@ Provide bounded local commands for queue state, build identity, backend occupanc
 
 Add an optional compressed local spool keyed by execution identity, with byte limits, retention, cleanup, and restrictive permissions. Keep log bodies out of PostgreSQL and leave external upload to operator tooling.
 
-### Export autoscaling demand metrics
-
-Expose bounded signals that distinguish subject admission, backend permit waits, missing compatible capacity, and Nomad placement delay. Autoscaling logic remains external.
-
 ## Later
 
 ### Active/passive availability
