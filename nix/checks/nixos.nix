@@ -9,6 +9,161 @@
   telcharModule,
 }:
 {
+  nixos-oci-gateway =
+    let
+      classic = pkgs.writeText "telchar-oci-classic.nix" ''
+        derivation {
+          name = "telchar-oci-classic";
+          system = builtins.currentSystem;
+          builder = builtins.storePath "${pkgs.runtimeShell}";
+          args = [ "-c" "printf telchar-oci-classic > $out" ];
+        }
+      '';
+      flat = pkgs.writeText "telchar-oci-fixed-flat.nix" ''
+        derivation {
+          name = "telchar-oci-fixed-flat";
+          system = builtins.currentSystem;
+          builder = builtins.storePath "${pkgs.runtimeShell}";
+          args = [ "-c" "printf telchar-oci-fixed-flat > $out" ];
+          outputHashMode = "flat";
+          outputHashAlgo = "sha256";
+          outputHash = "0eb6746201147efa7010dfb19b3bce80b1709904b80414c399fcd2d945f97c96";
+        }
+      '';
+    in
+    pkgs.testers.nixosTest {
+      name = "telchar-nixos-oci-gateway";
+      nodes = {
+        gateway =
+          { pkgs, ... }:
+          {
+            networking.firewall.enable = false;
+            virtualisation.docker.enable = true;
+            services.postgresql = {
+              enable = true;
+              package = pkgs.postgresql;
+              enableTCPIP = true;
+              authentication = pkgs.lib.mkForce ''
+                host telchar telchar 127.0.0.1/32 trust
+                host telchar telchar ::1/128 trust
+                local all all trust
+              '';
+              ensureDatabases = [ "telchar" ];
+              ensureUsers = [
+                {
+                  name = "telchar";
+                  ensureDBOwnership = true;
+                }
+              ];
+            };
+            users.groups.telchar = { };
+            users.users.telchar = {
+              isSystemUser = true;
+              uid = 995;
+              group = "telchar";
+              home = "/var/lib/telchar-oci/ingress";
+              createHome = true;
+              shell = "${pkgs.bashInteractive}/bin/bash";
+            };
+            security.sudo.extraRules = [
+              {
+                users = [ "telchar" ];
+                commands = [
+                  {
+                    command = "${pkgs.docker}/bin/docker";
+                    options = [ "NOPASSWD" ];
+                  }
+                ];
+              }
+            ];
+            services.openssh = {
+              enable = true;
+              settings = {
+                PasswordAuthentication = false;
+                KbdInteractiveAuthentication = false;
+                PermitTTY = false;
+                AllowTcpForwarding = false;
+                AllowAgentForwarding = false;
+                X11Forwarding = false;
+                PermitUserEnvironment = false;
+              };
+              extraConfig = ''
+                Match User telchar
+                  AuthorizedKeysFile /var/lib/telchar-oci/ingress/.ssh/authorized_keys
+                  ForceCommand /etc/telchar-oci-forced-command
+                  DisableForwarding yes
+                  PermitTTY no
+              '';
+            };
+            environment.etc."telchar-oci-forced-command" = {
+              mode = "0555";
+              text = ''
+                #!${pkgs.runtimeShell}
+                set -eu
+                exec /run/wrappers/bin/sudo -n ${pkgs.docker}/bin/docker exec -i --user 995:995 \
+                  --env TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock \
+                  --env TELCHAR_AUTHENTICATED_KEY=SHA256:oci-fixture \
+                  telchar-daemon /bin/telchar serve-stdio
+              '';
+            };
+            nix.settings.trusted-users = [
+              "root"
+              "telchar"
+            ];
+            environment.systemPackages = [
+              pkgs.docker
+              pkgs.openssh
+              pkgs.postgresql
+              pkgs.bash
+            ];
+            system.stateVersion = "26.05";
+          };
+        client =
+          { pkgs, ... }:
+          {
+            networking.firewall.enable = false;
+            environment.systemPackages = [
+              pkgs.nix
+              pkgs.openssh
+            ];
+            system.stateVersion = "26.05";
+          };
+      };
+      testScript = ''
+        start_all()
+        gateway.wait_for_unit("docker.service")
+        gateway.wait_for_unit("postgresql.service")
+        gateway.wait_for_unit("nix-daemon.socket")
+        gateway.succeed("docker load < ${telcharImage}")
+        gateway.succeed("install -d -m 0700 -o 995 -g 995 /etc/telchar-oci /run/telchar-oci /var/lib/telchar/import /var/lib/telchar/gc-roots /var/lib/telchar-oci/ingress/.ssh")
+        gateway.succeed("cat > /etc/telchar-oci/telchar.toml <<'EOF'\nrunning_disconnect_policy = \"detach-and-finish\"\n\n[backends.local]\nname = \"local\"\nsystem = \"${system}\"\nmaximum_concurrent_builds = 1\nEOF\nchmod 0444 /etc/telchar-oci/telchar.toml")
+        client.succeed("mkdir -p /root/.ssh && ssh-keygen -q -t ed25519 -N \"\" -f /root/.ssh/telchar")
+        public_key = client.succeed("cat /root/.ssh/telchar.pub").strip()
+        gateway.succeed("printf '%s\n' '" + public_key + "' > /var/lib/telchar-oci/ingress/.ssh/authorized_keys && chown -R 995:995 /var/lib/telchar-oci/ingress/.ssh && chmod 0700 /var/lib/telchar-oci/ingress/.ssh && chmod 0600 /var/lib/telchar-oci/ingress/.ssh/authorized_keys")
+        gateway.succeed("docker run -d --name telchar-daemon --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket telchar:latest daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
+        gateway.wait_until_succeeds("test -S /run/telchar-oci/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true", timeout=30)
+        gateway.wait_for_unit("sshd.service")
+        client.succeed("ssh-keyscan gateway > /root/.ssh/known_hosts 2>/dev/null")
+        ssh_options = "-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts"
+        client.succeed("HOME=/root NIX_SSHOPTS='" + ssh_options + "' timeout 30 nix --extra-experimental-features nix-command --store ssh-ng://telchar@gateway store info > /tmp/oci-store-info 2>&1 || { cat /tmp/oci-store-info >&2; exit 1; }")
+        client.succeed("grep -q 'Version: telchar' /tmp/oci-store-info")
+        for expression, expected in [("${classic}", "telchar-oci-classic"), ("${flat}", "telchar-oci-fixed-flat")]:
+            client.succeed("cp " + expression + " /tmp/oci-build.nix")
+            derivation_path = client.succeed("nix-instantiate /tmp/oci-build.nix").strip()
+            derivation_export = client.succeed("nix-store --export '" + derivation_path + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
+            gateway.succeed("printf '%s' '" + derivation_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
+            command = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='" + ssh_options + "' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway ${system}' '" + derivation_path + "^*'"
+            output_path = client.succeed(command).strip()
+            gateway.succeed("test \"$(cat '" + output_path + "')\" = " + expected)
+            gateway.succeed("find /var/lib/telchar/gc-roots -type l -lname '" + output_path + "' | grep -q .")
+        gateway.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx 15")
+        gateway.succeed("docker stop --time 10 telchar-daemon && test \"$(docker inspect -f '{{.State.ExitCode}}' telchar-daemon)\" -eq 0 && find /var/lib/telchar/gc-roots -type l -delete")
+        gateway.succeed("docker rm telchar-daemon >/dev/null && docker run -d --name telchar-daemon --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket telchar:latest daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
+        gateway.wait_until_succeeds("test -S /run/telchar-oci/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true", timeout=30)
+        gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc \"select count(*) from shared_builds where state = 'succeeded'\") -eq 2")
+      '';
+    };
+
   nixos-oci-runtime = pkgs.testers.nixosTest {
     name = "telchar-nixos-oci-runtime";
     nodes.runtime =

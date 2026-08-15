@@ -344,6 +344,37 @@ fn committed_expiry_retries_root_removal_from_released_row() {
 }
 
 #[test]
+fn release_accepts_distinct_leases_for_the_same_store_path() {
+    let root_directory = std::env::temp_dir().join(format!(
+        "telchar-retention-shared-release-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    let store_path = "/nix/store/11111111111111111111111111111111-shared-release";
+    for lease_id in ["first-release", "second-release"] {
+        std::os::unix::fs::symlink(store_path, root_directory.join(lease_id))
+            .expect("root creates");
+    }
+    let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
+        .expect("retention backend configures");
+
+    backend
+        .release(&[
+            ReleasedRetentionEntry::new("first-release", store_path),
+            ReleasedRetentionEntry::new("second-release", store_path),
+        ])
+        .expect("shared store path roots release");
+
+    assert!(fs::read_dir(&root_directory)
+        .expect("root directory reads")
+        .next()
+        .is_none());
+    fs::remove_dir_all(root_directory).expect("root directory cleans");
+}
+
+#[test]
 fn release_rejects_invalid_or_duplicate_entries_without_mutation() {
     let root_directory = std::env::temp_dir().join(format!(
         "telchar-retention-invalid-release-{}",

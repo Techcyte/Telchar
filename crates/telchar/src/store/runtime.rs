@@ -42,7 +42,7 @@ impl GatewayStoreRuntime {
             .map(|value| GatewayStoreEndpoint::parse_os(&value))
             .transpose()?;
         let environment = std::env::vars()
-            .filter(|(name, _)| name.starts_with("NIX_") || name == "TMPDIR")
+            .filter(|(name, _)| name.starts_with("NIX_") || name == "HOME" || name == "TMPDIR")
             .collect();
         Ok(Self {
             endpoint,

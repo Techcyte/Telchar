@@ -454,7 +454,6 @@ fn validate_released_entries(
         return Err(retention_error());
     }
     let mut lease_ids = std::collections::HashSet::new();
-    let mut store_paths = std::collections::HashSet::new();
     for entry in released {
         if entry.lease_id.is_empty()
             || entry.lease_id.len() > crate::service::ipc::MAX_IPC_COMPONENT_BYTES
@@ -465,7 +464,6 @@ fn validate_released_entries(
             || !valid_store_path(&entry.store_path)
             || root_directory.join(&entry.lease_id).parent() != Some(root_directory)
             || !lease_ids.insert(&entry.lease_id)
-            || !store_paths.insert(&entry.store_path)
         {
             return Err(retention_error());
         }

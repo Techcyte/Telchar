@@ -38,6 +38,8 @@ let
       telchar
       pkgs.cacert
       pkgs.openssh
+      pkgs.bash
+      pkgs.nix
     ];
     passthru.imageConfig = {
       Entrypoint = [ "/bin/telchar" ];
