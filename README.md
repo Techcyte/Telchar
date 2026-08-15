@@ -91,7 +91,7 @@ podman load < result
 
 The gateway image starts `telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 0`; override the command when the frontend runs under another UID. Mount `/etc/telchar`, `/run/telchar`, persistent import and GC-root state, and the gateway Nix daemon socket. Supply PostgreSQL, credentials, configuration, and OTLP settings through operator-owned files or environment variables. The worker image starts `telchar-nomad-worker` and expects the bounded Nomad allocation environment documented in [Nomad backend](docs/nomad.md).
 
-Executable release coverage loads both archives into Docker, starts the gateway image against PostgreSQL, verifies migration and IPC socket creation, checks bounded worker startup failure, and proves graceful `SIGTERM` shutdown.
+Executable release coverage loads both archives into Docker and exercises the gateway image as a non-root process against PostgreSQL and a real Nix daemon. It proves stock-Nix classic and fixed-output builds, retained-result reuse, graceful and crash restart, gateway-store interruption, PostgreSQL ownership fencing, exact-archive redeployment, idempotent migration, future-schema rejection, backup restore, and no blind resubmission.
 
 ## Documentation
 

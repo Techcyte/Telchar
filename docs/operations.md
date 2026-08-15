@@ -51,17 +51,29 @@ The module's forced command derives the accepted key fingerprint from the config
 
 ## PostgreSQL and recovery
 
-Only one daemon may own a deployment database. A second daemon refuses startup. Loss of the ownership connection fences the running daemon; the service manager may then restart it.
+Only one daemon may own a deployment database. A second daemon refuses startup. Loss of the ownership connection fences the running daemon, removes its IPC socket, and exits unsuccessfully. Restart only after PostgreSQL is authoritative again; the replacement acquires a fresh lifetime lock.
 
-Back up PostgreSQL and preserve:
+Back up PostgreSQL with a PostgreSQL-aware tool such as `pg_dump -Fc`. The backup must preserve:
 
+- the complete migration ledger;
 - shared-build rows and admitted build specifications;
 - attempt and backend execution identity;
-- transfer and terminal metadata.
+- transfer, retention, attachment, and terminal metadata.
 
-PostgreSQL must not contain NAR bodies, credentials, capabilities, signatures, or build logs.
+PostgreSQL must not contain NAR bodies, credentials, capabilities, signatures, or build logs. Back up the gateway Nix store and GC-root directory separately. A database-only restore does not restore missing store objects.
 
 Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery remains bound to the original backend, namespace, and job identity. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
+
+Failure procedure:
+
+1. stop client ingress or let requests fail closed;
+2. preserve PostgreSQL, the gateway store, GC roots, and import spool before changing state;
+3. restore PostgreSQL and store state from the same recovery point;
+4. verify the gateway Nix daemon socket and backend credentials;
+5. start one Telchar daemon and confirm ownership acquisition, migration completion, and recovery telemetry;
+6. verify durable attempt counts before reopening ingress.
+
+A gateway-store interruption rejects store-dependent operations. Restore the Nix daemon first, then replace the Telchar process so all long-lived store clients reconnect cleanly.
 
 ## Stores and retention
 
@@ -132,13 +144,21 @@ TLS keys belong to the proxy. Workload identity or HMAC authentication is still 
 
 ## Upgrades and release checks
 
-Before upgrading:
+For the current alpha, qualify each exact OCI archive produced by the revision being deployed. Do not infer compatibility from an image tag.
 
-1. back up PostgreSQL;
-2. preserve the gateway store and GC roots;
-3. confirm backend credentials and exact Nomad namespaces remain available;
-4. run the release suite for the candidate revision;
-5. stop the active daemon cleanly before replacing it.
+Deployment procedure:
+
+1. record the archive digest or loaded image ID;
+2. create a PostgreSQL custom-format backup;
+3. preserve the gateway store, GC roots, and import spool;
+4. confirm backend credentials and exact Nomad namespaces remain available;
+5. run the release suite for the candidate revision;
+6. stop the active daemon cleanly;
+7. load the exact archive and start one replacement daemon;
+8. confirm migration completion, singleton ownership, schema version, and unchanged durable attempt counts;
+9. remove a client-side result and verify the gateway reuses the retained result without another backend attempt.
+
+Telchar rejects an unknown future schema version. Before a migration is applied, rollback means replacing the container with the previously retained artifact. After a migration is applied, changing the image alone is not rollback. Use proven schema compatibility or restore PostgreSQL and store state from the coordinated pre-deployment recovery point.
 
 Verification commands:
 

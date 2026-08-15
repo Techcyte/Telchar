@@ -48,7 +48,7 @@ Add Kubernetes, cloud batch, or another scheduler only for a real fleet. Preserv
 
 ### OCI images
 
-The executable Docker-backed fixture now proves archive loading, declared entrypoints, gateway startup, PostgreSQL migration, IPC socket creation, bounded missing-configuration failure, and graceful `SIGTERM` shutdown. Before publishing images broadly, add non-root filesystem ownership, production Nix-daemon socket access, secret delivery, and upgrade/rollback evidence. Images continue to run the same Telchar binaries without a container-specific product mode.
+The executable Docker-backed fixtures prove archive loading, declared entrypoints, non-root gateway execution, real Nix-daemon socket access, stock-Nix classic and fixed-output builds, PostgreSQL migration and ownership fencing, retained-result reuse, graceful and crash restart, store interruption, exact-archive redeployment, future-schema rejection, backup restore, and no blind resubmission. Operator-owned secret delivery remains deployment policy. Images run the same Telchar binaries without a container-specific product mode.
 
 ### Soak and load qualification
 
