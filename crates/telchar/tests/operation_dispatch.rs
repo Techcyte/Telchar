@@ -21,14 +21,28 @@ use support::postgres::PostgresFixture;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[path = "operation_dispatch/build_lifecycle.rs"]
-mod build_lifecycle;
-#[path = "operation_dispatch/disconnect.rs"]
-mod disconnect;
+#[path = "operation_dispatch/backpressure.rs"]
+mod backpressure;
+#[path = "operation_dispatch/build_admission.rs"]
+mod build_admission;
+#[path = "operation_dispatch/build_cleanup.rs"]
+mod build_cleanup;
+#[path = "operation_dispatch/build_completion.rs"]
+mod build_completion;
+#[path = "operation_dispatch/build_logs.rs"]
+mod build_logs;
+#[path = "operation_dispatch/cancellation.rs"]
+mod cancellation;
+#[path = "operation_dispatch/coalescing.rs"]
+mod coalescing;
+#[path = "operation_dispatch/detached_completion.rs"]
+mod detached_completion;
 #[path = "operation_dispatch/protocol.rs"]
 mod protocol;
-#[path = "operation_dispatch/scheduling.rs"]
-mod scheduling;
+#[path = "operation_dispatch/queueing.rs"]
+mod queueing;
+#[path = "operation_dispatch/request_state.rs"]
+mod request_state;
 #[path = "operation_dispatch/store_transfer.rs"]
 mod store_transfer;
 #[path = "operation_dispatch/validation.rs"]
