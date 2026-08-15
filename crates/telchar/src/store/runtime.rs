@@ -8,15 +8,16 @@ use crate::store::closure::{
     GatewayStoreClosureBackend, StoreClosureBackend, UnavailableStoreClosureBackend,
 };
 use crate::store::daemon::GatewayStoreEndpoint;
+#[cfg(debug_assertions)]
+use crate::store::export::NixStoreExportBackend;
 use crate::store::export::{
-    GatewayStoreExportBackend, NixStoreExportBackend, StoreExportBackend,
-    UnavailableStoreExportBackend,
+    GatewayStoreExportBackend, StoreExportBackend, UnavailableStoreExportBackend,
 };
 use crate::store::import::{GatewayStoreImport, StoreImportBackend, UnavailableStoreImport};
 use crate::store::query::GatewayStoreQuery;
-use crate::store::retention::{
-    backend_for_gateway_store, filesystem_backend, StoreRetentionBackend,
-};
+#[cfg(debug_assertions)]
+use crate::store::retention::filesystem_backend;
+use crate::store::retention::{backend_for_gateway_store, StoreRetentionBackend};
 use crate::store::substitution::{
     GatewayStoreSubstitution, StoreSubstitutionBackend, UnavailableStoreSubstitution,
 };
@@ -26,9 +27,12 @@ pub struct GatewayStoreRuntime {
     endpoint: Option<GatewayStoreEndpoint>,
     nix_executable: String,
     environment: Vec<(String, String)>,
+    #[cfg(debug_assertions)]
     build_helper: Option<PathBuf>,
+    #[cfg(debug_assertions)]
     export_helper: Option<PathBuf>,
     gc_root_directory: Option<PathBuf>,
+    #[cfg(debug_assertions)]
     filesystem_retention: bool,
 }
 
@@ -44,10 +48,13 @@ impl GatewayStoreRuntime {
             endpoint,
             nix_executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
             environment,
+            #[cfg(debug_assertions)]
             build_helper: std::env::var_os("TELCHAR_TEST_BUILD_HELPER").map(PathBuf::from),
+            #[cfg(debug_assertions)]
             export_helper: std::env::var_os("TELCHAR_TEST_EXPORT_HELPER").map(PathBuf::from),
             gc_root_directory: std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY")
                 .map(PathBuf::from),
+            #[cfg(debug_assertions)]
             filesystem_retention: std::env::var_os("TELCHAR_TEST_STORE_RETENTION").is_some(),
         })
     }
@@ -57,7 +64,12 @@ impl GatewayStoreRuntime {
     }
 
     pub fn build_helper(&self) -> Option<&std::path::Path> {
-        self.build_helper.as_deref()
+        #[cfg(debug_assertions)]
+        {
+            self.build_helper.as_deref()
+        }
+        #[cfg(not(debug_assertions))]
+        None
     }
 
     pub fn query(&self) -> GatewayStoreQuery {
@@ -69,14 +81,17 @@ impl GatewayStoreRuntime {
     }
 
     pub fn export(&self) -> Box<dyn StoreExportBackend> {
-        match (&self.export_helper, &self.endpoint) {
-            (Some(helper), Some(endpoint)) => Box::new(NixStoreExportBackend::new(
+        #[cfg(debug_assertions)]
+        if let (Some(helper), Some(endpoint)) = (&self.export_helper, &self.endpoint) {
+            return Box::new(NixStoreExportBackend::new(
                 helper,
                 endpoint.to_string(),
                 [("TELCHAR_NIX".to_owned(), self.nix_executable.clone())],
-            )),
-            (None, Some(endpoint)) => Box::new(GatewayStoreExportBackend::new(endpoint.clone())),
-            _ => Box::new(UnavailableStoreExportBackend),
+            ));
+        }
+        match &self.endpoint {
+            Some(endpoint) => Box::new(GatewayStoreExportBackend::new(endpoint.clone())),
+            None => Box::new(UnavailableStoreExportBackend),
         }
     }
 
@@ -95,9 +110,13 @@ impl GatewayStoreRuntime {
     }
 
     pub fn substitution(&self) -> Box<dyn StoreSubstitutionBackend> {
-        match (&self.build_helper, &self.endpoint) {
-            (None, Some(endpoint)) => Box::new(GatewayStoreSubstitution::new(endpoint.clone())),
-            _ => Box::new(UnavailableStoreSubstitution),
+        #[cfg(debug_assertions)]
+        if self.build_helper.is_some() {
+            return Box::new(UnavailableStoreSubstitution);
+        }
+        match &self.endpoint {
+            Some(endpoint) => Box::new(GatewayStoreSubstitution::new(endpoint.clone())),
+            None => Box::new(UnavailableStoreSubstitution),
         }
     }
 
@@ -105,9 +124,11 @@ impl GatewayStoreRuntime {
         let Some(root_directory) = &self.gc_root_directory else {
             return Ok(crate::store::retention::unavailable_backend());
         };
+        #[cfg(debug_assertions)]
         if self.filesystem_retention {
-            filesystem_backend(root_directory)
-        } else if let Some(endpoint) = &self.endpoint {
+            return filesystem_backend(root_directory);
+        }
+        if let Some(endpoint) = &self.endpoint {
             backend_for_gateway_store(endpoint.to_string(), root_directory)
         } else {
             Ok(crate::store::retention::unavailable_backend())
@@ -115,14 +136,18 @@ impl GatewayStoreRuntime {
     }
 
     pub fn build_executor(&self) -> io::Result<Box<dyn BuildBackend>> {
-        match (&self.build_helper, &self.endpoint) {
-            (Some(helper), Some(endpoint)) => Ok(Box::new(
-                crate::backend::local::NixStoreExecutor::new(helper, endpoint.to_string())?,
-            )),
-            (None, Some(endpoint)) => Ok(Box::new(
-                crate::backend::local::GatewayStoreExecutor::new(endpoint.clone()),
-            )),
-            _ => Ok(Box::new(crate::backend::local::UnavailableBuildExecutor)),
+        #[cfg(debug_assertions)]
+        if let (Some(helper), Some(endpoint)) = (&self.build_helper, &self.endpoint) {
+            return Ok(Box::new(crate::backend::local::NixStoreExecutor::new(
+                helper,
+                endpoint.to_string(),
+            )?));
+        }
+        match &self.endpoint {
+            Some(endpoint) => Ok(Box::new(crate::backend::local::GatewayStoreExecutor::new(
+                endpoint.clone(),
+            ))),
+            None => Ok(Box::new(crate::backend::local::UnavailableBuildExecutor)),
         }
     }
 }

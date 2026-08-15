@@ -149,6 +149,7 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> 
     let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").ok();
     let root_directory = std::env::var_os("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY");
     match (store_uri, root_directory) {
+        #[cfg(debug_assertions)]
         (Some(_), Some(root_directory))
             if std::env::var_os("TELCHAR_TEST_STORE_RETENTION").is_some() =>
         {

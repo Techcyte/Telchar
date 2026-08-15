@@ -19,6 +19,7 @@ const MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES: usize =
     MAXIMUM_BUILD_LOG_CHUNK_BYTES * MAXIMUM_QUEUED_BUILD_LOG_CHUNKS;
 
 pub fn executor_from_environment() -> io::Result<Box<dyn BuildBackend>> {
+    #[cfg(debug_assertions)]
     if let Some(helper) = std::env::var_os("TELCHAR_TEST_BUILD_HELPER") {
         return Ok(Box::new(NixStoreExecutor::new(
             PathBuf::from(helper),

@@ -64,6 +64,7 @@ impl StoreExportBackend for UnavailableStoreExportBackend {
 }
 
 pub fn backend_from_environment() -> io::Result<Box<dyn StoreExportBackend>> {
+    #[cfg(debug_assertions)]
     if let Some(helper) = std::env::var_os("TELCHAR_TEST_EXPORT_HELPER") {
         let store_uri = std::env::var("TELCHAR_GATEWAY_STORE_URI").map_err(|_| {
             io::Error::new(
