@@ -113,6 +113,21 @@ maximum_input_bytes = 65536
 
 Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded; subprocess output is suppressed. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
 
+## Read-only operator CLI
+
+The `operator` command reads strict configuration and durable PostgreSQL state. It does not acquire daemon ownership, run migrations, submit work, retry builds, cancel work, or contact backends. Output is one bounded JSON value for local automation:
+
+```bash
+telchar operator config-check
+telchar operator status
+telchar operator queue --limit 64
+telchar operator build /nix/store/…-example.drv
+telchar operator backends
+telchar operator recovery --limit 64
+```
+
+`config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. `backends` combines configured capacity with active durable builds assigned to each backend; it does not probe backend health. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
+
 ## Logs and telemetry
 
 Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.

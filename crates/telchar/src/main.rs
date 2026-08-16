@@ -1,5 +1,6 @@
 //! Dispatches Telchar CLI commands to the binary runtime.
 
+mod operator;
 mod runtime;
 mod telemetry;
 
@@ -8,6 +9,7 @@ fn main() -> std::process::ExitCode {
         Some("serve-stdio") => runtime::serve_stdio(),
         Some("daemon") => runtime::daemon(),
         Some("executor") => runtime::executor(),
+        Some("operator") => operator::run(),
         _ => runtime::smoke(),
     };
     match result {

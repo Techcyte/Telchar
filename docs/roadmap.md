@@ -8,10 +8,6 @@ This is a ranked list, not a release promise. New work should solve a concrete o
 
 Expand beyond the executable stock Nix 2.34.8 and Lix 2.94.2 local-backend fixtures. Test selected client releases with complete static SSH and Nomad gateway flows; keep each client and release as separate evidence.
 
-### Add read-only operator tooling
-
-Provide bounded local commands for queue state, build identity, backend occupancy, recovery state, and configuration diagnosis. Start with a local CLI or Unix socket. Mutation and cancellation need separate authority.
-
 ### Archive logs locally
 
 Add an optional compressed local spool keyed by execution identity, with byte limits, retention, cleanup, and restrictive permissions. Keep log bodies out of PostgreSQL and leave external upload to operator tooling.
