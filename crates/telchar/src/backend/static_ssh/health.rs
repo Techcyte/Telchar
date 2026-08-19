@@ -36,8 +36,9 @@ impl StaticSshHealth {
         let states = backends
             .iter()
             .map(|backend| {
+                let started = Instant::now();
                 let state = probe_backend(backend, backend.check_timeout());
-                record_probe(backend, state);
+                record_probe(backend, state, started.elapsed());
                 (
                     backend.target().name().to_owned(),
                     BackendHealth {
@@ -155,8 +156,9 @@ impl StaticSshHealth {
         }
         let mut updates = Vec::with_capacity(due.len());
         for backend in &due {
+            let started = Instant::now();
             let state = probe(backend);
-            record_probe(backend, state);
+            record_probe(backend, state, started.elapsed());
             updates.push((backend.target().name().to_owned(), state));
         }
         let mut states = self
@@ -200,11 +202,12 @@ fn probe_backend(config: &StaticSshBackendConfig, timeout: Duration) -> StaticSs
     }
 }
 
-fn record_probe(config: &StaticSshBackendConfig, state: StaticSshHealthState) {
+fn record_probe(config: &StaticSshBackendConfig, state: StaticSshHealthState, duration: Duration) {
     let state_name = match state {
         StaticSshHealthState::Ready => "ready",
         StaticSshHealthState::Unavailable => "unavailable",
     };
+    crate::service::metrics::static_ssh_health_check(duration, state_name);
     tracing::info!(
         event = "backend.static_ssh.health_checked",
         backend = config.target().name(),

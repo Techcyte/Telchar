@@ -529,6 +529,7 @@ fn run_daemon() -> io::Result<()> {
             return Ok(());
         }
         if reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            let reload_started = std::time::Instant::now();
             tracing::info!(
                 event = "configuration.reload.requested",
                 "configuration reload requested"
@@ -544,7 +545,12 @@ fn run_daemon() -> io::Result<()> {
             .and_then(|reload| reload.apply(&mut config, &backends, &mut static_ssh_health_service))
             {
                 Ok(changes) => {
-                    telchar::service::metrics::configuration_reload("succeeded", None);
+                    telchar::service::metrics::configuration_reload(
+                        reload_started.elapsed(),
+                        "succeeded",
+                        None,
+                        Some(changes),
+                    );
                     tracing::info!(
                         event = "configuration.reload.completed",
                         static_ssh_added_count = changes.added,
@@ -554,7 +560,12 @@ fn run_daemon() -> io::Result<()> {
                     );
                 }
                 Err(error) => {
-                    telchar::service::metrics::configuration_reload("rejected", Some("invalid"));
+                    telchar::service::metrics::configuration_reload(
+                        reload_started.elapsed(),
+                        "rejected",
+                        Some("invalid"),
+                        None,
+                    );
                     tracing::warn!(
                         event = "configuration.reload.rejected",
                         reason = error_reason(&error),
@@ -648,6 +659,7 @@ fn run_daemon() -> io::Result<()> {
         let permit = match SessionPermit::acquire(Arc::clone(&active_sessions), maximum_sessions) {
             Some(permit) => permit,
             None => {
+                telchar::service::metrics::session_rejected("capacity");
                 tracing::warn!(event = "ipc.daemon.session_rejected", reason = "capacity");
                 drop(connection);
                 continue;

@@ -69,7 +69,11 @@ pub struct SharedBuildFollower {
     active: Arc<ActiveBuild>,
 }
 
-struct FollowerWaitGuard<'a>(&'a ActiveBuild);
+struct FollowerWaitGuard<'a> {
+    active: &'a ActiveBuild,
+    started: std::time::Instant,
+    outcome: &'static str,
+}
 
 impl FollowerWaitGuard<'_> {
     fn new(active: &ActiveBuild) -> FollowerWaitGuard<'_> {
@@ -80,19 +84,26 @@ impl FollowerWaitGuard<'_> {
         *waiting = waiting.saturating_add(1);
         crate::service::metrics::shared_build_follower_wait_started();
         drop(waiting);
-        FollowerWaitGuard(active)
+        FollowerWaitGuard {
+            active,
+            started: std::time::Instant::now(),
+            outcome: "timed_out",
+        }
     }
 }
 
 impl Drop for FollowerWaitGuard<'_> {
     fn drop(&mut self) {
         let mut waiting = self
-            .0
+            .active
             .waiting
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *waiting = waiting.saturating_sub(1);
-        crate::service::metrics::shared_build_follower_wait_finished();
+        crate::service::metrics::shared_build_follower_wait_finished(
+            self.started.elapsed(),
+            self.outcome,
+        );
     }
 }
 
@@ -113,7 +124,7 @@ impl SharedBuildFollower {
         self,
         deadline: Option<std::time::Instant>,
     ) -> Option<Result<BuildResult, SharedBuildTerminalFailure>> {
-        let _wait = FollowerWaitGuard::new(&self.active);
+        let mut wait_guard = FollowerWaitGuard::new(&self.active);
         let mut state = self
             .active
             .state
@@ -142,7 +153,14 @@ impl SharedBuildFollower {
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                     }
                 }
-                ActiveBuildState::Completed(result) => return Some(result.clone()),
+                ActiveBuildState::Completed(result) => {
+                    wait_guard.outcome = if result.is_ok() {
+                        "succeeded"
+                    } else {
+                        "failed"
+                    };
+                    return Some(result.clone());
+                }
             }
         }
     }

@@ -18,12 +18,28 @@ For OTLP/HTTP, Telchar appends the standard `/v1/traces`, `/v1/logs`, and `/v1/m
 
 Metric attributes must have bounded cardinality. Allowed dimensions describe configured or enumerated behavior, such as backend name and kind, operation, outcome, failure class, transfer direction, cache result, build mode, and fixed-output presence. Metrics must never contain requester identity, quota subject, request ID, trace ID, derivation or store path, shared-build key, execution ID, allocation ID, credential identity, endpoint, namespace, or arbitrary error text.
 
+## Terminology
+
+- **Session**: one authenticated frontend connection carrying a Nix worker-protocol conversation. A session can issue multiple operations serially.
+- **Request**: one admitted `BuildDerivation` operation within a session.
+- **Shared build**: one equivalence group for requests with the same semantic build identity.
+- **Leader**: the request that owns durable execution for a shared build.
+- **Follower**: an equivalent request waiting for its leader instead of executing again.
+- **In flight**: a process-local shared build whose leader has not yet published a terminal result.
+- **Queue admission**: permission for a durable leader to proceed under its quota subject's active-build limit.
+- **Backend**: one independently named local, static SSH, or Nomad execution target.
+- **Permit**: one configured unit of concurrent execution capacity on a backend. A backend with `maximum_concurrent_builds = 4` exposes four permits. Waiting for a permit means the build is admitted but backend execution capacity is saturated.
+- **Selection**: choosing the exact compatible backend identity that is then persisted and used for permit acquisition and execution.
+- **Transfer**: one bounded NAR movement between gateway store and execution environment.
+- **Recovery monitor**: process-local observation of durable work adopted after startup.
+
 ## Service and build metrics
 
 | Instrument | Kind | Unit | Meaning |
 | --- | --- | --- | --- |
 | `telchar.service.sessions` | gauge | `{session}` | Active daemon sessions. |
 | `telchar.service.session.limit` | gauge | `{session}` | Configured daemon session capacity. |
+| `telchar.service.session.rejections` | counter | `{session}` | Frontend sessions rejected by bounded reason, currently capacity. |
 | `telchar.build.requests` | counter | `{request}` | Admitted build requests. |
 | `telchar.build.request.duration` | histogram | `s` | Request service time from admission to terminal client result. |
 | `telchar.build.executions` | counter | `{execution}` | Shared-build leader executions by terminal outcome. |
@@ -41,6 +57,7 @@ Build attributes are bounded enums: `build_mode` and `fixed_output`. Terminal in
 | `telchar.shared_build.reused_results` | counter | `{build}` | Requests served from a durable terminal result. |
 | `telchar.shared_build.in_flight` | gauge | `{build}` | Distinct equivalent-build groups currently coordinated in this daemon process. |
 | `telchar.shared_build.waiting_followers` | gauge | `{request}` | Attached requests currently waiting for an in-process equivalent build to complete. |
+| `telchar.shared_build.follower.wait.duration` | histogram | `s` | Follower wait time by bounded terminal outcome. |
 | `telchar.shared_build.queue.depth` | gauge | `{build}` | Durable builds waiting for subject admission. |
 | `telchar.shared_build.active` | gauge | `{build}` | Durable builds in running state. |
 | `telchar.shared_build.collecting` | gauge | `{build}` | Durable builds collecting or validating outputs. |
@@ -55,12 +72,15 @@ Queue depth and wait duration are primary subject-admission autoscaling and over
 | --- | --- | --- | --- |
 | `telchar.backend.permits.active` | gauge | `{permit}` | Active execution permits per configured backend. |
 | `telchar.backend.permits.limit` | gauge | `{permit}` | Configured permit limit per backend. |
+| `telchar.backend.permits.waiting` | gauge | `{request}` | Admitted executions currently waiting for a permit on each configured backend. |
 | `telchar.backend.permit.wait.duration` | histogram | `s` | Time waiting for backend capacity. |
 | `telchar.backend.selections` | counter | `{selection}` | Backend selections and selection failures. |
 | `telchar.backend.executions` | counter | `{execution}` | Backend executions by outcome. |
 | `telchar.backend.execution.duration` | histogram | `s` | Backend execution duration. |
 | `telchar.static_ssh.hosts.available` | gauge | `{host}` | Configured static SSH hosts that completed the SSH and Nix worker-protocol readiness check. |
 | `telchar.static_ssh.hosts.unavailable` | gauge | `{host}` | Configured static SSH hosts that did not complete the readiness check. |
+| `telchar.static_ssh.health.checks` | counter | `{check}` | SSH and Nix readiness checks by ready or unavailable outcome. |
+| `telchar.static_ssh.health.check.duration` | histogram | `s` | Complete readiness-check duration by outcome. |
 
 Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or `failure_class`. Configured backend names are operator-bounded. Permit utilization and wait duration are primary backend autoscaling signals. A selection failure with `failure_class=no_compatible_backend` distinguishes missing compatible capacity from saturation; `backend_unavailable` means compatible static SSH capacity exists in configuration but is not currently ready. Static SSH health gauges intentionally have no host labels and therefore retain bounded cardinality.
 
@@ -69,6 +89,9 @@ Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or 
 | Instrument | Kind | Unit | Meaning |
 | --- | --- | --- | --- |
 | `telchar.configuration.reloads` | counter | `{reload}` | SIGHUP reload attempts by bounded `outcome` and optional `failure_class`. |
+| `telchar.configuration.reload.duration` | histogram | `s` | Complete parse, validation, probe, assembly, and publication time. |
+| `telchar.configuration.reload.static_ssh.added` | histogram | `{host}` | Static SSH hosts added by successful reload. |
+| `telchar.configuration.reload.static_ssh.removed` | histogram | `{host}` | Static SSH hosts removed by successful reload. |
 
 Reload metrics never contain configuration paths, backend names, destinations, credentials, or parser text.
 

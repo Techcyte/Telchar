@@ -291,6 +291,9 @@ impl BackendPool {
 
     fn acquire_index(&self, index: usize, timeout: Duration) -> io::Result<BackendPermit> {
         let started = Instant::now();
+        let target_name = self.inner.targets[index].name().to_owned();
+        let target_kind = self.inner.targets[index].kind().as_str();
+        crate::service::metrics::backend_permit_wait_started(&target_name, target_kind);
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -313,6 +316,7 @@ impl BackendPool {
                     "selected",
                     None,
                 );
+                crate::service::metrics::backend_permit_wait_finished(&target_name, target_kind);
                 crate::service::metrics::backend_permit_acquired(
                     target.name(),
                     target.kind().as_str(),
@@ -331,6 +335,7 @@ impl BackendPool {
                     "failed",
                     Some("capacity_timeout"),
                 );
+                crate::service::metrics::backend_permit_wait_finished(&target_name, target_kind);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "backend permit wait timed out",
@@ -349,6 +354,7 @@ impl BackendPool {
                     "failed",
                     Some("capacity_timeout"),
                 );
+                crate::service::metrics::backend_permit_wait_finished(&target_name, target_kind);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "backend permit wait timed out",

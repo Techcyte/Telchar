@@ -10,6 +10,7 @@ use opentelemetry::{global, KeyValue};
 struct Instruments {
     service_sessions: Gauge<u64>,
     service_session_limit: Gauge<u64>,
+    service_session_rejections: Counter<u64>,
     build_requests: Counter<u64>,
     build_request_duration: Histogram<f64>,
     build_executions: Counter<u64>,
@@ -20,6 +21,7 @@ struct Instruments {
     shared_build_reused_results: Counter<u64>,
     shared_build_in_flight: Gauge<u64>,
     shared_build_waiting_followers: Gauge<u64>,
+    shared_build_follower_wait_duration: Histogram<f64>,
     shared_build_queue_depth: Gauge<u64>,
     shared_build_active: Gauge<u64>,
     shared_build_collecting: Gauge<u64>,
@@ -27,13 +29,19 @@ struct Instruments {
     shared_build_queue_admissions: Counter<u64>,
     backend_permits_active: Gauge<u64>,
     backend_permits_limit: Gauge<u64>,
+    backend_permits_waiting: Gauge<u64>,
     backend_permit_wait_duration: Histogram<f64>,
     backend_selections: Counter<u64>,
     backend_executions: Counter<u64>,
     backend_execution_duration: Histogram<f64>,
     static_ssh_available: Gauge<u64>,
     static_ssh_unavailable: Gauge<u64>,
+    static_ssh_health_checks: Counter<u64>,
+    static_ssh_health_check_duration: Histogram<f64>,
     configuration_reloads: Counter<u64>,
+    configuration_reload_duration: Histogram<f64>,
+    configuration_reload_static_ssh_added: Histogram<u64>,
+    configuration_reload_static_ssh_removed: Histogram<u64>,
     cache_substitutions: Counter<u64>,
     cache_substitution_duration: Histogram<f64>,
     cache_publications: Counter<u64>,
@@ -67,7 +75,7 @@ struct GaugeState {
     shared_build_queue_depth: u64,
     shared_build_in_flight: u64,
     shared_build_waiting_followers: u64,
-    backend_permits: BTreeMap<String, (String, u64, u64)>,
+    backend_permits: BTreeMap<String, (String, u64, u64, u64)>,
     static_ssh_health: (u64, u64),
     transfer_active: BTreeMap<(String, String, String), u64>,
     recovery_monitoring: u64,
@@ -86,6 +94,10 @@ fn instruments() -> &'static Instruments {
                 .build(),
             service_session_limit: meter
                 .u64_gauge("telchar.service.session.limit")
+                .with_unit("{session}")
+                .build(),
+            service_session_rejections: meter
+                .u64_counter("telchar.service.session.rejections")
                 .with_unit("{session}")
                 .build(),
             build_requests: meter
@@ -128,6 +140,10 @@ fn instruments() -> &'static Instruments {
                 .u64_gauge("telchar.shared_build.waiting_followers")
                 .with_unit("{request}")
                 .build(),
+            shared_build_follower_wait_duration: meter
+                .f64_histogram("telchar.shared_build.follower.wait.duration")
+                .with_unit("s")
+                .build(),
             shared_build_queue_depth: meter
                 .u64_gauge("telchar.shared_build.queue.depth")
                 .with_unit("{build}")
@@ -156,6 +172,10 @@ fn instruments() -> &'static Instruments {
                 .u64_gauge("telchar.backend.permits.limit")
                 .with_unit("{permit}")
                 .build(),
+            backend_permits_waiting: meter
+                .u64_gauge("telchar.backend.permits.waiting")
+                .with_unit("{request}")
+                .build(),
             backend_permit_wait_duration: meter
                 .f64_histogram("telchar.backend.permit.wait.duration")
                 .with_unit("s")
@@ -180,9 +200,29 @@ fn instruments() -> &'static Instruments {
                 .u64_gauge("telchar.static_ssh.hosts.unavailable")
                 .with_unit("{host}")
                 .build(),
+            static_ssh_health_checks: meter
+                .u64_counter("telchar.static_ssh.health.checks")
+                .with_unit("{check}")
+                .build(),
+            static_ssh_health_check_duration: meter
+                .f64_histogram("telchar.static_ssh.health.check.duration")
+                .with_unit("s")
+                .build(),
             configuration_reloads: meter
                 .u64_counter("telchar.configuration.reloads")
                 .with_unit("{reload}")
+                .build(),
+            configuration_reload_duration: meter
+                .f64_histogram("telchar.configuration.reload.duration")
+                .with_unit("s")
+                .build(),
+            configuration_reload_static_ssh_added: meter
+                .u64_histogram("telchar.configuration.reload.static_ssh.added")
+                .with_unit("{host}")
+                .build(),
+            configuration_reload_static_ssh_removed: meter
+                .u64_histogram("telchar.configuration.reload.static_ssh.removed")
+                .with_unit("{host}")
                 .build(),
             cache_substitutions: meter
                 .u64_counter("telchar.cache.substitutions")
@@ -326,6 +366,12 @@ pub fn record_service_session_limit(limit: u64) {
     instruments().service_session_limit.record(limit, &[]);
 }
 
+pub fn session_rejected(reason: &str) {
+    instruments()
+        .service_session_rejections
+        .add(1, &[KeyValue::new("reason", reason.to_owned())]);
+}
+
 pub fn session_started() {
     let mut state = gauge_state()
         .lock()
@@ -420,7 +466,7 @@ pub fn shared_build_follower_wait_started() {
         .record(state.shared_build_waiting_followers, &[]);
 }
 
-pub fn shared_build_follower_wait_finished() {
+pub fn shared_build_follower_wait_finished(duration: Duration, outcome: &str) {
     let mut state = gauge_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -428,6 +474,10 @@ pub fn shared_build_follower_wait_finished() {
     instruments()
         .shared_build_waiting_followers
         .record(state.shared_build_waiting_followers, &[]);
+    instruments().shared_build_follower_wait_duration.record(
+        seconds(duration),
+        &[KeyValue::new("outcome", outcome.to_owned())],
+    );
 }
 
 pub fn record_shared_build_operational_counts(
@@ -482,7 +532,7 @@ pub fn backend_configured(name: &str, kind: &str, limit: u64) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state
         .backend_permits
-        .insert(name.to_owned(), (kind.to_owned(), 0, limit));
+        .insert(name.to_owned(), (kind.to_owned(), 0, limit, 0));
     let attributes = backend_attributes(name, kind);
     instruments().backend_permits_active.record(0, &attributes);
     instruments()
@@ -490,12 +540,36 @@ pub fn backend_configured(name: &str, kind: &str, limit: u64) {
         .record(limit, &attributes);
 }
 
-pub fn configuration_reload(outcome: &str, failure_class: Option<&str>) {
+pub fn configuration_reload(
+    duration: Duration,
+    outcome: &str,
+    failure_class: Option<&str>,
+    changes: Option<crate::service::config::StaticSshReloadChanges>,
+) {
     let mut attributes = vec![KeyValue::new("outcome", outcome.to_owned())];
     if let Some(failure_class) = failure_class {
         attributes.push(KeyValue::new("failure_class", failure_class.to_owned()));
     }
     instruments().configuration_reloads.add(1, &attributes);
+    instruments()
+        .configuration_reload_duration
+        .record(seconds(duration), &attributes);
+    if let Some(changes) = changes {
+        instruments()
+            .configuration_reload_static_ssh_added
+            .record(changes.added as u64, &[]);
+        instruments()
+            .configuration_reload_static_ssh_removed
+            .record(changes.removed as u64, &[]);
+    }
+}
+
+pub fn static_ssh_health_check(duration: Duration, outcome: &str) {
+    let attributes = [KeyValue::new("outcome", outcome.to_owned())];
+    instruments().static_ssh_health_checks.add(1, &attributes);
+    instruments()
+        .static_ssh_health_check_duration
+        .record(seconds(duration), &attributes);
 }
 
 pub fn record_static_ssh_health(ready: u64, unavailable: u64) {
@@ -525,6 +599,34 @@ pub fn backend_selection(
     instruments().backend_selections.add(1, &attributes);
 }
 
+pub fn backend_permit_wait_started(name: &str, kind: &str) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = state
+        .backend_permits
+        .entry(name.to_owned())
+        .or_insert_with(|| (kind.to_owned(), 0, 0, 0));
+    entry.3 = entry.3.saturating_add(1);
+    instruments()
+        .backend_permits_waiting
+        .record(entry.3, &backend_attributes(name, kind));
+}
+
+pub fn backend_permit_wait_finished(name: &str, kind: &str) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = state
+        .backend_permits
+        .entry(name.to_owned())
+        .or_insert_with(|| (kind.to_owned(), 0, 0, 0));
+    entry.3 = entry.3.saturating_sub(1);
+    instruments()
+        .backend_permits_waiting
+        .record(entry.3, &backend_attributes(name, kind));
+}
+
 pub fn backend_permit_acquired(name: &str, kind: &str, wait: Duration) {
     let mut state = gauge_state()
         .lock()
@@ -532,7 +634,7 @@ pub fn backend_permit_acquired(name: &str, kind: &str, wait: Duration) {
     let entry = state
         .backend_permits
         .entry(name.to_owned())
-        .or_insert_with(|| (kind.to_owned(), 0, 0));
+        .or_insert_with(|| (kind.to_owned(), 0, 0, 0));
     entry.1 = entry.1.saturating_add(1);
     let attributes = backend_attributes(name, kind);
     instruments()
@@ -550,7 +652,7 @@ pub fn backend_permit_released(name: &str, kind: &str) {
     let entry = state
         .backend_permits
         .entry(name.to_owned())
-        .or_insert_with(|| (kind.to_owned(), 0, 0));
+        .or_insert_with(|| (kind.to_owned(), 0, 0, 0));
     entry.1 = entry.1.saturating_sub(1);
     instruments()
         .backend_permits_active
@@ -810,6 +912,7 @@ pub fn nomad_callback_finished(outcome: &str) {
 
 pub fn emit_smoke_metrics() {
     record_service_session_limit(8);
+    session_rejected("capacity");
     session_started();
     session_finished();
     build_admitted("normal", false, 1);
@@ -820,7 +923,7 @@ pub fn emit_smoke_metrics() {
     shared_build_reused_result();
     shared_build_in_flight_started();
     shared_build_follower_wait_started();
-    shared_build_follower_wait_finished();
+    shared_build_follower_wait_finished(Duration::from_millis(3), "succeeded");
     shared_build_in_flight_finished();
     record_shared_build_operational_counts(crate::persistence::SharedBuildOperationalCounts {
         queued: 1,
@@ -831,6 +934,8 @@ pub fn emit_smoke_metrics() {
     shared_build_admitted(Duration::from_millis(5));
     backend_configured("smoke", "local", 2);
     backend_selection(Some("smoke"), Some("local"), "selected", None);
+    backend_permit_wait_started("smoke", "local");
+    backend_permit_wait_finished("smoke", "local");
     backend_permit_acquired("smoke", "local", Duration::from_millis(2));
     backend_permit_released("smoke", "local");
     backend_execution_finished(
@@ -841,7 +946,16 @@ pub fn emit_smoke_metrics() {
         None,
     );
     record_static_ssh_health(1, 1);
-    configuration_reload("succeeded", None);
+    static_ssh_health_check(Duration::from_millis(1), "ready");
+    configuration_reload(
+        Duration::from_millis(2),
+        "succeeded",
+        None,
+        Some(crate::service::config::StaticSshReloadChanges {
+            added: 1,
+            removed: 1,
+        }),
+    );
     cache_substitution_finished(Duration::from_millis(1), "miss");
     cache_publication_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");
