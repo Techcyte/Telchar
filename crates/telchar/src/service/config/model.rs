@@ -385,6 +385,27 @@ impl NomadPrestartConfig {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadConstraint {
+    pub(super) attribute: String,
+    pub(super) operator: String,
+    pub(super) value: String,
+}
+
+impl NomadConstraint {
+    pub fn attribute(&self) -> &str {
+        &self.attribute
+    }
+
+    pub fn operator(&self) -> &str {
+        &self.operator
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NomadBackendConfig {
     pub(super) target: BackendTarget,
@@ -401,6 +422,7 @@ pub struct NomadBackendConfig {
     pub(super) job_name_scope: String,
     pub(super) poll_interval: Duration,
     pub(super) runtime_limit: Duration,
+    pub(super) constraints: Vec<NomadConstraint>,
     pub(super) transfer_endpoint: String,
     pub(super) transfer_authentication: NomadTransferAuthentication,
     pub(super) store: NomadStoreConfig,
@@ -463,6 +485,10 @@ impl NomadBackendConfig {
 
     pub fn runtime_limit(&self) -> Duration {
         self.runtime_limit
+    }
+
+    pub fn constraints(&self) -> &[NomadConstraint] {
+        &self.constraints
     }
 
     pub fn transfer_endpoint(&self) -> &str {

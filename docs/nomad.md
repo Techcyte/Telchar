@@ -89,6 +89,20 @@ Cache credentials and trust policy stay outside client requests and outside gene
 
 ## Configuration shape
 
-A Nomad target controls its own endpoint, namespace, credentials, capacity, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Limits separately bound manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, live logs, idle time, setup, runtime, output collection, connection lifetime, authentication, replay retention, reconnect, and diagnostics. These settings are strict: unknown fields or unsafe credential files fail startup.
+A Nomad target controls its own endpoint, namespace, credentials, capacity, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
+
+```toml
+[[backends.nomad.constraints]]
+attribute = "${attr.cpu.arch}"
+operator = "="
+value = "amd64"
+
+[[backends.nomad.constraints]]
+attribute = "${node.class}"
+operator = "="
+value = "general"
+```
+
+Limits separately bound constraint count and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, live logs, idle time, setup, runtime, output collection, connection lifetime, authentication, replay retention, reconnect, and diagnostics. These settings are strict: unknown fields or unsafe credential files fail startup.
 
 Consult `crates/telchar/tests/service_config.rs` for complete exercised TOML examples until a generated configuration reference exists.

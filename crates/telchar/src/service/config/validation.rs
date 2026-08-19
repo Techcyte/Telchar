@@ -217,6 +217,7 @@ pub(super) fn validate_nomad_backends(
             return Err(invalid("Nomad timing bounds are invalid"));
         }
         let resources = validate_nomad_resources(backend.resources)?;
+        let constraints = validate_nomad_constraints(backend.constraints)?;
         let token_file = backend
             .token_file
             .map(|path| validate_protected_file(path, "Nomad token file is invalid"))
@@ -270,6 +271,7 @@ pub(super) fn validate_nomad_backends(
             job_name_scope,
             poll_interval: Duration::from_secs(backend.poll_interval_seconds),
             runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
+            constraints,
             transfer_endpoint,
             transfer_authentication,
             store,
@@ -435,6 +437,32 @@ pub(super) fn validate_unique_backend_names(
         }
     }
     Ok(())
+}
+
+pub(super) fn validate_nomad_constraints(
+    raw: Vec<RawNomadConstraint>,
+) -> io::Result<Vec<NomadConstraint>> {
+    if raw.len() > MAXIMUM_NOMAD_CONSTRAINTS {
+        return Err(invalid("Nomad constraint count exceeds limit"));
+    }
+    raw.into_iter()
+        .map(|constraint| {
+            if constraint.attribute.is_empty()
+                || constraint.attribute.len() > MAXIMUM_NOMAD_CONSTRAINT_FIELD_BYTES
+                || constraint.operator.is_empty()
+                || constraint.operator.len() > MAXIMUM_NOMAD_CONSTRAINT_FIELD_BYTES
+                || constraint.value.is_empty()
+                || constraint.value.len() > MAXIMUM_NOMAD_CONSTRAINT_FIELD_BYTES
+            {
+                return Err(invalid("Nomad constraint is invalid"));
+            }
+            Ok(NomadConstraint {
+                attribute: constraint.attribute,
+                operator: constraint.operator,
+                value: constraint.value,
+            })
+        })
+        .collect()
 }
 
 pub(super) fn validate_nomad_resources(raw: RawNomadResources) -> io::Result<NomadResources> {

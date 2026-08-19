@@ -25,6 +25,16 @@ poll_interval_seconds = 2
 runtime_limit_seconds = 3600
 transfer_endpoint = "ws://telchar.example:7443"
 
+[[backends.nomad.constraints]]
+attribute = "${attr.cpu.arch}"
+operator = "="
+value = "amd64"
+
+[[backends.nomad.constraints]]
+attribute = "${node.class}"
+operator = "="
+value = "general"
+
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
@@ -115,6 +125,21 @@ args = ["--stdio"]
     );
     assert_eq!(job["Job"]["Meta"]["telchar_backend"], "nomad-arm");
     assert_eq!(job["Job"]["Meta"]["telchar_system"], "aarch64-linux");
+    assert_eq!(
+        job["Job"]["Constraints"],
+        serde_json::json!([
+            {
+                "LTarget": "${attr.cpu.arch}",
+                "Operand": "=",
+                "RTarget": "amd64",
+            },
+            {
+                "LTarget": "${node.class}",
+                "Operand": "=",
+                "RTarget": "general",
+            },
+        ])
+    );
     assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Name"], "prestart");
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][0]["Lifecycle"]["Hook"],

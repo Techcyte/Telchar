@@ -152,11 +152,21 @@ pub(super) struct RawNomadBackendConfig {
     pub(super) job_name_scope: String,
     pub(super) poll_interval_seconds: u64,
     pub(super) runtime_limit_seconds: u64,
+    #[serde(default)]
+    pub(super) constraints: Vec<RawNomadConstraint>,
     pub(super) transfer_endpoint: Option<String>,
     pub(super) transfer_authentication: RawNomadTransferAuthentication,
     pub(super) store: RawNomadStoreConfig,
     pub(super) transfer_limits: RawNomadTransferLimits,
     pub(super) prestart: Option<RawNomadPrestartConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadConstraint {
+    pub(super) attribute: String,
+    pub(super) operator: String,
+    pub(super) value: String,
 }
 
 #[derive(Deserialize)]

@@ -542,6 +542,17 @@ fn render_job_at(
     group.insert("Name".to_owned(), Value::String("build".to_owned()));
     group.insert("Count".to_owned(), Value::from(1));
     group.insert("Tasks".to_owned(), Value::Array(tasks));
+    let constraints = config
+        .constraints()
+        .iter()
+        .map(|constraint| {
+            json!({
+                "LTarget": constraint.attribute(),
+                "Operand": constraint.operator(),
+                "RTarget": constraint.value(),
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(json!({
         "Job": {
             "ID": deterministic_job_name(config, shared_build_key),
@@ -549,6 +560,7 @@ fn render_job_at(
             "Type": "batch",
             "Namespace": config.namespace(),
             "Datacenters": ["*"],
+            "Constraints": constraints,
             "TaskGroups": [Value::Object(group)],
             "Meta": {
                 "telchar_backend": config.target().name(),

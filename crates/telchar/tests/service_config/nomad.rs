@@ -184,6 +184,16 @@ runtime_limit_seconds = 3600
 
 transfer_endpoint = "ws://telchar.example:7443"
 
+[[backends.nomad.constraints]]
+attribute = "${{attr.cpu.arch}}"
+operator = "="
+value = "amd64"
+
+[[backends.nomad.constraints]]
+attribute = "${{node.class}}"
+operator = "="
+value = "general"
+
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
@@ -304,6 +314,12 @@ args = ["--stdio"]
     assert_eq!(backends[0].resources().cpu_mhz(), 2000);
     assert_eq!(backends[0].resources().memory_mb(), 4096);
     assert_eq!(backends[0].resources().disk_mb(), 16384);
+    assert_eq!(backends[0].constraints().len(), 2);
+    assert_eq!(backends[0].constraints()[0].attribute(), "${attr.cpu.arch}");
+    assert_eq!(backends[0].constraints()[0].operator(), "=");
+    assert_eq!(backends[0].constraints()[0].value(), "amd64");
+    assert_eq!(backends[0].constraints()[1].attribute(), "${node.class}");
+    assert_eq!(backends[0].constraints()[1].value(), "general");
     assert_eq!(
         backends[0].driver_config()["image"],
         "registry.example/telchar-builder:1"
