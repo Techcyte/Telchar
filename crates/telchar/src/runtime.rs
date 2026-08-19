@@ -321,18 +321,16 @@ fn run_daemon() -> io::Result<()> {
         "released request roots reconciled"
     );
     let disk_probe = telchar::service::disk_reserve::OsDiskReserveProbe;
-    telchar::backend::static_ssh::verify_configured_backends(
-        config.static_ssh_backends(),
-        Duration::from_secs(10),
+    let static_ssh_health =
+        telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
+    let mut configured_backends = telchar::backend::routing::ConfiguredBackends::with_health(
+        &config,
+        gateway_store.endpoint().cloned(),
+        gateway_store
+            .build_helper()
+            .map(std::path::Path::to_path_buf),
+        static_ssh_health.clone(),
     )?;
-    let mut configured_backends =
-        telchar::backend::routing::ConfiguredBackends::with_local_build_helper(
-            &config,
-            gateway_store.endpoint().cloned(),
-            gateway_store
-                .build_helper()
-                .map(std::path::Path::to_path_buf),
-        )?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let recovery_started = std::time::Instant::now();
@@ -422,6 +420,11 @@ fn run_daemon() -> io::Result<()> {
             .map_err(|_| invalid("shared build recovery monitor failed"))?,
         );
     }
+    let mut static_ssh_health_service =
+        telchar::service::daemon_services::StaticSshHealthService::start(
+            static_ssh_health,
+            Duration::from_secs(1),
+        )?;
     let mut callback_service = if config.nomad_backends().is_empty() {
         None
     } else {
@@ -518,9 +521,19 @@ fn run_daemon() -> io::Result<()> {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
+                &mut static_ssh_health_service,
                 &mut recovery_services,
             )?;
             return Ok(());
+        }
+        if let Err(error) = static_ssh_health_service.check() {
+            shutdown_daemon_services(
+                &mut callback_service,
+                &mut maintenance_service,
+                &mut static_ssh_health_service,
+                &mut recovery_services,
+            )?;
+            return Err(error);
         }
         if let Err(error) = maintenance_service.check() {
             tracing::error!(
@@ -532,6 +545,7 @@ fn run_daemon() -> io::Result<()> {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
+                &mut static_ssh_health_service,
                 &mut recovery_services,
             )?;
             return Err(error);
@@ -553,6 +567,7 @@ fn run_daemon() -> io::Result<()> {
                     shutdown_daemon_services(
                         &mut callback_service,
                         &mut maintenance_service,
+                        &mut static_ssh_health_service,
                         &mut recovery_services,
                     )?;
                     return Err(error);
@@ -571,6 +586,7 @@ fn run_daemon() -> io::Result<()> {
                 shutdown_daemon_services(
                     &mut callback_service,
                     &mut maintenance_service,
+                    &mut static_ssh_health_service,
                     &mut recovery_services,
                 )?;
                 return Err(invalid("singleton daemon ownership lost"));

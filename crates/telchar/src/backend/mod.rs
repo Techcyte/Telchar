@@ -228,26 +228,50 @@ impl BackendPool {
         required_features: &[&str],
         timeout: Duration,
     ) -> io::Result<BackendPermit> {
+        self.acquire_where(system, required_features, timeout, |_| true)
+    }
+
+    pub fn acquire_where(
+        &self,
+        system: &str,
+        required_features: &[&str],
+        timeout: Duration,
+        available: impl Fn(&BackendTarget) -> bool,
+    ) -> io::Result<BackendPermit> {
         let started = Instant::now();
-        let index = match self
+        let compatible = self
             .inner
             .targets
             .iter()
-            .position(|target| target.supports(system, required_features))
-        {
-            Some(index) => index,
-            None => {
-                crate::service::metrics::backend_selection(
-                    None,
-                    None,
-                    "failed",
-                    Some("no_compatible_backend"),
-                );
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "compatible backend is unavailable",
-                ));
-            }
+            .any(|target| target.supports(system, required_features));
+        if !compatible {
+            crate::service::metrics::backend_selection(
+                None,
+                None,
+                "failed",
+                Some("no_compatible_backend"),
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "compatible backend is unavailable",
+            ));
+        }
+        let index = self
+            .inner
+            .targets
+            .iter()
+            .position(|target| target.supports(system, required_features) && available(target));
+        let Some(index) = index else {
+            crate::service::metrics::backend_selection(
+                None,
+                None,
+                "failed",
+                Some("backend_unavailable"),
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "compatible backend is not ready",
+            ));
         };
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(
@@ -283,10 +307,9 @@ impl BackendPool {
             }
             let now = Instant::now();
             if now >= deadline {
-                let target = &self.inner.targets[index];
                 crate::service::metrics::backend_selection(
-                    Some(target.name()),
-                    Some(target.kind().as_str()),
+                    None,
+                    None,
                     "failed",
                     Some("capacity_timeout"),
                 );
@@ -302,10 +325,9 @@ impl BackendPool {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             permits = next;
             if result.timed_out() {
-                let target = &self.inner.targets[index];
                 crate::service::metrics::backend_selection(
-                    Some(target.name()),
-                    Some(target.kind().as_str()),
+                    None,
+                    None,
                     "failed",
                     Some("capacity_timeout"),
                 );

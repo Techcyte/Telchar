@@ -15,12 +15,14 @@ use super::{invalid, protocol_session_limits};
 pub(super) fn shutdown_daemon_services(
     callback: &mut Option<telchar::nomad::callback_service::NomadCallbackService>,
     maintenance: &mut telchar::service::daemon_services::MaintenanceService,
+    static_ssh_health: &mut telchar::service::daemon_services::StaticSshHealthService,
     recovery: &mut [telchar::service::daemon_services::RecoveryMonitorService],
 ) -> io::Result<()> {
     if let Some(service) = callback.as_mut() {
         service.shutdown()?;
     }
     maintenance.shutdown()?;
+    static_ssh_health.shutdown()?;
     for service in recovery {
         service.shutdown()?;
     }

@@ -64,6 +64,21 @@ PostgreSQL must not contain NAR bodies, credentials, capabilities, signatures, o
 
 Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery remains bound to the original backend, namespace, and job identity. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
 
+## Static SSH readiness
+
+Telchar immediately checks every configured static SSH backend during startup by opening its pinned, noninteractive SSH connection and completing the Nix worker-protocol handshake with `nix-daemon --stdio`. An unavailable host does not prevent daemon startup. It remains excluded from new backend selection until a later check succeeds.
+
+Ready hosts are checked every five minutes by default. Unavailable hosts are checked every minute so machines returning to the network become eligible quickly:
+
+```toml
+[[backends.static_ssh]]
+ready_check_interval_seconds = 300
+unavailable_check_interval_seconds = 60
+check_timeout_seconds = 10
+```
+
+All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged.
+
 Failure procedure:
 
 1. stop client ingress or let requests fail closed;
@@ -126,7 +141,7 @@ telchar operator backends
 telchar operator recovery --limit 64
 ```
 
-`config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. `backends` combines configured capacity with active durable builds assigned to each backend; it does not probe backend health. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
+`config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. `backends` combines configured capacity with active durable builds and performs the same bounded SSH/Nix readiness probe for static SSH entries. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
 
 ## Logs and telemetry
 

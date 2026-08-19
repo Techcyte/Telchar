@@ -21,6 +21,7 @@ struct ConfiguredBackendsInner {
     gateway_store: Option<GatewayStoreEndpoint>,
     local_build_helper: Option<PathBuf>,
     static_ssh: Vec<StaticSshBackendConfig>,
+    static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
     nomad: Vec<NomadBackendConfig>,
 }
 
@@ -29,13 +30,26 @@ impl ConfiguredBackends {
         config: &ServiceConfig,
         gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
     ) -> io::Result<Self> {
-        Self::with_local_build_helper(config, gateway_store, None)
+        let health =
+            crate::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
+        Self::with_health(config, gateway_store, None, health)
     }
 
     pub fn with_local_build_helper(
         config: &ServiceConfig,
         gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
         local_build_helper: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let health =
+            crate::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
+        Self::with_health(config, gateway_store, local_build_helper, health)
+    }
+
+    pub fn with_health(
+        config: &ServiceConfig,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        local_build_helper: Option<PathBuf>,
+        static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
     ) -> io::Result<Self> {
         let gateway_store = gateway_store.into();
         let mut targets = Vec::new();
@@ -59,9 +73,14 @@ impl ConfiguredBackends {
                 gateway_store,
                 local_build_helper,
                 static_ssh: config.static_ssh_backends().to_vec(),
+                static_ssh_health,
                 nomad: config.nomad_backends().to_vec(),
             }),
         })
+    }
+
+    pub fn static_ssh_health(&self) -> crate::backend::static_ssh::StaticSshHealth {
+        self.inner.static_ssh_health.clone()
     }
 
     pub fn executor(&self, database_url: &str) -> io::Result<BackendExecutor> {
@@ -175,7 +194,15 @@ impl BuildBackend for BackendExecutor {
             .inner
             .pool
             .targets()
-            .find(|target| target.supports(system, required_features))
+            .find(|target| {
+                target.supports(system, required_features)
+                    && (target.kind() != BackendKind::StaticSsh
+                        || self
+                            .backends
+                            .inner
+                            .static_ssh_health
+                            .is_ready(target.name()))
+            })
             .cloned()
             .ok_or_else(|| {
                 io::Error::new(
@@ -197,10 +224,12 @@ impl BuildBackend for BackendExecutor {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let permit = self.backends.inner.pool.acquire(
+        let health = &self.backends.inner.static_ssh_health;
+        let permit = self.backends.inner.pool.acquire_where(
             execution.build().system(),
             &required_features,
             self.backends.inner.permit_wait,
+            |target| target.kind() != BackendKind::StaticSsh || health.is_ready(target.name()),
         )?;
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();

@@ -100,6 +100,7 @@ fn durable_commands_report_empty_authoritative_state() {
     assert_eq!(report["backends"][0]["name"], "local-main");
     assert_eq!(report["backends"][0]["capacity"], 2);
     assert_eq!(report["backends"][0]["active_builds"], 1);
+    assert!(report["backends"][0].get("available").is_none());
 
     let recovery = operator(&config, &["recovery", "--limit", "10"]);
     assert!(recovery.status.success(), "{}", stderr(&recovery));

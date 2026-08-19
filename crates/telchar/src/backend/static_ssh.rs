@@ -16,24 +16,13 @@ use crate::service::config::StaticSshBackendConfig;
 use crate::store::closure::{GatewayStoreClosureBackend, StoreClosureBackend};
 use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
+#[path = "static_ssh/health.rs"]
+mod health;
+
+pub use health::{StaticSshHealth, StaticSshHealthCounts, StaticSshHealthState};
+
 const MAXIMUM_BUILD_LOG_CHUNK_BYTES: usize = 8192;
 const MAXIMUM_QUEUED_BUILD_LOG_CHUNKS: usize = 8;
-
-pub fn verify_configured_backends(
-    backends: &[StaticSshBackendConfig],
-    timeout: Duration,
-) -> io::Result<()> {
-    for backend in backends {
-        verify_backend(backend, timeout)?;
-        tracing::info!(
-            event = "backend.static_ssh.verified",
-            backend = backend.target().name(),
-            system = backend.target().system(),
-            "static SSH backend verified"
-        );
-    }
-    Ok(())
-}
 
 pub fn recover_outputs(
     config: &StaticSshBackendConfig,
@@ -113,7 +102,7 @@ fn recover_remote_outputs(
     Ok(())
 }
 
-fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration) -> io::Result<()> {
+pub(super) fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration) -> io::Result<()> {
     let mut command = ssh_command(config);
     let mut child = ChildGuard::new(command.spawn()?);
     let stdin = child

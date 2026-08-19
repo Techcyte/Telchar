@@ -96,6 +96,29 @@ impl Drop for BackgroundService {
     }
 }
 
+pub struct StaticSshHealthService(BackgroundService);
+
+impl StaticSshHealthService {
+    pub fn start(
+        health: crate::backend::static_ssh::StaticSshHealth,
+        interval: Duration,
+    ) -> io::Result<Self> {
+        BackgroundService::start(interval, "static SSH health monitor failed", move || {
+            health.check_due(std::time::Instant::now());
+            Ok(true)
+        })
+        .map(Self)
+    }
+
+    pub fn check(&mut self) -> io::Result<()> {
+        self.0.check().map(|_| ())
+    }
+
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        self.0.shutdown()
+    }
+}
+
 pub struct MaintenanceService(BackgroundService);
 
 impl MaintenanceService {

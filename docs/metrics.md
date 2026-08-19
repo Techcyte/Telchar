@@ -57,8 +57,10 @@ Queue depth and wait duration are primary subject-admission autoscaling and over
 | `telchar.backend.selections` | counter | `{selection}` | Backend selections and selection failures. |
 | `telchar.backend.executions` | counter | `{execution}` | Backend executions by outcome. |
 | `telchar.backend.execution.duration` | histogram | `s` | Backend execution duration. |
+| `telchar.static_ssh.hosts.available` | gauge | `{host}` | Configured static SSH hosts that completed the SSH and Nix worker-protocol readiness check. |
+| `telchar.static_ssh.hosts.unavailable` | gauge | `{host}` | Configured static SSH hosts that did not complete the readiness check. |
 
-Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or `failure_class`. Configured backend names are operator-bounded. Permit utilization and wait duration are primary backend autoscaling signals. A selection failure with `failure_class=no_compatible_backend` distinguishes missing compatible capacity from saturation.
+Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or `failure_class`. Configured backend names are operator-bounded. Permit utilization and wait duration are primary backend autoscaling signals. A selection failure with `failure_class=no_compatible_backend` distinguishes missing compatible capacity from saturation; `backend_unavailable` means compatible static SSH capacity exists in configuration but is not currently ready. Static SSH health gauges intentionally have no host labels and therefore retain bounded cardinality.
 
 ## Cache and gateway store
 

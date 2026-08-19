@@ -160,9 +160,13 @@ impl BackendReport {
         database_url: &str,
     ) -> Result<serde_json::Value, telchar::persistence::SharedBuildError> {
         let active = telchar::persistence::read_active_shared_builds(database_url, 256)?;
+        let static_ssh_health =
+            telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
         let backends = configured_backends(config)
             .into_iter()
             .map(|backend| BackendState {
+                available: (backend.kind == "static_ssh")
+                    .then(|| static_ssh_health.is_ready(&backend.name)),
                 active_builds: active
                     .iter()
                     .filter(|build| build.backend_name == backend.name)
@@ -179,6 +183,8 @@ struct BackendState {
     #[serde(flatten)]
     backend: ConfiguredBackend,
     active_builds: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available: Option<bool>,
 }
 
 #[derive(Serialize)]

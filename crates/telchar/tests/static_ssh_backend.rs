@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use telchar::backend::static_ssh::{verify_configured_backends, StaticSshBackend};
+use telchar::backend::static_ssh::{StaticSshBackend, StaticSshHealth, StaticSshHealthState};
 use telchar::backend::{BuildBackend, BuildExecution};
 use telchar::service::config::ServiceConfig;
 use telchar::store::daemon::GatewayStoreEndpoint;
@@ -382,7 +382,7 @@ fn output_recovery_timeout_terminates_the_static_ssh_process_group() {
 }
 
 #[test]
-fn startup_verification_requires_a_compatible_reachable_nix_daemon() {
+fn startup_probe_records_nix_readiness_without_rejecting_degraded_startup() {
     let root = std::env::temp_dir().join(format!(
         "telchar-static-ssh-verification-{}-{}",
         std::process::id(),
@@ -415,12 +415,14 @@ fn startup_verification_requires_a_compatible_reachable_nix_daemon() {
     .expect("configuration writes");
     let config = load_config(&config_path, std::convert::identity);
 
-    verify_configured_backends(config.static_ssh_backends(), Duration::from_secs(5))
-        .expect("reachable compatible daemon verifies");
+    let health = StaticSshHealth::probe_all(config.static_ssh_backends());
+    assert_eq!(health.state("builder"), Some(StaticSshHealthState::Ready));
 
     fs::write(&ssh, "#!/bin/sh\nexit 1\n").expect("failing SSH program writes");
-    assert!(
-        verify_configured_backends(config.static_ssh_backends(), Duration::from_secs(1)).is_err()
+    let health = StaticSshHealth::probe_all(config.static_ssh_backends());
+    assert_eq!(
+        health.state("builder"),
+        Some(StaticSshHealthState::Unavailable)
     );
 
     fs::remove_dir_all(root).expect("fixture removes");

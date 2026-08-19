@@ -29,6 +29,8 @@ struct Instruments {
     backend_selections: Counter<u64>,
     backend_executions: Counter<u64>,
     backend_execution_duration: Histogram<f64>,
+    static_ssh_available: Gauge<u64>,
+    static_ssh_unavailable: Gauge<u64>,
     cache_substitutions: Counter<u64>,
     cache_substitution_duration: Histogram<f64>,
     cache_publications: Counter<u64>,
@@ -61,6 +63,7 @@ struct GaugeState {
     service_sessions: u64,
     shared_build_queue_depth: u64,
     backend_permits: BTreeMap<String, (String, u64, u64)>,
+    static_ssh_health: (u64, u64),
     transfer_active: BTreeMap<(String, String, String), u64>,
     recovery_monitoring: u64,
     nomad_pending: BTreeMap<String, u64>,
@@ -155,6 +158,14 @@ fn instruments() -> &'static Instruments {
             backend_execution_duration: meter
                 .f64_histogram("telchar.backend.execution.duration")
                 .with_unit("s")
+                .build(),
+            static_ssh_available: meter
+                .u64_gauge("telchar.static_ssh.hosts.available")
+                .with_unit("{host}")
+                .build(),
+            static_ssh_unavailable: meter
+                .u64_gauge("telchar.static_ssh.hosts.unavailable")
+                .with_unit("{host}")
                 .build(),
             cache_substitutions: meter
                 .u64_counter("telchar.cache.substitutions")
@@ -420,6 +431,17 @@ pub fn backend_configured(name: &str, kind: &str, limit: u64) {
     instruments()
         .backend_permits_limit
         .record(limit, &attributes);
+}
+
+pub fn record_static_ssh_health(ready: u64, unavailable: u64) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.static_ssh_health = (ready, unavailable);
+    instruments().static_ssh_available.record(ready, &[]);
+    instruments()
+        .static_ssh_unavailable
+        .record(unavailable, &[]);
 }
 
 pub fn backend_selection(
@@ -749,6 +771,7 @@ pub fn emit_smoke_metrics() {
         "succeeded",
         None,
     );
+    record_static_ssh_health(1, 1);
     cache_substitution_finished(Duration::from_millis(1), "miss");
     cache_publication_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");

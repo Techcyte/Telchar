@@ -101,6 +101,39 @@ fn backend_pool_waits_for_selected_backend_and_releases_permits() {
 }
 
 #[test]
+fn backend_pool_skips_unavailable_compatible_targets() {
+    let pool = BackendPool::new(
+        vec![
+            BackendTarget::new(
+                "ssh-offline",
+                BackendKind::StaticSsh,
+                "x86_64-linux",
+                ["kvm"],
+            )
+            .expect("offline backend is valid"),
+            BackendTarget::new("ssh-ready", BackendKind::StaticSsh, "x86_64-linux", ["kvm"])
+                .expect("ready backend is valid"),
+        ],
+        vec![1, 1],
+    )
+    .expect("backend pool is valid");
+
+    let permit = pool
+        .acquire_where("x86_64-linux", &["kvm"], Duration::from_secs(1), |target| {
+            target.name() == "ssh-ready"
+        })
+        .expect("ready backend acquires");
+    assert_eq!(permit.target().name(), "ssh-ready");
+    drop(permit);
+    assert_eq!(
+        pool.acquire_where("x86_64-linux", &["kvm"], Duration::from_secs(1), |_| false,)
+            .expect_err("unavailable fleet rejects before capacity wait")
+            .kind(),
+        io::ErrorKind::NotConnected
+    );
+}
+
+#[test]
 fn backend_pool_times_out_and_releases_after_failure_paths() {
     let pool = BackendPool::new(
         vec![

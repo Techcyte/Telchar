@@ -122,6 +122,9 @@ pub(super) struct RawStaticSshBackendConfig {
     #[serde(default)]
     pub(super) supported_features: Vec<String>,
     pub(super) maximum_concurrent_builds: usize,
+    pub(super) ready_check_interval_seconds: Option<u64>,
+    pub(super) unavailable_check_interval_seconds: Option<u64>,
+    pub(super) check_timeout_seconds: Option<u64>,
     pub(super) destination: String,
     pub(super) identity_file: PathBuf,
     pub(super) known_hosts_file: PathBuf,

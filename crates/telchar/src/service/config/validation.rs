@@ -138,6 +138,24 @@ pub(super) fn validate_static_ssh_backends(
             return Err(invalid("static SSH backend name is ambiguous"));
         }
         validate_backend_capacity(backend.maximum_concurrent_builds)?;
+        let ready_check_interval_seconds = backend
+            .ready_check_interval_seconds
+            .unwrap_or(DEFAULT_STATIC_SSH_READY_CHECK_INTERVAL_SECONDS);
+        let unavailable_check_interval_seconds = backend
+            .unavailable_check_interval_seconds
+            .unwrap_or(DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS);
+        let check_timeout_seconds = backend
+            .check_timeout_seconds
+            .unwrap_or(DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS);
+        if ready_check_interval_seconds == 0
+            || ready_check_interval_seconds > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
+            || unavailable_check_interval_seconds == 0
+            || unavailable_check_interval_seconds > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
+            || check_timeout_seconds == 0
+            || check_timeout_seconds > MAXIMUM_STATIC_SSH_CHECK_TIMEOUT_SECONDS
+        {
+            return Err(invalid("static SSH health timing bounds are invalid"));
+        }
         if !valid_ssh_destination(&backend.destination) {
             return Err(invalid("static SSH destination is invalid"));
         }
@@ -155,6 +173,9 @@ pub(super) fn validate_static_ssh_backends(
                 &backend.supported_features,
             )?,
             maximum_concurrent_builds: backend.maximum_concurrent_builds,
+            ready_check_interval: Duration::from_secs(ready_check_interval_seconds),
+            unavailable_check_interval: Duration::from_secs(unavailable_check_interval_seconds),
+            check_timeout: Duration::from_secs(check_timeout_seconds),
             destination: backend.destination,
             identity_file: backend.identity_file,
             known_hosts_file: backend.known_hosts_file,

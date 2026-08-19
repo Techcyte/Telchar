@@ -107,6 +107,9 @@ impl LocalBackendConfig {
 pub struct StaticSshBackendConfig {
     pub(super) target: BackendTarget,
     pub(super) maximum_concurrent_builds: usize,
+    pub(super) ready_check_interval: Duration,
+    pub(super) unavailable_check_interval: Duration,
+    pub(super) check_timeout: Duration,
     pub(super) destination: String,
     pub(super) identity_file: PathBuf,
     pub(super) known_hosts_file: PathBuf,
@@ -120,6 +123,18 @@ impl StaticSshBackendConfig {
 
     pub fn maximum_concurrent_builds(&self) -> usize {
         self.maximum_concurrent_builds
+    }
+
+    pub fn ready_check_interval(&self) -> Duration {
+        self.ready_check_interval
+    }
+
+    pub fn unavailable_check_interval(&self) -> Duration {
+        self.unavailable_check_interval
+    }
+
+    pub fn check_timeout(&self) -> Duration {
+        self.check_timeout
     }
 
     pub fn destination(&self) -> &str {
