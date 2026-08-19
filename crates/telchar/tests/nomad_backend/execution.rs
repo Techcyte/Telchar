@@ -194,8 +194,11 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         );
     });
     let admitted = admitted_request();
-    let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
+    let mut execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
         .expect("execution creates");
+    execution
+        .set_target_name("nomad-test")
+        .expect("selected target records");
     let database = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let request = &admitted;

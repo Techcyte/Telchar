@@ -79,11 +79,7 @@ impl NixFixture {
         if std::env::var_os("TELCHAR_NIX_FIXTURE_SKIP_PROCESS_LOCK").is_none() {
             fixture_process_lock()?;
         }
-        let root = std::env::temp_dir().join(format!(
-            "telchar-nix-fixture-{}-{}",
-            std::process::id(),
-            unique_suffix()
-        ));
+        let root = fixture_root(std::process::id(), &unique_suffix());
         let state_dir = root.join("state");
         let store_dir = root.join("store");
         let log_dir = root.join("log");
@@ -742,6 +738,10 @@ fn fixture_process_lock() -> io::Result<&'static fs::File> {
     }
 }
 
+fn fixture_root(process_id: u32, suffix: &str) -> PathBuf {
+    Path::new("/tmp").join(format!("tnf-{process_id:x}-{suffix}"))
+}
+
 fn unique_suffix() -> String {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -750,4 +750,18 @@ fn unique_suffix() -> String {
     };
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{timestamp}-{sequence}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn fixture_root_keeps_daemon_socket_within_unix_path_limit() {
+        let root = fixture_root(4_294_967_295, "ffffffffffffffff-0");
+        let socket = root.join("socket/daemon.sock");
+
+        assert!(socket.as_os_str().as_bytes().len() < 108);
+    }
 }
