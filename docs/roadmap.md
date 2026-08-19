@@ -48,7 +48,11 @@ The executable Docker-backed fixtures prove archive loading, declared entrypoint
 
 ### Soak and load qualification
 
-Measure queue depth, duplicate fan-in, transfer throughput, callback concurrency, PostgreSQL pressure, restart storms, retention cleanup, and multi-day execution. Keep safety limits intact while tuning.
+Measure queue depth, duplicate fan-in, transfer throughput, callback concurrency, PostgreSQL pressure, restart storms, retention cleanup, and multi-day execution. Keep safety limits intact while tuning. The in-process suite proves 1,000 simultaneous equivalent requests coalesce into one execution, but does not qualify 1,000 unique PostgreSQL-backed client sessions or 700 concurrent backend executions.
+
+### High-concurrency client runtime
+
+Re-evaluate the blocking process-and-thread-per-client model if deployment evidence approaches 1,000 attached clients. An async runtime may reduce idle session, follower, queue, and permit-wait costs, while blocking Nix store, OpenSSH, and persistence operations remain behind bounded workers. Require measured RSS, thread/process counts, file descriptors, PostgreSQL connection pressure, scheduler wakeups, and shutdown behavior before choosing a runtime migration. Preserve authenticated OpenSSH ingress, durable shared-build authority, backend permits, and exact-target recovery.
 
 ### Extract `nix-worker-protocol`
 
