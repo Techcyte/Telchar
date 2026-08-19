@@ -39,13 +39,15 @@ Build attributes are bounded enums: `build_mode` and `fixed_output`. Terminal in
 | `telchar.shared_build.leaders` | counter | `{build}` | Requests that own durable shared execution. |
 | `telchar.shared_build.followers` | counter | `{build}` | Requests attached to existing shared work. |
 | `telchar.shared_build.reused_results` | counter | `{build}` | Requests served from a durable terminal result. |
+| `telchar.shared_build.in_flight` | gauge | `{build}` | Distinct equivalent-build groups currently coordinated in this daemon process. |
+| `telchar.shared_build.waiting_followers` | gauge | `{request}` | Attached requests currently waiting for an in-process equivalent build to complete. |
 | `telchar.shared_build.queue.depth` | gauge | `{build}` | Durable builds waiting for subject admission. |
 | `telchar.shared_build.active` | gauge | `{build}` | Durable builds in running state. |
 | `telchar.shared_build.collecting` | gauge | `{build}` | Durable builds collecting or validating outputs. |
 | `telchar.shared_build.queue.wait.duration` | histogram | `s` | Time a leader waits for subject admission. |
 | `telchar.shared_build.queue.admissions` | counter | `{build}` | Durable queue admissions. |
 
-Queue depth and wait duration are primary subject-admission autoscaling and overload signals. Quota subjects are intentionally not metric attributes.
+Queue depth and wait duration are primary subject-admission autoscaling and overload signals. `in_flight` and `waiting_followers` are authoritative process-local coalescing gauges. Shared-build metrics have no requester, quota subject, derivation, path, request, or trace attributes.
 
 ## Backends
 

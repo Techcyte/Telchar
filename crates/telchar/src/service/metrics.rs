@@ -18,6 +18,8 @@ struct Instruments {
     shared_build_leaders: Counter<u64>,
     shared_build_followers: Counter<u64>,
     shared_build_reused_results: Counter<u64>,
+    shared_build_in_flight: Gauge<u64>,
+    shared_build_waiting_followers: Gauge<u64>,
     shared_build_queue_depth: Gauge<u64>,
     shared_build_active: Gauge<u64>,
     shared_build_collecting: Gauge<u64>,
@@ -62,6 +64,8 @@ struct Instruments {
 struct GaugeState {
     service_sessions: u64,
     shared_build_queue_depth: u64,
+    shared_build_in_flight: u64,
+    shared_build_waiting_followers: u64,
     backend_permits: BTreeMap<String, (String, u64, u64)>,
     static_ssh_health: (u64, u64),
     transfer_active: BTreeMap<(String, String, String), u64>,
@@ -114,6 +118,14 @@ fn instruments() -> &'static Instruments {
             shared_build_reused_results: meter
                 .u64_counter("telchar.shared_build.reused_results")
                 .with_unit("{build}")
+                .build(),
+            shared_build_in_flight: meter
+                .u64_gauge("telchar.shared_build.in_flight")
+                .with_unit("{build}")
+                .build(),
+            shared_build_waiting_followers: meter
+                .u64_gauge("telchar.shared_build.waiting_followers")
+                .with_unit("{request}")
                 .build(),
             shared_build_queue_depth: meter
                 .u64_gauge("telchar.shared_build.queue.depth")
@@ -371,6 +383,46 @@ pub fn shared_build_follower() {
 
 pub fn shared_build_reused_result() {
     instruments().shared_build_reused_results.add(1, &[]);
+}
+
+pub fn shared_build_in_flight_started() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_in_flight = state.shared_build_in_flight.saturating_add(1);
+    instruments()
+        .shared_build_in_flight
+        .record(state.shared_build_in_flight, &[]);
+}
+
+pub fn shared_build_in_flight_finished() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_in_flight = state.shared_build_in_flight.saturating_sub(1);
+    instruments()
+        .shared_build_in_flight
+        .record(state.shared_build_in_flight, &[]);
+}
+
+pub fn shared_build_follower_wait_started() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_waiting_followers = state.shared_build_waiting_followers.saturating_add(1);
+    instruments()
+        .shared_build_waiting_followers
+        .record(state.shared_build_waiting_followers, &[]);
+}
+
+pub fn shared_build_follower_wait_finished() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_waiting_followers = state.shared_build_waiting_followers.saturating_sub(1);
+    instruments()
+        .shared_build_waiting_followers
+        .record(state.shared_build_waiting_followers, &[]);
 }
 
 pub fn record_shared_build_operational_counts(
@@ -753,6 +805,10 @@ pub fn emit_smoke_metrics() {
     shared_build_leader();
     shared_build_follower();
     shared_build_reused_result();
+    shared_build_in_flight_started();
+    shared_build_follower_wait_started();
+    shared_build_follower_wait_finished();
+    shared_build_in_flight_finished();
     record_shared_build_operational_counts(crate::persistence::SharedBuildOperationalCounts {
         queued: 1,
         running: 1,

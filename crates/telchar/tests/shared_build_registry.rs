@@ -77,17 +77,13 @@ fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
             .collect::<Vec<_>>()
     });
 
-    assert!(
-        failures
-            .iter()
-            .all(|result| *result == Err(SharedBuildTerminalFailure::Backend))
-    );
+    assert!(failures
+        .iter()
+        .all(|result| *result == Err(SharedBuildTerminalFailure::Backend)));
     assert_eq!(registry.active_build_count(), 0);
-    assert!(
-        registry
-            .execute_or_wait("failed-build", successful_result)
-            .is_ok()
-    );
+    assert!(registry
+        .execute_or_wait("failed-build", successful_result)
+        .is_ok());
 }
 
 #[test]
@@ -103,6 +99,8 @@ fn explicit_leader_and_follower_share_terminal_result() {
         SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
     };
 
+    assert_eq!(registry.active_build_count(), 1);
+    assert_eq!(registry.waiting_follower_count(), 0);
     let expected = successful_result().expect("result constructs");
     assert_eq!(leader.complete(Ok(expected.clone())), Ok(expected.clone()));
 
@@ -123,7 +121,32 @@ fn follower_wait_is_bounded_without_cancelling_the_leader() {
         SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
     };
 
-    assert_eq!(follower.wait_timeout(Duration::from_millis(10)), None);
+    let waiter_started = Arc::new(Barrier::new(2));
+    let waiter_release = Arc::new(Barrier::new(2));
+    thread::scope(|scope| {
+        let child_started = Arc::clone(&waiter_started);
+        let child_release = Arc::clone(&waiter_release);
+        let waiter = scope.spawn(move || {
+            child_started.wait();
+            let result = follower.wait_timeout(Duration::from_millis(50));
+            child_release.wait();
+            result
+        });
+        waiter_started.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while registry.waiting_follower_count() != 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "follower did not begin waiting"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(registry.active_build_count(), 1);
+        assert_eq!(registry.waiting_follower_count(), 1);
+        waiter_release.wait();
+        assert_eq!(waiter.join().expect("waiter joins"), None);
+    });
+    assert_eq!(registry.waiting_follower_count(), 0);
     assert_eq!(registry.active_build_count(), 1);
     leader
         .complete(successful_result())

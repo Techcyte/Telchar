@@ -52,6 +52,7 @@ impl SharedBuildLeader<'_> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         active_builds.remove(&self.build_key);
+        crate::service::metrics::shared_build_in_flight_finished();
         self.completed = true;
     }
 }
@@ -66,6 +67,33 @@ impl Drop for SharedBuildLeader<'_> {
 
 pub struct SharedBuildFollower {
     active: Arc<ActiveBuild>,
+}
+
+struct FollowerWaitGuard<'a>(&'a ActiveBuild);
+
+impl FollowerWaitGuard<'_> {
+    fn new(active: &ActiveBuild) -> FollowerWaitGuard<'_> {
+        let mut waiting = active
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *waiting = waiting.saturating_add(1);
+        crate::service::metrics::shared_build_follower_wait_started();
+        drop(waiting);
+        FollowerWaitGuard(active)
+    }
+}
+
+impl Drop for FollowerWaitGuard<'_> {
+    fn drop(&mut self) {
+        let mut waiting = self
+            .0
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *waiting = waiting.saturating_sub(1);
+        crate::service::metrics::shared_build_follower_wait_finished();
+    }
 }
 
 impl SharedBuildFollower {
@@ -85,6 +113,7 @@ impl SharedBuildFollower {
         self,
         deadline: Option<std::time::Instant>,
     ) -> Option<Result<BuildResult, SharedBuildTerminalFailure>> {
+        let _wait = FollowerWaitGuard::new(&self.active);
         let mut state = self
             .active
             .state
@@ -142,6 +171,7 @@ impl SharedBuildRegistry {
 
         let active = Arc::new(ActiveBuild::default());
         active_builds.insert(build_key.to_owned(), Arc::clone(&active));
+        crate::service::metrics::shared_build_in_flight_started();
         SharedBuildAccess::Leader(SharedBuildLeader {
             registry: self,
             build_key: build_key.to_owned(),
@@ -186,12 +216,27 @@ impl SharedBuildRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
     }
+
+    pub fn waiting_follower_count(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .map(|active| {
+                *active
+                    .waiting
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            })
+            .sum()
+    }
 }
 
 #[derive(Default)]
 struct ActiveBuild {
     state: Mutex<ActiveBuildState>,
     completed: Condvar,
+    waiting: Mutex<usize>,
 }
 
 #[derive(Default)]
