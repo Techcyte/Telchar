@@ -1,5 +1,6 @@
 //! Constructs configured backend executors and dispatches admitted builds to the selected target.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -22,6 +23,7 @@ struct ConfiguredBackendsInner {
     local_build_helper: Option<PathBuf>,
     static_ssh: Vec<StaticSshBackendConfig>,
     static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
+    schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     nomad: Vec<NomadBackendConfig>,
 }
 
@@ -51,6 +53,29 @@ impl ConfiguredBackends {
         local_build_helper: Option<PathBuf>,
         static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
     ) -> io::Result<Self> {
+        let schedulable_static_ssh = Arc::new(RwLock::new(
+            config
+                .static_ssh_backends()
+                .iter()
+                .map(|backend| backend.target().name().to_owned())
+                .collect(),
+        ));
+        Self::with_health_and_scheduling(
+            config,
+            gateway_store,
+            local_build_helper,
+            static_ssh_health,
+            schedulable_static_ssh,
+        )
+    }
+
+    pub fn with_health_and_scheduling(
+        config: &ServiceConfig,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        local_build_helper: Option<PathBuf>,
+        static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
+        schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
+    ) -> io::Result<Self> {
         let gateway_store = gateway_store.into();
         let mut targets = Vec::new();
         let mut maximums = Vec::new();
@@ -74,6 +99,7 @@ impl ConfiguredBackends {
                 local_build_helper,
                 static_ssh: config.static_ssh_backends().to_vec(),
                 static_ssh_health,
+                schedulable_static_ssh,
                 nomad: config.nomad_backends().to_vec(),
             }),
         })
@@ -81,6 +107,10 @@ impl ConfiguredBackends {
 
     pub fn static_ssh_health(&self) -> crate::backend::static_ssh::StaticSshHealth {
         self.inner.static_ssh_health.clone()
+    }
+
+    pub fn static_ssh_scheduling(&self) -> Arc<RwLock<BTreeSet<String>>> {
+        Arc::clone(&self.inner.schedulable_static_ssh)
     }
 
     pub fn executor(&self, database_url: &str) -> io::Result<BackendExecutor> {
@@ -111,6 +141,14 @@ impl ReloadableBackends {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub fn disable_static_ssh_not_in(&self, desired: &BTreeSet<String>) {
+        let scheduling = self.snapshot().static_ssh_scheduling();
+        scheduling
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|name| desired.contains(name));
     }
 
     pub fn replace(&self, backends: ConfiguredBackends) {
@@ -224,11 +262,18 @@ impl BuildBackend for BackendExecutor {
             .find(|target| {
                 target.supports(system, required_features)
                     && (target.kind() != BackendKind::StaticSsh
-                        || self
+                        || (self
                             .backends
                             .inner
-                            .static_ssh_health
-                            .is_ready(target.name()))
+                            .schedulable_static_ssh
+                            .read()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .contains(target.name())
+                            && self
+                                .backends
+                                .inner
+                                .static_ssh_health
+                                .is_ready(target.name())))
             })
             .cloned()
             .ok_or_else(|| {
@@ -245,19 +290,14 @@ impl BuildBackend for BackendExecutor {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
-        let required_features = execution
-            .build()
-            .required_system_features()
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let health = &self.backends.inner.static_ssh_health;
-        let permit = self.backends.inner.pool.acquire_where(
-            execution.build().system(),
-            &required_features,
-            self.backends.inner.permit_wait,
-            |target| target.kind() != BackendKind::StaticSsh || health.is_ready(target.name()),
-        )?;
+        let target_name = execution
+            .target_name()
+            .ok_or_else(|| io::Error::other("selected backend is unavailable"))?;
+        let permit = self
+            .backends
+            .inner
+            .pool
+            .acquire_target(target_name, self.backends.inner.permit_wait)?;
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();
         let started = std::time::Instant::now();

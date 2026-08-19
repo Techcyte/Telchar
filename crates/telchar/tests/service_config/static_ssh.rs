@@ -65,7 +65,7 @@ ssh_program = "{}"
 }
 
 #[test]
-fn reload_accepts_only_additive_static_ssh_backends() {
+fn reload_accepts_static_ssh_inventory_additions_and_removals() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
     let root = fixture_root("static-ssh-reload");
@@ -100,22 +100,29 @@ fn reload_accepts_only_additive_static_ssh_backends() {
     let additive = ServiceConfig::load().expect("additive configuration loads");
     assert_eq!(
         original
-            .validate_additive_static_ssh_reload(&additive)
+            .validate_static_ssh_reload(&additive)
             .expect("additive reload validates"),
-        1
+        telchar::service::config::StaticSshReloadChanges {
+            added: 1,
+            removed: 0,
+        }
     );
 
     fs::write(&config_path, backend("builder-a", 2)).expect("changed configuration writes");
     let changed = ServiceConfig::load().expect("changed configuration loads");
-    assert!(original
-        .validate_additive_static_ssh_reload(&changed)
-        .is_err());
+    assert!(original.validate_static_ssh_reload(&changed).is_err());
 
     fs::write(&config_path, "").expect("removed configuration writes");
     let removed = ServiceConfig::load().expect("removed configuration loads");
-    assert!(original
-        .validate_additive_static_ssh_reload(&removed)
-        .is_err());
+    assert_eq!(
+        original
+            .validate_static_ssh_reload(&removed)
+            .expect("removal reload validates"),
+        telchar::service::config::StaticSshReloadChanges {
+            added: 0,
+            removed: 1,
+        }
+    );
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");

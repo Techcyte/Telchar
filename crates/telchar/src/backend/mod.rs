@@ -231,6 +231,20 @@ impl BackendPool {
         self.acquire_where(system, required_features, timeout, |_| true)
     }
 
+    pub fn acquire_target(
+        &self,
+        target_name: &str,
+        timeout: Duration,
+    ) -> io::Result<BackendPermit> {
+        let index = self
+            .inner
+            .targets
+            .iter()
+            .position(|target| target.name() == target_name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "backend is unavailable"))?;
+        self.acquire_index(index, timeout)
+    }
+
     pub fn acquire_where(
         &self,
         system: &str,
@@ -238,7 +252,6 @@ impl BackendPool {
         timeout: Duration,
         available: impl Fn(&BackendTarget) -> bool,
     ) -> io::Result<BackendPermit> {
-        let started = Instant::now();
         let compatible = self
             .inner
             .targets
@@ -273,6 +286,11 @@ impl BackendPool {
                 "compatible backend is not ready",
             ));
         };
+        self.acquire_index(index, timeout)
+    }
+
+    fn acquire_index(&self, index: usize, timeout: Duration) -> io::Result<BackendPermit> {
+        let started = Instant::now();
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -389,6 +407,7 @@ pub struct BuildExecution<'a> {
     request_id: &'a str,
     build: &'a BuildRequest,
     timeout: Duration,
+    target_name: Option<String>,
 }
 
 impl<'a> BuildExecution<'a> {
@@ -411,6 +430,7 @@ impl<'a> BuildExecution<'a> {
             request_id,
             build,
             timeout,
+            target_name: None,
         })
     }
 
@@ -424,6 +444,21 @@ impl<'a> BuildExecution<'a> {
 
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    pub fn set_target_name(&mut self, target_name: &str) -> io::Result<()> {
+        if target_name.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend target name is invalid",
+            ));
+        }
+        self.target_name = Some(target_name.to_owned());
+        Ok(())
+    }
+
+    pub fn target_name(&self) -> Option<&str> {
+        self.target_name.as_deref()
     }
 }
 

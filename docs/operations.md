@@ -81,7 +81,9 @@ All values must be positive and bounded. A failed check covers network, host-key
 
 Send `SIGHUP` to the daemon after atomically replacing its configuration file to add static SSH backends. Reload parses and validates the complete file, immediately probes the resulting static SSH inventory, and publishes one immutable backend generation for subsequently accepted sessions. Existing sessions and in-flight builds retain their previous generation.
 
-Reload is intentionally additive. Existing static SSH definitions, removals, local or Nomad backends, and all non-backend settings must remain unchanged. An invalid or unsupported reload is rejected while the active configuration continues serving work. Newly added but unavailable hosts are accepted in degraded state and remain excluded from scheduling until a readiness check succeeds.
+Reload treats the static SSH list as desired inventory. Added hosts are probed immediately. Omitted hosts are immediately excluded from every new selection, including requests on sessions accepted before the reload; work already assigned to an omitted host retains its exact immutable backend generation and may finish or fail normally. Backend permit acquisition uses that exact selected target rather than choosing another compatible host. Once those sessions finish, the omitted configuration disappears with the retired generation. Drain state is process-local and is not restored after daemon restart.
+
+Changing an existing host under the same backend name, changing local or Nomad backends, or changing any non-backend setting remains unsupported. Such a reload is rejected while the active configuration continues serving work. Newly added but unavailable hosts are accepted in degraded state and remain excluded from scheduling until a readiness check succeeds.
 
 Failure procedure:
 

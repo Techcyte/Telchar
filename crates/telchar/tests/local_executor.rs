@@ -31,12 +31,17 @@ fn local_executors_implement_the_backend_contract() {
 #[test]
 fn build_execution_retains_only_the_admitted_build_and_control_metadata() {
     let build = admitted_request();
-    let request = BuildExecution::new("request-1", &build, Duration::from_secs(30))
+    let mut request = BuildExecution::new("request-1", &build, Duration::from_secs(30))
         .expect("execution request is valid");
 
     assert_eq!(request.request_id(), "request-1");
     assert_eq!(request.build(), &build);
     assert_eq!(request.timeout(), Duration::from_secs(30));
+    assert_eq!(request.target_name(), None);
+    request
+        .set_target_name("builder-a")
+        .expect("target name records");
+    assert_eq!(request.target_name(), Some("builder-a"));
     assert!(BuildExecution::new("", &build, Duration::from_secs(30)).is_err());
     assert!(BuildExecution::new("request-1", &build, Duration::ZERO).is_err());
 }

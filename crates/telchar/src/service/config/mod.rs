@@ -82,6 +82,12 @@ pub struct ServiceConfig {
     nomad_backends: Vec<NomadBackendConfig>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StaticSshReloadChanges {
+    pub added: usize,
+    pub removed: usize,
+}
+
 impl ServiceConfig {
     pub fn load() -> io::Result<Self> {
         match std::env::var_os("TELCHAR_CONFIG") {
@@ -165,7 +171,10 @@ impl ServiceConfig {
         &self.nomad_backends
     }
 
-    pub fn validate_additive_static_ssh_reload(&self, replacement: &Self) -> io::Result<usize> {
+    pub fn validate_static_ssh_reload(
+        &self,
+        replacement: &Self,
+    ) -> io::Result<StaticSshReloadChanges> {
         if self.running_disconnect_policy != replacement.running_disconnect_policy
             || self.output_retention != replacement.output_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
@@ -183,19 +192,39 @@ impl ServiceConfig {
         {
             return Err(invalid("configuration reload changes immutable settings"));
         }
-        if replacement.static_ssh_backends.len() < self.static_ssh_backends.len()
-            || !self.static_ssh_backends.iter().all(|backend| {
-                replacement
+        for backend in &self.static_ssh_backends {
+            if let Some(candidate) = replacement
+                .static_ssh_backends
+                .iter()
+                .find(|candidate| candidate.target().name() == backend.target().name())
+                && candidate != backend
+            {
+                return Err(invalid(
+                    "configuration reload changes an existing static SSH backend",
+                ));
+            }
+        }
+        let added = replacement
+            .static_ssh_backends
+            .iter()
+            .filter(|backend| {
+                !self
                     .static_ssh_backends
                     .iter()
-                    .any(|candidate| candidate == backend)
+                    .any(|current| current.target().name() == backend.target().name())
             })
-        {
-            return Err(invalid(
-                "configuration reload changes an existing static SSH backend",
-            ));
-        }
-        Ok(replacement.static_ssh_backends.len() - self.static_ssh_backends.len())
+            .count();
+        let removed = self
+            .static_ssh_backends
+            .iter()
+            .filter(|backend| {
+                !replacement
+                    .static_ssh_backends
+                    .iter()
+                    .any(|candidate| candidate.target().name() == backend.target().name())
+            })
+            .count();
+        Ok(StaticSshReloadChanges { added, removed })
     }
 
     pub fn backend_targets(&self) -> impl Iterator<Item = &BackendTarget> {

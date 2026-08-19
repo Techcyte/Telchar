@@ -543,11 +543,12 @@ fn run_daemon() -> io::Result<()> {
             )
             .and_then(|reload| reload.apply(&mut config, &backends, &mut static_ssh_health_service))
             {
-                Ok(added) => {
+                Ok(changes) => {
                     telchar::service::metrics::configuration_reload("succeeded", None);
                     tracing::info!(
                         event = "configuration.reload.completed",
-                        static_ssh_added_count = added,
+                        static_ssh_added_count = changes.added,
+                        static_ssh_removed_count = changes.removed,
                         static_ssh_total_count = config.static_ssh_backends().len(),
                         "configuration reload completed"
                     );

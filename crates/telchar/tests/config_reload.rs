@@ -7,14 +7,20 @@ use std::time::Duration;
 
 use telchar::backend::routing::{ConfiguredBackends, ReloadableBackends};
 use telchar::backend::static_ssh::{StaticSshHealth, StaticSshHealthState};
+use telchar::backend::{BuildBackend, BuildExecution};
 use telchar::service::config::ServiceConfig;
 use telchar::service::config_reload::BackendReload;
 use telchar::service::daemon_services::StaticSshHealthService;
 
+#[path = "support/build_request.rs"]
+mod build_request_support;
+
+use build_request_support::admitted_request;
+
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
 #[test]
-fn additive_reload_publishes_a_new_generation_without_mutating_existing_snapshots() {
+fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snapshots() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let root = tempfile::tempdir().expect("fixture creates");
     let identity = root.path().join("identity");
@@ -24,7 +30,11 @@ fn additive_reload_publishes_a_new_generation_without_mutating_existing_snapshot
     fs::set_permissions(&identity, fs::Permissions::from_mode(0o600))
         .expect("identity permissions set");
     fs::write(&known_hosts, "builder ssh-ed25519 AAAA\n").expect("known hosts writes");
-    fs::write(&ssh, "#!/bin/sh\nexit 1\n").expect("SSH program writes");
+    fs::write(
+        &ssh,
+        "#!/bin/sh\nexec 3>&-\nprintf '\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x13\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'\n",
+    )
+    .expect("SSH program writes");
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).expect("SSH permissions set");
     let config_path = root.path().join("telchar.toml");
     let backend = |name: &str| {
@@ -36,23 +46,37 @@ fn additive_reload_publishes_a_new_generation_without_mutating_existing_snapshot
         )
     };
     let saved = std::env::var_os("TELCHAR_CONFIG");
-    fs::write(&config_path, backend("builder-a")).expect("initial configuration writes");
+    fs::write(
+        &config_path,
+        format!("{}{}", backend("builder-a"), backend("builder-b")),
+    )
+    .expect("initial configuration writes");
     unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
     let mut current = ServiceConfig::load().expect("initial configuration loads");
     let health = StaticSshHealth::from_states(
         current.static_ssh_backends(),
-        [("builder-a", StaticSshHealthState::Unavailable)],
+        [
+            ("builder-a", StaticSshHealthState::Ready),
+            ("builder-b", StaticSshHealthState::Ready),
+        ],
     );
     let initial = ConfiguredBackends::with_health(&current, None, None, health.clone())
         .expect("initial backends configure");
     let old_snapshot = initial.clone();
+    let mut old_executor = old_snapshot
+        .executor("postgresql://fixture")
+        .expect("old executor configures");
+    let selected = old_executor
+        .selected_target("x86_64-linux", &[])
+        .expect("old generation selects first backend");
+    assert_eq!(selected.name(), "builder-a");
     let reloadable = ReloadableBackends::new(initial);
     let mut health_service = StaticSshHealthService::start(health, Duration::from_secs(60))
         .expect("health service starts");
 
     fs::write(
         &config_path,
-        format!("{}{}", backend("builder-a"), backend("builder-b")),
+        format!("{}{}", backend("builder-b"), backend("builder-c")),
     )
     .expect("replacement configuration writes");
     let replacement = ServiceConfig::load().expect("replacement configuration loads");
@@ -63,12 +87,29 @@ fn additive_reload_publishes_a_new_generation_without_mutating_existing_snapshot
         reload
             .apply(&mut current, &reloadable, &mut health_service)
             .expect("reload applies"),
-        1
+        telchar::service::config::StaticSshReloadChanges {
+            added: 1,
+            removed: 1,
+        }
     );
 
-    assert_eq!(old_snapshot.static_ssh_health().state("builder-b"), None);
+    assert_eq!(old_snapshot.static_ssh_health().state("builder-c"), None);
+    assert!(old_executor.selected_target("x86_64-linux", &[]).is_ok());
+    let build = admitted_request();
+    let mut execution =
+        BuildExecution::new("assigned-before-reload", &build, Duration::from_secs(1))
+            .expect("execution constructs");
+    execution
+        .set_target_name("builder-a")
+        .expect("exact target records");
+    assert!(old_executor.execute(&execution).is_err());
+    assert!(!old_snapshot
+        .static_ssh_scheduling()
+        .read()
+        .expect("scheduling reads")
+        .contains("builder-a"));
     assert_eq!(
-        reloadable.snapshot().static_ssh_health().state("builder-b"),
+        reloadable.snapshot().static_ssh_health().state("builder-c"),
         Some(StaticSshHealthState::Unavailable)
     );
     assert_eq!(current.static_ssh_backends().len(), 2);

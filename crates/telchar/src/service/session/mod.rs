@@ -412,7 +412,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     build_mode = request.build_mode(),
                     "BuildDerivation request admitted"
                 );
-                let execution =
+                let mut execution =
                     match BuildExecution::new(&request_id, &admitted, Duration::from_secs(30 * 60))
                     {
                         Ok(execution) => execution,
@@ -455,6 +455,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     .collect::<Vec<_>>();
                 let selected_target =
                     build_executor.selected_target(admitted.system(), &required_features)?;
+                execution.set_target_name(selected_target.name())?;
                 let backend_execution_id =
                     build_executor.execution_id(&selected_target, shared_build_key.as_bytes())?;
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
