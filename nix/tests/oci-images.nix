@@ -2,6 +2,7 @@
 {
   pkgs,
   telcharImage,
+  sshIngressImage,
   nomadWorkerImage,
 }:
 assert telcharImage.imageName == "telchar";
@@ -15,12 +16,34 @@ assert
     "--frontend-uid"
     "0"
   ];
+assert sshIngressImage.imageName == "telchar-ssh-ingress";
+assert sshIngressImage.imageTag == "latest";
+assert sshIngressImage.imageConfig.Entrypoint == [ "/bin/telchar-ssh-ingress" ];
 assert nomadWorkerImage.imageName == "telchar-nomad-worker";
 assert nomadWorkerImage.imageTag == "latest";
 assert nomadWorkerImage.imageConfig.Entrypoint == [ "/bin/telchar-nomad-worker" ];
 pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar ]; } ''
   test -f ${telcharImage}
+  test -f ${sshIngressImage}
   test -f ${nomadWorkerImage}
+
+  mkdir ingress
+  tar -xOf ${sshIngressImage} manifest.json \
+    | grep -o '"[^"]*/layer.tar"' \
+    | tr -d '"' \
+    | while read -r layer; do
+      tar -xOf ${sshIngressImage} "$layer" | tar -xf - -C ingress
+    done
+  test -x ingress/bin/telchar-ssh-ingress
+  test -x ingress/bin/telchar-ssh-forced-command
+  grep -q '^telchar:x:995:995:' ingress/etc/passwd
+  grep -q '^telchar:x:995:' ingress/etc/group
+  grep -q '^ForceCommand /bin/telchar-ssh-forced-command$' ingress/etc/ssh/sshd_config
+  grep -q '^TrustedUserCAKeys /var/lib/telchar-ssh/client-ca.pub$' ingress/etc/ssh/sshd_config
+  grep -q '^ExposeAuthInfo yes$' ingress/etc/ssh/sshd_config
+  grep -q '^DisableForwarding yes$' ingress/etc/ssh/sshd_config
+  grep -q '^PermitTTY no$' ingress/etc/ssh/sshd_config
+  grep -q '^PasswordAuthentication no$' ingress/etc/ssh/sshd_config
 
   mkdir gateway
   tar -xOf ${telcharImage} manifest.json \

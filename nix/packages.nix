@@ -31,6 +31,25 @@ let
     cargoExtraArgs = "-p telchar-nomad-worker";
   };
 
+  sshIngressEntrypoint = pkgs.writeShellScriptBin "telchar-ssh-ingress" (
+    builtins.readFile ../deploy/ssh/telchar-ssh-ingress.sh
+  );
+  sshIngressForcedCommand = pkgs.writeShellScriptBin "telchar-ssh-forced-command" (
+    builtins.readFile ../deploy/ssh/telchar-ssh-forced-command.sh
+  );
+  sshIngressEtc = pkgs.runCommand "telchar-ssh-ingress-etc" { } ''
+        mkdir -p "$out/etc/ssh" "$out/var/empty"
+        cp ${../deploy/ssh/sshd_config} "$out/etc/ssh/sshd_config"
+        cat > "$out/etc/passwd" <<'EOF'
+    root:x:0:0:root:/root:/bin/bash
+    telchar:x:995:995:Telchar SSH ingress:/var/empty:/bin/false
+    EOF
+        cat > "$out/etc/group" <<'EOF'
+    root:x:0:
+    telchar:x:995:
+    EOF
+  '';
+
   telchar-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar";
     tag = "latest";
@@ -71,6 +90,43 @@ let
     };
   };
 
+  telchar-ssh-ingress-oci = pkgs.dockerTools.buildLayeredImage {
+    name = "telchar-ssh-ingress";
+    tag = "latest";
+    contents = [
+      telchar
+      sshIngressEntrypoint
+      sshIngressForcedCommand
+      sshIngressEtc
+      pkgs.bash
+      pkgs.cacert
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.gawk
+      pkgs.gnugrep
+      pkgs.jq
+      pkgs.openssh
+    ];
+    passthru.imageConfig = {
+      Entrypoint = [ "/bin/telchar-ssh-ingress" ];
+    };
+    config = {
+      Entrypoint = [ "/bin/telchar-ssh-ingress" ];
+      Env = [
+        "PATH=/bin:/usr/bin:/usr/sbin"
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+      ];
+      User = "0:0";
+      ExposedPorts = {
+        "2222/tcp" = { };
+      };
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.title" = "Telchar SSH ingress";
+      };
+    };
+  };
+
   telchar-nomad-worker-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar-nomad-worker";
     tag = "latest";
@@ -100,6 +156,7 @@ in
     telchar
     telchar-nomad-worker
     telchar-oci
+    telchar-ssh-ingress-oci
     telchar-nomad-worker-oci
     ;
   nix-reference = pkgs.nix;

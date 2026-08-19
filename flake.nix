@@ -21,8 +21,15 @@
         src = ./.;
         filter =
           path: type:
+          let
+            pathString = toString path;
+            sshDeployment = "${toString ./.}/deploy/ssh";
+          in
           craneLib.filterCargoSources path type
-          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" (toString path);
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" pathString
+          || pathString == "${toString ./.}/deploy"
+          || pathString == sshDeployment
+          || pkgs.lib.hasPrefix "${sshDeployment}/" pathString;
       };
     in
     {
@@ -52,6 +59,7 @@
           oci-images = import ./nix/tests/oci-images.nix {
             inherit pkgs;
             telcharImage = self.packages.${system}.telchar-oci;
+            sshIngressImage = self.packages.${system}.telchar-ssh-ingress-oci;
             nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           };
         };
