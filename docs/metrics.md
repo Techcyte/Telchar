@@ -64,6 +64,14 @@ Queue depth and wait duration are primary subject-admission autoscaling and over
 
 Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or `failure_class`. Configured backend names are operator-bounded. Permit utilization and wait duration are primary backend autoscaling signals. A selection failure with `failure_class=no_compatible_backend` distinguishes missing compatible capacity from saturation; `backend_unavailable` means compatible static SSH capacity exists in configuration but is not currently ready. Static SSH health gauges intentionally have no host labels and therefore retain bounded cardinality.
 
+## Configuration reload
+
+| Instrument | Kind | Unit | Meaning |
+| --- | --- | --- | --- |
+| `telchar.configuration.reloads` | counter | `{reload}` | SIGHUP reload attempts by bounded `outcome` and optional `failure_class`. |
+
+Reload metrics never contain configuration paths, backend names, destinations, credentials, or parser text.
+
 ## Cache and gateway store
 
 | Instrument | Kind | Unit | Meaning |

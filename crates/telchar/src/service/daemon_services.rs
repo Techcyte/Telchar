@@ -96,7 +96,7 @@ impl Drop for BackgroundService {
     }
 }
 
-pub struct StaticSshHealthService(BackgroundService);
+pub struct StaticSshHealthService(Option<BackgroundService>);
 
 impl StaticSshHealthService {
     pub fn start(
@@ -107,15 +107,28 @@ impl StaticSshHealthService {
             health.check_due(std::time::Instant::now());
             Ok(true)
         })
+        .map(Some)
         .map(Self)
     }
 
     pub fn check(&mut self) -> io::Result<()> {
-        self.0.check().map(|_| ())
+        match self.0.as_mut() {
+            Some(service) => service.check().map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    pub fn replace(&mut self, replacement: Self) -> io::Result<()> {
+        self.shutdown()?;
+        self.0 = replacement.0;
+        Ok(())
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
-        self.0.shutdown()
+        match self.0.as_mut() {
+            Some(service) => service.shutdown(),
+            None => Ok(()),
+        }
     }
 }
 

@@ -248,7 +248,7 @@ pub(crate) fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn run_daemon() -> io::Result<()> {
-    let config = telchar::service::config::ServiceConfig::load()
+    let mut config = telchar::service::config::ServiceConfig::load()
         .map_err(|_| invalid("database migration failed"))?;
     let running_disconnect_policy = config.running_disconnect_policy();
     let output_retention = config.output_retention();
@@ -382,7 +382,7 @@ fn run_daemon() -> io::Result<()> {
             .map_err(|_| invalid("shared build metric reconciliation failed"))?;
     telchar::service::metrics::record_shared_build_operational_counts(operational_counts);
     let monitoring_derivations = reconciliation.monitoring_derivations;
-    let backends = Arc::new(configured_backends);
+    let backends = telchar::backend::routing::ReloadableBackends::new(configured_backends);
     let shared_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
     let scheduling_config = config.clone();
     let shared_build_scheduler = Arc::new(
@@ -395,14 +395,14 @@ fn run_daemon() -> io::Result<()> {
     let mut recovery_services = Vec::with_capacity(monitoring_derivations.len());
     for derivation_path in monitoring_derivations {
         let database_url = database_url.clone();
-        let backends = Arc::clone(&backends);
+        let backends = backends.clone();
         let retention = output_retention.duration();
         let gateway_store = gateway_store.endpoint().cloned();
         recovery_services.push(
             telchar::service::daemon_services::RecoveryMonitorService::start(
                 Duration::from_millis(100),
                 move || {
-                    let mut configured_backends = (*backends).clone();
+                    let mut configured_backends = backends.snapshot();
                     let mut outputs =
                         telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
                             gateway_store.clone(),
@@ -478,7 +478,7 @@ fn run_daemon() -> io::Result<()> {
             &rate_admission,
             disk_reserve,
             &disk_probe,
-            &backends,
+            &backends.snapshot(),
             &shared_builds,
             &shared_build_scheduler,
             &gateway_store,
@@ -506,11 +506,13 @@ fn run_daemon() -> io::Result<()> {
     )?;
     let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
     let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reload_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     signal_hook::flag::register(
         signal_hook::consts::SIGTERM,
         Arc::clone(&shutdown_requested),
     )?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown_requested))?;
+    signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_requested))?;
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
     telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);
@@ -525,6 +527,40 @@ fn run_daemon() -> io::Result<()> {
                 &mut recovery_services,
             )?;
             return Ok(());
+        }
+        if reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(
+                event = "configuration.reload.requested",
+                "configuration reload requested"
+            );
+            match telchar::service::config_reload::BackendReload::prepare(
+                &config,
+                gateway_store.endpoint().cloned(),
+                gateway_store
+                    .build_helper()
+                    .map(std::path::Path::to_path_buf),
+                Duration::from_secs(1),
+            )
+            .and_then(|reload| reload.apply(&mut config, &backends, &mut static_ssh_health_service))
+            {
+                Ok(added) => {
+                    telchar::service::metrics::configuration_reload("succeeded", None);
+                    tracing::info!(
+                        event = "configuration.reload.completed",
+                        static_ssh_added_count = added,
+                        static_ssh_total_count = config.static_ssh_backends().len(),
+                        "configuration reload completed"
+                    );
+                }
+                Err(error) => {
+                    telchar::service::metrics::configuration_reload("rejected", Some("invalid"));
+                    tracing::warn!(
+                        event = "configuration.reload.rejected",
+                        reason = error_reason(&error),
+                        "configuration reload rejected"
+                    );
+                }
+            }
         }
         if let Err(error) = static_ssh_health_service.check() {
             shutdown_daemon_services(
@@ -620,7 +656,7 @@ fn run_daemon() -> io::Result<()> {
         let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
-        let backends = Arc::clone(&backends);
+        let backends = backends.clone();
         let shared_builds = Arc::clone(&shared_builds);
         let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
         let gateway_store = gateway_store.clone();
@@ -641,7 +677,7 @@ fn run_daemon() -> io::Result<()> {
                         &rate_admission,
                         disk_reserve,
                         &telchar::service::disk_reserve::OsDiskReserveProbe,
-                        &backends,
+                        &backends.snapshot(),
                         &shared_builds,
                         &shared_build_scheduler,
                         &gateway_store,

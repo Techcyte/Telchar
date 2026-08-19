@@ -65,6 +65,63 @@ ssh_program = "{}"
 }
 
 #[test]
+fn reload_accepts_only_additive_static_ssh_backends() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("static-ssh-reload");
+    let identity_file = root.join("builder-key");
+    let known_hosts_file = root.join("known-hosts");
+    let ssh_program = root.join("ssh");
+    fs::write(&identity_file, "private-key").expect("identity writes");
+    fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
+        .expect("identity permissions set");
+    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n").expect("known hosts writes");
+    fs::write(&ssh_program, "#!/bin/sh\nexit 1\n").expect("SSH program writes");
+    fs::set_permissions(&ssh_program, fs::Permissions::from_mode(0o755))
+        .expect("SSH program permissions set");
+    let config_path = root.join("telchar.toml");
+    let backend = |name: &str, capacity: usize| {
+        format!(
+            "[[backends.static_ssh]]\nname = \"{name}\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = {capacity}\ndestination = \"{name}\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            identity_file.display(),
+            known_hosts_file.display(),
+            ssh_program.display()
+        )
+    };
+    fs::write(&config_path, backend("builder-a", 1)).expect("initial configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    let original = ServiceConfig::load().expect("initial configuration loads");
+
+    fs::write(
+        &config_path,
+        format!("{}{}", backend("builder-a", 1), backend("builder-b", 2)),
+    )
+    .expect("additive configuration writes");
+    let additive = ServiceConfig::load().expect("additive configuration loads");
+    assert_eq!(
+        original
+            .validate_additive_static_ssh_reload(&additive)
+            .expect("additive reload validates"),
+        1
+    );
+
+    fs::write(&config_path, backend("builder-a", 2)).expect("changed configuration writes");
+    let changed = ServiceConfig::load().expect("changed configuration loads");
+    assert!(original
+        .validate_additive_static_ssh_reload(&changed)
+        .is_err());
+
+    fs::write(&config_path, "").expect("removed configuration writes");
+    let removed = ServiceConfig::load().expect("removed configuration loads");
+    assert!(original
+        .validate_additive_static_ssh_reload(&removed)
+        .is_err());
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn static_ssh_backend_defaults_health_check_intervals() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

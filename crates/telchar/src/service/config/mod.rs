@@ -63,7 +63,7 @@ const MAXIMUM_STATIC_SSH_CHECK_TIMEOUT_SECONDS: u64 = 5 * 60;
 const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
 const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
@@ -163,6 +163,39 @@ impl ServiceConfig {
 
     pub fn nomad_backends(&self) -> &[NomadBackendConfig] {
         &self.nomad_backends
+    }
+
+    pub fn validate_additive_static_ssh_reload(&self, replacement: &Self) -> io::Result<usize> {
+        if self.running_disconnect_policy != replacement.running_disconnect_policy
+            || self.output_retention != replacement.output_retention
+            || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
+            || self.cache_publisher != replacement.cache_publisher
+            || self.database_url != replacement.database_url
+            || self.ipc_socket != replacement.ipc_socket
+            || self.maximum_ipc_sessions != replacement.maximum_ipc_sessions
+            || self.nomad_callback != replacement.nomad_callback
+            || self.credential_mappings != replacement.credential_mappings
+            || self.default_scheduling_limits != replacement.default_scheduling_limits
+            || self.subject_scheduling_limits != replacement.subject_scheduling_limits
+            || self.backend_permit_wait != replacement.backend_permit_wait
+            || self.local_backend != replacement.local_backend
+            || self.nomad_backends != replacement.nomad_backends
+        {
+            return Err(invalid("configuration reload changes immutable settings"));
+        }
+        if replacement.static_ssh_backends.len() < self.static_ssh_backends.len()
+            || !self.static_ssh_backends.iter().all(|backend| {
+                replacement
+                    .static_ssh_backends
+                    .iter()
+                    .any(|candidate| candidate == backend)
+            })
+        {
+            return Err(invalid(
+                "configuration reload changes an existing static SSH backend",
+            ));
+        }
+        Ok(replacement.static_ssh_backends.len() - self.static_ssh_backends.len())
     }
 
     pub fn backend_targets(&self) -> impl Iterator<Item = &BackendTarget> {

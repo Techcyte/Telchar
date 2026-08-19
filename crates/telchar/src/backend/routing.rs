@@ -2,7 +2,7 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::backend::{
     BackendCapabilities, BackendKind, BackendPool, BuildBackend, BuildExecution, BuildResult,
@@ -91,6 +91,33 @@ impl ConfiguredBackends {
             backends: self.clone(),
             database_url: database_url.to_owned(),
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct ReloadableBackends {
+    current: Arc<RwLock<ConfiguredBackends>>,
+}
+
+impl ReloadableBackends {
+    pub fn new(backends: ConfiguredBackends) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(backends)),
+        }
+    }
+
+    pub fn snapshot(&self) -> ConfiguredBackends {
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn replace(&self, backends: ConfiguredBackends) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = backends;
     }
 }
 

@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use telchar::service::daemon_services::{MaintenanceService, RecoveryMonitorService};
+use telchar::backend::static_ssh::StaticSshHealth;
+use telchar::service::daemon_services::{
+    MaintenanceService, RecoveryMonitorService, StaticSshHealthService,
+};
 
 #[test]
 fn maintenance_shutdown_interrupts_wait_and_joins_worker() {
@@ -22,6 +25,20 @@ fn maintenance_shutdown_interrupts_wait_and_joins_worker() {
 
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(runs.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn static_ssh_health_service_can_be_replaced_without_leaking_the_previous_worker() {
+    let health = StaticSshHealth::from_states(&[], []);
+    let mut service = StaticSshHealthService::start(health.clone(), Duration::from_secs(60))
+        .expect("health service starts");
+    let replacement =
+        StaticSshHealthService::start(health, Duration::from_secs(60)).expect("replacement starts");
+
+    service
+        .replace(replacement)
+        .expect("health service replaces");
+    service.shutdown().expect("replacement shuts down");
 }
 
 #[test]

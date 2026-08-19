@@ -33,6 +33,7 @@ struct Instruments {
     backend_execution_duration: Histogram<f64>,
     static_ssh_available: Gauge<u64>,
     static_ssh_unavailable: Gauge<u64>,
+    configuration_reloads: Counter<u64>,
     cache_substitutions: Counter<u64>,
     cache_substitution_duration: Histogram<f64>,
     cache_publications: Counter<u64>,
@@ -178,6 +179,10 @@ fn instruments() -> &'static Instruments {
             static_ssh_unavailable: meter
                 .u64_gauge("telchar.static_ssh.hosts.unavailable")
                 .with_unit("{host}")
+                .build(),
+            configuration_reloads: meter
+                .u64_counter("telchar.configuration.reloads")
+                .with_unit("{reload}")
                 .build(),
             cache_substitutions: meter
                 .u64_counter("telchar.cache.substitutions")
@@ -483,6 +488,14 @@ pub fn backend_configured(name: &str, kind: &str, limit: u64) {
     instruments()
         .backend_permits_limit
         .record(limit, &attributes);
+}
+
+pub fn configuration_reload(outcome: &str, failure_class: Option<&str>) {
+    let mut attributes = vec![KeyValue::new("outcome", outcome.to_owned())];
+    if let Some(failure_class) = failure_class {
+        attributes.push(KeyValue::new("failure_class", failure_class.to_owned()));
+    }
+    instruments().configuration_reloads.add(1, &attributes);
 }
 
 pub fn record_static_ssh_health(ready: u64, unavailable: u64) {
@@ -828,6 +841,7 @@ pub fn emit_smoke_metrics() {
         None,
     );
     record_static_ssh_health(1, 1);
+    configuration_reload("succeeded", None);
     cache_substitution_finished(Duration::from_millis(1), "miss");
     cache_publication_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");

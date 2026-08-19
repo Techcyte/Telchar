@@ -2,6 +2,7 @@
 
 pub mod cache_publication;
 pub mod config;
+pub mod config_reload;
 pub mod daemon_services;
 pub mod deployment;
 pub mod disk_reserve;

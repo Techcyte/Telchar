@@ -79,6 +79,10 @@ check_timeout_seconds = 10
 
 All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged.
 
+Send `SIGHUP` to the daemon after atomically replacing its configuration file to add static SSH backends. Reload parses and validates the complete file, immediately probes the resulting static SSH inventory, and publishes one immutable backend generation for subsequently accepted sessions. Existing sessions and in-flight builds retain their previous generation.
+
+Reload is intentionally additive. Existing static SSH definitions, removals, local or Nomad backends, and all non-backend settings must remain unchanged. An invalid or unsupported reload is rejected while the active configuration continues serving work. Newly added but unavailable hosts are accepted in degraded state and remain excluded from scheduling until a readiness check succeeds.
+
 Failure procedure:
 
 1. stop client ingress or let requests fail closed;
