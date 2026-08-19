@@ -53,6 +53,51 @@ fn identical_connected_builds_share_one_execution() {
 }
 
 #[test]
+fn thousand_concurrent_requests_coalesce_into_one_in_flight_build() {
+    const REQUESTS: usize = 1_000;
+    let registry = Arc::new(SharedBuildRegistry::new());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(Barrier::new(REQUESTS + 1));
+    let release = Arc::new(Barrier::new(2));
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(REQUESTS);
+        for _ in 0..REQUESTS {
+            let registry = Arc::clone(&registry);
+            let executions = Arc::clone(&executions);
+            let start = Arc::clone(&start);
+            let release = Arc::clone(&release);
+            handles.push(scope.spawn(move || {
+                start.wait();
+                registry.execute_or_wait("large-fan-in", || {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    release.wait();
+                    successful_result()
+                })
+            }));
+        }
+        start.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while registry.waiting_follower_count() != REQUESTS - 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "all followers did not coalesce"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(registry.active_build_count(), 1);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        release.wait();
+        assert!(handles
+            .into_iter()
+            .all(|handle| handle.join().expect("request joins").is_ok()));
+    });
+
+    assert_eq!(registry.active_build_count(), 0);
+    assert_eq!(registry.waiting_follower_count(), 0);
+}
+
+#[test]
 fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
     let registry = Arc::new(SharedBuildRegistry::new());
     let barrier = Arc::new(Barrier::new(3));
