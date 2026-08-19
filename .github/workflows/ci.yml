@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@2126ae7fc54c9df00dd18f7f18754393182c73cd # v31.9.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting
+        run: nix develop -c cargo fmt --all -- --check
+
+      - name: Check workspace
+        run: nix develop -c cargo check --locked --workspace
+
+      - name: Lint workspace
+        run: nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: nix develop -c cargo test --locked --workspace -- --test-threads=1
+
+  nix:
+    name: Nix build and evaluation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NIXPKGS_ALLOW_UNFREE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@2126ae7fc54c9df00dd18f7f18754393182c73cd # v31.9.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Evaluate flake checks
+        run: nix flake check --impure --no-build
+
+      - name: Build Telchar
+        run: nix build --impure --no-link .#telchar
+
+      - name: Build Nomad worker
+        run: nix build --impure --no-link .#telchar-nomad-worker
+
+      - name: Build OCI image contracts
+        run: nix build --impure --no-link .#checks.x86_64-linux.oci-images
