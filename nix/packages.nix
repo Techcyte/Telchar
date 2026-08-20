@@ -69,14 +69,13 @@ let
     pkgs.runCommand "telchar-nix-daemon-bootstrap" { nativeBuildInputs = [ pkgs.gnutar ]; }
       ''
         mkdir -p "$out"
-        tar -cf "$out/store.tar" --files-from=${nixDaemonClosure}/store-paths
+        tar --mode=u+w -cf "$out/store.tar" --files-from=${nixDaemonClosure}/store-paths
         cp ${nixDaemonClosure}/registration "$out/registration"
       '';
   nixDaemonEntrypoint = pkgs.writeText "telchar-nix-daemon" (
-    builtins.replaceStrings
-      [ "/bootstrap/nix-store.tar" "/bootstrap/nix-store-registration" ]
-      [ "/bootstrap/store.tar" "/bootstrap/registration" ]
-      (builtins.readFile ../deploy/nix/telchar-nix-daemon.sh)
+    builtins.replaceStrings [ "@nix@" ] [ "${pkgs.nix}" ] (
+      builtins.readFile ../deploy/nix/telchar-nix-daemon.sh
+    )
   );
   nixDaemonEtc = pkgs.runCommand "telchar-nix-daemon-etc" { } ''
     mkdir -p "$out/etc/nix"
@@ -145,7 +144,8 @@ let
     name = "telchar-nix-daemon";
     tag = "latest";
     fakeRootCommands = ''
-      mkdir -p ./bootstrap ./bin ./etc/nix ./var/lib/telchar
+      mkdir -p ./bootstrap ./bin ./etc/nix ./nix/var/log/nix/drvs ./var/lib/telchar
+      chown -R 995:995 ./nix/var/log ./var/lib/telchar
       cp ${pkgs.pkgsStatic.busybox}/bin/busybox ./bootstrap/busybox
       cp ${nixDaemonBootstrap}/store.tar ./bootstrap/store.tar
       cp ${nixDaemonBootstrap}/registration ./bootstrap/registration
