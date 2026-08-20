@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::process::{Command, Stdio};
 use std::thread;
 
-const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
+const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_RESPONSE_ENTRIES: usize = nix_worker_protocol::MAXIMUM_QUERY_VALID_PATHS;
 
 pub trait QueryValidPathsStore {
