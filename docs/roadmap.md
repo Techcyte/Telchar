@@ -14,12 +14,6 @@ Add an optional compressed local spool keyed by execution identity, with byte li
 
 ## Later
 
-### Durable gateway Nix sidecar
-
-Run the gateway against a dedicated Nix daemon in its Nomad allocation rather than mounting the selected host's daemon socket. The daemon must use durable storage for `/nix/store`, `/nix/var/nix/db`, and Telchar GC roots so gateway-store authority survives rescheduling across eligible nodes. Telchar and the daemon share the canonical store path and a Unix socket through allocation volumes.
-
-This topology must prove startup ordering through the Nix worker handshake, non-root access, sandbox behavior, durable volume reattachment, node migration, GC-root preservation, backup and restore, store interruption, and bounded shutdown. Its Nix configuration must not delegate builds back through Telchar. Worker allocations may separately use ephemeral allocation-local Nix daemons; that is not sufficient for the durable gateway store.
-
 ### Active/passive availability
 
 A standby requires leadership epochs, dispatch fencing, callback routing, recovery handoff, and shared or replicated gateway-store authority. Running two current daemons is not high availability. A durable gateway Nix sidecar can provide shared placement-independent store authority, but does not by itself provide daemon leadership or callback failover.

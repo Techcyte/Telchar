@@ -46,7 +46,9 @@ The worker uses the configured Nix store or daemon. Common choices are:
 - a mounted host Nix daemon with a persistent warm store;
 - an allocation-local daemon or store with ordinary substituters.
 
-Mounting a host daemon socket is privileged operator policy. Telchar does not create arbitrary mounts or allow clients to select the store.
+The gateway independently supports either a host daemon socket or a sibling Nomad task running a dedicated Nix daemon. For the sibling topology, bind persistent operator storage to `/nix/store` and `/nix/var/nix`, and bind the daemon-socket directory into Telchar. Keep the Nix database and store together across rescheduling. Telchar needs only the socket; it does not mount or mutate the sidecar store directly.
+
+Mounting daemon sockets and persistent directories is privileged operator policy. Telchar does not create arbitrary mounts or allow clients to select the store.
 
 For each path in the complete admitted closure manifest, the worker:
 

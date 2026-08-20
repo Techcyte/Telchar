@@ -6,6 +6,13 @@ The public NixOS module is `nixosModules.default` (also exported as `nixosModule
 
 ## Before deployment
 
+Telchar supports two gateway Nix-daemon topologies:
+
+- **Host passthrough** connects to the host daemon through its Unix socket. A NixOS service can use the normal host socket directly; a container can bind-mount that socket. The host daemon must authorize the numeric runtime UID as a trusted user.
+- **Sidecar passthrough** connects to a sibling Nix daemon through a shared Unix socket. Persist `/nix/store` and `/nix/var/nix` outside the allocation, keep the daemon and Telchar runtime identities coherent, and do not back up the Nix store with file-oriented backup jobs. Preserve store state and its database as one unit when recovery requires a backup.
+
+`TELCHAR_GATEWAY_STORE_URI` selects the operator-owned daemon socket. Clients cannot select or alter this topology.
+
 - Use a gateway store that is not shared with a local client workload.
 - Give the daemon access only to its PostgreSQL database, gateway Nix daemon, state directories, and configured backend credentials.
 - Keep the daemon Unix socket private to the configured frontend UID.
