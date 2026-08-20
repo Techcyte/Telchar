@@ -35,6 +35,7 @@ pub struct PromotionRequest {
     pub references: Vec<PathBuf>,
     pub deriver: Option<PathBuf>,
     pub content_address: Option<String>,
+    pub signatures: Vec<String>,
     pub nar_path: PathBuf,
 }
 
@@ -86,6 +87,11 @@ impl StorePromotionBackend for GatewayStorePromotionBackend {
             .iter()
             .map(|path| path.as_os_str().as_encoded_bytes().to_vec())
             .collect::<Vec<_>>();
+        let signatures = request
+            .signatures
+            .iter()
+            .map(|signature| signature.as_bytes().to_vec())
+            .collect::<Vec<_>>();
         let info = AddToStoreNarInfo {
             path: request.path.as_os_str().as_encoded_bytes(),
             deriver: request
@@ -97,7 +103,7 @@ impl StorePromotionBackend for GatewayStorePromotionBackend {
             registration_time: 0,
             nar_size: request.nar_size,
             ultimate: false,
-            signatures: &[],
+            signatures: &signatures,
             content_address: request.content_address.as_deref().map(str::as_bytes),
         };
         let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
@@ -446,6 +452,7 @@ fn promote_staged(
         references: declared.references.clone(),
         deriver: declared.deriver.clone(),
         content_address: declared.content_address.clone(),
+        signatures: declared.signatures.clone(),
         nar_path: nar_path.to_path_buf(),
     };
     backend.before_promote(&request)?;
@@ -477,7 +484,7 @@ fn promote_staged(
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
-    if !declared.signatures.is_empty() || declared.ultimate {
+    if declared.ultimate {
         return Err(invalid("unsupported classic path metadata"));
     }
     if declared

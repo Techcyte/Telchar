@@ -146,37 +146,53 @@ fn preserves_fixed_output_content_address_during_promotion() {
 }
 
 #[test]
-fn rejects_unsupported_classic_metadata_before_staging() {
-    let cases: Vec<(&str, DeclarationMutation)> = vec![
-        (
-            "signature",
-            Box::new(|info| info.signatures.push("sig".into())),
-        ),
-        ("ultimate", Box::new(|info| info.ultimate = true)),
-    ];
-    for (label, mutate) in cases {
-        let staging = TestDirectory::create();
-        let mut declared = declared_path_info();
-        mutate(&mut declared);
-        let mut backend = RecordingBackend::accepting(registered_path_info());
+fn preserves_signatures_during_promotion() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.signatures = vec!["cache.nixos.org-1:fixture".into()];
+    let mut backend = RecordingBackend::accepting(registered_path_info());
 
-        let error = validate_and_promote_nar(
-            Cursor::new(regular_nar(CONTENT)),
-            staging.path(),
-            Path::new(STORE_DIRECTORY),
-            &declared,
-            &mut backend,
-        )
-        .unwrap_err();
+    validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect("signed path promotes");
 
-        assert!(
-            error.to_string().contains("unsupported"),
-            "{label}: {error}"
-        );
-        assert!(backend.request.is_none(), "{label} invoked helper");
-        assert!(backend.queried_paths.is_empty(), "{label} queried store");
-        assert_directory_empty(staging.path());
-    }
+    assert_eq!(
+        backend.request.expect("promotion invoked").signatures,
+        declared.signatures
+    );
+}
+
+#[test]
+fn rejects_ultimate_metadata_before_staging() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.ultimate = true;
+    let mut backend = RecordingBackend::accepting(registered_path_info());
+
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("unsupported"), "{error}");
+    assert!(
+        backend.request.is_none(),
+        "ultimate metadata invoked helper"
+    );
+    assert!(
+        backend.queried_paths.is_empty(),
+        "ultimate metadata queried store"
+    );
+    assert_directory_empty(staging.path());
 }
 
 #[test]
