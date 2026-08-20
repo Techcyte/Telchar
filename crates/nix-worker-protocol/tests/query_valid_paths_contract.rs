@@ -39,6 +39,37 @@ fn decodes_bounded_query_valid_paths_request() {
 }
 
 #[test]
+fn decodes_realistic_package_closure_query() {
+    let count = 2_530;
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 31);
+    write_worker_integer(&mut wire, count);
+    for index in 0..count {
+        write_worker_byte_string(
+            &mut wire,
+            format!("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-closure-{index}").as_bytes(),
+        );
+    }
+    write_worker_integer(&mut wire, 1);
+    let mut reader = WorkerReader::new(
+        wire.as_slice(),
+        ProtocolSessionLimits::new(16 * 1024 * 1024, Duration::from_secs(1)),
+    );
+
+    assert_eq!(
+        reader.read_operation().expect("operation decodes"),
+        WorkerOperation::QueryValidPaths
+    );
+    let request = reader
+        .complete_query_valid_paths(LATEST_WORKER_VERSION)
+        .expect("real package closure query decodes");
+
+    assert_eq!(request.paths().len(), count as usize);
+    assert!(request.substitute());
+    assert!(reader.retained_metadata_bytes() < 16 * 1024 * 1024);
+}
+
+#[test]
 fn rejects_query_valid_paths_count_before_path_allocation() {
     let mut wire = Vec::new();
     write_worker_integer(&mut wire, 31);
