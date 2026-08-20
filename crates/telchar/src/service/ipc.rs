@@ -174,11 +174,17 @@ pub fn authorize_peer<Fd: AsFd>(_socket: Fd, _expected_uid: u32) -> io::Result<(
 pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()> {
     let peer = rustix::net::sockopt::socket_peercred(socket)
         .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
-    if peer.uid.as_raw() != expected_uid {
-        tracing::warn!(event = "ipc.peer.rejected", reason = "unexpected-uid");
+    let peer_uid = peer.uid.as_raw();
+    if peer_uid != expected_uid {
+        tracing::warn!(
+            event = "ipc.peer.rejected",
+            reason = "unexpected-uid",
+            peer_uid,
+            expected_uid
+        );
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "local IPC peer has unexpected user identity",
+            format!("local IPC peer uid {peer_uid} does not match expected uid {expected_uid}"),
         ));
     }
     tracing::debug!(event = "ipc.peer.authorized", "local IPC peer authorized");

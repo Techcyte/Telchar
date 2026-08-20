@@ -18,4 +18,8 @@ fn rejects_socket_peer_with_wrong_uid() {
     let wrong_uid = if uid == 0 { 1 } else { 0 };
     let error = authorize_peer(&server, wrong_uid).expect_err("wrong user is denied");
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        error.to_string(),
+        format!("local IPC peer uid {uid} does not match expected uid {wrong_uid}")
+    );
 }
