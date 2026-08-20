@@ -9,7 +9,8 @@ use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 use crate::store::nar::stage_nar;
 
-pub const MAXIMUM_PROMOTION_REFERENCES: usize = 256;
+pub const MAXIMUM_PROMOTION_REFERENCES: usize =
+    nix_worker_protocol::MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

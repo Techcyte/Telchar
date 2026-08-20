@@ -3,6 +3,7 @@
 use std::io;
 use std::time::Duration;
 
+use nix_worker_protocol::MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES;
 use nix_worker_protocol::{
     write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
     WorkerReader, WorkerVersion, LATEST_WORKER_VERSION,
@@ -92,6 +93,11 @@ fn streams_one_declared_path_body_without_retaining_it() {
     assert_eq!(request.object_count(), 1);
     assert!(request.dont_check_signatures());
     assert_eq!(body, nar);
+}
+
+#[test]
+fn accepts_realistic_derivation_reference_count() {
+    assert!(MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES >= 275);
 }
 
 #[test]
