@@ -90,6 +90,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_specification",
         sql: include_str!("../../migrations/0015_shared_build_specification.sql"),
     },
+    Migration {
+        version: 16,
+        name: "singleton_ownership",
+        sql: include_str!("../../migrations/0016_singleton_ownership.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

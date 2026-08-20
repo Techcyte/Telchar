@@ -39,6 +39,7 @@ fn run_executor() -> io::Result<()> {
     let _ownership =
         telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
             &database_url,
+            config.ownership_lease_duration(),
         )
         .map_err(|_| invalid("local executor ownership refused"))?;
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
@@ -285,7 +286,10 @@ fn run_daemon() -> io::Result<()> {
         "database migration completed"
     );
     let mut singleton_ownership =
-        match telchar::service::singleton_ownership::SingletonOwnership::acquire(&database_url) {
+        match telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            &database_url,
+            config.ownership_lease_duration(),
+        ) {
             Ok(ownership) => {
                 tracing::info!(
                     event = "database.singleton_ownership.acquired",
@@ -504,7 +508,7 @@ fn run_daemon() -> io::Result<()> {
             )
         },
     )?;
-    let ownership_check_interval = duration_from_env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", 1_000);
+    let ownership_check_interval = config.ownership_renewal_interval();
     let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reload_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     signal_hook::flag::register(

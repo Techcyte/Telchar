@@ -88,6 +88,16 @@ impl PostgresFixture {
     pub fn connect(&self) -> Client {
         Client::connect(&self.url, NoTls).expect("test database connects")
     }
+
+    #[allow(dead_code)]
+    pub fn expire_singleton_ownership(&self, owner_kind: &str) {
+        self.connect()
+            .execute(
+                "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = $1",
+                &[&owner_kind],
+            )
+            .expect("singleton ownership expires");
+    }
 }
 
 impl Drop for PostgresFixture {

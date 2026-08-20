@@ -1,11 +1,12 @@
-//! Acquires and monitors the PostgreSQL advisory lock that fences Telchar to one active daemon.
+//! Acquires and renews the PostgreSQL lease that fences Telchar to one active process.
 
 use std::fmt;
+use std::time::Duration;
 
 use postgres::{Client, NoTls};
 
-pub const SINGLETON_OWNERSHIP_LOCK_KEY: i64 = 0x5445_4c43_4841_5202;
-pub const LOCAL_EXECUTOR_OWNERSHIP_LOCK_KEY: i64 = 0x5445_4c43_4841_5203;
+const DAEMON_OWNER_KIND: &str = "daemon";
+const LOCAL_EXECUTOR_OWNER_KIND: &str = "local-executor";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SingletonOwnershipFailure {
@@ -13,6 +14,7 @@ pub enum SingletonOwnershipFailure {
     Connection,
     Query,
     Contended,
+    Fenced,
 }
 
 impl SingletonOwnershipFailure {
@@ -22,6 +24,7 @@ impl SingletonOwnershipFailure {
             Self::Connection => "connection",
             Self::Query => "query",
             Self::Contended => "contended",
+            Self::Fenced => "fenced",
         }
     }
 }
@@ -44,7 +47,11 @@ impl fmt::Display for SingletonOwnershipError {
 impl std::error::Error for SingletonOwnershipError {}
 
 pub struct SingletonOwnership {
-    connection: Client,
+    database_url: String,
+    owner_kind: &'static str,
+    owner_token: String,
+    generation: i64,
+    lease_duration: Duration,
 }
 
 impl fmt::Debug for SingletonOwnership {
@@ -54,48 +61,129 @@ impl fmt::Debug for SingletonOwnership {
 }
 
 impl SingletonOwnership {
-    pub fn acquire(database_url: &str) -> Result<Self, SingletonOwnershipError> {
-        Self::acquire_with_key(database_url, SINGLETON_OWNERSHIP_LOCK_KEY)
-    }
-
-    pub fn acquire_local_executor(database_url: &str) -> Result<Self, SingletonOwnershipError> {
-        Self::acquire_with_key(database_url, LOCAL_EXECUTOR_OWNERSHIP_LOCK_KEY)
-    }
-
-    fn acquire_with_key(
+    pub fn acquire(
         database_url: &str,
-        lock_key: i64,
+        lease_duration: Duration,
     ) -> Result<Self, SingletonOwnershipError> {
-        if database_url.trim().is_empty() {
-            return Err(SingletonOwnershipError(
-                SingletonOwnershipFailure::Configuration,
-            ));
-        }
+        Self::acquire_with_kind(database_url, DAEMON_OWNER_KIND, lease_duration)
+    }
+
+    pub fn acquire_local_executor(
+        database_url: &str,
+        lease_duration: Duration,
+    ) -> Result<Self, SingletonOwnershipError> {
+        Self::acquire_with_kind(database_url, LOCAL_EXECUTOR_OWNER_KIND, lease_duration)
+    }
+
+    fn acquire_with_kind(
+        database_url: &str,
+        owner_kind: &'static str,
+        lease_duration: Duration,
+    ) -> Result<Self, SingletonOwnershipError> {
+        let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
+        let owner_token = owner_token();
         let mut connection = Client::connect(database_url, NoTls)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
-        let acquired: bool = connection
-            .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_key])
-            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?
-            .try_get(0)
+        let row = connection
+            .query_opt(
+                "INSERT INTO singleton_ownership (owner_kind, owner_token, generation, lease_expires_at, updated_at) VALUES ($1, $2, 1, clock_timestamp() + ($3::bigint * interval '1 millisecond'), clock_timestamp()) ON CONFLICT (owner_kind) DO UPDATE SET owner_token = EXCLUDED.owner_token, generation = singleton_ownership.generation + 1, lease_expires_at = EXCLUDED.lease_expires_at, updated_at = EXCLUDED.updated_at WHERE singleton_ownership.lease_expires_at <= clock_timestamp() RETURNING generation",
+                &[&owner_kind, &owner_token, &lease_milliseconds],
+            )
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
-        if !acquired {
+        let Some(row) = row else {
             return Err(SingletonOwnershipError(
                 SingletonOwnershipFailure::Contended,
             ));
-        }
-        Ok(Self { connection })
-    }
-
-    pub fn check(&mut self) -> Result<(), SingletonOwnershipError> {
-        let value: i32 = self
-            .connection
-            .query_one("SELECT 1", &[])
-            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?
+        };
+        let generation = row
             .try_get(0)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
-        if value != 1 {
-            return Err(SingletonOwnershipError(SingletonOwnershipFailure::Query));
+        Ok(Self {
+            database_url: database_url.to_owned(),
+            owner_kind,
+            owner_token,
+            generation,
+            lease_duration,
+        })
+    }
+
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+
+    pub fn renew(&mut self) -> Result<(), SingletonOwnershipError> {
+        let lease_milliseconds = lease_milliseconds(&self.database_url, self.lease_duration)?;
+        let mut connection = Client::connect(&self.database_url, NoTls)
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+        let renewed = connection
+            .execute(
+                "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'), updated_at = clock_timestamp() WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3 AND lease_expires_at > clock_timestamp()",
+                &[&self.owner_kind, &self.owner_token, &self.generation, &lease_milliseconds],
+            )
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
+        if renewed != 1 {
+            return Err(SingletonOwnershipError(SingletonOwnershipFailure::Fenced));
         }
         Ok(())
     }
+
+    pub fn check(&mut self) -> Result<(), SingletonOwnershipError> {
+        self.renew()
+    }
+
+    pub fn verify(&self) -> Result<(), SingletonOwnershipError> {
+        let mut connection = Client::connect(&self.database_url, NoTls)
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+        let current = connection
+            .query_opt(
+                "SELECT 1 FROM singleton_ownership WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3 AND lease_expires_at > clock_timestamp()",
+                &[&self.owner_kind, &self.owner_token, &self.generation],
+            )
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
+        if current.is_none() {
+            return Err(SingletonOwnershipError(SingletonOwnershipFailure::Fenced));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SingletonOwnership {
+    fn drop(&mut self) {
+        let Ok(mut connection) = Client::connect(&self.database_url, NoTls) else {
+            return;
+        };
+        let _ = connection.execute(
+            "DELETE FROM singleton_ownership WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3",
+            &[&self.owner_kind, &self.owner_token, &self.generation],
+        );
+    }
+}
+
+fn lease_milliseconds(
+    database_url: &str,
+    lease_duration: Duration,
+) -> Result<i64, SingletonOwnershipError> {
+    if database_url.trim().is_empty() || lease_duration.is_zero() {
+        return Err(SingletonOwnershipError(
+            SingletonOwnershipFailure::Configuration,
+        ));
+    }
+    i64::try_from(lease_duration.as_millis())
+        .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Configuration))
+}
+
+fn owner_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!(
+        "{:x}-{:x}-{:x}",
+        std::process::id(),
+        time,
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
 }

@@ -19,7 +19,7 @@ fn latest_migration_version_matches_resulting_schema() {
         telchar::persistence::latest_migration_version(),
         outcome.resulting_version
     );
-    assert_eq!(outcome.resulting_version, 15);
+    assert_eq!(outcome.resulting_version, 16);
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
             &[],
         )
         .expect("migration ledger reads");
-    assert_eq!(ledger.len(), 15);
+    assert_eq!(ledger.len(), 16);
     assert_eq!(ledger[0].get::<_, i64>(0), 1);
     assert_eq!(ledger[0].get::<_, String>(1), "minimum_lifecycle");
     assert_eq!(ledger[0].get::<_, Vec<u8>>(2).len(), 32);
@@ -84,6 +84,9 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
     assert_eq!(ledger[14].get::<_, i64>(0), 15);
     assert_eq!(ledger[14].get::<_, String>(1), "shared_build_specification");
     assert_eq!(ledger[14].get::<_, Vec<u8>>(2).len(), 32);
+    assert_eq!(ledger[15].get::<_, i64>(0), 16);
+    assert_eq!(ledger[15].get::<_, String>(1), "singleton_ownership");
+    assert_eq!(ledger[15].get::<_, Vec<u8>>(2).len(), 32);
 
     for table in [
         "protocol_sessions",
@@ -97,6 +100,7 @@ fn empty_database_migrates_to_minimum_lifecycle_schema() {
         "shared_build_attempts",
         "shared_build_attempt_outcomes",
         "nomad_callback_nonces",
+        "singleton_ownership",
     ] {
         let row = client
             .query_one("SELECT to_regclass($1)::text", &[&table])
@@ -242,7 +246,7 @@ fn shared_build_attempt_migration_backfills_active_builds() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("attempt migration applies");
 
     assert_eq!(outcome.previously_applied, 11);
-    assert_eq!(outcome.applied_this_run, 4);
+    assert_eq!(outcome.applied_this_run, 5);
     let attempt = telchar::persistence::read_shared_build_attempt(
         fixture.url(),
         "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-active.drv",
@@ -297,7 +301,7 @@ fn output_retention_migration_backfills_version_one_rows() {
     let outcome = telchar::persistence::migrate(fixture.url()).expect("version two migrates");
 
     assert_eq!(outcome.previously_applied, 1);
-    assert_eq!(outcome.applied_this_run, 14);
+    assert_eq!(outcome.applied_this_run, 15);
     let mut client = fixture.connect();
     let active_seconds = client
         .query_one(
@@ -332,8 +336,8 @@ fn rerunning_an_exact_prefix_is_idempotent() {
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
 
     assert_eq!(first.previously_applied, 0);
-    assert_eq!(first.applied_this_run, 15);
-    assert_eq!(second.previously_applied, 15);
+    assert_eq!(first.applied_this_run, 16);
+    assert_eq!(second.previously_applied, 16);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -341,7 +345,7 @@ fn rerunning_an_exact_prefix_is_idempotent() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        15
+        16
     );
 }
 
@@ -373,7 +377,7 @@ fn future_schema_version_is_rejected() {
     fixture
         .connect()
         .execute(
-            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (16, 'future', decode(repeat('00', 32), 'hex'))",
+            "INSERT INTO telchar_schema_migrations (version, name, checksum) VALUES (17, 'future', decode(repeat('00', 32), 'hex'))",
             &[],
         )
         .expect("future migration inserts");
@@ -426,7 +430,7 @@ fn schema_and_ledger_survive_a_database_restart() {
     fixture.restart();
 
     let second = telchar::persistence::migrate(fixture.url()).expect("second migration succeeds");
-    assert_eq!(first.applied_this_run, 15);
+    assert_eq!(first.applied_this_run, 16);
     assert_eq!(second.applied_this_run, 0);
     assert_eq!(
         fixture
@@ -434,7 +438,7 @@ fn schema_and_ledger_survive_a_database_restart() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        15
+        16
     );
 }
 
@@ -462,7 +466,7 @@ fn concurrent_runners_apply_the_migration_once() {
             .iter()
             .map(|outcome| outcome.applied_this_run)
             .sum::<usize>(),
-        15
+        16
     );
     assert_eq!(
         fixture
@@ -470,6 +474,6 @@ fn concurrent_runners_apply_the_migration_once() {
             .query_one("SELECT count(*) FROM telchar_schema_migrations", &[])
             .expect("ledger count reads")
             .get::<_, i64>(0),
-        15
+        16
     );
 }
