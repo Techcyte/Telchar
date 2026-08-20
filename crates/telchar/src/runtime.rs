@@ -672,6 +672,7 @@ fn run_daemon() -> io::Result<()> {
                 tracing::warn!(
                     event = "ipc.daemon.connection_rejected",
                     reason = error_reason(&error),
+                    detail = %error,
                     "local IPC connection rejected"
                 );
                 continue;
