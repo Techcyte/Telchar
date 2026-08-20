@@ -4,8 +4,8 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    LATEST_WORKER_VERSION, ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion,
-    write_worker_byte_string, write_worker_integer,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
+    WorkerReader, WorkerVersion, LATEST_WORKER_VERSION,
 };
 
 #[test]
@@ -92,6 +92,26 @@ fn streams_one_declared_path_body_without_retaining_it() {
     assert_eq!(request.object_count(), 1);
     assert!(request.dont_check_signatures());
     assert_eq!(body, nar);
+}
+
+#[test]
+fn accepts_realistic_input_closure_object_count() {
+    let mut logical = Vec::new();
+    write_worker_integer(&mut logical, 2_338);
+    let mut wire = request_prefix(0, 1);
+    append_frame(&mut wire, &logical);
+    write_worker_integer(&mut wire, 0);
+    let mut reader = reader(&wire);
+    assert_eq!(
+        reader.read_operation().unwrap(),
+        WorkerOperation::AddMultipleToStore
+    );
+
+    let error = reader
+        .complete_add_multiple_to_store(LATEST_WORKER_VERSION, |_, _| Ok(()))
+        .expect_err("truncated first object must fail after accepting batch count");
+
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
 }
 
 #[test]

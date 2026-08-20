@@ -30,7 +30,7 @@ pub(crate) const NIX_STORE_HASH_LENGTH: usize = 32;
 pub(crate) const NIX_STORE_HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 pub const MAXIMUM_QUERY_VALID_PATHS: usize = 65_536;
-pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_OBJECTS: usize = 256;
+pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_OBJECTS: usize = 65_536;
 pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES: usize = 256;
 pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_SIGNATURES: usize = 256;
 pub const MAXIMUM_ADD_MULTIPLE_TO_STORE_HASH_BYTES: usize = 64;
