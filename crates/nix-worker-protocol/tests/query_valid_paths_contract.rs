@@ -4,9 +4,9 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    LATEST_WORKER_VERSION, MAXIMUM_QUERY_VALID_PATHS, MAXIMUM_WORKER_STORE_PATH_BYTES,
-    ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion, write_worker_byte_string,
-    write_worker_integer,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
+    WorkerReader, WorkerVersion, LATEST_WORKER_VERSION, MAXIMUM_QUERY_VALID_PATHS,
+    MAXIMUM_WORKER_STORE_PATH_BYTES,
 };
 
 const VALID_PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-valid";
@@ -106,7 +106,7 @@ fn protocol_before_1_27_has_no_substitute_word() {
 }
 
 #[test]
-fn rejects_query_valid_paths_substitution_request() {
+fn decodes_query_valid_paths_substitution_request() {
     let mut wire = Vec::new();
     write_worker_integer(&mut wire, 31);
     write_worker_integer(&mut wire, 1);
@@ -121,11 +121,12 @@ fn rejects_query_valid_paths_substitution_request() {
         reader.read_operation().expect("operation decodes"),
         WorkerOperation::QueryValidPaths
     );
-    let error = reader
+    let request = reader
         .complete_query_valid_paths(LATEST_WORKER_VERSION)
-        .expect_err("substitution is outside the initial deployment contract");
+        .expect("stock Nix substitution request decodes");
 
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(request.paths(), [VALID_PATH]);
+    assert!(request.substitute());
 }
 
 #[test]

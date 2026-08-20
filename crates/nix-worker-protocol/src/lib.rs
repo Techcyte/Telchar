@@ -218,12 +218,7 @@ impl<R: WorkerInput> WorkerReader<R> {
         let substitute = if version >= WorkerVersion::new(1, 27) {
             match self.read_integer()? {
                 0 => false,
-                1 => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "invalid QueryValidPaths request",
-                    ));
-                }
+                1 => true,
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
