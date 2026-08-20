@@ -32,6 +32,7 @@ tungstenite.workspace = true
 jsonwebtoken = "9.3.1"
 tempfile = "3.27.0"
 signal-hook = "0.3"
+libc = "0.2"
 
 [dev-dependencies]
 opentelemetry-proto.workspace = true

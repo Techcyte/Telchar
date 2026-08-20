@@ -171,10 +171,36 @@ pub fn authorize_peer<Fd: AsFd>(_socket: Fd, _expected_uid: u32) -> io::Result<(
 }
 
 #[cfg(target_os = "linux")]
+fn peer_credentials<Fd: AsFd>(socket: Fd) -> io::Result<libc::ucred> {
+    use std::os::fd::AsRawFd;
+
+    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            socket.as_fd().as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &mut length,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "local IPC peer credentials have unexpected size",
+        ));
+    }
+    Ok(unsafe { credentials.assume_init() })
+}
+
+#[cfg(target_os = "linux")]
 pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()> {
-    let peer = rustix::net::sockopt::socket_peercred(socket)
-        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
-    let peer_uid = peer.uid.as_raw();
+    let peer = peer_credentials(socket)?;
+    let peer_uid = peer.uid;
     if peer_uid != expected_uid {
         tracing::warn!(
             event = "ipc.peer.rejected",
