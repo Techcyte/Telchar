@@ -50,9 +50,25 @@ let
     EOF
   '';
 
+  gatewayEtc = pkgs.runCommand "telchar-gateway-etc" { } ''
+    mkdir -p "$out/etc"
+    cat > "$out/etc/passwd" <<'EOF'
+    root:x:0:0:root:/root:/bin/bash
+    telchar:x:995:995:Telchar gateway:/var/lib/telchar:/bin/false
+    EOF
+    cat > "$out/etc/group" <<'EOF'
+    root:x:0:
+    telchar:x:995:
+    EOF
+  '';
+
   telchar-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar";
     tag = "latest";
+    fakeRootCommands = ''
+      cp ${gatewayEtc}/etc/passwd ./etc/passwd
+      cp ${gatewayEtc}/etc/group ./etc/group
+    '';
     contents = [
       telchar
       pkgs.cacert
@@ -67,8 +83,9 @@ let
         "--socket"
         "/run/telchar/daemon.sock"
         "--frontend-uid"
-        "0"
+        "995"
       ];
+      User = "995:995";
     };
     config = {
       Entrypoint = [ "/bin/telchar" ];
@@ -77,12 +94,14 @@ let
         "--socket"
         "/run/telchar/daemon.sock"
         "--frontend-uid"
-        "0"
+        "995"
       ];
       Env = [
+        "HOME=/var/lib/telchar"
         "PATH=/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       ];
+      User = "995:995";
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
         "org.opencontainers.image.title" = "Telchar";
@@ -93,11 +112,15 @@ let
   telchar-ssh-ingress-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar-ssh-ingress";
     tag = "latest";
+    fakeRootCommands = ''
+      rm -rf ./etc/ssh ./var/empty
+      cp -R ${sshIngressEtc}/etc/. ./etc/
+      cp -R ${sshIngressEtc}/var/. ./var/
+    '';
     contents = [
       telchar
       sshIngressEntrypoint
       sshIngressForcedCommand
-      sshIngressEtc
       pkgs.bash
       pkgs.cacert
       pkgs.coreutils

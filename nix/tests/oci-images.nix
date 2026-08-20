@@ -1,6 +1,7 @@
 # Checks the names, entrypoints, commands, and buildability of OCI image outputs.
 {
   pkgs,
+  telchar,
   telcharImage,
   sshIngressImage,
   nomadWorkerImage,
@@ -14,8 +15,9 @@ assert
     "--socket"
     "/run/telchar/daemon.sock"
     "--frontend-uid"
-    "0"
+    "995"
   ];
+assert telcharImage.imageConfig.User == "995:995";
 assert sshIngressImage.imageName == "telchar-ssh-ingress";
 assert sshIngressImage.imageTag == "latest";
 assert sshIngressImage.imageConfig.Entrypoint == [ "/bin/telchar-ssh-ingress" ];
@@ -28,33 +30,25 @@ pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar
   test -f ${nomadWorkerImage}
 
   mkdir ingress
-  tar -xOf ${sshIngressImage} manifest.json \
-    | grep -o '"[^"]*/layer.tar"' \
-    | tr -d '"' \
-    | while read -r layer; do
-      tar -xOf ${sshIngressImage} "$layer" | tar -xf - -C ingress
-    done
-  test -x ingress/bin/telchar-ssh-ingress
-  test -x ingress/bin/telchar-ssh-forced-command
-  grep -q '^telchar:x:995:995:' ingress/etc/passwd
-  grep -q '^telchar:x:995:' ingress/etc/group
-  grep -q '^ForceCommand /bin/telchar-ssh-forced-command$' ingress/etc/ssh/sshd_config
-  grep -q '^TrustedUserCAKeys /var/lib/telchar-ssh/client-ca.pub$' ingress/etc/ssh/sshd_config
-  grep -q '^ExposeAuthInfo yes$' ingress/etc/ssh/sshd_config
-  grep -q '^DisableForwarding yes$' ingress/etc/ssh/sshd_config
-  grep -q '^PermitTTY no$' ingress/etc/ssh/sshd_config
-  grep -q '^PasswordAuthentication no$' ingress/etc/ssh/sshd_config
+  ingress_layer="$(tar -xOf ${sshIngressImage} manifest.json | grep -o '"[^"]*/layer.tar"' | tr -d '"' | tail -n 1)"
+  tar -xOf ${sshIngressImage} "$ingress_layer" | tar -xf - -C ingress
+  test -L ingress/bin/telchar-ssh-ingress || { echo "SSH ingress entrypoint is missing" >&2; exit 1; }
+  test -L ingress/bin/telchar-ssh-forced-command || { echo "SSH forced command is missing" >&2; exit 1; }
+  grep -q '^telchar:x:995:995:' ingress/etc/passwd || { echo "SSH ingress passwd identity is missing" >&2; exit 1; }
+  grep -q '^telchar:x:995:' ingress/etc/group || { echo "SSH ingress group identity is missing" >&2; exit 1; }
+  grep -q '^ForceCommand /bin/telchar-ssh-forced-command$' ingress/etc/ssh/sshd_config || { echo "SSH forced command configuration is missing" >&2; exit 1; }
+  grep -q '^TrustedUserCAKeys /var/lib/telchar-ssh/client-ca.pub$' ingress/etc/ssh/sshd_config || { echo "SSH client CA configuration is missing" >&2; exit 1; }
+  grep -q '^ExposeAuthInfo yes$' ingress/etc/ssh/sshd_config || { echo "SSH authentication metadata configuration is missing" >&2; exit 1; }
+  grep -q '^DisableForwarding yes$' ingress/etc/ssh/sshd_config || { echo "SSH forwarding restriction is missing" >&2; exit 1; }
+  grep -q '^PermitTTY no$' ingress/etc/ssh/sshd_config || { echo "SSH TTY restriction is missing" >&2; exit 1; }
+  grep -q '^PasswordAuthentication no$' ingress/etc/ssh/sshd_config || { echo "SSH password restriction is missing" >&2; exit 1; }
 
   mkdir gateway
-  tar -xOf ${telcharImage} manifest.json \
-    | grep -o '"[^"]*/layer.tar"' \
-    | tr -d '"' \
-    | while read -r layer; do
-      tar -xOf ${telcharImage} "$layer" | tar -xf - -C gateway
-    done
-  gateway_binary="$(readlink gateway/bin/telchar)"
-  gateway_binary="gateway''${gateway_binary}"
-  if grep -aEq 'TELCHAR_TEST_(BUILD_HELPER|EXPORT_HELPER|STORE_RETENTION)' "$gateway_binary"; then
+  gateway_layer="$(tar -xOf ${telcharImage} manifest.json | grep -o '"[^"]*/layer.tar"' | tr -d '"' | tail -n 1)"
+  tar -xOf ${telcharImage} "$gateway_layer" | tar -xf - -C gateway
+  grep -q '^telchar:x:995:995:Telchar gateway:/var/lib/telchar:/bin/false$' gateway/etc/passwd
+  grep -q '^telchar:x:995:$' gateway/etc/group
+  if grep -aEq 'TELCHAR_TEST_(BUILD_HELPER|EXPORT_HELPER|STORE_RETENTION)' ${telchar}/bin/telchar; then
     echo "gateway OCI image contains test adapter controls" >&2
     exit 1
   fi

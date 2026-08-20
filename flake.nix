@@ -58,6 +58,7 @@
         // {
           oci-images = import ./nix/tests/oci-images.nix {
             inherit pkgs;
+            telchar = self.packages.${system}.telchar;
             telcharImage = self.packages.${system}.telchar-oci;
             sshIngressImage = self.packages.${system}.telchar-ssh-ingress-oci;
             nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
