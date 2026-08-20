@@ -62,6 +62,29 @@ fn replacement_acquires_expired_lease_with_higher_generation() {
 }
 
 #[test]
+fn keyword_database_url_is_fenced() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let keyword_url = fixture.keyword_url();
+
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        &keyword_url,
+        Duration::from_secs(20),
+    )
+    .expect("keyword database URL acquires ownership");
+
+    telchar::persistence::create_build_request(
+        owner.database_url(),
+        "keyword-owner-request",
+        "/nix/store/00000000000000000000000000000000-keyword.drv",
+        "x86_64-linux",
+        "keyword-owner",
+        "keyword-owner",
+    )
+    .expect("keyword database URL carries fencing settings");
+}
+
+#[test]
 fn expired_owner_cannot_mutate_durable_state_after_takeover() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");

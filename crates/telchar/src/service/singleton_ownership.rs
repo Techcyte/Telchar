@@ -182,19 +182,21 @@ fn fenced_database_url(
     owner_token: &str,
     generation: i64,
 ) -> Result<String, SingletonOwnershipError> {
-    let mut config: Config = database_url
+    let _: Config = database_url
         .parse()
         .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Configuration))?;
-    config.options(&format!(
+    let options = format!(
         "-c telchar.owner_kind={owner_kind} -c telchar.owner_token={owner_token} -c telchar.owner_generation={generation}"
-    ));
-    Ok(config.get_hosts().first().map_or_else(
-        || database_url.to_owned(),
-        |_| format!(
-            "{database_url}{}options=-c%20telchar.owner_kind%3D{owner_kind}%20-c%20telchar.owner_token%3D{owner_token}%20-c%20telchar.owner_generation%3D{generation}",
-            if database_url.contains('?') { "&" } else { "?" }
-        ),
-    ))
+    );
+    if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
+        Ok(format!(
+            "{database_url}{}options={}",
+            if database_url.contains('?') { "&" } else { "?" },
+            options.replace(' ', "%20").replace('=', "%3D")
+        ))
+    } else {
+        Ok(format!("{database_url} options='{options}'"))
+    }
 }
 
 fn owner_token() -> String {

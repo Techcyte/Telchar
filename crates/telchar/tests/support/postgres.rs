@@ -74,6 +74,20 @@ impl PostgresFixture {
     }
 
     #[allow(dead_code)]
+    pub fn keyword_url(&self) -> String {
+        let database = self
+            .url
+            .strip_prefix("postgresql://telchar@localhost/")
+            .and_then(|tail| tail.split_once('?').map(|(database, _)| database))
+            .expect("fixture database URL has database name");
+        format!(
+            "host={} port={} user=telchar dbname={database}",
+            self.socket.to_str().expect("UTF-8 socket directory"),
+            self.port
+        )
+    }
+
+    #[allow(dead_code)]
     pub fn restart(&mut self) {
         self.stop();
         self.server = Some(start_server(
