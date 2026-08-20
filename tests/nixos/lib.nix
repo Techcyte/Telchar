@@ -334,6 +334,10 @@ let
       extraConfig = {
         environment.systemPackages = [ telchar ];
         environment.etc."telchar/telchar.toml".text = ''
+          [database]
+          ownership_renewal_seconds = 1
+          ownership_lease_seconds = 3
+
           [backends.local]
           name = "local"
           system = "${pkgs.stdenv.hostPlatform.system}"
@@ -349,7 +353,6 @@ let
             TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
             TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/var/lib/telchar-recovery-roots";
             TELCHAR_CONFIG = "/etc/telchar/telchar.toml";
-            TELCHAR_SINGLETON_CHECK_INTERVAL_MS = "50";
             NIX_CONFIG = ''
               post-build-hook =
               substituters =

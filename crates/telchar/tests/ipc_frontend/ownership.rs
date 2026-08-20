@@ -104,7 +104,7 @@ fn replacement_daemon_starts_only_after_fenced_owner_exits() {
     let replacement_root = temporary_root();
     let first_socket = first_root.join("daemon.sock");
     let replacement_socket = replacement_root.join("daemon.sock");
-    let mut database = PostgresFixture::start();
+    let database = PostgresFixture::start();
     let database_url = database.url().to_owned();
     let mut first = daemon_command(&first_socket, 1_000, false, &database_url)
         .env("TELCHAR_SINGLETON_CHECK_INTERVAL_MS", "10")

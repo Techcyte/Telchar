@@ -125,7 +125,7 @@ See [Nomad](nomad.md) for deployment and protocol detail.
 
 ### 8. Ownership and maintenance
 
-`service/singleton_ownership.rs` holds PostgreSQL advisory-lock connections. Lock loss fences the process. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` owns top-level composition; `runtime/daemon.rs` owns daemon socket, accepted-connection, and session lifecycle. Services start only after configuration, migration, reconciliation, and ownership succeed.
+`service/singleton_ownership.rs` acquires and renews PostgreSQL ownership leases. Each takeover increments a fencing generation, and PostgreSQL triggers reject durable mutations from expired generations. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` owns top-level composition; `runtime/daemon.rs` owns daemon socket, accepted-connection, and session lifecycle. Services start only after configuration, migration, reconciliation, and ownership succeed.
 
 Never edit an applied migration. Add the next numbered migration and tests.
 

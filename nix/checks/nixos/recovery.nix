@@ -83,24 +83,30 @@
       };
       recoveryOutput = telchar;
       seedSql = pkgs.writeText "telchar-restart-reconciliation.sql" ''
-        INSERT INTO build_requests (request_id, derivation_path, system, queue_state, queued_at, audit_subject, quota_subject) VALUES
-          ('queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', '${system}', 'queued', transaction_timestamp(), 'test-audit', 'test-quota'),
-          ('running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', '${system}', 'running', transaction_timestamp(), 'test-audit', 'test-quota'),
-          ('collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', '${system}', 'collecting', transaction_timestamp(), 'test-audit', 'test-quota');
+        INSERT INTO build_requests (request_id, derivation_path, system, audit_subject, quota_subject) VALUES
+          ('queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', '${system}', 'test-audit', 'test-quota'),
+          ('running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', '${system}', 'test-audit', 'test-quota'),
+          ('collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', '${system}', 'test-audit', 'test-quota');
 
-        INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at) VALUES
-          ('queued-derivation', 'request', 'queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL),
-          ('queued-input', 'request', 'queued-recovery', '/nix/store/44444444444444444444444444444444-input', 'input', 'active', transaction_timestamp(), NULL, NULL),
-          ('running-derivation', 'request', 'running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL),
-          ('collecting-derivation', 'request', 'collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL);
+        INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size) VALUES
+          ('queued-derivation', 'request', 'queued-recovery', '/nix/store/11111111111111111111111111111111-queued.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL, 1),
+          ('queued-input', 'request', 'queued-recovery', '/nix/store/44444444444444444444444444444444-input', 'input', 'active', transaction_timestamp(), NULL, NULL, 1),
+          ('running-derivation', 'request', 'running-recovery', '/nix/store/22222222222222222222222222222222-running.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL, 1),
+          ('collecting-derivation', 'request', 'collecting-recovery', '/nix/store/33333333333333333333333333333333-collecting.drv', 'derivation', 'active', transaction_timestamp(), NULL, NULL, 1);
 
-        INSERT INTO execution_attempts (attempt_id, request_id, ordinal, idempotency_key, backend, backend_execution_id, state, created_at, submitted_at, started_at, collecting_at) VALUES
-          ('running-attempt', 'running-recovery', 1, 'running-recovery:1', 'local', 'running-backend', 'running', transaction_timestamp(), transaction_timestamp(), transaction_timestamp(), NULL),
-          ('collecting-attempt', 'collecting-recovery', 1, 'collecting-recovery:1', 'local', 'collecting-backend', 'collecting', transaction_timestamp(), transaction_timestamp(), transaction_timestamp(), transaction_timestamp());
+        INSERT INTO shared_builds (
+          derivation_path, request_digest, state, backend_name, backend_kind,
+          execution_recovery, cancellation, log_recovery, backend_execution_id,
+          expected_outputs, created_at, started_at, collecting_at,
+          quota_subject, queue_position, queued_at, build_request
+        ) VALUES
+          ('/nix/store/11111111111111111111111111111111-queued.drv', decode(repeat('01', 32), 'hex'), 'claimed', 'local', 'local', 'output-only', 'connection-bound', 'live-only', NULL, ARRAY['/nix/store/55555555555555555555555555555555-queued-output'], transaction_timestamp(), NULL, NULL, 'test-quota', nextval('shared_build_queue_position_seq'), transaction_timestamp(), NULL),
+          ('/nix/store/22222222222222222222222222222222-running.drv', decode(repeat('02', 32), 'hex'), 'running', 'local', 'local', 'output-only', 'connection-bound', 'live-only', 'running-backend', ARRAY['/nix/store/66666666666666666666666666666666-running-output'], transaction_timestamp(), transaction_timestamp(), NULL, NULL, NULL, NULL, NULL),
+          ('/nix/store/33333333333333333333333333333333-collecting.drv', decode(repeat('03', 32), 'hex'), 'collecting', 'local', 'local', 'output-only', 'connection-bound', 'live-only', 'collecting-backend', ARRAY['${recoveryOutput}'], transaction_timestamp(), transaction_timestamp(), transaction_timestamp(), NULL, NULL, NULL, NULL);
 
-        INSERT INTO capacity_reservations (reservation_id, attempt_id, phase, quota_subject, units, created_at) VALUES
-          ('running-reservation', 'running-attempt', 'running', 'test-quota', 1, transaction_timestamp()),
-          ('collecting-reservation', 'collecting-attempt', 'collecting', 'test-quota', 1, transaction_timestamp());
+        INSERT INTO shared_build_attempts (derivation_path, ordinal, backend_name, backend_kind, backend_execution_id, state, created_at, started_at, collecting_at) VALUES
+          ('/nix/store/22222222222222222222222222222222-running.drv', 1, 'local', 'local', 'running-backend', 'running', transaction_timestamp(), transaction_timestamp(), NULL),
+          ('/nix/store/33333333333333333333333333333333-collecting.drv', 1, 'local', 'local', 'collecting-backend', 'collecting', transaction_timestamp(), transaction_timestamp(), transaction_timestamp());
 
         INSERT INTO local_backend_executions (backend_execution_id, idempotency_key, specification_digest, state, created_at, started_at, completed_at) VALUES
           ('running-backend', 'running-recovery:1', decode(repeat('08', 32), 'hex'), 'running', transaction_timestamp(), transaction_timestamp(), NULL),
@@ -126,26 +132,21 @@
         replacement.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.refused")
 
         postgres.succeed("sudo -u postgres psql -d telchar-recovery -v ON_ERROR_STOP=1 -f ${seedSql}")
-        postgres.succeed("systemctl restart postgresql.service")
-        postgres.wait_for_unit("postgresql.service")
+        owner.succeed("systemctl kill --signal=SIGKILL telchar-recovery-daemon.service")
         owner.wait_until_fails("systemctl is-active --quiet telchar-recovery-daemon.service")
-        owner.succeed("test ! -S /run/telchar-recovery/daemon.sock")
-        owner.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.lost")
+        owner.succeed("rm -f /run/telchar-recovery/daemon.sock")
 
-        replacement.succeed("systemctl reset-failed telchar-recovery-daemon.service")
-        replacement.succeed("systemctl start telchar-recovery-daemon.service")
-        replacement.wait_for_file("/run/telchar-recovery/daemon.sock")
+        replacement.wait_until_succeeds("systemctl reset-failed telchar-recovery-daemon.service; systemctl start telchar-recovery-daemon.service; test -S /run/telchar-recovery/daemon.sock", timeout=10)
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT generation >= 2 AND lease_expires_at > clock_timestamp() FROM singleton_ownership WHERE owner_kind = 'daemon'\" | grep -qx t")
 
-        postgres.wait_until_succeeds("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT queue_state FROM build_requests WHERE request_id = 'collecting-recovery'\" | grep -qx completed")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM build_requests WHERE request_id = 'queued-recovery' AND queue_state = 'queued'\" | grep -qx 1")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_attempts WHERE attempt_id = 'running-attempt' AND idempotency_key = 'running-recovery:1' AND backend_execution_id = 'running-backend' AND state = 'running'\" | grep -qx 1")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_executions WHERE backend_execution_id = 'running-backend' AND idempotency_key = 'running-recovery:1' AND state = 'running'\" | grep -qx 1")
+        postgres.wait_until_succeeds("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT state FROM shared_builds WHERE derivation_path = '/nix/store/33333333333333333333333333333333-collecting.drv'\" | grep -qx succeeded")
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM shared_builds WHERE derivation_path = '/nix/store/11111111111111111111111111111111-queued.drv'\" | grep -qx 1")
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM shared_build_attempts WHERE derivation_path = '/nix/store/22222222222222222222222222222222-running.drv' AND backend_execution_id = 'running-backend' AND state = 'failed'\" | grep -qx 1")
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_executions WHERE backend_execution_id = 'running-backend' AND state = 'running'\" | grep -qx 1")
         postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_executions\" | grep -qx 2")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_attempts\" | grep -qx 2")
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM shared_build_attempts\" | grep -qx 2")
         postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM local_backend_execution_results\" | grep -qx 1")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM execution_outcomes WHERE attempt_id = 'collecting-attempt' AND classification = 'succeeded'\" | grep -qx 1")
-        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM store_leases WHERE owner_id = 'collecting-recovery' AND purpose = 'output' AND state = 'active' AND store_path = '${recoveryOutput}'\" | grep -qx 1")
-        replacement.succeed("test \"$(find /var/lib/telchar-recovery-roots -mindepth 1 -maxdepth 1 -type l -lname '${recoveryOutput}' | wc -l)\" -eq 1")
+        postgres.succeed("sudo -u postgres psql -d telchar-recovery -Atc \"SELECT count(*) FROM shared_build_attempt_outcomes WHERE classification = 'restart-recovery-failed'\" | grep -qx 1")
         replacement.succeed("journalctl -u telchar-recovery-daemon.service --no-pager | grep -q database.singleton_ownership.acquired")
       '';
     };

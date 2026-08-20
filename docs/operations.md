@@ -51,7 +51,7 @@ The module's forced command derives the accepted key fingerprint from the config
 
 ## PostgreSQL and recovery
 
-Only one daemon may own a deployment database. A second daemon refuses startup. Loss of the ownership connection fences the running daemon, removes its IPC socket, and exits unsuccessfully. Restart only after PostgreSQL is authoritative again; the replacement acquires a fresh lifetime lock.
+Only one daemon may own a deployment database. Ownership is a PostgreSQL lease renewed every five seconds by default and valid for twenty seconds by default. Configure `database.ownership_renewal_seconds` and `database.ownership_lease_seconds`; the lease duration must be at least three renewal intervals. A second daemon refuses startup while the lease is current. After expiration, a replacement acquires a higher fencing generation. PostgreSQL rejects durable mutations from expired generations, and a fenced daemon removes its IPC socket and exits unsuccessfully on its next renewal. This remains safe across process, node, proxy, and network loss without manual PostgreSQL session termination.
 
 Back up PostgreSQL with a PostgreSQL-aware tool such as `pg_dump -Fc`. The backup must preserve:
 
@@ -93,7 +93,7 @@ Failure procedure:
 2. preserve PostgreSQL, the gateway store, GC roots, and import spool before changing state;
 3. restore PostgreSQL and store state from the same recovery point;
 4. verify the gateway Nix daemon socket and backend credentials;
-5. start one Telchar daemon and confirm ownership acquisition, migration completion, and recovery telemetry;
+5. start one Telchar daemon and confirm ownership acquisition, fencing generation, migration completion, and recovery telemetry;
 6. verify durable attempt counts before reopening ingress.
 
 A gateway-store interruption rejects store-dependent operations. Restore the Nix daemon first, then replace the Telchar process so all long-lived store clients reconnect cleanly.
