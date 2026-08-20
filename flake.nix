@@ -60,6 +60,7 @@
             inherit pkgs;
             telchar = self.packages.${system}.telchar;
             telcharImage = self.packages.${system}.telchar-oci;
+            nixDaemonImage = self.packages.${system}.telchar-nix-daemon-oci;
             sshIngressImage = self.packages.${system}.telchar-ssh-ingress-oci;
             nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           };

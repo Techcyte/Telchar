@@ -3,6 +3,7 @@
   pkgs,
   telchar,
   telcharImage,
+  nixDaemonImage,
   sshIngressImage,
   nomadWorkerImage,
 }:
@@ -18,6 +19,10 @@ assert
     "995"
   ];
 assert telcharImage.imageConfig.User == "995:995";
+assert nixDaemonImage.imageName == "telchar-nix-daemon";
+assert nixDaemonImage.imageTag == "latest";
+assert nixDaemonImage.imageConfig.Entrypoint == [ "/bin/telchar-nix-daemon" ];
+assert nixDaemonImage.imageConfig.User == "995:995";
 assert sshIngressImage.imageName == "telchar-ssh-ingress";
 assert sshIngressImage.imageTag == "latest";
 assert sshIngressImage.imageConfig.Entrypoint == [ "/bin/telchar-ssh-ingress" ];
@@ -26,6 +31,7 @@ assert nomadWorkerImage.imageTag == "latest";
 assert nomadWorkerImage.imageConfig.Entrypoint == [ "/bin/telchar-nomad-worker" ];
 pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar ]; } ''
   test -f ${telcharImage}
+  test -f ${nixDaemonImage}
   test -f ${sshIngressImage}
   test -f ${nomadWorkerImage}
 
@@ -48,6 +54,14 @@ pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar
   tar -xOf ${telcharImage} "$gateway_layer" | tar -xf - -C gateway
   grep -q '^telchar:x:995:995:Telchar gateway:/var/lib/telchar:/bin/false$' gateway/etc/passwd
   grep -q '^telchar:x:995:$' gateway/etc/group
+
+  mkdir nix-daemon
+  nix_daemon_layer="$(tar -xOf ${nixDaemonImage} manifest.json | grep -o '"[^"]*/layer.tar"' | tr -d '"' | tail -n 1)"
+  tar -xOf ${nixDaemonImage} "$nix_daemon_layer" | tar -xf - -C nix-daemon
+  test -f nix-daemon/bin/telchar-nix-daemon || { echo "Nix daemon entrypoint is missing" >&2; exit 1; }
+  test -x nix-daemon/bin/telchar-nix-daemon || { echo "Nix daemon entrypoint is not executable" >&2; exit 1; }
+  grep -q '^telchar:x:995:995:Telchar Nix daemon:/var/lib/telchar:/bin/false$' nix-daemon/etc/passwd
+  grep -q '^telchar:x:995:$' nix-daemon/etc/group
   if grep -aEq 'TELCHAR_TEST_(BUILD_HELPER|EXPORT_HELPER|STORE_RETENTION)' ${telchar}/bin/telchar; then
     echo "gateway OCI image contains test adapter controls" >&2
     exit 1

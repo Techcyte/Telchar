@@ -62,6 +62,38 @@ let
     EOF
   '';
 
+  nixDaemonClosure = pkgs.closureInfo {
+    rootPaths = [ pkgs.nix ];
+  };
+  nixDaemonBootstrap =
+    pkgs.runCommand "telchar-nix-daemon-bootstrap" { nativeBuildInputs = [ pkgs.gnutar ]; }
+      ''
+        mkdir -p "$out"
+        tar -cf "$out/store.tar" --files-from=${nixDaemonClosure}/store-paths
+        cp ${nixDaemonClosure}/registration "$out/registration"
+      '';
+  nixDaemonEntrypoint = pkgs.writeText "telchar-nix-daemon" (
+    builtins.replaceStrings
+      [ "/bootstrap/nix-store.tar" "/bootstrap/nix-store-registration" ]
+      [ "/bootstrap/store.tar" "/bootstrap/registration" ]
+      (builtins.readFile ../deploy/nix/telchar-nix-daemon.sh)
+  );
+  nixDaemonEtc = pkgs.runCommand "telchar-nix-daemon-etc" { } ''
+    mkdir -p "$out/etc/nix"
+    cat > "$out/etc/passwd" <<'EOF'
+    root:x:0:0:root:/root:/bin/bash
+    telchar:x:995:995:Telchar Nix daemon:/var/lib/telchar:/bin/false
+    EOF
+    cat > "$out/etc/group" <<'EOF'
+    root:x:0:
+    telchar:x:995:
+    EOF
+    cat > "$out/etc/nix/nix.conf" <<'EOF'
+    build-users-group =
+    sandbox = false
+    EOF
+  '';
+
   telchar-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar";
     tag = "latest";
@@ -105,6 +137,38 @@ let
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
         "org.opencontainers.image.title" = "Telchar";
+      };
+    };
+  };
+
+  telchar-nix-daemon-oci = pkgs.dockerTools.buildLayeredImage {
+    name = "telchar-nix-daemon";
+    tag = "latest";
+    fakeRootCommands = ''
+      mkdir -p ./bootstrap ./bin ./etc/nix ./var/lib/telchar
+      cp ${pkgs.pkgsStatic.busybox}/bin/busybox ./bootstrap/busybox
+      cp ${nixDaemonBootstrap}/store.tar ./bootstrap/store.tar
+      cp ${nixDaemonBootstrap}/registration ./bootstrap/registration
+      cp ${nixDaemonEntrypoint} ./bin/telchar-nix-daemon
+      chmod 0555 ./bootstrap/busybox ./bin/telchar-nix-daemon
+      cp ${nixDaemonEtc}/etc/passwd ./etc/passwd
+      cp ${nixDaemonEtc}/etc/group ./etc/group
+      cp ${nixDaemonEtc}/etc/nix/nix.conf ./etc/nix/nix.conf
+    '';
+    passthru.imageConfig = {
+      Entrypoint = [ "/bin/telchar-nix-daemon" ];
+      User = "995:995";
+    };
+    config = {
+      Entrypoint = [ "/bin/telchar-nix-daemon" ];
+      Env = [
+        "HOME=/var/lib/telchar"
+        "PATH=/bin"
+      ];
+      User = "995:995";
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.title" = "Telchar Nix daemon";
       };
     };
   };
@@ -179,6 +243,7 @@ in
     telchar
     telchar-nomad-worker
     telchar-oci
+    telchar-nix-daemon-oci
     telchar-ssh-ingress-oci
     telchar-nomad-worker-oci
     ;
