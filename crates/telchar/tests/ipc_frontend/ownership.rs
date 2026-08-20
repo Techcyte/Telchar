@@ -34,7 +34,7 @@ fn second_daemon_is_refused_by_database_ownership_before_socket_binding() {
 }
 
 #[test]
-fn daemon_exits_and_releases_socket_after_ownership_connection_loss() {
+fn daemon_keeps_lease_after_database_restart() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");
     let mut database = PostgresFixture::start();
@@ -46,18 +46,17 @@ fn daemon_exits_and_releases_socket_after_ownership_connection_loss() {
 
     database.restart();
 
-    let output = wait_with_deadline(&mut daemon, Duration::from_secs(2));
+    std::thread::sleep(Duration::from_millis(1_200));
     assert!(
-        !output.status.success(),
-        "fenced daemon exited successfully"
+        daemon.try_wait().expect("daemon status").is_none(),
+        "daemon exited after recoverable database restart"
     );
-    assert!(!socket.exists(), "fenced daemon left admission socket open");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("database.singleton_ownership.lost"),
-        "{stderr}"
+        socket.exists(),
+        "daemon removed admission socket after recovery"
     );
-    assert!(!stderr.contains(database.url()), "{stderr}");
+    daemon.kill().expect("daemon stops");
+    let _ = daemon.wait();
     let _ = fs::remove_dir_all(root);
 }
 
@@ -113,7 +112,11 @@ fn replacement_daemon_starts_only_after_fenced_owner_exits() {
         .expect("first daemon starts");
     wait_for_socket(&first_socket, &mut first);
 
-    database.restart();
+    database.expire_singleton_ownership("daemon");
+    let mut replacement = daemon_command(&replacement_socket, 1_000, false, &database_url)
+        .spawn()
+        .expect("replacement daemon starts");
+    wait_for_socket(&replacement_socket, &mut replacement);
     let first_output = wait_with_deadline(&mut first, Duration::from_secs(2));
     assert!(
         !first_output.status.success(),
@@ -121,6 +124,36 @@ fn replacement_daemon_starts_only_after_fenced_owner_exits() {
     );
     assert!(!first_socket.exists(), "fenced owner kept admission open");
 
+    assert!(
+        replacement
+            .try_wait()
+            .expect("replacement daemon status")
+            .is_none(),
+        "replacement daemon did not remain active"
+    );
+
+    replacement.kill().expect("replacement daemon stops");
+    let _ = replacement.wait();
+    let _ = fs::remove_dir_all(first_root);
+    let _ = fs::remove_dir_all(replacement_root);
+}
+
+#[test]
+fn replacement_daemon_starts_after_owner_process_disappears_and_lease_expires() {
+    let first_root = temporary_root();
+    let replacement_root = temporary_root();
+    let first_socket = first_root.join("daemon.sock");
+    let replacement_socket = replacement_root.join("daemon.sock");
+    let database = PostgresFixture::start();
+    let database_url = database.url().to_owned();
+    let mut first = daemon_command(&first_socket, 1_000, false, &database_url)
+        .spawn()
+        .expect("first daemon starts");
+    wait_for_socket(&first_socket, &mut first);
+    first.kill().expect("owner process disappears");
+    let _ = first.wait();
+
+    std::thread::sleep(Duration::from_secs(4));
     let mut replacement = daemon_command(&replacement_socket, 1_000, false, &database_url)
         .spawn()
         .expect("replacement daemon starts");

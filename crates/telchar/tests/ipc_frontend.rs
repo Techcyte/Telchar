@@ -51,6 +51,7 @@ impl Fixture {
         let mut fixture = Self::start();
         fixture.daemon.kill().expect("default daemon stops");
         let _ = fixture.daemon.wait();
+        fixture.database.expire_singleton_ownership("daemon");
         fs::remove_file(&fixture.socket).expect("default daemon socket removes");
         fixture.daemon = daemon_command(&fixture.socket, 1_000, true, fixture.database.url())
             .env(
@@ -293,7 +294,7 @@ fn daemon_command_with_uid(
     let config = socket.with_extension("toml");
     fs::write(
         &config,
-        "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
+        "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n\n[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n",
     )
     .expect("daemon configuration writes");
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));

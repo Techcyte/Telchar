@@ -36,23 +36,40 @@ fn run_executor() -> io::Result<()> {
         .to_owned();
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
-    let _ownership =
+    let mut ownership =
         telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
             &database_url,
             config.ownership_lease_duration(),
         )
         .map_err(|_| invalid("local executor ownership refused"))?;
+    let database_url = ownership.database_url().to_owned();
+    let ownership_renewal_interval = config.ownership_renewal_interval();
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
     let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw());
     prepare_socket_path(&socket)?;
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let _socket_guard = SocketGuard(socket);
+    listener.set_nonblocking(true)?;
     let executor = Arc::new(Mutex::new(
         telchar::backend::local::executor_from_environment()?,
     ));
-    for connection in listener.incoming() {
-        let mut stream = connection?;
+    let mut next_ownership_renewal = std::time::Instant::now() + ownership_renewal_interval;
+    loop {
+        if std::time::Instant::now() >= next_ownership_renewal {
+            ownership
+                .renew()
+                .map_err(|_| invalid("local executor ownership lost"))?;
+            next_ownership_renewal = std::time::Instant::now() + ownership_renewal_interval;
+        }
+        let mut stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10).min(ownership_renewal_interval));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if telchar::service::ipc::authorize_peer(&stream, expected_uid).is_err() {
             continue;
         }
@@ -151,7 +168,6 @@ fn run_executor() -> io::Result<()> {
             );
         }
     }
-    Ok(())
 }
 
 pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -310,6 +326,7 @@ fn run_daemon() -> io::Result<()> {
                 return Err(invalid("singleton daemon ownership refused"));
             }
         };
+    let database_url = singleton_ownership.database_url().to_owned();
     let mut store_retention = gateway_store.retention()?;
     telchar::store::retention::reconcile_output_retention(
         &database_url,

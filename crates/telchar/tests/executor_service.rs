@@ -85,6 +85,7 @@ fn executor_service_persists_idempotent_submit_and_status_across_restart() {
 
     first.kill().expect("first executor stops");
     let _ = first.wait();
+    database.expire_singleton_ownership("local-executor");
     let _ = fs::remove_file(&socket);
     let mut second = executor_command(&socket, database.url())
         .spawn()

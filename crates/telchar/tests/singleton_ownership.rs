@@ -62,6 +62,43 @@ fn replacement_acquires_expired_lease_with_higher_generation() {
 }
 
 #[test]
+fn expired_owner_cannot_mutate_durable_state_after_takeover() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("first daemon acquires ownership");
+    let stale_database_url = owner.database_url().to_owned();
+    fixture.expire_singleton_ownership("daemon");
+    let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("replacement acquires expired lease");
+
+    assert!(telchar::persistence::create_build_request(
+        &stale_database_url,
+        "stale-owner-request",
+        "/nix/store/11111111111111111111111111111111-stale.drv",
+        "x86_64-linux",
+        "stale-owner",
+        "stale-owner",
+    )
+    .is_err());
+    telchar::persistence::create_build_request(
+        replacement.database_url(),
+        "replacement-request",
+        "/nix/store/22222222222222222222222222222222-replacement.drv",
+        "x86_64-linux",
+        "replacement",
+        "replacement",
+    )
+    .expect("replacement mutates durable state");
+}
+
+#[test]
 fn renewal_extends_lease_only_for_current_owner() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
