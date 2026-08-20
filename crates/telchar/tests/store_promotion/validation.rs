@@ -180,6 +180,27 @@ fn rejects_unsupported_classic_metadata_before_staging() {
 }
 
 #[test]
+fn accepts_derivation_store_path_as_imported_object() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.path = PathBuf::from("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-imported.drv");
+    let mut registered = registered_path_info();
+    registered.path = declared.path.clone();
+    let mut backend = RecordingBackend::accepting(registered.clone());
+
+    let result = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect("derivation store path promotes");
+
+    assert_eq!(result, registered);
+}
+
+#[test]
 fn rejects_invalid_and_duplicate_path_metadata_before_staging() {
     let cases: Vec<(&str, DeclarationMutation)> = vec![
         (

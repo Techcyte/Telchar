@@ -490,16 +490,16 @@ fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> 
     if declared.references.len() > MAXIMUM_PROMOTION_REFERENCES {
         return Err(invalid("too many references"));
     }
-    validate_store_path(&declared.path, store_directory, false)?;
+    validate_store_path(&declared.path, store_directory, None)?;
     let mut references = std::collections::BTreeSet::new();
     for reference in &declared.references {
-        validate_store_path(reference, store_directory, false)?;
+        validate_store_path(reference, store_directory, Some(false))?;
         if !references.insert(reference) {
             return Err(invalid("invalid duplicate reference"));
         }
     }
     if let Some(deriver) = &declared.deriver {
-        validate_store_path(deriver, store_directory, true)?;
+        validate_store_path(deriver, store_directory, Some(true))?;
     }
     Ok(())
 }
@@ -525,7 +525,11 @@ fn valid_fixed_content_address(address: &str) -> bool {
             .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
 }
 
-fn validate_store_path(path: &Path, store_directory: &Path, deriver: bool) -> io::Result<()> {
+fn validate_store_path(
+    path: &Path,
+    store_directory: &Path,
+    deriver: Option<bool>,
+) -> io::Result<()> {
     const HASH_LENGTH: usize = 32;
     const MAXIMUM_BASE_NAME_LENGTH: usize = 211;
     const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
@@ -547,7 +551,7 @@ fn validate_store_path(path: &Path, store_directory: &Path, deriver: bool) -> io
     };
     if !hash.bytes().all(|byte| HASH_ALPHABET.contains(&byte))
         || !valid_store_path_name(name)
-        || name.ends_with(".drv") != deriver
+        || deriver.is_some_and(|deriver| name.ends_with(".drv") != deriver)
     {
         return Err(invalid("invalid store path"));
     }
