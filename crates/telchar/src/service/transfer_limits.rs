@@ -4,10 +4,11 @@ use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-pub const DEFAULT_MAXIMUM_NAR_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
-pub const DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
-pub const DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES: u64 = 256 * 1024 * 1024;
-pub const DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS: u64 = 256;
+pub const DEFAULT_MAXIMUM_NAR_OBJECT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAXIMUM_INBOUND_NAR_SESSION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS: u64 = 65_536;
+pub const DEFAULT_MAXIMUM_ACTIVE_NAR_OBJECTS: u64 = 256;
 pub const DEFAULT_NAR_RATE_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024 * 1024;
 pub const DEFAULT_NAR_BURST_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
@@ -34,8 +35,8 @@ impl Default for TransferLimits {
             maximum_outbound_session_bytes: DEFAULT_MAXIMUM_OUTBOUND_NAR_SESSION_BYTES,
             maximum_inbound_session_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
             maximum_outbound_session_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
-            maximum_active_inbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
-            maximum_active_outbound_objects: DEFAULT_MAXIMUM_NAR_SESSION_OBJECTS,
+            maximum_active_inbound_objects: DEFAULT_MAXIMUM_ACTIVE_NAR_OBJECTS,
+            maximum_active_outbound_objects: DEFAULT_MAXIMUM_ACTIVE_NAR_OBJECTS,
             inbound_rate_bytes_per_second: DEFAULT_NAR_RATE_BYTES_PER_SECOND,
             inbound_burst_bytes: DEFAULT_NAR_BURST_BYTES,
             outbound_rate_bytes_per_second: DEFAULT_NAR_RATE_BYTES_PER_SECOND,

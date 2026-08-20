@@ -245,6 +245,11 @@ fn absent_default_file_uses_policy_defaults_without_routing_targets() {
         .expect("absent default uses policy defaults");
     assert_eq!(config.backend_targets().count(), 0);
     assert_eq!(config.output_retention().seconds(), 3600);
+    assert_eq!(config.maximum_ipc_sessions(), 256);
+    assert_eq!(
+        config.scheduling_limits("unknown-subject"),
+        telchar::service::config::SchedulingLimits::new(65_536, 65_536).expect("limits are valid")
+    );
 
     restore_environment(saved);
 }

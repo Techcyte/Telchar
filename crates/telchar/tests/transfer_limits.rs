@@ -88,11 +88,17 @@ use telchar::service::transfer_limits::{
 #[test]
 fn finite_defaults_and_strict_parsing() {
     let defaults = TransferLimits::default();
-    assert!(defaults.maximum_object_bytes > 0);
-    assert!(defaults.maximum_inbound_session_bytes > 0);
-    assert!(defaults.maximum_outbound_session_bytes > 0);
-    assert_eq!(defaults.maximum_inbound_session_objects, 256);
-    assert_eq!(defaults.maximum_outbound_session_objects, 256);
+    assert_eq!(defaults.maximum_object_bytes, 16 * 1024 * 1024 * 1024);
+    assert_eq!(
+        defaults.maximum_inbound_session_bytes,
+        128 * 1024 * 1024 * 1024
+    );
+    assert_eq!(
+        defaults.maximum_outbound_session_bytes,
+        128 * 1024 * 1024 * 1024
+    );
+    assert_eq!(defaults.maximum_inbound_session_objects, 65_536);
+    assert_eq!(defaults.maximum_outbound_session_objects, 65_536);
     assert_eq!(defaults.maximum_active_inbound_objects, 256);
     assert_eq!(defaults.maximum_active_outbound_objects, 256);
     assert_eq!(defaults.inbound_rate_bytes_per_second, 17_179_869_184);

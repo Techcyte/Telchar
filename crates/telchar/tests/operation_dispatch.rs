@@ -91,7 +91,7 @@ impl FrontendFixture {
         fs::write(
             &config_path,
             format!(
-                "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nsupported_features = []\nmaximum_concurrent_builds = {maximum_concurrent_builds}\n\n[identity.credentials.\"ssh-pubkey:SHA256:bob\"]\naudit_subject = \"ssh-pubkey:SHA256:bob\"\nquota_subject = \"ssh-pubkey:SHA256:bob\"\n"
+                "[scheduling.default]\nmaximum_queued_builds = 64\nmaximum_active_builds = 4\n\n[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nsupported_features = []\nmaximum_concurrent_builds = {maximum_concurrent_builds}\n\n[identity.credentials.\"ssh-pubkey:SHA256:bob\"]\naudit_subject = \"ssh-pubkey:SHA256:bob\"\nquota_subject = \"ssh-pubkey:SHA256:bob\"\n"
             ),
         )
         .expect("service configuration writes");
