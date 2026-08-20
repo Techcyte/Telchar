@@ -35,6 +35,8 @@ impl RawServiceConfig {
 #[serde(deny_unknown_fields)]
 pub(super) struct DatabaseSection {
     pub(super) url_file: Option<PathBuf>,
+    pub(super) ownership_renewal_seconds: Option<u64>,
+    pub(super) ownership_lease_seconds: Option<u64>,
 }
 
 #[derive(Deserialize)]

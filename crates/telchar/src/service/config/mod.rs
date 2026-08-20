@@ -16,6 +16,9 @@ use crate::service::deployment::{OutputRetention, RunningDisconnectPolicy};
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/telchar/telchar.toml";
 const DEFAULT_MAXIMUM_IPC_SESSIONS: usize = 64;
 const MAXIMUM_IPC_SESSIONS: usize = 65_536;
+const DEFAULT_OWNERSHIP_RENEWAL_SECONDS: u64 = 5;
+const DEFAULT_OWNERSHIP_LEASE_SECONDS: u64 = 20;
+const MAXIMUM_OWNERSHIP_LEASE_SECONDS: u64 = 24 * 60 * 60;
 const DEFAULT_NOMAD_CALLBACK_BIND: &str = "0.0.0.0:7443";
 const DEFAULT_NOMAD_CALLBACK_PUBLIC_URL: &str = "ws://127.0.0.1:7443/callback";
 const DEFAULT_NOMAD_CALLBACK_MAXIMUM_CONNECTIONS: usize = 64;
@@ -72,6 +75,8 @@ pub struct ServiceConfig {
     maximum_retained_input_bytes: u64,
     cache_publisher: Option<crate::service::cache_publication::CachePublisher>,
     database_url: Option<String>,
+    ownership_renewal_interval: Duration,
+    ownership_lease_duration: Duration,
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
     nomad_callback: NomadCallbackConfig,
@@ -128,6 +133,14 @@ impl ServiceConfig {
             .ok_or_else(|| invalid("database URL is not configured"))
     }
 
+    pub fn ownership_renewal_interval(&self) -> Duration {
+        self.ownership_renewal_interval
+    }
+
+    pub fn ownership_lease_duration(&self) -> Duration {
+        self.ownership_lease_duration
+    }
+
     pub fn ipc_socket(&self) -> Option<&Path> {
         self.ipc_socket.as_deref()
     }
@@ -182,6 +195,8 @@ impl ServiceConfig {
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.cache_publisher != replacement.cache_publisher
             || self.database_url != replacement.database_url
+            || self.ownership_renewal_interval != replacement.ownership_renewal_interval
+            || self.ownership_lease_duration != replacement.ownership_lease_duration
             || self.ipc_socket != replacement.ipc_socket
             || self.maximum_ipc_sessions != replacement.maximum_ipc_sessions
             || self.nomad_callback != replacement.nomad_callback
@@ -308,14 +323,29 @@ impl ServiceConfig {
             .transpose()?
             .unwrap_or_default();
 
+        let database = raw.database;
         let database_url = match environment_string("TELCHAR_DATABASE_URL")? {
             Some(value) => Some(nonempty(value, "database URL is invalid")?),
-            None => raw
-                .database
-                .and_then(|database| database.url_file)
+            None => database
+                .as_ref()
+                .and_then(|database| database.url_file.clone())
                 .map(read_secret)
                 .transpose()?,
         };
+        let ownership_renewal_seconds = database
+            .as_ref()
+            .and_then(|database| database.ownership_renewal_seconds)
+            .unwrap_or(DEFAULT_OWNERSHIP_RENEWAL_SECONDS);
+        let ownership_lease_seconds = database
+            .as_ref()
+            .and_then(|database| database.ownership_lease_seconds)
+            .unwrap_or(DEFAULT_OWNERSHIP_LEASE_SECONDS);
+        if ownership_renewal_seconds == 0
+            || ownership_lease_seconds > MAXIMUM_OWNERSHIP_LEASE_SECONDS
+            || ownership_lease_seconds < ownership_renewal_seconds.saturating_mul(3)
+        {
+            return Err(invalid("database ownership durations are invalid"));
+        }
         let ipc_socket = environment_path("TELCHAR_IPC_SOCKET")?
             .or_else(|| raw.ipc.as_ref().and_then(|ipc| ipc.socket.clone()));
         if ipc_socket.as_ref().is_some_and(|path| !path.is_absolute()) {
@@ -378,6 +408,8 @@ impl ServiceConfig {
             maximum_retained_input_bytes,
             cache_publisher,
             database_url,
+            ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),
+            ownership_lease_duration: Duration::from_secs(ownership_lease_seconds),
             ipc_socket,
             maximum_ipc_sessions,
             nomad_callback,

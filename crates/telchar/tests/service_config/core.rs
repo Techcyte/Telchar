@@ -1,5 +1,7 @@
 //! Tests core configuration.
 
+use std::time::Duration;
+
 use super::*;
 
 #[test]
@@ -24,6 +26,8 @@ maximum_retained_input_bytes = 1048576
 
 [database]
 url_file = "{}"
+ownership_renewal_seconds = 7
+ownership_lease_seconds = 28
 
 [ipc]
 socket = "/run/telchar/daemon.sock"
@@ -73,6 +77,8 @@ maximum_concurrent_builds = 2
         config.database_url().expect("database configured"),
         "postgresql://telchar@localhost/telchar"
     );
+    assert_eq!(config.ownership_renewal_interval(), Duration::from_secs(7));
+    assert_eq!(config.ownership_lease_duration(), Duration::from_secs(28));
     assert_eq!(
         config.ipc_socket().expect("IPC socket configured"),
         Path::new("/run/telchar/daemon.sock")
@@ -261,6 +267,31 @@ fn invalid_scheduling_limits_fail_closed() {
         assert_eq!(
             ServiceConfig::load()
                 .expect_err("invalid scheduling limit rejects")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn invalid_database_ownership_durations_fail_closed() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-ownership-duration");
+    let config_path = root.join("telchar.toml");
+
+    for database in [
+        "ownership_renewal_seconds = 0\nownership_lease_seconds = 20",
+        "ownership_renewal_seconds = 5\nownership_lease_seconds = 14",
+    ] {
+        fs::write(&config_path, format!("[database]\n{database}\n")).expect("configuration writes");
+        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        assert_eq!(
+            ServiceConfig::load()
+                .expect_err("invalid ownership duration rejects")
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
