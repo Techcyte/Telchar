@@ -4,7 +4,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::time::Duration;
 
-use telchar::service::ipc::authorize_peer;
+use telchar::service::ipc::{authorize_peer, IpcListener};
 
 #[test]
 fn accepts_socket_peer_with_expected_uid() {
@@ -57,9 +57,10 @@ fn accepts_peer_from_another_pid_namespace() {
 fn namespaced_server_authorizes_external_peer() {
     let socket_path = std::env::var("TELCHAR_TEST_SOCKET").expect("test socket path");
     let listener = UnixListener::bind(socket_path).expect("listener binds");
-    let (stream, _) = listener.accept().expect("listener accepts external peer");
     let uid = rustix::process::getuid().as_raw();
-    authorize_peer(&stream, uid).expect("external peer uid is authorized");
+    IpcListener::from_listener(listener, uid)
+        .accept_pending()
+        .expect("external peer uid is authorized");
 }
 
 #[test]

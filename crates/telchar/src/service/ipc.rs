@@ -55,12 +55,10 @@ pub struct IpcListener {
 pub struct IpcConnection {
     stream: UnixStream,
     envelope: IpcEnvelope,
-    peer_pid: u32,
 }
 
 pub struct PendingIpcConnection {
     stream: UnixStream,
-    peer_pid: u32,
 }
 
 impl IpcListener {
@@ -90,8 +88,7 @@ impl IpcListener {
         let _span = tracing::info_span!("ipc.connection.accept").entered();
         let (stream, _) = self.listener.accept()?;
         authorize_peer(&stream, self.expected_uid)?;
-        let peer_pid = peer_pid(&stream)?;
-        Ok(PendingIpcConnection { stream, peer_pid })
+        Ok(PendingIpcConnection { stream })
     }
 
     pub fn send_envelope(stream: &mut UnixStream, envelope: &IpcEnvelope) -> io::Result<()> {
@@ -128,7 +125,6 @@ impl PendingIpcConnection {
         Ok(IpcConnection {
             stream: self.stream,
             envelope,
-            peer_pid: self.peer_pid,
         })
     }
 }
@@ -140,26 +136,6 @@ impl IpcConnection {
     pub fn stream_mut(&mut self) -> &mut UnixStream {
         &mut self.stream
     }
-    pub fn peer_pid(&self) -> io::Result<u32> {
-        Ok(self.peer_pid)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn peer_pid<Fd: AsFd>(socket: Fd) -> io::Result<u32> {
-    Ok(rustix::net::sockopt::socket_peercred(socket)
-        .map_err(io::Error::other)?
-        .pid
-        .as_raw_nonzero()
-        .get() as u32)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn peer_pid<Fd: AsFd>(_socket: Fd) -> io::Result<u32> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "peer PID is unsupported on this platform",
-    ))
 }
 
 #[cfg(not(target_os = "linux"))]
