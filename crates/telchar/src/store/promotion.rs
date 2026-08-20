@@ -493,7 +493,7 @@ fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> 
     validate_store_path(&declared.path, store_directory, None)?;
     let mut references = std::collections::BTreeSet::new();
     for reference in &declared.references {
-        validate_store_path(reference, store_directory, Some(false))?;
+        validate_store_path(reference, store_directory, None)?;
         if !references.insert(reference) {
             return Err(invalid("invalid duplicate reference"));
         }

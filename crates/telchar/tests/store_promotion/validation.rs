@@ -201,6 +201,29 @@ fn accepts_derivation_store_path_as_imported_object() {
 }
 
 #[test]
+fn accepts_derivation_store_path_as_reference() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.references = vec![PathBuf::from(
+        "/nix/store/11111111111111111111111111111111-input.drv",
+    )];
+    let mut registered = registered_path_info();
+    registered.references = declared.references.clone();
+    let mut backend = RecordingBackend::accepting(registered.clone());
+
+    let result = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .expect("derivation reference promotes");
+
+    assert_eq!(result, registered);
+}
+
+#[test]
 fn rejects_invalid_and_duplicate_path_metadata_before_staging() {
     let cases: Vec<(&str, DeclarationMutation)> = vec![
         (
