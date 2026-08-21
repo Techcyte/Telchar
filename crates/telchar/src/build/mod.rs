@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 
 use crate::backend::BackendTarget;
 
+mod derivation;
+
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
 
@@ -74,6 +76,67 @@ pub struct BuildRequest {
 }
 
 impl BuildRequest {
+    pub fn from_stored_derivation(
+        derivation_path: &[u8],
+        contents: &[u8],
+        backends: &[BackendTarget],
+    ) -> io::Result<Self> {
+        let stored = derivation::parse(contents).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("stored derivation parse failed: {error}"),
+            )
+        })?;
+        let required_system_features = required_system_features(&stored.environment)?;
+        let required_features = required_system_features
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let system = std::str::from_utf8(&stored.system).map_err(|_| unsupported_request())?;
+        if system.is_empty()
+            || !backends
+                .iter()
+                .any(|backend| backend.supports(system, &required_features))
+            || environment_value(&stored.environment, b"system") != Some(stored.system.as_slice())
+            || environment_value(&stored.environment, b"builder") != Some(stored.builder.as_slice())
+            || environment_value(&stored.environment, b"name") != derivation_name(derivation_path)
+        {
+            return Err(unsupported_request());
+        }
+        let mut expected_outputs = Vec::with_capacity(stored.outputs.len());
+        let mut output_authorities = Vec::with_capacity(stored.outputs.len());
+        for (name, path, hash_algorithm, hash) in stored.outputs {
+            if environment_value(&stored.environment, &name) != Some(path.as_slice()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid stored derivation",
+                ));
+            }
+            expected_outputs.push((name.clone(), path.clone()));
+            output_authorities.push(OutputAuthority {
+                name,
+                path,
+                hash_algorithm,
+                hash,
+            });
+        }
+        let mut input_sources = stored.input_sources;
+        input_sources.extend(stored.input_derivations);
+        let request = Self {
+            derivation_path: derivation_path.to_vec(),
+            expected_outputs,
+            output_authorities,
+            input_sources,
+            system: system.to_owned(),
+            required_system_features,
+            builder: stored.builder,
+            arguments: stored.arguments,
+            environment: stored.environment,
+        };
+        request.validate_for_execution()?;
+        Ok(request)
+    }
+
     pub fn from_worker_request(
         request: &BuildDerivationRequest,
         backends: &[BackendTarget],

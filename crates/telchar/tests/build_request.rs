@@ -10,6 +10,44 @@ use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 
 #[test]
+fn loads_classic_stored_derivation_into_build_request() {
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/bin/sh",["-c","printf value > \"$out\""],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let request = BuildRequest::from_stored_derivation(
+        drv_path(),
+        derivation,
+        &backends("x86_64-linux", &[]),
+    )
+    .expect("stored derivation admits");
+
+    assert_eq!(request.derivation_path(), drv_path());
+    assert_eq!(
+        request.expected_outputs(),
+        &[(b"out".to_vec(), output_path().to_vec())]
+    );
+    assert_eq!(
+        request.input_sources(),
+        &[b"/nix/store/22222222222222222222222222222222-input".to_vec()]
+    );
+    assert_eq!(request.system(), "x86_64-linux");
+    assert_eq!(request.builder(), b"/bin/sh");
+}
+
+#[test]
+fn rejects_malformed_or_dynamic_stored_derivations() {
+    for derivation in [
+        b"Derive([)".as_slice(),
+        br#"DrvWithVersion("xp-dyn-drv",Derive([],[],[],"x86_64-linux","/bin/sh",[],[]))"#,
+    ] {
+        assert!(BuildRequest::from_stored_derivation(
+            drv_path(),
+            derivation,
+            &backends("x86_64-linux", &[]),
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn admits_each_system_from_the_individual_backend_fleet() {
     let backends = [
         BackendTarget::new("ssh-amd64", BackendKind::StaticSsh, "x86_64-linux", ["kvm"])
