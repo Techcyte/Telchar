@@ -499,7 +499,7 @@ fn render_job_at(
             task["Identity"] = json!({
                 "Env": true,
                 "File": false,
-                "Audiences": [config
+                "Audience": [config
                     .transfer_authentication()
                     .audience()
                     .expect("workload identity audience is configured")],

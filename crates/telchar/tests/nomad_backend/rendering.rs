@@ -197,9 +197,10 @@ args = ["--stdio"]
         false
     );
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audiences"][0],
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audience"][0],
         "telchar-transfer"
     );
+    assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audiences"].is_null());
     assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["TTL"].is_null());
 
     unsafe {
