@@ -303,6 +303,18 @@ impl<R: WorkerInput> WorkerReader<R> {
     }
 
     pub fn complete_query_missing(&mut self) -> io::Result<QueryMissingRequest> {
+        let request = self.read_derived_paths()?;
+        if self.input.has_unread_message_data() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing QueryMissing request data",
+            ));
+        }
+        self.input.complete_message();
+        Ok(request)
+    }
+
+    fn read_derived_paths(&mut self) -> io::Result<QueryMissingRequest> {
         let count_value = self.read_integer()?;
         let count = usize::try_from(count_value).map_err(|_| {
             io::Error::new(
@@ -342,17 +354,36 @@ impl<R: WorkerInput> WorkerReader<R> {
             targets.push(target);
             value_charges.push(charge);
         }
-        if self.input.has_unread_message_data() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "trailing QueryMissing request data",
-            ));
-        }
-        self.input.complete_message();
         Ok(QueryMissingRequest {
             targets,
             _collection_charge: collection_charge,
             _value_charges: value_charges,
+        })
+    }
+
+    pub fn complete_build_paths_with_results(
+        &mut self,
+    ) -> io::Result<BuildPathsWithResultsRequest> {
+        let missing = self.read_derived_paths()?;
+        let build_mode = self.read_integer()?;
+        if build_mode > 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid BuildPathsWithResults request",
+            ));
+        }
+        if self.input.has_unread_message_data() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing BuildPathsWithResults request data",
+            ));
+        }
+        self.input.complete_message();
+        Ok(BuildPathsWithResultsRequest {
+            targets: missing.targets,
+            build_mode,
+            _collection_charge: missing._collection_charge,
+            _value_charges: missing._value_charges,
         })
     }
 
@@ -1105,6 +1136,24 @@ impl QueryMissingRequest {
 }
 
 #[derive(Debug)]
+pub struct BuildPathsWithResultsRequest {
+    targets: Vec<Vec<u8>>,
+    build_mode: u64,
+    _collection_charge: SessionAllocationCharge,
+    _value_charges: Vec<SessionAllocationCharge>,
+}
+
+impl BuildPathsWithResultsRequest {
+    pub fn targets(&self) -> &[Vec<u8>] {
+        &self.targets
+    }
+
+    pub fn build_mode(&self) -> u64 {
+        self.build_mode
+    }
+}
+
+#[derive(Debug)]
 pub struct QueryValidPathsRequest {
     paths: Vec<Vec<u8>>,
     substitute: bool,
@@ -1127,12 +1176,43 @@ mod client;
 use client::validate_store_path;
 pub use client::*;
 
+pub fn write_build_paths_with_results_success_response<'a>(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    results: impl IntoIterator<Item = (&'a [u8], bool)>,
+) -> io::Result<()> {
+    let results = results.into_iter().collect::<Vec<_>>();
+    if results.len() > MAXIMUM_QUERY_VALID_PATHS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many BuildPathsWithResults results",
+        ));
+    }
+    output.write_all(&STDERR_LAST.to_le_bytes())?;
+    write_worker_integer_to(output, results.len() as u64)?;
+    for (target, already_valid) in results {
+        validate_derived_path(target)?;
+        write_worker_byte_string_to(output, target)?;
+        write_build_result_success(output, version, already_valid)?;
+    }
+    output.flush()
+}
+
 pub fn write_build_derivation_success_response(
     output: &mut impl Write,
     version: WorkerVersion,
     already_valid: bool,
 ) -> io::Result<()> {
     output.write_all(&STDERR_LAST.to_le_bytes())?;
+    write_build_result_success(output, version, already_valid)?;
+    output.flush()
+}
+
+fn write_build_result_success(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    already_valid: bool,
+) -> io::Result<()> {
     write_worker_integer_to(output, if already_valid { 2 } else { 0 })?;
     write_worker_byte_string_to(output, b"")?;
     if version >= WorkerVersion::new(1, 29) {
@@ -1147,7 +1227,7 @@ pub fn write_build_derivation_success_response(
     if version >= WorkerVersion::new(1, 28) {
         write_worker_integer_to(output, 0)?;
     }
-    output.flush()
+    Ok(())
 }
 
 pub struct PathInfoResponse<'a> {

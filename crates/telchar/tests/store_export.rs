@@ -1,13 +1,16 @@
 //! Tests store export contracts and failure boundaries, including real store streams raw nar with registered hash and size.
 
 use std::io::{self, Write};
+
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 
 use telchar::fixture::nix::{NixFixture, TrustMode};
 use telchar::service::transfer_limits::{TransferBudget, TransferLimits};
 use telchar::store::export::{
-    export_verified_nar, export_verified_nar_with_limits, validate_store_output,
-    GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
+    export_verified_nar, export_verified_nar_with_limits, load_stored_derivation,
+    validate_store_output, GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest,
+    VerifiedStoreExport,
 };
 use telchar::store::promotion::RegisteredPathInfo;
 
@@ -76,6 +79,30 @@ fn real_store_validates_registered_output_metadata() {
 
     daemon.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
+}
+
+#[test]
+fn loads_one_bounded_registered_derivation() {
+    let contents = b"Derive([],[],[],\"x86_64-linux\",\"/bin/sh\",[],[])";
+    let metadata = RegisteredPathInfo {
+        path: PathBuf::from("/nix/store/00000000000000000000000000000000-contract.drv"),
+        nar_hash: sha2::Sha256::digest(regular_nar(contents)).into(),
+        nar_size: regular_nar(contents).len() as u64,
+        references: Vec::new(),
+        deriver: None,
+        content_address: None,
+    };
+    let mut backend = RecordingExportBackend::successful(metadata, regular_nar(contents));
+
+    assert_eq!(
+        load_stored_derivation(
+            Path::new("/nix/store/00000000000000000000000000000000-contract.drv"),
+            4096,
+            &mut backend,
+        )
+        .unwrap(),
+        contents
+    );
 }
 
 #[test]

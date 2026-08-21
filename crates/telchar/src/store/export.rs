@@ -338,6 +338,50 @@ pub fn query_path_info(
     }
 }
 
+pub fn load_stored_derivation(
+    path: &Path,
+    maximum_contents: u64,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+) -> io::Result<Vec<u8>> {
+    if path.extension().and_then(std::ffi::OsStr::to_str) != Some("drv") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stored derivation path must end in .drv",
+        ));
+    }
+    let metadata = backend
+        .query_path_info(path)
+        .map_err(|error| io::Error::other(format!("path info query failed: {error}")))?;
+    let request = StoreExportRequest {
+        version: 1,
+        store_uri: backend.store_uri().to_owned(),
+        path: path.to_path_buf(),
+    };
+    let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let reader = ExportReader {
+        receiver,
+        pending: None,
+        offset: 0,
+    };
+    let mut writer = ExportWriter { sender };
+    let contents = std::thread::scope(|scope| {
+        let export =
+            scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
+        let parsed = crate::store::nar::read_regular_nar(reader, maximum_contents);
+        let exported = export
+            .join()
+            .map_err(|_| io::Error::other("export backend thread panicked"))?;
+        match parsed {
+            Err(error) => Err(error),
+            Ok(contents) => {
+                exported?;
+                Ok(contents)
+            }
+        }
+    })?;
+    Ok(contents)
+}
+
 pub fn export_verified_nar(
     path: &Path,
     sink: &mut impl Write,
