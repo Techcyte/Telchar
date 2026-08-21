@@ -249,13 +249,13 @@ impl WorkerSession {
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        for path in &requested.paths {
+        for path in order_requested_inputs(&self.manifest, requested)? {
             self.ensure_connection_active()?;
             let entry = self
                 .manifest
                 .paths
                 .iter()
-                .find(|entry| &entry.path == path)
+                .find(|entry| entry.path == path)
                 .ok_or_else(|| invalid("worker requested input is not admitted"))?;
             let references = entry
                 .references
@@ -273,6 +273,12 @@ impl WorkerSession {
                 signatures: &[],
                 content_address: None,
             };
+            eprintln!(
+                "telchar-nomad-worker: importing input path={} nar_size={} reference_count={}",
+                entry.path,
+                entry.nar_size,
+                entry.references.len()
+            );
             let mut source = InputNarReader::new(
                 &mut self.socket,
                 &mut self.protocol,
@@ -281,8 +287,14 @@ impl WorkerSession {
             );
             store
                 .add_to_store_nar(&info, &mut source, false, true)
-                .map_err(|_| io::Error::other("worker input import failed"))?;
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "worker input import failed for {}: {error}",
+                        entry.path
+                    ))
+                })?;
             source.finish()?;
+            eprintln!("telchar-nomad-worker: imported input path={}", entry.path);
         }
         self.inputs.ready_to_build()
     }
@@ -805,6 +817,75 @@ impl<'a> InputNarReader<'a> {
     }
 }
 
+fn order_requested_inputs(
+    manifest: &InputManifest,
+    requested: &PathSet,
+) -> io::Result<Vec<String>> {
+    let requested_paths = requested
+        .paths
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if requested_paths.len() != requested.paths.len() {
+        return Err(invalid("worker input request contains duplicate paths"));
+    }
+    let entries = manifest
+        .paths
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if requested_paths
+        .iter()
+        .any(|path| !entries.contains_key(path.as_str()))
+    {
+        return Err(invalid("worker requested input is not admitted"));
+    }
+
+    let mut dependency_counts = std::collections::BTreeMap::new();
+    let mut dependents = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for path in &requested_paths {
+        let entry = entries
+            .get(path.as_str())
+            .ok_or_else(|| invalid("worker requested input is not admitted"))?;
+        let dependencies = entry
+            .references
+            .iter()
+            .filter(|reference| requested_paths.contains(*reference))
+            .collect::<std::collections::BTreeSet<_>>();
+        dependency_counts.insert(path.as_str(), dependencies.len());
+        for dependency in dependencies {
+            dependents
+                .entry(dependency.as_str())
+                .or_default()
+                .push(path.as_str());
+        }
+    }
+
+    let mut ready = dependency_counts
+        .iter()
+        .filter_map(|(path, count)| (*count == 0).then_some(*path))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut ordered = Vec::with_capacity(requested_paths.len());
+    while let Some(path) = ready.pop_first() {
+        ordered.push(path.to_owned());
+        for dependent in dependents.get(path).into_iter().flatten() {
+            let count = dependency_counts
+                .get_mut(dependent)
+                .ok_or_else(|| invalid("worker input dependency is invalid"))?;
+            *count = count
+                .checked_sub(1)
+                .ok_or_else(|| invalid("worker input dependency is invalid"))?;
+            if *count == 0 {
+                ready.insert(dependent);
+            }
+        }
+    }
+    if ordered.len() != requested_paths.len() {
+        return Err(invalid("worker input references contain a cycle"));
+    }
+    Ok(ordered)
+}
+
 impl io::Read for InputNarReader<'_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if self.chunk.position() == self.chunk.get_ref().len() as u64 {
@@ -819,6 +900,62 @@ impl io::Read for InputNarReader<'_> {
 
 pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
     connect(config).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, references: &[&str]) -> PathManifestEntry {
+        PathManifestEntry {
+            path: path.to_owned(),
+            nar_hash: "0".repeat(64),
+            nar_size: 1,
+            references: references.iter().map(|value| (*value).to_owned()).collect(),
+            deriver: None,
+            content_address: None,
+        }
+    }
+
+    #[test]
+    fn orders_requested_inputs_after_their_references() {
+        let manifest = InputManifest {
+            derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+            build: telchar::nomad::protocol::BuildSpecification {
+                derivation_path: b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_vec(),
+                outputs: vec![],
+                input_sources: vec![],
+                system: "x86_64-linux".to_owned(),
+                required_system_features: vec![],
+                builder: b"/bin/sh".to_vec(),
+                arguments: vec![],
+                environment: vec![],
+            },
+            paths: vec![
+                entry(
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-referrer",
+                    &["/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference"],
+                ),
+                entry("/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference", &[]),
+            ],
+            outputs: vec![],
+        };
+        let requested = PathSet {
+            paths: manifest
+                .paths
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+
+        assert_eq!(
+            order_requested_inputs(&manifest, &requested).expect("requested inputs order"),
+            vec![
+                "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference".to_owned(),
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-referrer".to_owned(),
+            ]
+        );
+    }
 }
 
 #[derive(Deserialize)]
