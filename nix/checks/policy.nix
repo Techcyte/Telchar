@@ -1,6 +1,25 @@
 # Defines the worker-protocol dependency-direction policy check.
 { pkgs }:
 {
+  release-workload-authority = pkgs.runCommand "telchar-release-workload-authority" { } ''
+    release_script=${../..}/scripts/check-release.sh
+
+    for check in \
+      nixos-lix-local \
+      nixos-fixed-output-local \
+      nixos-oci-gateway \
+      nixos-static-ssh-gateway \
+      nixos-nomad-gateway
+    do
+      if ! grep -Fq ".#checks.x86_64-linux.$check" "$release_script"; then
+        echo "release verification omits real-workload authority: $check" >&2
+        exit 1
+      fi
+    done
+
+    touch "$out"
+  '';
+
   protocol-dependency-boundary = pkgs.runCommand "telchar-protocol-dependency-boundary" { } ''
     protocol_manifest=${../..}/crates/nix-worker-protocol/Cargo.toml
     workspace_manifest=${../..}/Cargo.toml
