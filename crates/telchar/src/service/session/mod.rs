@@ -1086,6 +1086,77 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     nix_worker_protocol::write_build_derivation_success_response,
                 );
             }
+            Ok(WorkerOperation::BuildPathsWithResults) => {
+                let request_started = std::time::Instant::now();
+                let request = match reader.complete_build_paths_with_results() {
+                    Ok(request) if request.build_mode() == 0 && request.targets().len() == 1 => request,
+                    Ok(_) => {
+                        return reject(
+                            &mut output,
+                            "unsupported-build-paths-with-results",
+                            "unsupported BuildPathsWithResults request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-paths-with-results",
+                            "invalid BuildPathsWithResults request",
+                        );
+                    }
+                };
+                let target = &request.targets()[0];
+                let derivation_path = target
+                    .split(|byte| *byte == b'!')
+                    .next()
+                    .unwrap_or(target.as_slice());
+                let derivation_path = match std::str::from_utf8(derivation_path) {
+                    Ok(path) => std::path::Path::new(path),
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-paths-with-results",
+                            "invalid BuildPathsWithResults request",
+                        );
+                    }
+                };
+                let admitted = match BuildRequest::load_stored(
+                    derivation_path,
+                    store_export,
+                    backend_targets,
+                ) {
+                    Ok(admitted) => admitted,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "unsupported-build-paths-with-results",
+                            "unsupported BuildPathsWithResults request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-paths-with-results",
+                            "invalid BuildPathsWithResults request",
+                        );
+                    }
+                };
+                let target = target.clone();
+                let requested_system = admitted.system().as_bytes().to_vec();
+                execute_admitted_build!(
+                    admitted,
+                    request_started,
+                    request.build_mode(),
+                    requested_system.as_slice(),
+                    |output, version, already_valid| {
+                        nix_worker_protocol::write_build_paths_with_results_success_response(
+                            output,
+                            version,
+                            [(target.as_slice(), already_valid)],
+                        )
+                    },
+                );
+            }
             Ok(WorkerOperation::QueryPathInfo) => {
                 let request = match reader.complete_store_path_request() {
                     Ok(request) => request,

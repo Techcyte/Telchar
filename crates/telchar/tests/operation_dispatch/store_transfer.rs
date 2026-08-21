@@ -57,8 +57,13 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
     assert!(derivation.status.success());
     let derivation = String::from_utf8(derivation.stdout).unwrap();
     let derivation = derivation.trim();
-    let frontend =
-        FrontendFixture::spawn_with_store(None, "unix:///nix/var/nix/daemon-socket/socket", []);
+    let mut frontend = FrontendFixture::spawn_with_store(
+        Some(5_000),
+        "unix:///nix/var/nix/daemon-socket/socket",
+        [],
+    );
+    let _ = frontend.frontend.kill();
+    let _ = frontend.frontend.wait();
     let mut client = frontend.spawn_frontend();
     let mut input = client.stdin.take().expect("frontend input");
     let mut output = client.stdout.take().expect("frontend output");
@@ -84,14 +89,21 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
     input
         .flush()
         .expect("BuildPathsWithResults request flushes");
-    let next = read_integer(&mut output);
+    drop(output);
+    wait_for_path_state_for(
+        frontend.database.url(),
+        derivation,
+        telchar::persistence::SharedBuildState::Claimed,
+        Duration::from_secs(10),
+    );
     drop(input);
+    let _ = client.kill();
     let _ = client.wait();
-    assert_ne!(
-        next,
-        STDERR_ERROR,
-        "real stock Nix operation sequence was rejected: {}",
-        frontend.finish()
+    let stderr = frontend.finish();
+    assert!(
+        !stderr.contains("recognized-unimplemented")
+            && !stderr.contains("unsupported worker operation"),
+        "real stock Nix operation sequence was rejected: {stderr}"
     );
 }
 
