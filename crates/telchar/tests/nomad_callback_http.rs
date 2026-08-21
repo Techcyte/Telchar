@@ -109,6 +109,18 @@ fn sends_ping_during_quiet_transfer_and_accepts_matching_pong() {
 }
 
 #[test]
+fn applies_updated_message_limit_to_outbound_binary_frames() {
+    let stream = FragmentedStream::new(handshake("/callback", "telchar-nomad-transfer-v1"), 128);
+    let mut socket =
+        accept_connection(stream, CallbackHttpLimits::new(1024, 64)).expect("WebSocket accepts");
+    socket.set_maximum_message_bytes(262_144 + 1024);
+
+    socket
+        .write_binary(vec![0; 262_144 + 512])
+        .expect("bounded transfer frame writes");
+}
+
+#[test]
 fn rejects_wrong_subprotocol_and_oversized_headers() {
     for request in [
         handshake("/callback", "foreign"),

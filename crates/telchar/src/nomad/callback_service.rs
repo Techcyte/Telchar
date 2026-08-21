@@ -677,7 +677,8 @@ impl<S: io::Read + io::Write> InputNarSink<'_, S> {
         };
         let frame = Frame::new(
             FrameKind::InputNar,
-            encode_metadata(&metadata, self.maximum_metadata_bytes)?,
+            encode_metadata(&metadata, self.maximum_metadata_bytes)
+                .map_err(|_| io::Error::other("Nomad input NAR metadata encoding failed"))?,
             std::mem::take(&mut self.chunk),
         );
         self.offset = self
@@ -685,14 +686,22 @@ impl<S: io::Read + io::Write> InputNarSink<'_, S> {
             .checked_add(frame.payload().len() as u64)
             .ok_or_else(|| io::Error::other("Nomad input NAR offset overflow"))?;
         self.session
-            .accept(Direction::GatewayToWorker, frame.clone())?;
+            .accept(Direction::GatewayToWorker, frame.clone())
+            .map_err(|_| io::Error::other("Nomad input NAR session validation failed"))?;
         let mut message = Vec::new();
         write_frame(
             &mut message,
             &frame,
             ProtocolLimits::new(self.maximum_metadata_bytes, frame.payload().len()),
-        )?;
-        self.socket.write_binary(message)
+        )
+        .map_err(|_| io::Error::other("Nomad input NAR frame encoding failed"))?;
+        self.socket.write_binary(message).map_err(|error| {
+            if error.to_string() == "Nomad WebSocket message exceeds limit" {
+                io::Error::other("Nomad input NAR message exceeds limit")
+            } else {
+                io::Error::other("Nomad input NAR WebSocket send failed")
+            }
+        })
     }
 
     fn finish(&mut self) -> io::Result<()> {
