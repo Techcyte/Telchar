@@ -20,11 +20,11 @@ const VALID_TOKEN: &str = concat!(
     "lfrDiO2U7LepZaw0zWkpPxymkfZ_gXH2zyeSHeiXncpI3-oCHfihb_fnQSve6xOH38uK1ivs-XvfU_oCbfuRhs4YXlytC3JDVo-Hnb6wqubcWk94lhJCCbZpLwa9qISCPaB59qcJeA4RDQQHJKk7mDJ4MbGyBTJqxb1pASm76ygq75MV9N2aAueR_jh2VWJ2ih1WjpWWxN2-nTGQpa50krgdCwTzzcTux47EdTwGKzLsHciu5c0s5uhksE2_5FJNPZblg6o91gQAinchmHyoQ0ewUz6vu3RW3xYCxtX9kxM2GN_kHykJGAC6M7b2HY-43PA4v3fDYErLWUYeUe2eEQ"
 );
 const TOKEN_WITHOUT_ISSUER_MODULUS: &str = "vdvNatdr61BODpq9bEtbXLoTZL5BIe4HsSzlGdIG4gVXA-hgM2k3RQUTt0SgiPobcT5odWfwwLSOuCxUWT4tEeWzQLw7lhr9tZVtZxJ_4AYSZis50NO6JzkmnxTz0oFb443WRZ0I5MiLV4ne3FKXNzxZKmkZkPWHkrglOGnuvvqjbKzsrmCs1uxEiCegMlr6nhb2SlpYqf-A8EG4PNazyrPITBLZikITQG5YgOrDwqQmQ9QPshb16YWlskLus0E-nC0DkODt6CZyHjngPAhJNGGa_8cpqjdQPgZBg8SUuwcXpa1-IkqNXXzW2SCVzQY5LbkC3_TkEcasXOGCOhTUZw";
-const TOKEN_WITH_ARRAY_AUDIENCE_MODULUS: &str = "zBLUADMRQSO9rrfuWz5qRKdkfjdLPN6TGuZH2qXResDkXiPi0-SbBnzRhieXLLOHQDdmtaVORZtUd4LMb36hdfL3NlOeqHW_C53LIsCpSHs0KGwlQsxHS9ZhgnjCt5-RqdP1htA7bmYg9mFaYJKAZ77eAAPcFQ4dGc66CTzSLrXFzOWdg1dqxP-rchlQaZ2f32gypXNkItuh8fBTi4McKQGIAgPL7m-u5lYDJufjjCVmT39DnT2qxC5RhCQwK-XagUC2iezXKgY8gZe9o4NTBc8p8FBbeNPXbGTOTBUxeQQ2_G4JslaD68RW1XgvO4Lwr5RZA2S_1z-SJX3CMGFxJw";
+const TOKEN_WITH_ARRAY_AUDIENCE_MODULUS: &str = "1yPBXBgzZicPI-9jLboMYy9au1ndfyaE3js1ZC60ioypXQDLJ1-Z9bZmvAsApr2R9fRvdy2e5VDDREqj7HIki4PPsFYqY91Jluw06wVInYWDU3fjs8YPKP8Uwn_jiu2xmIko5tF6aNsXOAFHPB2QT1QBgNXEMU6ByEuYjkwN7LjkM9e2yZJWEB5Y67UnypQ6ysiL7ebBOdOtIkS6PRhkMYVP9UOU-oYsT5CvN5R7wdSlw5obons6dKD53iFu34QIeFwRbpJFgdoW5Kfn_i6354YipmuldrWf5KbGkJH1XPN8q4kjnH4iUpejcgnQtLnHrBLxurNVw_8vLJOerEvHzw";
 const TOKEN_WITH_ARRAY_AUDIENCE: &str = concat!(
-    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im5vbWFkLWFycmF5LWF1ZGllbmNlLWtleSJ9.",
-    "eyJhdWQiOlsidGVsY2hhci10cmFuc2ZlciJdLCJleHAiOjExMDAsIm5iZiI6OTAwLCJub21hZF9uYW1lc3BhY2UiOiJ0ZWxjaGFyIiwibm9tYWRfam9iX2lkIjoiam9iLTEiLCJub21hZF9hbGxvY2F0aW9uX2lkIjoiYWxsb2NhdGlvbi0xIiwibm9tYWRfdGFzayI6ImJ1aWxkIn0.",
-    "p9zk4vVEemPs-qI4iCKDFdJVWf4wn_VUhqZDMF1gk3BZETO_wG62MBYY-vHflJzF2yq3F4yBAfFPo08DhBqxVXmuOWIH7H3SxZRrgQ1gixtN_mlzX1wSiov7i2Sw8TtnXRqcujYZAdgG8DQRIYggIoj9Bsjrph1hf4En34d9NGo0uJoCvc3Jy_rK4KPH13Q1JP4p0siNzi2vi_susxn0th7Upg_TThfyA0jpK_Oiww1IK8Aihsf4hAdeEIu37ySOXO8cxt9VguwH-g9GilnE18WWiKRrR9CDp0rIkncQzCjAoIXBw40pXHXf0h7-VsKU0NQPlkKFnI_TgJFYsDQ7ng"
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im5vbWFkLXByb2R1Y3Rpb24tY2xhaW1zLWtleSJ9.",
+    "eyJhdWQiOlsidGVsY2hhci10cmFuc2ZlciJdLCJleHAiOjExMDAsIm5iZiI6OTAwLCJpYXQiOjkwMCwianRpIjoidG9rZW4tMSIsIm5vbWFkX25hbWVzcGFjZSI6InRlbGNoYXIiLCJub21hZF9qb2JfaWQiOiJqb2ItMSIsIm5vbWFkX2FsbG9jYXRpb25faWQiOiJhbGxvY2F0aW9uLTEiLCJub21hZF90YXNrIjoiYnVpbGQiLCJzdWIiOiJkYzE6dGVsY2hhcjpqb2ItMTpidWlsZDpidWlsZDp0ZWxjaGFyX3RyYW5zZmVyIn0.",
+    "JWfqE1p1QbEGqJ-PWB28qFvChLhCB03yFPUXDfcMV_yTYZX1dYwKMdccvvFkl1ZDFa7u99zfbP4vQDppuXvZNlbYKsoMtFsn4-fz0Cf1L1UwXH0Epc1dUDu5DOcCKOeW_-wzEoYnGtCbhT66xyBsCSiw05TuHTZekAa8w3Y8-iGk_mHiv4QAN5HIU_RPQTBGbDNWKIlvMEUx1padPONbruzbMuHH4rym-jL6cgNrldzr27vIL65g6X4JIOzGaGMociK3WjI84tCOS8C8sbfflet-IuvsAlXG3awyJHYSgnQJTHY1SdN3qRLUY7lhkAMfas5P7Q4WLJIEi-7ML5jbkA"
 );
 const TOKEN_WITHOUT_ISSUER: &str = concat!(
     "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9wdGlvbmFsLWlzc3Vlci1rZXkifQ.",
@@ -157,7 +157,7 @@ fn accepts_nomad_array_audience() {
         let mut request = [0_u8; 1024];
         let _length = stream.read(&mut request).expect("request reads");
         let body = format!(
-            r#"{{"keys":[{{"kty":"RSA","kid":"nomad-array-audience-key","use":"sig","alg":"RS256","n":"{TOKEN_WITH_ARRAY_AUDIENCE_MODULUS}","e":"AQAB"}}]}}"#
+            r#"{{"keys":[{{"kty":"RSA","kid":"nomad-production-claims-key","use":"sig","alg":"RS256","n":"{TOKEN_WITH_ARRAY_AUDIENCE_MODULUS}","e":"AQAB"}}]}}"#
         );
         write!(
             stream,

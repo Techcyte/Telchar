@@ -197,10 +197,16 @@ struct WorkloadClaims {
     _audience: AudienceClaim,
     exp: u64,
     nbf: u64,
+    #[serde(rename = "iat")]
+    _issued_at: Option<u64>,
+    #[serde(rename = "jti")]
+    _token_id: Option<String>,
     nomad_namespace: String,
     nomad_job_id: String,
     nomad_allocation_id: String,
     nomad_task: String,
+    #[serde(rename = "sub")]
+    _subject: Option<String>,
 }
 
 #[allow(dead_code)]
