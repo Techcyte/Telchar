@@ -12,7 +12,8 @@ Supported behavior:
 - Lix 2.94.2 `ssh-ng` ingress;
 - worker-protocol negotiation through version 1.38;
 - normal build mode (`0`);
-- classic input-addressed and fixed-output `BuildDerivation` requests;
+- classic input-addressed and fixed-output builds through the stock-client `QueryMissing` and `BuildPathsWithResults` workflow;
+- typed `BuildDerivation` requests used by Telchar's executor-facing protocol boundary;
 - typed fixed-output authority across local, static SSH, and Nomad execution paths;
 - exact output import and normal Nix `BuildResult` delivery.
 

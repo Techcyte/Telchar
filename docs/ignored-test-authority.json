@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "ignoredTests": [
+    {
+      "test": "store_export::real_store_streams_raw_nar_with_registered_hash_and_size",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/store_export.rs::streams_raw_nar_and_verifies_registered_metadata",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "store_export::real_store_validates_registered_output_metadata",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/store_export.rs::validates_exact_output_path_against_registered_metadata",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "output_transfer::real_gateway_store_metadata_encodes_for_stock_nix",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/output_transfer.rs::raw_nar_response_has_terminal_frame_then_unframed_nar",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "output_transfer::missing_gateway_path_encodes_absence",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/store_export.rs::missing_path_fails_before_export",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "operation_dispatch::store_transfer::query_valid_paths_returns_only_authoritative_valid_paths",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/operation_dispatch/store_transfer.rs::empty_query_valid_paths_returns_empty_set_without_store_lookup",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "operation_dispatch::store_transfer::query_path_info_returns_authoritative_metadata",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/operation_dispatch/store_transfer.rs::real_stock_nix_build_reaches_production_dispatch_without_unsupported_operations",
+        "nix/checks/nixos/static-ssh.nix::nixos-static-ssh-gateway"
+      ]
+    },
+    {
+      "test": "store_promotion::real_store::real_store_promotes_matching_nar_with_explicit_metadata",
+      "reason": "private fixture paths are outside the production /nix/store namespace",
+      "authority": [
+        "crates/telchar/tests/store_promotion/validation.rs::promotes_matching_staged_nar_and_verifies_registered_metadata",
+        "nix/checks/nixos/oci.nix::nixos-oci-gateway"
+      ]
+    },
+    {
+      "test": "ipc_auth::namespaced_server_authorizes_external_peer",
+      "reason": "helper process for cross-PID-namespace authorization",
+      "authority": [
+        "crates/telchar/tests/ipc_auth.rs::accepts_peer_from_another_pid_namespace"
+      ]
+    }
+  ]
+}

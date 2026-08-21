@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "workflows": [
+    {
+      "name": "stock-nix-2.34.8-ssh-ng-build-paths",
+      "evidence": "crates/telchar/tests/nix_fixture.rs::relay_streams_the_complete_classic_build_fixture_in_both_trust_modes",
+      "operations": [
+        "SetOptions",
+        "QueryMissing",
+        "QueryPathInfo",
+        "BuildPathsWithResults"
+      ]
+    },
+    {
+      "name": "gateway-store-transfer",
+      "evidence": "crates/telchar/tests/operation_dispatch/store_transfer.rs",
+      "operations": [
+        "QueryValidPaths",
+        "AddMultipleToStore"
+      ]
+    },
+    {
+      "name": "stored-derivation-admission",
+      "evidence": "crates/telchar/tests/store_export.rs and crates/telchar/tests/operation_dispatch/store_transfer.rs",
+      "operations": [
+        "QueryPathInfo",
+        "NarFromPath"
+      ]
+    },
+    {
+      "name": "typed-build-derivation",
+      "evidence": "crates/telchar/tests/operation_dispatch.rs and crates/nix-worker-protocol/tests/build_derivation_contract.rs",
+      "operations": [
+        "BuildDerivation"
+      ]
+    }
+  ]
+}
