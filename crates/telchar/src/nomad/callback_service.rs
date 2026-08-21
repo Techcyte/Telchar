@@ -327,14 +327,14 @@ pub fn serve_connection(
     )?;
     let frame = Frame::new(
         FrameKind::InputManifest,
-        encode_metadata(&manifest, limits.maximum_frame_metadata_bytes())?,
+        encode_metadata(&manifest, limits.maximum_manifest_bytes() as usize)?,
         Vec::new(),
     );
     let mut message = Vec::new();
     write_frame(
         &mut message,
         &frame,
-        ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
+        ProtocolLimits::new(limits.maximum_manifest_bytes() as usize, 0),
     )?;
     socket.write_binary(message)?;
     ensure_before(connection_deadline)?;

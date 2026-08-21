@@ -179,6 +179,7 @@ args = ["--stdio"]
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_CHUNK_BYTES"],
         "262144"
     );
+    assert_eq!(environment["TELCHAR_MAXIMUM_MANIFEST_BYTES"], "1048576");
     assert_eq!(environment["TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS"], "30");
     assert_eq!(
         environment["TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS"],

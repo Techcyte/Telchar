@@ -69,6 +69,37 @@ fn manifest_preserves_fixed_output_authority() {
 }
 
 #[test]
+fn manifest_uses_its_dedicated_metadata_limit() {
+    let derivation_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned();
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned();
+    let mut manifest = InputManifest {
+        derivation_path: derivation_path.clone(),
+        build: build_specification(&derivation_path, &input, &output),
+        paths: Vec::new(),
+        outputs: vec![output],
+    };
+    for index in 0..1024 {
+        manifest.paths.push(PathManifestEntry {
+            path: format!("/nix/store/{:032x}-input-{index}", index),
+            nar_hash: "0".repeat(64),
+            nar_size: 1,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        });
+    }
+
+    let metadata = encode_metadata(&manifest, 1024 * 1024).expect("manifest uses dedicated limit");
+    assert!(metadata.len() > 64 * 1024);
+    assert!(encode_metadata(&manifest, 64 * 1024).is_err());
+    let frame = Frame::new(FrameKind::InputManifest, metadata, Vec::new());
+    let mut wire = Vec::new();
+    write_frame(&mut wire, &frame, ProtocolLimits::new(1024 * 1024, 0))
+        .expect("manifest frame uses dedicated limit");
+}
+
+#[test]
 fn round_trips_every_version_one_frame_kind() {
     let limits = ProtocolLimits::new(1024, 4096);
     let kinds = [

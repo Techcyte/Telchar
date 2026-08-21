@@ -20,7 +20,7 @@ use url::Url;
 
 const MAXIMUM_ENVIRONMENT_VALUE_BYTES: usize = 4096;
 const MAXIMUM_AUTHENTICATION_METADATA_BYTES: usize = 16 * 1024;
-const MAXIMUM_MANIFEST_METADATA_BYTES: usize = 1024 * 1024;
+const MAXIMUM_MANIFEST_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_MANIFEST_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
 const MAXIMUM_INPUT_NAR_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAXIMUM_NAR_CHUNK_BYTES: usize = 1024 * 1024;
@@ -425,6 +425,7 @@ pub struct WorkerConfig {
     endpoint: Url,
     store_uri: String,
     transfer_chunk_bytes: usize,
+    maximum_manifest_bytes: usize,
     transfer_idle_timeout: std::time::Duration,
     output_collection_timeout: std::time::Duration,
     maximum_connection_lifetime: std::time::Duration,
@@ -455,6 +456,11 @@ impl WorkerConfig {
             .ok()
             .filter(|value| *value > 0 && *value <= MAXIMUM_NAR_CHUNK_BYTES)
             .ok_or_else(|| invalid("worker transfer chunk limit is invalid"))?;
+        let maximum_manifest_bytes = required(&mut lookup, "TELCHAR_MAXIMUM_MANIFEST_BYTES")?
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0 && *value <= MAXIMUM_MANIFEST_METADATA_BYTES)
+            .ok_or_else(|| invalid("worker manifest limit is invalid"))?;
         let transfer_idle_timeout = required(&mut lookup, "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS")?
             .parse::<u64>()
             .ok()
@@ -561,6 +567,7 @@ impl WorkerConfig {
             endpoint,
             store_uri,
             transfer_chunk_bytes,
+            maximum_manifest_bytes,
             transfer_idle_timeout,
             output_collection_timeout,
             maximum_connection_lifetime,
@@ -587,6 +594,10 @@ impl WorkerConfig {
 
     pub fn transfer_chunk_bytes(&self) -> usize {
         self.transfer_chunk_bytes
+    }
+
+    pub fn maximum_manifest_bytes(&self) -> usize {
+        self.maximum_manifest_bytes
     }
 
     pub fn transfer_idle_timeout(&self) -> std::time::Duration {
@@ -693,14 +704,14 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
     let mut input = message.as_slice();
     let frame = read_frame(
         &mut input,
-        ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
+        ProtocolLimits::new(config.maximum_manifest_bytes(), 0),
     )?;
     if !input.is_empty() || frame.kind() != FrameKind::InputManifest || !frame.payload().is_empty()
     {
         return Err(invalid("worker manifest frame is invalid"));
     }
     let manifest: InputManifest =
-        decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)?;
+        decode_metadata(frame.metadata(), config.maximum_manifest_bytes())?;
     manifest.validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)?;
     let inputs = InputTransferSession::new(
         manifest.clone(),

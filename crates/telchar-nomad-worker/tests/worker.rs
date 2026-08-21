@@ -23,6 +23,10 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
             "262144".to_owned(),
         ),
         (
+            "TELCHAR_MAXIMUM_MANIFEST_BYTES".to_owned(),
+            "8388608".to_owned(),
+        ),
+        (
             "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
             "30".to_owned(),
         ),
@@ -66,6 +70,7 @@ fn parses_exact_workload_identity_environment() {
 
     assert_eq!(config.store_uri(), "daemon");
     assert_eq!(config.transfer_chunk_bytes(), 262_144);
+    assert_eq!(config.maximum_manifest_bytes(), 8_388_608);
     assert_eq!(
         config.transfer_idle_timeout(),
         std::time::Duration::from_secs(30)
@@ -122,6 +127,10 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
         (
             "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
             "262144".to_owned(),
+        ),
+        (
+            "TELCHAR_MAXIMUM_MANIFEST_BYTES".to_owned(),
+            "8388608".to_owned(),
         ),
         (
             "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
