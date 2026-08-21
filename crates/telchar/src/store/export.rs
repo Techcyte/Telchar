@@ -367,18 +367,31 @@ pub fn load_stored_derivation(
     let contents = std::thread::scope(|scope| {
         let export =
             scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
-        let parsed = crate::store::nar::read_regular_nar(reader, maximum_contents);
+        let parsed = crate::store::nar::read_regular_nar_with_fingerprint(reader, maximum_contents);
         let exported = export
             .join()
             .map_err(|_| io::Error::other("export backend thread panicked"))?;
         match parsed {
             Err(error) => Err(error),
-            Ok(contents) => {
+            Ok((contents, fingerprint)) => {
                 exported?;
-                Ok(contents)
+                Ok((contents, fingerprint))
             }
         }
     })?;
+    let (contents, fingerprint) = contents;
+    if fingerprint.sha256 != metadata.nar_hash {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exported derivation NAR hash mismatch",
+        ));
+    }
+    if fingerprint.size != metadata.nar_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exported derivation NAR size mismatch",
+        ));
+    }
     Ok(contents)
 }
 

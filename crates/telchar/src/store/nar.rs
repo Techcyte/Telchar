@@ -212,6 +212,13 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub fn read_regular_nar<R: Read>(source: R, maximum_contents: u64) -> io::Result<Vec<u8>> {
+    read_regular_nar_with_fingerprint(source, maximum_contents).map(|(contents, _)| contents)
+}
+
+pub fn read_regular_nar_with_fingerprint<R: Read>(
+    source: R,
+    maximum_contents: u64,
+) -> io::Result<(Vec<u8>, NarFingerprint)> {
     let mut nar = NarReader::new(source, io::sink());
     nar.string_equals(b"nix-archive-1")?;
     nar.string_equals(b"(")?;
@@ -233,7 +240,7 @@ pub fn read_regular_nar<R: Read>(source: R, maximum_contents: u64) -> io::Result
     if nar.source.read(&mut trailing)? != 0 {
         return Err(invalid("trailing bytes after NAR"));
     }
-    Ok(contents)
+    Ok((contents, nar.finish()))
 }
 
 pub fn stage_nar<R: Read, W: Write>(source: R, staging: W) -> io::Result<NarFingerprint> {

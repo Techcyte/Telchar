@@ -106,6 +106,28 @@ fn loads_one_bounded_registered_derivation() {
 }
 
 #[test]
+fn rejects_stored_derivation_hash_mismatch() {
+    let contents = b"Derive([],[],[],\"x86_64-linux\",\"/bin/sh\",[],[])";
+    let nar = regular_nar(contents);
+    let metadata = RegisteredPathInfo {
+        path: PathBuf::from("/nix/store/00000000000000000000000000000000-contract.drv"),
+        nar_hash: [0; 32],
+        nar_size: nar.len() as u64,
+        references: Vec::new(),
+        deriver: None,
+        content_address: None,
+    };
+    let mut backend = RecordingExportBackend::successful(metadata, nar);
+
+    assert!(load_stored_derivation(
+        Path::new("/nix/store/00000000000000000000000000000000-contract.drv"),
+        4096,
+        &mut backend,
+    )
+    .is_err());
+}
+
+#[test]
 fn validates_exact_output_path_against_registered_metadata() {
     let nar = regular_nar(CONTENT);
     let metadata = registered_path_info();
