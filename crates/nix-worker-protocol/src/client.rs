@@ -321,11 +321,30 @@ impl<S: Read + Write> WorkerClient<S> {
         sink: &mut dyn Write,
     ) -> io::Result<()> {
         self.write_store_path_operation(WorkerOperation::NarFromPath, path)?;
-        read_operation_frames(&mut self.stream, self.profile.version)?;
-        let copied = io::copy(&mut Read::by_ref(&mut self.stream).take(nar_size), sink)
-            .map_err(|_| protocol_client_error())?;
-        if copied != nar_size {
-            return Err(protocol_client_error());
+        read_operation_frames(&mut self.stream, self.profile.version).map_err(|error| {
+            if error.kind() == io::ErrorKind::Other
+                && error.to_string() == "Nix daemon operation failed"
+            {
+                io::Error::other("Nix daemon NarFromPath was rejected")
+            } else {
+                io::Error::other("Nix daemon NarFromPath response failed")
+            }
+        })?;
+        let mut remaining = nar_size;
+        let mut buffer = [0_u8; 8192];
+        while remaining > 0 {
+            let maximum = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| io::Error::other("Nix daemon NarFromPath body read failed"))?;
+            let read = self
+                .stream
+                .read(&mut buffer[..maximum])
+                .map_err(|_| io::Error::other("Nix daemon NarFromPath body read failed"))?;
+            if read == 0 {
+                return Err(io::Error::other("Nix daemon NarFromPath body read failed"));
+            }
+            sink.write_all(&buffer[..read])
+                .map_err(|_| io::Error::other("Nix daemon NarFromPath sink write failed"))?;
+            remaining -= read as u64;
         }
         Ok(())
     }

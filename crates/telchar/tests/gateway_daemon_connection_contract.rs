@@ -147,6 +147,44 @@ fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
 }
 
 #[test]
+fn nar_from_path_preserves_sanitized_sink_failure() {
+    struct FailingSink;
+    impl Write for FailingSink {
+        fn write(&mut self, _input: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("sensitive sink failure"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 38);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        integer(&mut stream, STDERR_LAST);
+        stream.write_all(b"body").expect("NAR body writes");
+        stream.flush().expect("NAR body flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+
+    let error = connection
+        .nar_from_path(STORE_PATH, 4, &mut FailingSink)
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "gateway Nix daemon NarFromPath sink write failed"
+    );
+    assert!(!error.to_string().contains("sensitive"));
+    server.join().expect("server exits");
+}
+
+#[test]
 fn add_to_store_nar_preserves_sanitized_operation_failure() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");

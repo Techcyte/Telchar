@@ -3,8 +3,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
-    WorkerClient,
+    WorkerClient, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR,
+    STDERR_LAST,
 };
 
 const PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
@@ -118,8 +118,17 @@ fn daemon_error_is_redacted_before_raw_body() {
 
     let error = client.nar_from_path(PATH, 0, &mut Vec::new()).unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
+    assert_eq!(error.to_string(), "Nix daemon NarFromPath was rejected");
     assert!(!error.to_string().contains("sensitive"));
+}
+
+#[test]
+fn truncated_body_identifies_daemon_read_phase() {
+    let mut client = WorkerClient::connect(ScriptedStream::new(response(b"short"))).unwrap();
+
+    let error = client.nar_from_path(PATH, 7, &mut Vec::new()).unwrap_err();
+
+    assert_eq!(error.to_string(), "Nix daemon NarFromPath body read failed");
 }
 
 #[test]
@@ -139,6 +148,9 @@ fn writer_failure_stops_streaming_and_is_redacted() {
         .nar_from_path(PATH, 7, &mut FailingWriter)
         .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon NarFromPath sink write failed"
+    );
     assert!(!error.to_string().contains("sensitive"));
 }

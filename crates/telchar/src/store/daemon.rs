@@ -150,7 +150,13 @@ impl GatewayStoreConnection {
     ) -> io::Result<()> {
         self.client
             .nar_from_path(path, nar_size, sink)
-            .map_err(|_| connection_error())
+            .map_err(|error| {
+                let message = error.to_string();
+                let phase = message
+                    .strip_prefix("Nix daemon NarFromPath ")
+                    .unwrap_or("operation failed");
+                io::Error::other(format!("gateway Nix daemon NarFromPath {phase}"))
+            })
     }
 
     pub fn add_to_store_nar(
