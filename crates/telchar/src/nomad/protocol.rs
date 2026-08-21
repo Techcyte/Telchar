@@ -454,7 +454,12 @@ impl TransferSession {
                 require_empty_payload(&frame)?;
                 let requested: PathSet =
                     decode_metadata(frame.metadata(), self.maximum_metadata_bytes)?;
-                if requested != self.inputs.request_unresolved()? {
+                let expected = self.inputs.request_unresolved()?;
+                let requested_paths = requested.paths.iter().collect::<BTreeSet<_>>();
+                let expected_paths = expected.paths.iter().collect::<BTreeSet<_>>();
+                if requested_paths.len() != requested.paths.len()
+                    || requested_paths != expected_paths
+                {
                     return Err(invalid_data(
                         "Nomad input request does not match unresolved paths",
                     ));

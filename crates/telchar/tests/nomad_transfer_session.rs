@@ -66,6 +66,66 @@ fn rejects_manifest_when_exact_build_specification_disagrees() {
 }
 
 #[test]
+fn input_request_accepts_exact_unresolved_permutation_only() {
+    let mut manifest = manifest();
+    manifest.paths.push(PathManifestEntry {
+        path: path('d', "second-input"),
+        nar_hash: HASH.to_owned(),
+        nar_size: 10,
+        references: vec![],
+        deriver: None,
+        content_address: None,
+    });
+    let first = manifest.paths[0].path.clone();
+    let second = manifest.paths[1].path.clone();
+    let mut accepted = TransferSession::new(manifest.clone(), 8, 32, 32, 32, 32, 16, 4096)
+        .expect("session creates");
+    accepted
+        .accept(
+            Direction::WorkerToGateway,
+            frame(FrameKind::ValidPaths, &PathSet { paths: vec![] }, vec![]),
+        )
+        .expect("valid paths accepts");
+    accepted
+        .accept(
+            Direction::WorkerToGateway,
+            frame(
+                FrameKind::InputRequest,
+                &PathSet {
+                    paths: vec![second.clone(), first.clone()],
+                },
+                vec![],
+            ),
+        )
+        .expect("exact unresolved permutation accepts");
+
+    for requested in [
+        vec![first.clone()],
+        vec![first.clone(), first.clone()],
+        vec![first, path('e', "foreign")],
+    ] {
+        let mut rejected = TransferSession::new(manifest.clone(), 8, 32, 32, 32, 32, 16, 4096)
+            .expect("session creates");
+        rejected
+            .accept(
+                Direction::WorkerToGateway,
+                frame(FrameKind::ValidPaths, &PathSet { paths: vec![] }, vec![]),
+            )
+            .expect("valid paths accepts");
+        assert!(rejected
+            .accept(
+                Direction::WorkerToGateway,
+                frame(
+                    FrameKind::InputRequest,
+                    &PathSet { paths: requested },
+                    vec![],
+                ),
+            )
+            .is_err());
+    }
+}
+
+#[test]
 fn validates_complete_selective_transfer_sequence() {
     let manifest = manifest();
     let input = manifest.paths[0].path.clone();
