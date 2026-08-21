@@ -626,8 +626,20 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
                 offset: 0,
                 chunk: Vec::with_capacity(limits.stream_buffer_bytes()),
                 maximum_metadata_bytes: limits.maximum_frame_metadata_bytes(),
+                failure_stage: None,
             };
-            store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)?;
+            if let Err(error) =
+                store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)
+            {
+                tracing::warn!(
+                    event = "nomad.callback.input_nar.failed",
+                    path = entry.path,
+                    nar_size = entry.nar_size,
+                    stage = ?sink.failure_stage,
+                    "Nomad callback input NAR transfer failed"
+                );
+                return Err(error);
+            }
             sink.finish()
         })();
         match &result {
@@ -651,6 +663,16 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputNarSinkFailureStage {
+    Metadata,
+    Offset,
+    Session,
+    Frame,
+    MessageLimit,
+    WebSocket,
+}
+
 struct InputNarSink<'a, S: io::Read + io::Write> {
     socket: &'a mut crate::nomad::callback_http::CallbackSocket<S>,
     session: &'a mut TransferSession,
@@ -658,6 +680,7 @@ struct InputNarSink<'a, S: io::Read + io::Write> {
     offset: u64,
     chunk: Vec<u8>,
     maximum_metadata_bytes: usize,
+    failure_stage: Option<InputNarSinkFailureStage>,
 }
 
 impl<S: io::Read + io::Write> InputNarSink<'_, S> {
@@ -677,28 +700,41 @@ impl<S: io::Read + io::Write> InputNarSink<'_, S> {
         };
         let frame = Frame::new(
             FrameKind::InputNar,
-            encode_metadata(&metadata, self.maximum_metadata_bytes)
-                .map_err(|_| io::Error::other("Nomad input NAR metadata encoding failed"))?,
+            encode_metadata(&metadata, self.maximum_metadata_bytes).map_err(|_| {
+                self.failure_stage = Some(InputNarSinkFailureStage::Metadata);
+                io::Error::other("Nomad input NAR metadata encoding failed")
+            })?,
             std::mem::take(&mut self.chunk),
         );
         self.offset = self
             .offset
             .checked_add(frame.payload().len() as u64)
-            .ok_or_else(|| io::Error::other("Nomad input NAR offset overflow"))?;
+            .ok_or_else(|| {
+                self.failure_stage = Some(InputNarSinkFailureStage::Offset);
+                io::Error::other("Nomad input NAR offset overflow")
+            })?;
         self.session
             .accept(Direction::GatewayToWorker, frame.clone())
-            .map_err(|_| io::Error::other("Nomad input NAR session validation failed"))?;
+            .map_err(|_| {
+                self.failure_stage = Some(InputNarSinkFailureStage::Session);
+                io::Error::other("Nomad input NAR session validation failed")
+            })?;
         let mut message = Vec::new();
         write_frame(
             &mut message,
             &frame,
             ProtocolLimits::new(self.maximum_metadata_bytes, frame.payload().len()),
         )
-        .map_err(|_| io::Error::other("Nomad input NAR frame encoding failed"))?;
+        .map_err(|_| {
+            self.failure_stage = Some(InputNarSinkFailureStage::Frame);
+            io::Error::other("Nomad input NAR frame encoding failed")
+        })?;
         self.socket.write_binary(message).map_err(|error| {
             if error.to_string() == "Nomad WebSocket message exceeds limit" {
+                self.failure_stage = Some(InputNarSinkFailureStage::MessageLimit);
                 io::Error::other("Nomad input NAR message exceeds limit")
             } else {
+                self.failure_stage = Some(InputNarSinkFailureStage::WebSocket);
                 io::Error::other("Nomad input NAR WebSocket send failed")
             }
         })
