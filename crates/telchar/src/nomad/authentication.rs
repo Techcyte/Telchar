@@ -194,13 +194,21 @@ struct WorkloadClaims {
     #[serde(rename = "iss")]
     _issuer: Option<String>,
     #[serde(rename = "aud")]
-    _audience: String,
+    _audience: AudienceClaim,
     exp: u64,
     nbf: u64,
     nomad_namespace: String,
     nomad_job_id: String,
     nomad_allocation_id: String,
     nomad_task: String,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AudienceClaim {
+    One(String),
+    Many(Vec<String>),
 }
 
 fn validate_authentication_identity_for_workload(
