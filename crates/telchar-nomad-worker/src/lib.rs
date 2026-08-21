@@ -68,7 +68,7 @@ impl WorkerSession {
             .paths
             .iter()
             .collect::<std::collections::BTreeSet<_>>();
-        let requested = PathSet {
+        let unresolved = PathSet {
             paths: self
                 .manifest
                 .paths
@@ -78,7 +78,19 @@ impl WorkerSession {
                 .cloned()
                 .collect(),
         };
-        if requested != self.inputs.request_unresolved()? {
+        let requested = requested_inputs(&self.manifest, unresolved)?;
+        if requested
+            .paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            != self
+                .inputs
+                .request_unresolved()?
+                .paths
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        {
             return Err(invalid("worker unresolved input set is inconsistent"));
         }
         self.send_metadata(FrameKind::InputRequest, &requested)?;
@@ -249,13 +261,16 @@ impl WorkerSession {
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        for path in order_requested_inputs(&self.manifest, requested)? {
+        if requested_inputs(&self.manifest, requested.clone())? != *requested {
+            return Err(invalid("worker input request order is inconsistent"));
+        }
+        for path in &requested.paths {
             self.ensure_connection_active()?;
             let entry = self
                 .manifest
                 .paths
                 .iter()
-                .find(|entry| entry.path == path)
+                .find(|entry| &entry.path == path)
                 .ok_or_else(|| invalid("worker requested input is not admitted"))?;
             let references = entry
                 .references
@@ -878,6 +893,12 @@ impl<'a> InputNarReader<'a> {
     }
 }
 
+fn requested_inputs(manifest: &InputManifest, unresolved: PathSet) -> io::Result<PathSet> {
+    Ok(PathSet {
+        paths: order_requested_inputs(manifest, &unresolved)?,
+    })
+}
+
 fn order_requested_inputs(
     manifest: &InputManifest,
     requested: &PathSet,
@@ -1127,6 +1148,40 @@ mod tests {
         assert!(reader.read(&mut byte).is_err());
         assert_eq!(reader.failure_stage(), Some(InputNarFailureStage::Message));
         server.join().expect("server joins");
+    }
+
+    #[test]
+    fn unresolved_request_uses_dependency_order() {
+        let manifest = InputManifest {
+            derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+            build: input_reader_manifest("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-referrer", 1)
+                .build,
+            paths: vec![
+                entry(
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-referrer",
+                    &["/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference"],
+                ),
+                entry("/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference", &[]),
+            ],
+            outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+        };
+        let unresolved = PathSet {
+            paths: manifest
+                .paths
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+
+        assert_eq!(
+            requested_inputs(&manifest, unresolved).expect("requested inputs order"),
+            PathSet {
+                paths: vec![
+                    "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-reference".to_owned(),
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-referrer".to_owned(),
+                ]
+            }
+        );
     }
 
     #[test]
