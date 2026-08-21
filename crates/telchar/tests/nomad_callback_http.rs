@@ -61,8 +61,9 @@ fn handshake(path: &str, protocol: &str) -> String {
 #[test]
 fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
     let stream = FragmentedStream::new(handshake("/callback", "telchar-nomad-transfer-v1"), 128);
-    let socket =
+    let mut socket =
         accept_connection(stream, CallbackHttpLimits::new(1024, 4096)).expect("WebSocket accepts");
+    socket.set_maximum_message_bytes(8192);
     let stream = socket.into_inner();
     assert!(String::from_utf8(stream.output)
         .expect("response is UTF-8")

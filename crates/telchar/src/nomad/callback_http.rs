@@ -85,6 +85,10 @@ impl<S: Read + Write> CallbackSocket<S> {
         self.inner.into_inner().inner
     }
 
+    pub fn set_maximum_message_bytes(&mut self, maximum_message_bytes: usize) {
+        self.maximum_message_bytes = maximum_message_bytes;
+    }
+
     pub fn configure_keepalive(&mut self, interval: Duration, deadline: Instant) {
         self.keepalive = Some(Keepalive {
             _interval: interval,

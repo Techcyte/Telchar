@@ -302,6 +302,10 @@ pub fn serve_connection(
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
     let limits = backend.transfer_limits();
+    socket.set_maximum_message_bytes(
+        (limits.maximum_manifest_bytes() as usize)
+            .max(limits.maximum_frame_metadata_bytes() + limits.stream_buffer_bytes()),
+    );
     let connection_deadline = Instant::now()
         .checked_add(limits.maximum_connection_lifetime())
         .ok_or_else(|| io::Error::other("Nomad connection lifetime is invalid"))?;
