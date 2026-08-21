@@ -302,6 +302,18 @@ pub fn serve_connection(
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
     let limits = backend.transfer_limits();
+    tracing::debug!(
+        event = "nomad.callback.authentication.accepted",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        task = authentication.task,
+        maximum_manifest_paths = limits.maximum_manifest_paths(),
+        maximum_manifest_bytes = limits.maximum_manifest_bytes(),
+        maximum_frame_metadata_bytes = limits.maximum_frame_metadata_bytes(),
+        stream_buffer_bytes = limits.stream_buffer_bytes(),
+        "Nomad callback authentication accepted"
+    );
     socket.set_maximum_message_bytes(
         (limits.maximum_manifest_bytes() as usize)
             .max(limits.maximum_frame_metadata_bytes() + limits.stream_buffer_bytes()),
@@ -319,6 +331,15 @@ pub fn serve_connection(
         .set_write_timeout(Some(limits.transfer_idle_timeout()))?;
     let mut closure = GatewayStoreClosureBackend::new(gateway_store.clone());
     let manifest = input_manifest(build_request, &mut closure)?;
+    tracing::debug!(
+        event = "nomad.callback.manifest.prepared",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        path_count = manifest.paths.len(),
+        output_count = manifest.outputs.len(),
+        "Nomad callback input manifest prepared"
+    );
     let mut session = TransferSession::new(
         manifest.clone(),
         limits.maximum_manifest_paths(),
@@ -340,7 +361,22 @@ pub fn serve_connection(
         &frame,
         ProtocolLimits::new(limits.maximum_manifest_bytes() as usize, 0),
     )?;
+    tracing::debug!(
+        event = "nomad.callback.manifest.sending",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        message_bytes = message.len(),
+        "Nomad callback input manifest sending"
+    );
     socket.write_binary(message)?;
+    tracing::debug!(
+        event = "nomad.callback.manifest.sent",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        "Nomad callback input manifest sent"
+    );
     ensure_before(connection_deadline)?;
     let valid_paths = read_transfer_frame(
         &mut socket,

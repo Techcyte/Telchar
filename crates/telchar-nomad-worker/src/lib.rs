@@ -677,12 +677,14 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
     loop {
         match socket
             .read()
-            .map_err(|_| io::Error::other("worker transfer receive failed"))?
+            .map_err(|error| io::Error::other(format!("worker transfer receive failed: {error}")))?
         {
             tungstenite::Message::Binary(body) => return Ok(body.to_vec()),
             tungstenite::Message::Ping(payload) => socket
                 .send(tungstenite::Message::Pong(payload))
-                .map_err(|_| io::Error::other("worker transfer receive failed"))?,
+                .map_err(|error| {
+                    io::Error::other(format!("worker transfer response failed: {error}"))
+                })?,
             tungstenite::Message::Close(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
