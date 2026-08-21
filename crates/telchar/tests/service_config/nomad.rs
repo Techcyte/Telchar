@@ -391,7 +391,6 @@ command = "/opt/telchar/bin/telchar-nomad-worker"
 
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
-issuer = "https://nomad.example:4646"
 jwks_url = "https://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 ca_certificate_file = "{}"
@@ -445,7 +444,8 @@ args = ["/alloc/data/nix"]
     assert_eq!(backend.transfer_endpoint(), "wss://telchar.example:7443");
     let authentication = backend.transfer_authentication();
     assert_eq!(authentication.mode(), "workload-identity");
-    assert_eq!(authentication.issuer(), Some("https://nomad.example:4646"));
+    assert_eq!(authentication.issuer(), None);
+    assert!(!authentication.verify_issuer());
     assert_eq!(
         authentication.jwks_url(),
         Some("https://nomad.example:4646/.well-known/jwks.json")
@@ -470,6 +470,20 @@ args = ["/alloc/data/nix"]
         prestart.driver_config()["command"],
         "/opt/operator/bin/configure-nix"
     );
+
+    let configured = fs::read_to_string(&config_path).expect("configuration reads");
+    fs::write(
+        &config_path,
+        configured.replace(
+            "mode = \"workload-identity\"\n",
+            "mode = \"workload-identity\"\nissuer = \"https://nomad.example:4646\"\nverify_issuer = true\n",
+        ),
+    )
+    .expect("issuer configuration writes");
+    let config = ServiceConfig::load().expect("issuer configuration loads");
+    let authentication = config.nomad_backends()[0].transfer_authentication();
+    assert_eq!(authentication.issuer(), Some("https://nomad.example:4646"));
+    assert!(authentication.verify_issuer());
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");

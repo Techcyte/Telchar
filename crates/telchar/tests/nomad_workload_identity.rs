@@ -19,6 +19,12 @@ const VALID_TOKEN: &str = concat!(
     "eyJpc3MiOiJodHRwOi8vbm9tYWQuZXhhbXBsZTo0NjQ2IiwiYXVkIjoidGVsY2hhci10cmFuc2ZlciIsImV4cCI6MTEwMCwibmJmIjo5MDAsIm5vbWFkX25hbWVzcGFjZSI6InRlbGNoYXIiLCJub21hZF9qb2JfaWQiOiJqb2ItMSIsIm5vbWFkX2FsbG9jYXRpb25faWQiOiJhbGxvY2F0aW9uLTEiLCJub21hZF90YXNrIjoiYnVpbGQifQ.",
     "lfrDiO2U7LepZaw0zWkpPxymkfZ_gXH2zyeSHeiXncpI3-oCHfihb_fnQSve6xOH38uK1ivs-XvfU_oCbfuRhs4YXlytC3JDVo-Hnb6wqubcWk94lhJCCbZpLwa9qISCPaB59qcJeA4RDQQHJKk7mDJ4MbGyBTJqxb1pASm76ygq75MV9N2aAueR_jh2VWJ2ih1WjpWWxN2-nTGQpa50krgdCwTzzcTux47EdTwGKzLsHciu5c0s5uhksE2_5FJNPZblg6o91gQAinchmHyoQ0ewUz6vu3RW3xYCxtX9kxM2GN_kHykJGAC6M7b2HY-43PA4v3fDYErLWUYeUe2eEQ"
 );
+const TOKEN_WITHOUT_ISSUER_MODULUS: &str = "vdvNatdr61BODpq9bEtbXLoTZL5BIe4HsSzlGdIG4gVXA-hgM2k3RQUTt0SgiPobcT5odWfwwLSOuCxUWT4tEeWzQLw7lhr9tZVtZxJ_4AYSZis50NO6JzkmnxTz0oFb443WRZ0I5MiLV4ne3FKXNzxZKmkZkPWHkrglOGnuvvqjbKzsrmCs1uxEiCegMlr6nhb2SlpYqf-A8EG4PNazyrPITBLZikITQG5YgOrDwqQmQ9QPshb16YWlskLus0E-nC0DkODt6CZyHjngPAhJNGGa_8cpqjdQPgZBg8SUuwcXpa1-IkqNXXzW2SCVzQY5LbkC3_TkEcasXOGCOhTUZw";
+const TOKEN_WITHOUT_ISSUER: &str = concat!(
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9wdGlvbmFsLWlzc3Vlci1rZXkifQ.",
+    "eyJhdWQiOiJ0ZWxjaGFyLXRyYW5zZmVyIiwiZXhwIjoxMTAwLCJuYmYiOjkwMCwibm9tYWRfbmFtZXNwYWNlIjoidGVsY2hhciIsIm5vbWFkX2pvYl9pZCI6ImpvYi0xIiwibm9tYWRfYWxsb2NhdGlvbl9pZCI6ImFsbG9jYXRpb24tMSIsIm5vbWFkX3Rhc2siOiJidWlsZCJ9.",
+    "pk05kuHZaZbOo5XRk9gX6itd81bK4J0NgXTIQ5-lqelGE6xrlh-NMhIV8l91VvkCqGMfazTJnL514L1kl_tUaq6J3c3BSRRDd-3H6krT69z5gDlyDQQ9Okxvp-gIlGs6D5XkbDlZsA53BiymLwCYtYb2sTi8oQkkctZszceUsQYm02GgQcwsWqjOjynKe5CA3Agft4A7vHCjz7JC9yPuloSrvxHEv5kse5EBwMYWyEtVR8HWtK5aqtiii53ZdIwyYxikypkaL3sja9hxaz9oEeWQmSVs-_u154UDRO4FO-ZdA9yo8KY0PbMWV6WbbdDKoyNHfZmUao8QQ2KsCpedyA"
+);
 const FOREIGN_TOKEN: &str = concat!(
     "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0xIn0.",
     "eyJpc3MiOiJodHRwOi8vbm9tYWQuZXhhbXBsZTo0NjQ2IiwiYXVkIjoidGVsY2hhci10cmFuc2ZlciIsImV4cCI6MTEwMCwibmJmIjo5MDAsIm5vbWFkX25hbWVzcGFjZSI6InRlbGNoYXIiLCJub21hZF9qb2JfaWQiOiJqb2ItMSIsIm5vbWFkX2FsbG9jYXRpb25faWQiOiJmb3JlaWduIiwibm9tYWRfdGFzayI6ImJ1aWxkIn0.",
@@ -61,7 +67,8 @@ fn fetches_bounded_jwks_and_verifies_exact_nomad_claims() {
         .expect("response writes");
     });
     let mut verifier = WorkloadIdentityVerifier::new(WorkloadIdentityPolicy {
-        issuer: "http://nomad.example:4646".to_owned(),
+        issuer: Some("http://nomad.example:4646".to_owned()),
+        verify_issuer: true,
         jwks_url,
         audience: "telchar-transfer".to_owned(),
         namespace: "telchar".to_owned(),
@@ -82,6 +89,53 @@ fn fetches_bounded_jwks_and_verifies_exact_nomad_claims() {
             UNIX_EPOCH + Duration::from_secs(1_000),
         )
         .expect("identity verifies");
+    server.join().expect("server joins");
+}
+
+#[test]
+fn accepts_missing_issuer_when_verification_is_disabled() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let jwks_url = format!(
+        "http://{}/.well-known/jwks.json",
+        listener.local_addr().expect("address")
+    );
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("JWKS request accepts");
+        let mut request = [0_u8; 1024];
+        let _length = stream.read(&mut request).expect("request reads");
+        let body = format!(
+            r#"{{"keys":[{{"kty":"RSA","kid":"optional-issuer-key","use":"sig","alg":"RS256","n":"{TOKEN_WITHOUT_ISSUER_MODULUS}","e":"AQAB"}}]}}"#
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("response writes");
+    });
+    let mut verifier = WorkloadIdentityVerifier::new(WorkloadIdentityPolicy {
+        issuer: None,
+        verify_issuer: false,
+        jwks_url,
+        audience: "telchar-transfer".to_owned(),
+        namespace: "telchar".to_owned(),
+        job_id: "job-1".to_owned(),
+        task: "build".to_owned(),
+        ca_certificate_file: None,
+        request_timeout: Duration::from_secs(5),
+        maximum_jwks_bytes: 16 * 1024,
+        clock_skew: Duration::from_secs(30),
+    })
+    .expect("verifier creates");
+
+    verifier
+        .verify_authentication(
+            &authentication(TOKEN_WITHOUT_ISSUER.to_owned()),
+            "POST",
+            "/callback",
+            UNIX_EPOCH + Duration::from_secs(1_000),
+        )
+        .expect("identity verifies without issuer");
     server.join().expect("server joins");
 }
 
@@ -107,7 +161,8 @@ fn rejects_foreign_claims_and_unsupported_algorithm() {
         .expect("response writes");
     });
     let policy = WorkloadIdentityPolicy {
-        issuer: "http://nomad.example:4646".to_owned(),
+        issuer: Some("http://nomad.example:4646".to_owned()),
+        verify_issuer: true,
         jwks_url,
         audience: "telchar-transfer".to_owned(),
         namespace: "telchar".to_owned(),

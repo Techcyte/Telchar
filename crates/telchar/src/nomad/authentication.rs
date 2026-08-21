@@ -19,7 +19,8 @@ const MAXIMUM_IDENTITY_BYTES: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct WorkloadIdentityPolicy {
-    pub issuer: String,
+    pub issuer: Option<String>,
+    pub verify_issuer: bool,
     pub jwks_url: String,
     pub audience: String,
     pub namespace: String,
@@ -41,8 +42,13 @@ impl WorkloadIdentityVerifier {
         if policy.request_timeout.is_zero() || policy.maximum_jwks_bytes == 0 {
             return Err(invalid("Nomad workload identity policy is invalid"));
         }
+        if policy.verify_issuer && policy.issuer.is_none() {
+            return Err(invalid("Nomad workload identity issuer is required"));
+        }
+        if let Some(issuer) = &policy.issuer {
+            validate_identity(issuer)?;
+        }
         for value in [
-            &policy.issuer,
             &policy.jwks_url,
             &policy.audience,
             &policy.namespace,
@@ -102,13 +108,20 @@ impl WorkloadIdentityVerifier {
             .map_err(|_| invalid("Nomad workload identity clock is invalid"))?
             .as_secs();
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[self.policy.issuer.as_str()]);
+        if self.policy.verify_issuer {
+            validation.set_issuer(&[self
+                .policy
+                .issuer
+                .as_deref()
+                .ok_or_else(|| invalid("Nomad workload identity issuer is required"))?]);
+        }
         validation.set_audience(&[self.policy.audience.as_str()]);
         validation.leeway = self.policy.clock_skew.as_secs();
         validation.validate_exp = false;
         validation.validate_nbf = false;
-        validation.required_spec_claims = ["exp", "iss", "aud", "nbf"]
+        validation.required_spec_claims = ["exp", "aud", "nbf"]
             .into_iter()
+            .chain(self.policy.verify_issuer.then_some("iss"))
             .map(str::to_owned)
             .collect();
         let token = decode::<WorkloadClaims>(token, &decoding_key, &validation)
@@ -179,7 +192,7 @@ struct Jwk {
 #[serde(deny_unknown_fields)]
 struct WorkloadClaims {
     #[serde(rename = "iss")]
-    _issuer: String,
+    _issuer: Option<String>,
     #[serde(rename = "aud")]
     _audience: String,
     exp: u64,

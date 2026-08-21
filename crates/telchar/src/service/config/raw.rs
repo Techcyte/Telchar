@@ -175,7 +175,9 @@ pub(super) struct RawNomadConstraint {
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum RawNomadTransferAuthentication {
     WorkloadIdentity {
-        issuer: String,
+        issuer: Option<String>,
+        #[serde(default)]
+        verify_issuer: bool,
         jwks_url: String,
         audience: String,
         ca_certificate_file: Option<PathBuf>,

@@ -288,11 +288,17 @@ pub(super) fn validate_nomad_transfer_authentication(
     match raw {
         RawNomadTransferAuthentication::WorkloadIdentity {
             issuer,
+            verify_issuer,
             jwks_url,
             audience,
             ca_certificate_file,
         } => {
-            if !valid_nomad_endpoint(&issuer) || !valid_nomad_endpoint(&jwks_url) {
+            if issuer
+                .as_deref()
+                .is_some_and(|value| !valid_nomad_endpoint(value))
+                || !valid_nomad_endpoint(&jwks_url)
+                || (verify_issuer && issuer.is_none())
+            {
                 return Err(invalid("Nomad workload identity endpoint is invalid"));
             }
             let audience =
@@ -304,6 +310,7 @@ pub(super) fn validate_nomad_transfer_authentication(
                 .transpose()?;
             Ok(NomadTransferAuthentication::WorkloadIdentity {
                 issuer,
+                verify_issuer,
                 jwks_url,
                 audience,
                 ca_certificate_file,

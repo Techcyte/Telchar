@@ -224,12 +224,14 @@ pub fn serve_connection(
     match backend.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity {
             issuer,
+            verify_issuer,
             jwks_url,
             audience,
             ca_certificate_file,
         } => {
             let verifier = WorkloadIdentityVerifier::new(WorkloadIdentityPolicy {
                 issuer: issuer.clone(),
+                verify_issuer: *verify_issuer,
                 jwks_url: jwks_url.clone(),
                 audience: audience.clone(),
                 namespace: backend.namespace().to_owned(),

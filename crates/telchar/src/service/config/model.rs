@@ -178,7 +178,8 @@ impl NomadResources {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NomadTransferAuthentication {
     WorkloadIdentity {
-        issuer: String,
+        issuer: Option<String>,
+        verify_issuer: bool,
         jwks_url: String,
         audience: String,
         ca_certificate_file: Option<PathBuf>,
@@ -199,8 +200,15 @@ impl NomadTransferAuthentication {
 
     pub fn issuer(&self) -> Option<&str> {
         match self {
-            Self::WorkloadIdentity { issuer, .. } => Some(issuer),
+            Self::WorkloadIdentity { issuer, .. } => issuer.as_deref(),
             Self::Hmac { .. } => None,
+        }
+    }
+
+    pub fn verify_issuer(&self) -> bool {
+        match self {
+            Self::WorkloadIdentity { verify_issuer, .. } => *verify_issuer,
+            Self::Hmac { .. } => false,
         }
     }
 

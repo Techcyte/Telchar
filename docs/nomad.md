@@ -31,7 +31,7 @@ Every transfer is authenticated, including on trusted plaintext networks.
 
 ### Workload identity
 
-Configure an explicit issuer, JWKS URL, audience, and optional CA certificate. Telchar verifies the signature and exact namespace, job, allocation, and task claims. It does not infer identity trust from the Nomad API endpoint.
+Configure a JWKS URL, audience, and optional CA certificate. Telchar verifies the signature and exact audience, namespace, job, allocation, and task claims. Issuer verification is disabled by default because Nomad omits the `iss` claim unless its servers configure `oidc_issuer`. To require it, configure both `issuer` and `verify_issuer = true`. Telchar does not infer identity trust from the Nomad API endpoint.
 
 ### HMAC capability
 
