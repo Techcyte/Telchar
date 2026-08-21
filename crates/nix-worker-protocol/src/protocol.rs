@@ -258,19 +258,6 @@ impl WorkerOperation {
             Self::AddPermRoot => 47,
         }
     }
-
-    pub const fn is_fixture_allowed(self) -> bool {
-        matches!(
-            self,
-            Self::IsValidPath
-                | Self::AddToStore
-                | Self::AddTempRoot
-                | Self::SetOptions
-                | Self::QueryPathInfo
-                | Self::QueryMissing
-                | Self::BuildPathsWithResults
-        )
-    }
 }
 
 pub fn read_worker_operation(input: &mut &[u8]) -> Result<WorkerOperation, ProtocolError> {

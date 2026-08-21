@@ -79,7 +79,7 @@ fn pinned_nix_reports_framed_error_after_set_options() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unsupported worker operation"),
+        stderr.contains("QueryMissing store query failed"),
         "client did not decode worker error: {stderr}"
     );
     assert!(

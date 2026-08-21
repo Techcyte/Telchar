@@ -1472,7 +1472,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     "SetOptions request completed"
                 );
             }
-            Ok(operation) if !operation.is_fixture_allowed() => {
+            Ok(operation) => {
                 tracing::error!(
                     event = "worker.operation.unsupported",
                     operation = ?operation,
@@ -1481,18 +1481,6 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 return reject(
                     &mut output,
                     "recognized-unsupported",
-                    "unsupported worker operation",
-                );
-            }
-            Ok(operation) => {
-                tracing::error!(
-                    event = "worker.operation.unimplemented",
-                    operation = ?operation,
-                    "fixture-observed worker operation is not implemented"
-                );
-                return reject(
-                    &mut output,
-                    "recognized-unimplemented",
                     "unsupported worker operation",
                 );
             }
