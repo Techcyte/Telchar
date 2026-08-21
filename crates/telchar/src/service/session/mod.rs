@@ -68,62 +68,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     let negotiated = reader.perform_server_handshake(&mut output, &[])?;
     reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")?;
 
-    loop {
-        match reader.read_operation() {
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                tracing::error!(
-                    event = "worker.session.timed_out",
-                    "worker protocol session timed out"
-                );
-                return Ok(());
-            }
-            Err(_) => {
-                return reject(&mut output, "unknown-operation", "unknown worker operation");
-            }
-            Ok(WorkerOperation::BuildDerivation) => {
-                let request_started = std::time::Instant::now();
-                let request = match reader.complete_build_derivation() {
-                    Ok(request) => request,
-                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                        tracing::error!(
-                            event = "worker.session.timed_out",
-                            "worker protocol session timed out"
-                        );
-                        return Ok(());
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                        return reject(
-                            &mut output,
-                            "invalid-build-derivation",
-                            "invalid BuildDerivation request",
-                        );
-                    }
-                    Err(_) => {
-                        return reject(
-                            &mut output,
-                            "invalid-build-derivation",
-                            "invalid BuildDerivation request",
-                        );
-                    }
-                };
-                let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
-                    Ok(admitted) => admitted,
-                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                        return reject(
-                            &mut output,
-                            "unsupported-build-derivation",
-                            "unsupported BuildDerivation request",
-                        );
-                    }
-                    Err(_) => {
-                        return reject(
-                            &mut output,
-                            "invalid-build-derivation",
-                            "invalid BuildDerivation request",
-                        );
-                    }
-                };
+    macro_rules! execute_admitted_build {
+        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $write_success:expr $(,)?) => {{
+            let admitted = $admitted;
+            let request_started = $request_started;
+            let build_mode = $build_mode;
+            let requested_system = $requested_system;
                 if let Err(error) = disk_reserve.admit_build(
                     disk_probe,
                     std::path::Path::new(crate::service::disk_reserve::GATEWAY_STORE_DIRECTORY),
@@ -391,7 +341,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     "request attachment persisted"
                 );
                 crate::service::metrics::build_admitted(
-                    if request.build_mode() == 0 {
+                    if build_mode == 0 {
                         "normal"
                     } else {
                         "unsupported"
@@ -408,8 +358,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     input_count = admitted.input_sources().len(),
                     argument_count = admitted.arguments().len(),
                     environment_count = admitted.environment().len(),
-                    requested_system = request.platform(),
-                    build_mode = request.build_mode(),
+                    requested_system,
+                    build_mode,
                     "BuildDerivation request admitted"
                 );
                 let mut execution =
@@ -1051,7 +1001,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     });
                 }
                 if !requester_detached.get() {
-                    nix_worker_protocol::write_build_derivation_success_response(
+                    $write_success(
                         &mut output,
                         negotiated.version,
                         result.status() == BuildStatus::AlreadyValid,
@@ -1067,6 +1017,73 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     output_count = result.outputs().len(),
                     status = ?result.status(),
                     "BuildDerivation execution completed"
+                );
+
+        }};
+    }
+
+    loop {
+        match reader.read_operation() {
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                tracing::error!(
+                    event = "worker.session.timed_out",
+                    "worker protocol session timed out"
+                );
+                return Ok(());
+            }
+            Err(_) => {
+                return reject(&mut output, "unknown-operation", "unknown worker operation");
+            }
+            Ok(WorkerOperation::BuildDerivation) => {
+                let request_started = std::time::Instant::now();
+                let request = match reader.complete_build_derivation() {
+                    Ok(request) => request,
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                        tracing::error!(
+                            event = "worker.session.timed_out",
+                            "worker protocol session timed out"
+                        );
+                        return Ok(());
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                };
+                let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
+                    Ok(admitted) => admitted,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "unsupported-build-derivation",
+                            "unsupported BuildDerivation request",
+                        );
+                    }
+                    Err(_) => {
+                        return reject(
+                            &mut output,
+                            "invalid-build-derivation",
+                            "invalid BuildDerivation request",
+                        );
+                    }
+                };
+                execute_admitted_build!(
+                    admitted,
+                    request_started,
+                    request.build_mode(),
+                    request.platform(),
+                    nix_worker_protocol::write_build_derivation_success_response,
                 );
             }
             Ok(WorkerOperation::QueryPathInfo) => {
