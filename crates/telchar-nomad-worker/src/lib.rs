@@ -777,12 +777,29 @@ impl<'a> InputNarReader<'a> {
     }
 
     fn receive_chunk(&mut self) -> io::Result<()> {
-        let message = self
-            .socket
-            .read()
-            .map_err(|_| io::Error::other("worker input NAR receive failed"))?;
-        let tungstenite::Message::Binary(body) = message else {
-            return Err(invalid("worker input NAR message is invalid"));
+        let body = loop {
+            match self
+                .socket
+                .read()
+                .map_err(|_| io::Error::other("worker input NAR receive failed"))?
+            {
+                tungstenite::Message::Binary(body) => break body,
+                tungstenite::Message::Ping(payload) => self
+                    .socket
+                    .send(tungstenite::Message::Pong(payload))
+                    .map_err(|_| io::Error::other("worker input NAR keepalive response failed"))?,
+                tungstenite::Message::Close(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "worker callback closed during input NAR transfer",
+                    ));
+                }
+                tungstenite::Message::Text(_)
+                | tungstenite::Message::Pong(_)
+                | tungstenite::Message::Frame(_) => {
+                    return Err(invalid("worker input NAR message is invalid"));
+                }
+            }
         };
         let mut input = body.as_ref();
         let frame = read_frame(
@@ -915,6 +932,115 @@ mod tests {
             deriver: None,
             content_address: None,
         }
+    }
+
+    #[test]
+    fn input_reader_answers_keepalive_before_nar_chunk() {
+        use std::io::Read as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let endpoint = format!("ws://{}", listener.local_addr().expect("listener address"));
+        let path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input";
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection accepts");
+            let mut socket = tungstenite::accept(stream).expect("WebSocket accepts");
+            socket
+                .send(tungstenite::Message::Ping(b"keepalive".to_vec().into()))
+                .expect("keepalive sends");
+            let metadata = NarMetadata {
+                path: path.to_owned(),
+                nar_hash: "0".repeat(64),
+                nar_size: 3,
+                offset: 0,
+                final_chunk: true,
+            };
+            let mut message = Vec::new();
+            write_frame(
+                &mut message,
+                &Frame::new(
+                    FrameKind::InputNar,
+                    encode_metadata(&metadata, MAXIMUM_MANIFEST_METADATA_BYTES)
+                        .expect("metadata encodes"),
+                    b"nar".to_vec(),
+                ),
+                ProtocolLimits::new(
+                    MAXIMUM_MANIFEST_METADATA_BYTES,
+                    MAXIMUM_MANIFEST_METADATA_BYTES,
+                ),
+            )
+            .expect("frame writes");
+            socket
+                .send(tungstenite::Message::Binary(message.into()))
+                .expect("NAR sends");
+            assert!(matches!(
+                socket.read().expect("keepalive response reads"),
+                tungstenite::Message::Pong(_)
+            ));
+        });
+        let (mut socket, _) = tungstenite::connect(endpoint).expect("client connects");
+        let manifest = InputManifest {
+            derivation_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned(),
+            build: telchar::nomad::protocol::BuildSpecification {
+                derivation_path: b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_vec(),
+                outputs: vec![telchar::nomad::protocol::NamedOutput {
+                    name: b"out".to_vec(),
+                    path: b"/nix/store/cccccccccccccccccccccccccccccccc-output".to_vec(),
+                    hash_algorithm: vec![],
+                    hash: vec![],
+                }],
+                input_sources: vec![path.as_bytes().to_vec()],
+                system: "x86_64-linux".to_owned(),
+                required_system_features: vec![],
+                builder: b"/bin/sh".to_vec(),
+                arguments: vec![],
+                environment: vec![
+                    (b"system".to_vec(), b"x86_64-linux".to_vec()),
+                    (b"builder".to_vec(), b"/bin/sh".to_vec()),
+                    (
+                        b"out".to_vec(),
+                        b"/nix/store/cccccccccccccccccccccccccccccccc-output".to_vec(),
+                    ),
+                ],
+            },
+            paths: vec![PathManifestEntry {
+                nar_size: 3,
+                ..entry(path, &[])
+            }],
+            outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+        };
+        let mut inputs = InputTransferSession::new(
+            manifest.clone(),
+            MAXIMUM_MANIFEST_PATHS,
+            MAXIMUM_INPUT_NAR_BYTES,
+            MAXIMUM_INPUT_NAR_BYTES,
+        )
+        .expect("input session creates");
+        inputs
+            .record_valid_paths(PathSet { paths: vec![] })
+            .expect("valid paths record");
+        inputs.request_unresolved().expect("inputs request");
+        let mut protocol = ProtocolSession::new();
+        protocol
+            .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+            .expect("authentication records");
+        protocol
+            .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+            .expect("manifest records");
+        protocol
+            .accept(Direction::WorkerToGateway, FrameKind::ValidPaths)
+            .expect("valid paths record");
+        protocol
+            .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
+            .expect("request records");
+        let mut reader =
+            InputNarReader::new(&mut socket, &mut protocol, &mut inputs, &manifest.paths[0]);
+        let mut body = Vec::new();
+
+        reader.read_to_end(&mut body).expect("NAR reads");
+
+        assert_eq!(body, b"nar");
+        reader.finish().expect("NAR finishes");
+        server.join().expect("server joins");
     }
 
     #[test]
