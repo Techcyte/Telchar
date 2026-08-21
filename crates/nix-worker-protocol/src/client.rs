@@ -361,7 +361,7 @@ impl<S: Read + Write> WorkerClient<S> {
         loop {
             let read = source
                 .read(&mut buffer)
-                .map_err(|_| protocol_client_error())?;
+                .map_err(|_| io::Error::other("Nix daemon AddToStoreNar source read failed"))?;
             if read == 0 {
                 break;
             }
@@ -370,7 +370,15 @@ impl<S: Read + Write> WorkerClient<S> {
         }
         write_worker_integer_to(&mut self.stream, 0)?;
         self.stream.flush()?;
-        read_operation_frames(&mut self.stream, self.profile.version)
+        read_operation_frames(&mut self.stream, self.profile.version).map_err(|error| {
+            if error.kind() == io::ErrorKind::Other
+                && error.to_string() == "Nix daemon operation failed"
+            {
+                io::Error::other("Nix daemon AddToStoreNar was rejected")
+            } else {
+                io::Error::other("Nix daemon AddToStoreNar response failed")
+            }
+        })
     }
 
     pub fn ensure_path(&mut self, store_path: &[u8]) -> io::Result<()> {

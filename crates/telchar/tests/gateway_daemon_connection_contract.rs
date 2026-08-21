@@ -10,7 +10,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
-    WorkerTrust, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
+    AddToStoreNarInfo, WorkerTrust, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION,
+    SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
 };
 
 const STORE_PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
@@ -143,6 +144,72 @@ fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
     assert!(value[length..].iter().all(|byte| *byte == 0));
     value.truncate(length);
     value
+}
+
+#[test]
+fn add_to_store_nar_preserves_sanitized_operation_failure() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+
+        assert_eq!(read_integer(&mut stream), 39);
+        let _path = read_byte_string(&mut stream);
+        let _deriver = read_byte_string(&mut stream);
+        let _nar_hash = read_byte_string(&mut stream);
+        let reference_count = read_integer(&mut stream);
+        for _ in 0..reference_count {
+            let _reference = read_byte_string(&mut stream);
+        }
+        let _registration_time = read_integer(&mut stream);
+        let _nar_size = read_integer(&mut stream);
+        let _ultimate = read_integer(&mut stream);
+        let signature_count = read_integer(&mut stream);
+        for _ in 0..signature_count {
+            let _signature = read_byte_string(&mut stream);
+        }
+        let _content_address = read_byte_string(&mut stream);
+        let _repair = read_integer(&mut stream);
+        let _dont_check_signatures = read_integer(&mut stream);
+        while read_integer(&mut stream) != 0 {
+            let mut body = [0_u8; 4];
+            stream.read_exact(&mut body).expect("framed NAR body reads");
+        }
+
+        integer(&mut stream, STDERR_ERROR);
+        byte_string(&mut stream, b"sensitive-type");
+        integer(&mut stream, 1);
+        byte_string(&mut stream, b"sensitive-name");
+        byte_string(&mut stream, b"sensitive-message");
+        integer(&mut stream, 0);
+        integer(&mut stream, 0);
+        stream.flush().expect("operation error flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+    let info = AddToStoreNarInfo {
+        path: STORE_PATH,
+        deriver: None,
+        nar_hash_hex: std::str::from_utf8(NAR_HASH).unwrap(),
+        references: &[],
+        registration_time: 0,
+        nar_size: 4,
+        ultimate: false,
+        signatures: &[],
+        content_address: None,
+    };
+
+    let error = connection
+        .add_to_store_nar(&info, &mut b"body".as_slice(), false, true)
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "gateway Nix daemon AddToStoreNar was rejected"
+    );
+    assert!(!error.to_string().contains("sensitive"));
+    server.join().expect("server exits");
 }
 
 #[test]

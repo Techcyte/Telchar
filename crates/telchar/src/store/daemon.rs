@@ -162,7 +162,13 @@ impl GatewayStoreConnection {
     ) -> io::Result<()> {
         self.client
             .add_to_store_nar(info, source, repair, dont_check_signatures)
-            .map_err(|_| connection_error())
+            .map_err(|error| {
+                let message = error.to_string();
+                let phase = message
+                    .strip_prefix("Nix daemon AddToStoreNar ")
+                    .unwrap_or("operation failed");
+                io::Error::other(format!("gateway Nix daemon AddToStoreNar {phase}"))
+            })
     }
 }
 

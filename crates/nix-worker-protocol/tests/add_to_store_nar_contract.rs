@@ -3,8 +3,8 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    AddToStoreNarInfo, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC,
-    STDERR_LAST, WorkerClient, WorkerVersion,
+    AddToStoreNarInfo, WorkerClient, WorkerVersion, CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION,
+    SERVER_WORKER_MAGIC, STDERR_LAST,
 };
 
 const PATH: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-output";
@@ -195,7 +195,11 @@ fn source_failure_stops_without_successfully_terminating_frame() {
         .add_to_store_nar(&info(&references), &mut FailingSource(false), false, true)
         .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon AddToStoreNar source read failed"
+    );
+    assert!(!error.to_string().contains("sensitive source failure"));
     let output = client.into_inner().output;
     assert!(output.ends_with(b"nar"));
     assert!(!output.ends_with(&0_u64.to_le_bytes()));
@@ -223,8 +227,28 @@ fn daemon_error_is_redacted_after_upload() {
         )
         .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
+    assert_eq!(error.to_string(), "Nix daemon AddToStoreNar was rejected");
     assert!(!error.to_string().contains("sensitive"));
+}
+
+#[test]
+fn response_transport_failure_identifies_the_response_phase() {
+    let mut client = WorkerClient::connect(ScriptedStream::new(handshake(1))).unwrap();
+    let references = [REFERENCE.to_vec()];
+
+    let error = client
+        .add_to_store_nar(
+            &info(&references),
+            &mut b"streamed-nar".as_slice(),
+            false,
+            true,
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon AddToStoreNar response failed"
+    );
 }
 
 #[test]
