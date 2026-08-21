@@ -188,20 +188,13 @@ args = ["--stdio"]
         environment["TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS"],
         "3600"
     );
-    assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Env"],
-        true
-    );
-    assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["File"],
-        false
-    );
-    assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audience"][0],
-        "telchar-transfer"
-    );
-    assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["Audiences"].is_null());
-    assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"]["TTL"].is_null());
+    let identity = &job["Job"]["TaskGroups"][0]["Tasks"][1]["Identities"][0];
+    assert_eq!(identity["Name"], "telchar_transfer");
+    assert_eq!(identity["Env"], true);
+    assert_eq!(identity["File"], false);
+    assert_eq!(identity["Audience"][0], "telchar-transfer");
+    assert_eq!(identity["TTL"], 3_600_000_000_000_u64);
+    assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"].is_null());
 
     unsafe {
         match saved {

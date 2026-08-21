@@ -496,14 +496,16 @@ fn render_job_at(
             task["Env"]["TELCHAR_SHARED_BUILD_DIGEST"] =
                 Value::from(URL_SAFE_NO_PAD.encode(Sha256::digest(shared_build_key)));
             task["Env"]["TELCHAR_TASK"] = Value::from("build");
-            task["Identity"] = json!({
+            task["Identities"] = json!([{
+                "Name": "telchar_transfer",
                 "Env": true,
                 "File": false,
                 "Audience": [config
                     .transfer_authentication()
                     .audience()
                     .expect("workload identity audience is configured")],
-            });
+                "TTL": 3_600_000_000_000_u64,
+            }]);
         }
         NomadTransferAuthentication::Hmac {
             key_id,

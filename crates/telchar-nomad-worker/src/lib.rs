@@ -503,7 +503,7 @@ impl WorkerConfig {
                     required(&mut lookup, "TELCHAR_SHARED_BUILD_DIGEST")?,
                     task,
                     AuthenticationProof::WorkloadIdentity {
-                        token: required(&mut lookup, "NOMAD_TOKEN")?,
+                        token: required(&mut lookup, "NOMAD_TOKEN_telchar_transfer")?,
                     },
                 )
             }

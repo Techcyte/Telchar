@@ -54,7 +54,7 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
         ("NOMAD_JOB_ID".to_owned(), "job-1".to_owned()),
         ("NOMAD_ALLOC_ID".to_owned(), "allocation-1".to_owned()),
         ("NOMAD_TASK_NAME".to_owned(), "build".to_owned()),
-        ("NOMAD_TOKEN".to_owned(), "jwt".to_owned()),
+        ("NOMAD_TOKEN_telchar_transfer".to_owned(), "jwt".to_owned()),
     ])
 }
 
