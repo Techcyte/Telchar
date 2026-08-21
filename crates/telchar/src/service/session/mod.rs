@@ -1264,6 +1264,58 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     "AddMultipleToStore request completed"
                 );
             }
+            Ok(WorkerOperation::QueryMissing) => {
+                let request = match reader.complete_query_missing() {
+                    Ok(request) => request,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.operation.rejected",
+                            rejection = "invalid-query-missing",
+                            reason = error.to_string(),
+                            "QueryMissing request rejected"
+                        );
+                        return reject(
+                            &mut output,
+                            "invalid-query-missing",
+                            "invalid QueryMissing request",
+                        );
+                    }
+                };
+                let requested_count = request.targets().len();
+                let missing = match store_query.query_missing(request.targets()) {
+                    Ok(missing) => missing,
+                    Err(error) => {
+                        tracing::error!(
+                            event = "worker.query_missing.failed",
+                            reason = error.to_string(),
+                            "gateway store QueryMissing failed"
+                        );
+                        return reject(
+                            &mut output,
+                            "query-missing-store-failure",
+                            "QueryMissing store query failed",
+                        );
+                    }
+                };
+                output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
+                nix_worker_protocol::write_query_missing_response(
+                    &mut output,
+                    &missing.will_build,
+                    &missing.will_substitute,
+                    &missing.unknown,
+                    missing.download_size,
+                    missing.nar_size,
+                )?;
+                output.flush()?;
+                tracing::info!(
+                    event = "worker.query_missing.completed",
+                    requested_count,
+                    will_build_count = missing.will_build.len(),
+                    will_substitute_count = missing.will_substitute.len(),
+                    unknown_count = missing.unknown.len(),
+                    "QueryMissing request completed"
+                );
+            }
             Ok(WorkerOperation::QueryValidPaths) => {
                 let request = match reader.complete_query_valid_paths(negotiated.version) {
                     Ok(request) => request,

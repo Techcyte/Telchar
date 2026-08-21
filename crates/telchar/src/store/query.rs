@@ -8,8 +8,18 @@ use std::thread;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_RESPONSE_ENTRIES: usize = nix_worker_protocol::MAXIMUM_QUERY_VALID_PATHS;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MissingPaths {
+    pub will_build: Vec<Vec<u8>>,
+    pub will_substitute: Vec<Vec<u8>>,
+    pub unknown: Vec<Vec<u8>>,
+    pub download_size: u64,
+    pub nar_size: u64,
+}
+
 pub trait QueryValidPathsStore {
     fn query_valid_paths(&mut self, paths: &[Vec<u8>]) -> io::Result<Vec<Vec<u8>>>;
+    fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<MissingPaths>;
 }
 
 pub struct GatewayStoreQuery {
@@ -124,6 +134,25 @@ impl QueryValidPathsStore for GatewayStoreQuery {
             }
         }
         Ok(valid.into_iter().map(String::into_bytes).collect())
+    }
+
+    fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<MissingPaths> {
+        let endpoint = self.store_uri.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })?;
+        let endpoint = crate::store::daemon::GatewayStoreEndpoint::parse(endpoint)?;
+        let mut connection = crate::store::daemon::GatewayStoreConnection::connect(&endpoint)?;
+        let missing = connection.query_missing(targets)?;
+        Ok(MissingPaths {
+            will_build: missing.will_build,
+            will_substitute: missing.will_substitute,
+            unknown: missing.unknown,
+            download_size: missing.download_size,
+            nar_size: missing.nar_size,
+        })
     }
 }
 

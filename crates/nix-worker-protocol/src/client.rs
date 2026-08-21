@@ -127,6 +127,15 @@ pub enum WorkerBuildStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerMissingPaths {
+    pub will_build: Vec<Vec<u8>>,
+    pub will_substitute: Vec<Vec<u8>>,
+    pub unknown: Vec<Vec<u8>>,
+    pub download_size: u64,
+    pub nar_size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerBuildResult {
     status: WorkerBuildStatus,
     outputs: Vec<(Vec<u8>, Vec<u8>)>,
@@ -228,6 +237,50 @@ impl<S: Read + Write> WorkerClient<S> {
         read_worker_path_info(&mut self.stream)
             .map(Some)
             .map_err(|_| protocol_client_error())
+    }
+
+    pub fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<WorkerMissingPaths> {
+        if targets.len() > MAXIMUM_QUERY_VALID_PATHS {
+            return Err(protocol_client_error());
+        }
+        for target in targets {
+            validate_derived_path(target).map_err(|_| protocol_client_error())?;
+        }
+        write_worker_integer_to(&mut self.stream, WorkerOperation::QueryMissing.code())?;
+        write_byte_string_collection(&mut self.stream, targets)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
+        let budget = SessionAllocationBudget::new(ProtocolSessionLimits::DEFAULT);
+        let will_build = read_client_byte_string_set(
+            &mut self.stream,
+            MAXIMUM_QUERY_VALID_PATHS,
+            MAXIMUM_WORKER_STORE_PATH_BYTES,
+            &budget,
+            true,
+        )?;
+        let will_substitute = read_client_byte_string_set(
+            &mut self.stream,
+            MAXIMUM_QUERY_VALID_PATHS,
+            MAXIMUM_WORKER_STORE_PATH_BYTES,
+            &budget,
+            true,
+        )?;
+        let unknown = read_client_byte_string_set(
+            &mut self.stream,
+            MAXIMUM_QUERY_VALID_PATHS,
+            MAXIMUM_WORKER_STORE_PATH_BYTES,
+            &budget,
+            true,
+        )?;
+        let download_size = read_worker_integer_from(&mut self.stream)?;
+        let nar_size = read_worker_integer_from(&mut self.stream)?;
+        Ok(WorkerMissingPaths {
+            will_build,
+            will_substitute,
+            unknown,
+            download_size,
+            nar_size,
+        })
     }
 
     pub fn build_derivation(

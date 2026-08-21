@@ -45,6 +45,63 @@ fn query_valid_paths_returns_only_authoritative_valid_paths() {
 }
 
 #[test]
+fn query_missing_reports_uncached_derivation_as_buildable() {
+    let name = format!("telchar-query-missing-{}", std::process::id());
+    let expression = format!(
+        "derivation {{ name = \"{name}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf {name} > \\\"$out\\\"\" ]; }}"
+    );
+    let derivation = Command::new("nix-instantiate")
+        .args(["--expr", &expression])
+        .output()
+        .unwrap_or_else(|error| panic!("host-store fixture derivation failed to run: {error}"));
+    assert!(
+        derivation.status.success(),
+        "nix-instantiate failed: {}",
+        String::from_utf8_lossy(&derivation.stderr)
+    );
+    let derivation = std::str::from_utf8(&derivation.stdout)
+        .unwrap_or_else(|error| panic!("derivation path is not UTF-8: {error}"))
+        .trim();
+    assert!(derivation.starts_with("/nix/store/") && !derivation.contains('\n'));
+    let derivation = PathBuf::from(derivation);
+    let mut frontend =
+        FrontendFixture::spawn_with_store(None, "unix:///nix/var/nix/daemon-socket/socket", []);
+    let child = &mut frontend.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 40);
+    write_integer(&mut input, 1);
+    let target = format!("{}!*", derivation.display());
+    write_string(&mut input, target.as_bytes());
+    input.flush().expect("QueryMissing request flushes");
+
+    let frame = read_integer(&mut output);
+    if frame != STDERR_LAST {
+        drop(input);
+        let _ = child.wait();
+        panic!(
+            "unexpected QueryMissing frame {frame:#x}: {}",
+            frontend.finish()
+        );
+    }
+    assert_eq!(read_integer(&mut output), 1, "derivation needs building");
+    assert_eq!(read_string(&mut output), derivation.to_string_lossy());
+    assert_eq!(read_integer(&mut output), 0, "nothing will substitute");
+    assert_eq!(read_integer(&mut output), 0, "target is known");
+    assert_eq!(read_integer(&mut output), 0, "no download bytes");
+    assert_eq!(read_integer(&mut output), 0, "no substitute NAR bytes");
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = frontend.finish();
+    assert!(
+        stderr.contains("worker.query_missing.completed"),
+        "missing completion telemetry: {stderr}"
+    );
+}
+
+#[test]
 #[ignore = "private fixture paths are outside the production /nix/store namespace"]
 fn query_path_info_returns_authoritative_metadata() {
     let fixture = NixFixture::create().expect("Nix fixture creates");

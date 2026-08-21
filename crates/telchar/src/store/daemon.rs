@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use nix_worker_protocol::{
     AddToStoreNarInfo, BuildDerivationClientRequest, WorkerBuildResult, WorkerClient,
-    WorkerClientProfile, WorkerPathInfo,
+    WorkerClientProfile, WorkerMissingPaths, WorkerPathInfo,
 };
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -111,6 +111,12 @@ impl GatewayStoreConnection {
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.client
             .query_path_info(path)
+            .map_err(|_| connection_error())
+    }
+
+    pub fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<WorkerMissingPaths> {
+        self.client
+            .query_missing(targets)
             .map_err(|_| connection_error())
     }
 

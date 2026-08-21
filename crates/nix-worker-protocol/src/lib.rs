@@ -302,6 +302,60 @@ impl<R: WorkerInput> WorkerReader<R> {
         })
     }
 
+    pub fn complete_query_missing(&mut self) -> io::Result<QueryMissingRequest> {
+        let count_value = self.read_integer()?;
+        let count = usize::try_from(count_value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid QueryMissing count: {count_value}"),
+            )
+        })?;
+        if count > MAXIMUM_QUERY_VALID_PATHS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("QueryMissing count exceeds limit: {count}"),
+            ));
+        }
+        let collection_charge = self
+            .budget
+            .charge(
+                count
+                    .checked_mul(std::mem::size_of::<Vec<u8>>())
+                    .ok_or_else(invalid_query_missing_request)?,
+            )
+            .map_err(|_| invalid_query_missing_request())?;
+        let mut targets = Vec::with_capacity(count);
+        let mut value_charges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (target, charge) = read_worker_byte_string_with_charge_from(
+                &mut self.input,
+                MAXIMUM_WORKER_STORE_PATH_BYTES + 1 + MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES,
+                &self.budget,
+            )?;
+            validate_derived_path(&target)?;
+            if targets.iter().any(|existing| existing == &target) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate QueryMissing target",
+                ));
+            }
+            targets.push(target);
+            value_charges.push(charge);
+        }
+        if self.input.has_unread_message_data() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing QueryMissing request data",
+            ));
+        }
+        self.input.complete_message();
+        Ok(QueryMissingRequest {
+            targets,
+            _collection_charge: collection_charge,
+            _value_charges: value_charges,
+        })
+    }
+
     pub fn complete_build_derivation(&mut self) -> io::Result<BuildDerivationRequest> {
         let invalid = |message: &'static str| io::Error::new(io::ErrorKind::InvalidData, message);
         let (drv_path, drv_charge) = read_build_string(
@@ -749,6 +803,39 @@ fn read_add_multiple_path_info(
     })
 }
 
+fn invalid_query_missing_request() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "invalid QueryMissing request")
+}
+
+fn validate_derived_path(target: &[u8]) -> io::Result<()> {
+    let path = match target.iter().position(|byte| *byte == b'!') {
+        Some(separator) => {
+            let (path, suffix) = target.split_at(separator);
+            let outputs = &suffix[1..];
+            if outputs.is_empty()
+                || outputs.split(|byte| *byte == b',').any(|output| {
+                    output.is_empty()
+                        || (output != b"*"
+                            && !output.iter().all(|byte| {
+                                byte.is_ascii_alphanumeric()
+                                    || matches!(byte, b'+' | b'-' | b'.' | b'_')
+                            }))
+                })
+            {
+                return Err(invalid_query_missing_request());
+            }
+            path
+        }
+        None => target,
+    };
+    validate_store_path(path).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid QueryMissing derived path: {error}"),
+        )
+    })
+}
+
 fn validate_build_store_path(path: &[u8]) -> io::Result<()> {
     validate_store_path(path)?;
     if !path.starts_with(NIX_STORE_DIRECTORY) {
@@ -1005,6 +1092,19 @@ impl StorePathRequest {
 }
 
 #[derive(Debug)]
+pub struct QueryMissingRequest {
+    targets: Vec<Vec<u8>>,
+    _collection_charge: SessionAllocationCharge,
+    _value_charges: Vec<SessionAllocationCharge>,
+}
+
+impl QueryMissingRequest {
+    pub fn targets(&self) -> &[Vec<u8>] {
+        &self.targets
+    }
+}
+
+#[derive(Debug)]
 pub struct QueryValidPathsRequest {
     paths: Vec<Vec<u8>>,
     substitute: bool,
@@ -1099,6 +1199,49 @@ pub fn write_query_path_info_response(
             write_worker_byte_string_to(output, signature.as_bytes())?;
         }
         write_worker_byte_string_to(output, info.content_address.unwrap_or_default().as_bytes())?;
+    }
+    Ok(())
+}
+
+pub fn write_query_missing_response(
+    output: &mut impl Write,
+    will_build: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    will_substitute: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    unknown: impl IntoIterator<Item = impl AsRef<[u8]>>,
+    download_size: u64,
+    nar_size: u64,
+) -> io::Result<()> {
+    write_query_missing_path_set(output, will_build)?;
+    write_query_missing_path_set(output, will_substitute)?;
+    write_query_missing_path_set(output, unknown)?;
+    write_worker_integer_to(output, download_size)?;
+    write_worker_integer_to(output, nar_size)
+}
+
+fn write_query_missing_path_set(
+    output: &mut impl Write,
+    paths: impl IntoIterator<Item = impl AsRef<[u8]>>,
+) -> io::Result<()> {
+    let mut paths = paths
+        .into_iter()
+        .map(|path| path.as_ref().to_vec())
+        .collect::<Vec<_>>();
+    if paths.len() > MAXIMUM_QUERY_VALID_PATHS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many QueryMissing results",
+        ));
+    }
+    for path in &paths {
+        validate_store_path(path).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid QueryMissing response")
+        })?;
+    }
+    paths.sort();
+    paths.dedup();
+    write_worker_integer_to(output, paths.len() as u64)?;
+    for path in paths {
+        write_worker_byte_string_to(output, &path)?;
     }
     Ok(())
 }
