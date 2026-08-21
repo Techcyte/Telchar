@@ -211,6 +211,31 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message)
 }
 
+pub fn read_regular_nar<R: Read>(source: R, maximum_contents: u64) -> io::Result<Vec<u8>> {
+    let mut nar = NarReader::new(source, io::sink());
+    nar.string_equals(b"nix-archive-1")?;
+    nar.string_equals(b"(")?;
+    nar.string_equals(b"type")?;
+    if nar.read_string_word()? != b"regular" {
+        return Err(invalid("NAR root is not a regular file"));
+    }
+    let marker = nar.read_string_word()?;
+    if marker == b"executable" {
+        if !nar.read_string_word()?.is_empty() || nar.read_string_word()? != b"contents" {
+            return Err(invalid("invalid executable regular NAR"));
+        }
+    } else if marker != b"contents" {
+        return Err(invalid("regular NAR node lacks contents"));
+    }
+    let contents = nar.read_bounded_string(maximum_contents)?;
+    nar.string_equals(b")")?;
+    let mut trailing = [0; 1];
+    if nar.source.read(&mut trailing)? != 0 {
+        return Err(invalid("trailing bytes after NAR"));
+    }
+    Ok(contents)
+}
+
 pub fn stage_nar<R: Read, W: Write>(source: R, staging: W) -> io::Result<NarFingerprint> {
     let mut nar = NarReader::new(source, staging);
     nar.string_equals(b"nix-archive-1")?;

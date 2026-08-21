@@ -2,11 +2,27 @@
 
 use std::io::Cursor;
 
-use telchar::store::nar::stage_nar;
+use telchar::store::nar::{read_regular_nar, stage_nar};
 
 const NAR_MAGIC: &[u8] = b"nix-archive-1";
 const CONTENT: &[u8] = b"telchar-classic-fixture";
 const CONTENT_OFFSET: usize = 96;
+
+#[test]
+fn extracts_one_bounded_regular_file() {
+    let contents = b"Derive([],[],[],\"x86_64-linux\",\"/bin/sh\",[],[])";
+    assert_eq!(
+        read_regular_nar(Cursor::new(regular_nar(contents)), 4096).unwrap(),
+        contents
+    );
+}
+
+#[test]
+fn rejects_non_regular_and_oversized_regular_extraction() {
+    let directory = nar_with_root(directory_node(&[(b"entry", regular_node(b"value"))]));
+    assert!(read_regular_nar(Cursor::new(directory), 4096).is_err());
+    assert!(read_regular_nar(Cursor::new(regular_nar(b"oversized")), 4).is_err());
+}
 
 #[test]
 fn stages_one_valid_nar_and_reports_its_fingerprint() {
