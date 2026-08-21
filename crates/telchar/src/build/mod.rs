@@ -76,6 +76,24 @@ pub struct BuildRequest {
 }
 
 impl BuildRequest {
+    pub fn load_stored(
+        derivation_path: &std::path::Path,
+        backend: &mut (impl crate::store::export::StoreExportBackend + ?Sized),
+        backends: &[BackendTarget],
+    ) -> io::Result<Self> {
+        const MAXIMUM_STORED_DERIVATION_BYTES: u64 = 16 * 1024 * 1024;
+        let contents = crate::store::export::load_stored_derivation(
+            derivation_path,
+            MAXIMUM_STORED_DERIVATION_BYTES,
+            backend,
+        )?;
+        Self::from_stored_derivation(
+            derivation_path.as_os_str().as_encoded_bytes(),
+            &contents,
+            backends,
+        )
+    }
+
     pub fn from_stored_derivation(
         derivation_path: &[u8],
         contents: &[u8],

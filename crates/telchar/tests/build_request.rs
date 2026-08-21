@@ -3,6 +3,8 @@
 use std::io;
 use std::time::Duration;
 
+use sha2::Digest;
+
 use nix_worker_protocol::{
     write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
 };
@@ -30,6 +32,56 @@ fn loads_classic_stored_derivation_into_build_request() {
     );
     assert_eq!(request.system(), "x86_64-linux");
     assert_eq!(request.builder(), b"/bin/sh");
+}
+
+#[test]
+fn loads_registered_derivation_through_store_export() {
+    use std::path::{Path, PathBuf};
+    use telchar::store::export::{StoreExportBackend, StoreExportRequest};
+    use telchar::store::promotion::RegisteredPathInfo;
+
+    struct Backend {
+        nar: Vec<u8>,
+        metadata: RegisteredPathInfo,
+    }
+    impl StoreExportBackend for Backend {
+        fn store_uri(&self) -> &str {
+            "fixture"
+        }
+        fn query_path_info(&mut self, _path: &Path) -> io::Result<RegisteredPathInfo> {
+            Ok(self.metadata.clone())
+        }
+        fn export_nar(
+            &mut self,
+            _request: &StoreExportRequest,
+            _nar_size: u64,
+            sink: &mut dyn io::Write,
+        ) -> io::Result<()> {
+            sink.write_all(&self.nar)
+        }
+    }
+
+    let contents = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let nar = regular_nar(contents);
+    let mut backend = Backend {
+        metadata: RegisteredPathInfo {
+            path: PathBuf::from(std::str::from_utf8(drv_path()).unwrap()),
+            nar_hash: sha2::Sha256::digest(&nar).into(),
+            nar_size: nar.len() as u64,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        },
+        nar,
+    };
+
+    let request = BuildRequest::load_stored(
+        Path::new(std::str::from_utf8(drv_path()).unwrap()),
+        &mut backend,
+        &backends("x86_64-linux", &[]),
+    )
+    .expect("registered derivation loads");
+    assert_eq!(request.derivation_path(), drv_path());
 }
 
 #[test]
@@ -430,6 +482,22 @@ fn build_request_wire_with_output_authority(
 
 fn drv_path() -> &'static [u8] {
     b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+}
+
+fn regular_nar(contents: &[u8]) -> Vec<u8> {
+    let mut nar = Vec::new();
+    for value in [
+        b"nix-archive-1".as_slice(),
+        b"(".as_slice(),
+        b"type".as_slice(),
+        b"regular".as_slice(),
+        b"contents".as_slice(),
+        contents,
+        b")".as_slice(),
+    ] {
+        write_worker_byte_string(&mut nar, value);
+    }
+    nar
 }
 
 fn output_path() -> &'static [u8] {
