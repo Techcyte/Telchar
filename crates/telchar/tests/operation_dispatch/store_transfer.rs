@@ -45,6 +45,57 @@ fn query_valid_paths_returns_only_authoritative_valid_paths() {
 }
 
 #[test]
+fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operations() {
+    let name = format!("telchar-real-workload-{}", std::process::id());
+    let expression = format!(
+        "derivation {{ name = \"{name}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf {name} > \\\"$out\\\"\" ]; }}"
+    );
+    let derivation = Command::new("nix-instantiate")
+        .args(["--expr", &expression])
+        .output()
+        .expect("host-store derivation creates");
+    assert!(derivation.status.success());
+    let derivation = String::from_utf8(derivation.stdout).unwrap();
+    let derivation = derivation.trim();
+    let frontend =
+        FrontendFixture::spawn_with_store(None, "unix:///nix/var/nix/daemon-socket/socket", []);
+    let mut client = frontend.spawn_frontend();
+    let mut input = client.stdin.take().expect("frontend input");
+    let mut output = client.stdout.take().expect("frontend output");
+    complete_handshake(&mut input, &mut output);
+    write_integer(&mut input, 40);
+    write_integer(&mut input, 1);
+    write_string(&mut input, format!("{derivation}!*").as_bytes());
+    input.flush().expect("QueryMissing request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    let will_build = read_integer(&mut output);
+    for _ in 0..will_build {
+        let _ = read_string(&mut output);
+    }
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
+    write_integer(&mut input, 46);
+    write_integer(&mut input, 1);
+    write_string(&mut input, format!("{derivation}!*").as_bytes());
+    write_integer(&mut input, 0);
+    input
+        .flush()
+        .expect("BuildPathsWithResults request flushes");
+    let next = read_integer(&mut output);
+    drop(input);
+    let _ = client.wait();
+    assert_ne!(
+        next,
+        STDERR_ERROR,
+        "real stock Nix operation sequence was rejected: {}",
+        frontend.finish()
+    );
+}
+
+#[test]
 fn query_missing_reports_uncached_derivation_as_buildable() {
     let name = format!("telchar-query-missing-{}", std::process::id());
     let expression = format!(
