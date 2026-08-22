@@ -64,6 +64,7 @@ pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar
   grep -q '^telchar:x:995:$' nix-daemon/etc/group
   grep -q '^keep-failed = true$' nix-daemon/etc/nix/nix.conf
   grep -q '^keep-log = true$' nix-daemon/etc/nix/nix.conf
+  test -d nix-daemon/tmp || { echo "Nix daemon /tmp is missing" >&2; exit 1; }
   if grep -aEq 'TELCHAR_TEST_(BUILD_HELPER|EXPORT_HELPER|STORE_RETENTION)' ${telchar}/bin/telchar; then
     echo "gateway OCI image contains test adapter controls" >&2
     exit 1

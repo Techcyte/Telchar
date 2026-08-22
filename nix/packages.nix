@@ -146,13 +146,14 @@ let
     name = "telchar-nix-daemon";
     tag = "latest";
     fakeRootCommands = ''
-      mkdir -p ./bootstrap ./bin ./etc/nix ./nix/var/log/nix/drvs ./var/lib/telchar
+      mkdir -p ./bootstrap ./bin ./etc/nix ./nix/var/log/nix/drvs ./tmp ./var/lib/telchar
       chown -R 995:995 ./nix/var/log ./var/lib/telchar
       cp ${pkgs.pkgsStatic.busybox}/bin/busybox ./bootstrap/busybox
       cp ${nixDaemonBootstrap}/store.tar ./bootstrap/store.tar
       cp ${nixDaemonBootstrap}/registration ./bootstrap/registration
       cp ${nixDaemonEntrypoint} ./bin/telchar-nix-daemon
       chmod 0555 ./bootstrap/busybox ./bin/telchar-nix-daemon
+      chmod 1777 ./tmp
       cp ${nixDaemonEtc}/etc/passwd ./etc/passwd
       cp ${nixDaemonEtc}/etc/group ./etc/group
       cp ${nixDaemonEtc}/etc/nix/nix.conf ./etc/nix/nix.conf
