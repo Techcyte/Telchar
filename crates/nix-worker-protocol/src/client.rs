@@ -149,8 +149,17 @@ impl BuildPathsFailurePhase {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuildPathsFailureResult {
+    pub status: u64,
+    pub category: &'static str,
+}
+
 #[derive(Debug)]
-struct BuildPathsFailure(BuildPathsFailurePhase);
+struct BuildPathsFailure {
+    phase: BuildPathsFailurePhase,
+    result: Option<BuildPathsFailureResult>,
+}
 
 impl std::fmt::Display for BuildPathsFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,11 +173,28 @@ pub fn build_paths_failure_phase(error: &io::Error) -> Option<BuildPathsFailureP
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<BuildPathsFailure>())
-        .map(|failure| failure.0)
+        .map(|failure| failure.phase)
+}
+
+pub fn build_paths_failure_result(error: &io::Error) -> Option<BuildPathsFailureResult> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<BuildPathsFailure>())
+        .and_then(|failure| failure.result)
 }
 
 fn build_paths_error(phase: BuildPathsFailurePhase) -> io::Error {
-    io::Error::other(BuildPathsFailure(phase))
+    io::Error::other(BuildPathsFailure {
+        phase,
+        result: None,
+    })
+}
+
+fn build_paths_result_error(status: u64, category: &'static str) -> io::Error {
+    io::Error::other(BuildPathsFailure {
+        phase: BuildPathsFailurePhase::Result,
+        result: Some(BuildPathsFailureResult { status, category }),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -492,8 +518,15 @@ impl<S: Read + Write> WorkerClient<S> {
             if &actual != expected {
                 return Err(build_paths_error(BuildPathsFailurePhase::Target));
             }
-            let result = read_worker_build_result(&mut self.stream, self.profile.version)
-                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Result))?;
+            let result = read_worker_build_result(&mut self.stream, self.profile.version).map_err(
+                |error| {
+                    worker_build_failure(&error)
+                        .map(|failure| {
+                            build_paths_result_error(failure.status, failure.category)
+                        })
+                        .unwrap_or_else(|| build_paths_error(BuildPathsFailurePhase::Result))
+                },
+            )?;
             if !matches!(
                 result.status(),
                 WorkerBuildStatus::Built | WorkerBuildStatus::AlreadyValid
@@ -669,6 +702,34 @@ fn read_build_operation_frames(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WorkerBuildFailure {
+    status: u64,
+    category: &'static str,
+}
+
+#[derive(Debug)]
+struct WorkerBuildFailureError(WorkerBuildFailure);
+
+impl std::fmt::Display for WorkerBuildFailureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Nix daemon BuildDerivation failed with status {} category {}",
+            self.0.status, self.0.category
+        )
+    }
+}
+
+impl std::error::Error for WorkerBuildFailureError {}
+
+fn worker_build_failure(error: &io::Error) -> Option<WorkerBuildFailure> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<WorkerBuildFailureError>())
+        .map(|error| error.0)
+}
+
 fn read_worker_build_result(
     input: &mut impl Read,
     version: WorkerVersion,
@@ -681,10 +742,10 @@ fn read_worker_build_result(
         1 | 3..=14 => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "Nix daemon BuildDerivation failed with status {raw_status} category {}",
-                    build_failure_category(&message)
-                ),
+                WorkerBuildFailureError(WorkerBuildFailure {
+                    status: raw_status,
+                    category: build_failure_category(&message),
+                }),
             ));
         }
         _ => return Err(protocol_client_error()),
@@ -716,7 +777,9 @@ fn read_worker_build_result(
 
 fn build_failure_category(message: &[u8]) -> &'static str {
     let message = String::from_utf8_lossy(message).to_ascii_lowercase();
-    if message.contains("failed with exit code") || message.contains("builder failed") {
+    if message.contains("interrupted by the user") || message.contains("cancelled") {
+        "interrupted"
+    } else if message.contains("failed with exit code") || message.contains("builder failed") {
         "builder-exited"
     } else if message.contains("required input") && message.contains("missing") {
         "missing-input"

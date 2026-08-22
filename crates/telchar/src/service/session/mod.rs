@@ -1146,6 +1146,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                     Err(error) => {
+                        let dependency_result =
+                            crate::build::stored_load_dependency_result(&error);
                         tracing::error!(
                             event = "gateway.stored_build.failed",
                             phase = crate::build::stored_load_failure_phase(&error)
@@ -1153,6 +1155,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 .unwrap_or("unknown"),
                             dependency_phase = crate::build::stored_load_dependency_phase(&error)
                                 .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
+                                .unwrap_or("none"),
+                            dependency_status = dependency_result.map(|result| result.status),
+                            dependency_category = dependency_result
+                                .map(|result| result.category)
                                 .unwrap_or("none"),
                             "stored build request loading failed"
                         );
