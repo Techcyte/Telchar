@@ -205,6 +205,8 @@ job "telchar" {
         }
       }
 
+      # OPERATOR POLICY: size for gateway-side substitution and dependency
+      # realization. These are Nomad resources, not Telchar configuration defaults.
       resources {
         cpu    = 1000
         memory = 4096
@@ -238,14 +240,17 @@ job "telchar" {
       }
 
       env {
-        HOME                               = "/alloc/data"
-        TMPDIR                             = "/alloc/data/import"
-        TELCHAR_CONFIG                     = "/secrets/telchar.toml"
-        TELCHAR_GATEWAY_STORE_URI          = "unix:///nix/var/nix/daemon-socket/socket"
-        TELCHAR_GATEWAY_GC_ROOT_DIRECTORY  = "/alloc/data/gc-roots"
-        TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1073741824"
-        RUST_LOG                           = "info"
+        HOME                              = "/alloc/data"
+        TMPDIR                            = "/alloc/data/import"
+        TELCHAR_CONFIG                    = "/secrets/telchar.toml"
+        TELCHAR_GATEWAY_STORE_URI         = "unix:///nix/var/nix/daemon-socket/socket"
+        TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = "/alloc/data/gc-roots"
+        RUST_LOG                          = "info"
 
+        # TELCHAR_GATEWAY_DISK_RESERVE_BYTES defaults to 10 GiB. Override only
+        # from an operator capacity decision; low values risk exhausting the
+        # gateway store during input admission or output import.
+        #
         # Optional OTLP example:
         # OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
         # OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.example.invalid"
@@ -291,22 +296,36 @@ EOH
         change_mode   = "signal"
         change_signal = "SIGHUP"
         data          = <<-EOH
+# Value labels used below:
+#   REQUIRED        Telchar cannot construct this deployment without the value.
+#   TELCHAR DEFAULT Repeated so operators can see and review the effective bound.
+#   OPERATOR POLICY Example sizing or behavior; choose deliberately.
+
+# OPERATOR POLICY: detached requests continue to completion. This prevents a
+# transient client disconnect from cancelling already-dispatched execution.
 running_disconnect_policy = "detach-and-finish"
+
+# OPERATOR POLICY: defaults are 3600 seconds and i64::MAX bytes respectively.
+# This example retains successful outputs for one day while capping retained
+# admitted inputs at 8 GiB.
 output_retention_seconds = 86400
 maximum_retained_input_bytes = 8589934592
 
 [database]
+# REQUIRED: secret file rendered above.
 url_file = "/secrets/database-url"
-# Singleton defaults are renewal = 5 seconds and lease = 20 seconds. Keep the
-# lease at least three times the renewal interval when overriding them.
+# TELCHAR DEFAULT: ownership renewal is 5 seconds and lease is 20 seconds.
+# Omitted here. Keep lease at least three times renewal when overriding them.
 
 [ipc]
+# REQUIRED for this jobspec topology: gateway and ingress share this socket.
 socket = "/alloc/data/run/daemon.sock"
+# OPERATOR POLICY: Telchar default is 256 sessions.
 maximum_sessions = 64
 
 [nomad_callback]
+# TELCHAR DEFAULT: repeated to document the actual listener and protocol bounds.
 bind = "0.0.0.0:7443"
-public_url = "${var.callback_public_url}"
 maximum_connections = 64
 maximum_header_bytes = 16384
 maximum_body_bytes = 65536
@@ -314,14 +333,20 @@ authentication_request_timeout_seconds = 10
 shutdown_drain_timeout_seconds = 30
 maximum_jwks_bytes = 1048576
 maximum_retained_nonces = 65536
+# REQUIRED: unlike the loopback default, this URL must be reachable by workers.
+public_url = "${var.callback_public_url}"
 
 [scheduling.default]
+# OPERATOR POLICY: Telchar defaults are 65536 queued and 65536 active builds.
+# Keep active admission separate from backend maximum_concurrent_builds.
 maximum_queued_builds = 1024
 maximum_active_builds = 64
 
 [backends]
+# TELCHAR DEFAULT: repeated to make backend-capacity waiting explicit.
 permit_wait_seconds = 30
 
+# REQUIRED BACKEND: fields in this section define exact execution authority.
 [[backends.nomad]]
 name = "nomad-linux-amd64"
 system = "x86_64-linux"
@@ -355,11 +380,14 @@ target = "/nix/var/nix/daemon-socket/socket"
 type = "bind"
 readonly = false
 
+# OPERATOR POLICY: required explicit resources. Size from workload classes and
+# measured demand, never from derivation or closure byte size.
 [backends.nomad.resources]
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
 
+# REQUIRED: every callback is authenticated even on a trusted private network.
 [backends.nomad.transfer_authentication]
 mode = "workload-identity"
 issuer = "${var.nomad_api_endpoint}"
@@ -369,10 +397,14 @@ verify_issuer = false
 jwks_url = "${var.nomad_api_endpoint}/.well-known/jwks.json"
 audience = "telchar-transfer"
 
+# REQUIRED: allocation-side Nix authority.
 [backends.nomad.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
+# REQUIRED BOUNDS: Nomad backends intentionally have no implicit transfer-limit
+# defaults. Values below are production-shaped examples; reduce or increase them
+# only after considering memory, disk, expected closure, and expected output size.
 [backends.nomad.transfer_limits]
 maximum_manifest_paths = 65536
 maximum_manifest_bytes = 8388608
@@ -396,6 +428,8 @@ maximum_diagnostic_bytes = 65536
 EOH
       }
 
+      # OPERATOR POLICY: gateway service resources, independent of generated
+      # execution-worker resources above.
       resources {
         cpu    = 1000
         memory = 2048
