@@ -544,6 +544,13 @@ fn render_job_at(
     let mut group = Map::new();
     group.insert("Name".to_owned(), Value::String("build".to_owned()));
     group.insert("Count".to_owned(), Value::from(1));
+    group.insert(
+        "RestartPolicy".to_owned(),
+        json!({
+            "Attempts": 0,
+            "Mode": "fail",
+        }),
+    );
     group.insert("Tasks".to_owned(), Value::Array(tasks));
     let constraints = config
         .constraints()
