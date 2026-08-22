@@ -953,6 +953,7 @@ fn order_requested_inputs(
         let dependencies = entry
             .references
             .iter()
+            .filter(|reference| reference.as_str() != path.as_str())
             .filter(|reference| requested_paths.contains(*reference))
             .collect::<std::collections::BTreeSet<_>>();
         dependency_counts.insert(path.as_str(), dependencies.len());
@@ -1184,6 +1185,25 @@ mod tests {
         assert!(reader.read(&mut byte).is_err());
         assert_eq!(reader.failure_stage(), Some(InputNarFailureStage::Message));
         server.join().expect("server joins");
+    }
+
+    #[test]
+    fn input_order_ignores_nix_self_references() {
+        let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-self-reference";
+        let manifest = InputManifest {
+            derivation_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-build.drv".to_owned(),
+            build: input_reader_manifest(path, 1).build,
+            paths: vec![entry(path, &[path])],
+            outputs: vec!["/nix/store/cccccccccccccccccccccccccccccccc-output".to_owned()],
+        };
+        let requested = PathSet {
+            paths: vec![path.to_owned()],
+        };
+
+        assert_eq!(
+            order_requested_inputs(&manifest, &requested).expect("input order"),
+            vec![path.to_owned()]
+        );
     }
 
     #[test]
