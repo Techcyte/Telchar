@@ -310,8 +310,16 @@ impl<S: Read + Write> WorkerClient<S> {
         write_worker_integer_to(&mut self.stream, 0)?;
         self.stream.flush()?;
         read_build_operation_frames(&mut self.stream, self.profile.version, logs)?;
-        read_worker_build_result(&mut self.stream, self.profile.version)
-            .map_err(|_| io::Error::other("Nix daemon BuildDerivation result failed"))
+        read_worker_build_result(&mut self.stream, self.profile.version).map_err(|error| {
+            if error
+                .to_string()
+                .starts_with("Nix daemon BuildDerivation failed with status ")
+            {
+                error
+            } else {
+                io::Error::other("Nix daemon BuildDerivation result failed")
+            }
+        })
     }
 
     pub fn nar_from_path(
@@ -570,17 +578,14 @@ fn read_worker_build_result(
     version: WorkerVersion,
 ) -> io::Result<WorkerBuildResult> {
     let raw_status = read_worker_integer_from(input)?;
-    let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    let _message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     let status = match raw_status {
         0 => WorkerBuildStatus::Built,
         2 => WorkerBuildStatus::AlreadyValid,
         1 | 3..=14 => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported build result status {raw_status}: {}",
-                    String::from_utf8_lossy(&message)
-                ),
+                format!("Nix daemon BuildDerivation failed with status {raw_status}"),
             ));
         }
         _ => return Err(protocol_client_error()),

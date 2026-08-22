@@ -264,6 +264,32 @@ fn daemon_rejection_is_redacted_and_identifies_build_phase() {
 }
 
 #[test]
+fn terminal_build_status_is_preserved_without_daemon_message() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 6); // TimedOut
+    string(&mut input, b"sensitive daemon message");
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let error = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon BuildDerivation failed with status 6"
+    );
+    assert!(!error.to_string().contains("sensitive"));
+}
+
+#[test]
 fn malformed_result_and_log_writer_failure_are_redacted() {
     for (label, status, fail_logs) in [("status", 99, false), ("logs", 0, true)] {
         let mut input = Vec::new();
