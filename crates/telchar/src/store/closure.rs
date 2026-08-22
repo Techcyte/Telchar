@@ -31,8 +31,27 @@ impl ClosureFailurePhase {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClosurePathKind {
+    Root,
+    Reference,
+}
+
+impl ClosurePathKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Reference => "reference",
+        }
+    }
+}
+
 #[derive(Debug)]
-struct ClosureFailure(ClosureFailurePhase);
+struct ClosureFailure {
+    phase: ClosureFailurePhase,
+    path: Option<String>,
+    path_kind: Option<ClosurePathKind>,
+}
 
 impl std::fmt::Display for ClosureFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,7 +65,14 @@ pub fn failure_phase(error: &io::Error) -> Option<ClosureFailurePhase> {
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<ClosureFailure>())
-        .map(|failure| failure.0)
+        .map(|failure| failure.phase)
+}
+
+pub fn failure_path(error: &io::Error) -> Option<(&str, ClosurePathKind)> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ClosureFailure>())
+        .and_then(|failure| Some((failure.path.as_deref()?, failure.path_kind?)))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,6 +169,7 @@ fn compute_input_closure(
     if roots.len() > MAXIMUM_CLOSURE_PATHS {
         return Err(query_error(ClosureFailurePhase::ValidatePath));
     }
+    let root_paths = roots.iter().map(Vec::as_slice).collect::<BTreeSet<_>>();
     let mut pending = VecDeque::new();
     let mut discovered = BTreeSet::new();
     let mut retained_bytes = 0_usize;
@@ -152,18 +179,24 @@ fn compute_input_closure(
     }
 
     while let Some(path) = pending.pop_front() {
+        let path_kind = if root_paths.contains(path.as_slice()) {
+            ClosurePathKind::Root
+        } else {
+            ClosurePathKind::Reference
+        };
         let mut info = store
             .query_path(&path)
-            .map_err(|_| query_error(ClosureFailurePhase::QueryPath))?;
+            .map_err(|_| path_error(ClosureFailurePhase::QueryPath, &path, path_kind))?;
         if info.is_none() {
             store
                 .ensure_path(&path)
-                .map_err(|_| query_error(ClosureFailurePhase::EnsurePath))?;
+                .map_err(|_| path_error(ClosureFailurePhase::EnsurePath, &path, path_kind))?;
             info = store
                 .query_path(&path)
-                .map_err(|_| query_error(ClosureFailurePhase::QueryPath))?;
+                .map_err(|_| path_error(ClosureFailurePhase::QueryPath, &path, path_kind))?;
         }
-        let info = info.ok_or_else(|| query_error(ClosureFailurePhase::MissingPath))?;
+        let info =
+            info.ok_or_else(|| path_error(ClosureFailurePhase::MissingPath, &path, path_kind))?;
         if info.nar_size == 0 || metadata.insert(path.clone(), info).is_some() {
             return Err(query_error(ClosureFailurePhase::Metadata));
         }
@@ -267,7 +300,19 @@ fn validate_store_path(path: &[u8]) -> io::Result<()> {
 }
 
 fn query_error(phase: ClosureFailurePhase) -> io::Error {
-    io::Error::other(ClosureFailure(phase))
+    io::Error::other(ClosureFailure {
+        phase,
+        path: None,
+        path_kind: None,
+    })
+}
+
+fn path_error(phase: ClosureFailurePhase, path: &[u8], path_kind: ClosurePathKind) -> io::Error {
+    io::Error::other(ClosureFailure {
+        phase,
+        path: std::str::from_utf8(path).ok().map(str::to_owned),
+        path_kind: Some(path_kind),
+    })
 }
 
 #[cfg(test)]
@@ -277,6 +322,7 @@ mod tests {
     use super::*;
 
     const ROOT: &[u8] = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root";
+    const ROOT_STR: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root";
     const LEFT: &[u8] = b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-left";
     const RIGHT: &[u8] = b"/nix/store/cccccccccccccccccccccccccccccccc-right";
     const LEAF: &[u8] = b"/nix/store/dddddddddddddddddddddddddddddddd-leaf";
@@ -410,6 +456,29 @@ mod tests {
         ensure_failure.ensure_failure = true;
         let error = compute_input_closure(&mut ensure_failure, &[ROOT.to_vec()]).unwrap_err();
         assert_eq!(failure_phase(&error), Some(ClosureFailurePhase::EnsurePath));
+        assert_eq!(
+            failure_path(&error),
+            Some((ROOT_STR, ClosurePathKind::Root))
+        );
+        assert!(!error.to_string().contains("daemon ensure payload"));
+    }
+
+    #[test]
+    fn reports_reference_path_context_without_daemon_payload() {
+        let mut reference_failure = store();
+        reference_failure.paths.remove(LEAF);
+        reference_failure.ensure_failure = true;
+
+        let error = compute_input_closure(&mut reference_failure, &[ROOT.to_vec()]).unwrap_err();
+
+        assert_eq!(failure_phase(&error), Some(ClosureFailurePhase::EnsurePath));
+        assert_eq!(
+            failure_path(&error),
+            Some((
+                "/nix/store/dddddddddddddddddddddddddddddddd-leaf",
+                ClosurePathKind::Reference,
+            ))
+        );
         assert!(!error.to_string().contains("daemon ensure payload"));
     }
 
