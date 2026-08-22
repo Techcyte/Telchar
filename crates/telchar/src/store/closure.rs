@@ -8,6 +8,47 @@ use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 const MAXIMUM_CLOSURE_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES;
 const MAXIMUM_CLOSURE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClosureFailurePhase {
+    Connect,
+    ValidatePath,
+    QueryPath,
+    EnsurePath,
+    MissingPath,
+    Metadata,
+}
+
+impl ClosureFailurePhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::ValidatePath => "validate-path",
+            Self::QueryPath => "query-path",
+            Self::EnsurePath => "ensure-path",
+            Self::MissingPath => "missing-path",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ClosureFailure(ClosureFailurePhase);
+
+impl std::fmt::Display for ClosureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("input closure query failed")
+    }
+}
+
+impl std::error::Error for ClosureFailure {}
+
+pub fn failure_phase(error: &io::Error) -> Option<ClosureFailurePhase> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ClosureFailure>())
+        .map(|failure| failure.0)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClosurePath {
     pub store_path: String,
@@ -26,7 +67,8 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreClosureBackend>> {
     let Some(value) = std::env::var_os("TELCHAR_GATEWAY_STORE_URI") else {
         return Ok(Box::new(UnavailableStoreClosureBackend));
     };
-    let endpoint = GatewayStoreEndpoint::parse_os(&value).map_err(|_| query_error())?;
+    let endpoint = GatewayStoreEndpoint::parse_os(&value)
+        .map_err(|_| query_error(ClosureFailurePhase::Connect))?;
     Ok(Box::new(GatewayStoreClosureBackend::new(endpoint)))
 }
 
@@ -37,7 +79,7 @@ impl StoreClosureBackend for UnavailableStoreClosureBackend {
         if roots.is_empty() {
             Ok(Vec::new())
         } else {
-            Err(query_error())
+            Err(query_error(ClosureFailurePhase::Connect))
         }
     }
 }
@@ -57,8 +99,8 @@ impl StoreClosureBackend for GatewayStoreClosureBackend {
         if roots.is_empty() {
             return Ok(Vec::new());
         }
-        let mut connection =
-            GatewayStoreConnection::connect(&self.endpoint).map_err(|_| query_error())?;
+        let mut connection = GatewayStoreConnection::connect(&self.endpoint)
+            .map_err(|_| query_error(ClosureFailurePhase::Connect))?;
         compute_input_closure(&mut connection, roots)
     }
 }
@@ -99,7 +141,7 @@ fn compute_input_closure(
     roots: &[Vec<u8>],
 ) -> io::Result<Vec<ClosurePath>> {
     if roots.len() > MAXIMUM_CLOSURE_PATHS {
-        return Err(query_error());
+        return Err(query_error(ClosureFailurePhase::ValidatePath));
     }
     let mut pending = VecDeque::new();
     let mut discovered = BTreeSet::new();
@@ -110,16 +152,26 @@ fn compute_input_closure(
     }
 
     while let Some(path) = pending.pop_front() {
-        let mut info = store.query_path(&path).map_err(|_| query_error())?;
+        let mut info = store
+            .query_path(&path)
+            .map_err(|_| query_error(ClosureFailurePhase::QueryPath))?;
         if info.is_none() {
-            store.ensure_path(&path).map_err(|_| query_error())?;
-            info = store.query_path(&path).map_err(|_| query_error())?;
+            store
+                .ensure_path(&path)
+                .map_err(|_| query_error(ClosureFailurePhase::EnsurePath))?;
+            info = store
+                .query_path(&path)
+                .map_err(|_| query_error(ClosureFailurePhase::QueryPath))?;
         }
-        let info = info.ok_or_else(query_error)?;
+        let info = info.ok_or_else(|| query_error(ClosureFailurePhase::MissingPath))?;
         if info.nar_size == 0 || metadata.insert(path.clone(), info).is_some() {
-            return Err(query_error());
+            return Err(query_error(ClosureFailurePhase::Metadata));
         }
-        for reference in &metadata.get(&path).ok_or_else(query_error)?.references {
+        for reference in &metadata
+            .get(&path)
+            .ok_or_else(|| query_error(ClosureFailurePhase::Metadata))?
+            .references
+        {
             add_path(
                 reference,
                 &mut pending,
@@ -132,23 +184,35 @@ fn compute_input_closure(
     discovered
         .into_iter()
         .map(|path| {
-            let info = metadata.remove(&path).ok_or_else(query_error)?;
+            let info = metadata
+                .remove(&path)
+                .ok_or_else(|| query_error(ClosureFailurePhase::Metadata))?;
             Ok(ClosurePath {
-                store_path: String::from_utf8(path).map_err(|_| query_error())?,
+                store_path: String::from_utf8(path)
+                    .map_err(|_| query_error(ClosureFailurePhase::Metadata))?,
                 nar_hash: info.nar_hash,
                 nar_size: info.nar_size,
                 references: info
                     .references
                     .into_iter()
-                    .map(|reference| String::from_utf8(reference).map_err(|_| query_error()))
+                    .map(|reference| {
+                        String::from_utf8(reference)
+                            .map_err(|_| query_error(ClosureFailurePhase::Metadata))
+                    })
                     .collect::<io::Result<Vec<_>>>()?,
                 deriver: info
                     .deriver
-                    .map(|deriver| String::from_utf8(deriver).map_err(|_| query_error()))
+                    .map(|deriver| {
+                        String::from_utf8(deriver)
+                            .map_err(|_| query_error(ClosureFailurePhase::Metadata))
+                    })
                     .transpose()?,
                 content_address: info
                     .content_address
-                    .map(|address| String::from_utf8(address).map_err(|_| query_error()))
+                    .map(|address| {
+                        String::from_utf8(address)
+                            .map_err(|_| query_error(ClosureFailurePhase::Metadata))
+                    })
                     .transpose()?,
             })
         })
@@ -166,12 +230,12 @@ fn add_path(
         return Ok(());
     }
     if discovered.len() >= MAXIMUM_CLOSURE_PATHS {
-        return Err(query_error());
+        return Err(query_error(ClosureFailurePhase::ValidatePath));
     }
     *retained_bytes = retained_bytes
         .checked_add(path.len())
         .filter(|bytes| *bytes <= MAXIMUM_CLOSURE_BYTES)
-        .ok_or_else(query_error)?;
+        .ok_or_else(|| query_error(ClosureFailurePhase::ValidatePath))?;
     let path = path.to_vec();
     discovered.insert(path.clone());
     pending.push_back(path);
@@ -184,7 +248,7 @@ fn validate_store_path(path: &[u8]) -> io::Result<()> {
     const HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
     let Some(base) = path.strip_prefix(STORE_DIRECTORY) else {
-        return Err(query_error());
+        return Err(query_error(ClosureFailurePhase::ValidatePath));
     };
     if path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
         || base.len() <= HASH_LENGTH + 1
@@ -197,13 +261,13 @@ fn validate_store_path(path: &[u8]) -> io::Result<()> {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
         })
     {
-        return Err(query_error());
+        return Err(query_error(ClosureFailurePhase::ValidatePath));
     }
     Ok(())
 }
 
-fn query_error() -> io::Error {
-    io::Error::other("input closure query failed")
+fn query_error(phase: ClosureFailurePhase) -> io::Error {
+    io::Error::other(ClosureFailure(phase))
 }
 
 #[cfg(test)]
@@ -222,11 +286,16 @@ mod tests {
         substitutable: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
         queries: Vec<Vec<u8>>,
         ensured: Vec<Vec<u8>>,
+        query_failure: bool,
+        ensure_failure: bool,
     }
 
     impl PathInfoQuery for Store {
         fn query_path(&mut self, path: &[u8]) -> io::Result<Option<ClosurePathInfo>> {
             self.queries.push(path.to_vec());
+            if self.query_failure {
+                return Err(io::Error::other("daemon query payload must stay hidden"));
+            }
             Ok(self
                 .paths
                 .get(path)
@@ -243,11 +312,14 @@ mod tests {
 
         fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
             self.ensured.push(path.to_vec());
+            if self.ensure_failure {
+                return Err(io::Error::other("daemon ensure payload must stay hidden"));
+            }
             if let Some(references) = self.substitutable.remove(path) {
                 self.paths.insert(path.to_vec(), references);
                 Ok(())
             } else {
-                Err(query_error())
+                Err(query_error(ClosureFailurePhase::EnsurePath))
             }
         }
     }
@@ -263,6 +335,8 @@ mod tests {
             substitutable: BTreeMap::new(),
             queries: Vec::new(),
             ensured: Vec::new(),
+            query_failure: false,
+            ensure_failure: false,
         }
     }
 
@@ -321,6 +395,32 @@ mod tests {
             Vec::<ClosurePath>::new()
         );
         assert!(store.queries.is_empty());
+    }
+
+    #[test]
+    fn reports_bounded_query_and_ensure_failure_phases() {
+        let mut query_failure = store();
+        query_failure.query_failure = true;
+        let error = compute_input_closure(&mut query_failure, &[ROOT.to_vec()]).unwrap_err();
+        assert_eq!(failure_phase(&error), Some(ClosureFailurePhase::QueryPath));
+        assert!(!error.to_string().contains("daemon query payload"));
+
+        let mut ensure_failure = store();
+        ensure_failure.paths.remove(ROOT);
+        ensure_failure.ensure_failure = true;
+        let error = compute_input_closure(&mut ensure_failure, &[ROOT.to_vec()]).unwrap_err();
+        assert_eq!(failure_phase(&error), Some(ClosureFailurePhase::EnsurePath));
+        assert!(!error.to_string().contains("daemon ensure payload"));
+    }
+
+    #[test]
+    fn reports_missing_path_after_ensure() {
+        let mut missing = store();
+        missing.paths.remove(ROOT);
+
+        let error = compute_input_closure(&mut missing, &[ROOT.to_vec()]).unwrap_err();
+
+        assert_eq!(failure_phase(&error), Some(ClosureFailurePhase::EnsurePath));
     }
 
     #[test]
