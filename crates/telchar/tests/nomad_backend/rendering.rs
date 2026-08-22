@@ -160,6 +160,14 @@ args = ["--stdio"]
     assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Name"], "build");
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Attempts"], 0);
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Mode"], "fail");
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["ReschedulePolicy"]["Attempts"],
+        0
+    );
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["ReschedulePolicy"]["Unlimited"],
+        false
+    );
     let environment = &job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"];
     assert_eq!(environment["TELCHAR_BACKEND"], "nomad-arm");
     assert_eq!(environment["TELCHAR_NAMESPACE"], "telchar");
