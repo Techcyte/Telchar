@@ -15,7 +15,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
     let first = output("first");
     let second = output("second");
     let mut session =
-        OutputTransferSession::new(vec![first.clone(), second.clone()], 1024, 2048, 256)
+        OutputTransferSession::new(vec![first.clone(), second.clone()], 8, 1024, 2048, 256)
             .expect("session creates");
 
     session
@@ -78,10 +78,28 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
 }
 
 #[test]
+fn accepts_bounded_output_references_independent_of_output_count() {
+    let expected = output("expected");
+    let mut session = OutputTransferSession::new(vec![expected.clone()], 3, 1024, 1024, 256)
+        .expect("session creates");
+
+    session
+        .declare(PathManifestEntry {
+            path: expected,
+            nar_hash: HASH.to_owned(),
+            nar_size: 10,
+            references: vec![output("first"), output("second"), output("third")],
+            deriver: None,
+            content_address: None,
+        })
+        .expect("bounded references declare");
+}
+
+#[test]
 fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
     let expected = output("expected");
     let mut session =
-        OutputTransferSession::new(vec![expected.clone()], 16, 16, 16).expect("session creates");
+        OutputTransferSession::new(vec![expected.clone()], 8, 16, 16, 16).expect("session creates");
     assert!(session
         .declare(PathManifestEntry {
             path: output("foreign"),
@@ -145,8 +163,8 @@ fn rejects_foreign_duplicate_oversized_and_out_of_order_outputs() {
 
 #[test]
 fn permits_bounded_terminal_failure_without_outputs() {
-    let mut session =
-        OutputTransferSession::new(vec![output("expected")], 16, 16, 16).expect("session creates");
+    let mut session = OutputTransferSession::new(vec![output("expected")], 8, 16, 16, 16)
+        .expect("session creates");
     session
         .finish(&BuildResultMetadata {
             outcome: BuildOutcome::Failed,
@@ -155,8 +173,8 @@ fn permits_bounded_terminal_failure_without_outputs() {
         .expect("bounded failure accepts");
     assert!(session.is_complete());
 
-    let mut oversized =
-        OutputTransferSession::new(vec![output("expected")], 16, 16, 16).expect("session creates");
+    let mut oversized = OutputTransferSession::new(vec![output("expected")], 8, 16, 16, 16)
+        .expect("session creates");
     assert!(oversized
         .finish(&BuildResultMetadata {
             outcome: BuildOutcome::Failed,

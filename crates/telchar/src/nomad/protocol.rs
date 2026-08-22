@@ -420,6 +420,7 @@ impl TransferSession {
         let derivation_path = manifest.derivation_path.clone();
         let outputs = OutputTransferSession::new(
             manifest.outputs.clone(),
+            maximum_paths,
             maximum_output_nar_bytes,
             maximum_total_output_bytes,
             maximum_metadata_bytes,
@@ -711,6 +712,7 @@ enum OutputState {
 #[derive(Debug)]
 pub struct OutputTransferSession {
     outputs: std::collections::BTreeMap<String, OutputState>,
+    maximum_references: usize,
     maximum_nar_bytes: u64,
     maximum_total_bytes: u64,
     maximum_diagnostic_bytes: usize,
@@ -721,11 +723,13 @@ pub struct OutputTransferSession {
 impl OutputTransferSession {
     pub fn new(
         expected_outputs: Vec<String>,
+        maximum_references: usize,
         maximum_nar_bytes: u64,
         maximum_total_bytes: u64,
         maximum_diagnostic_bytes: usize,
     ) -> io::Result<Self> {
         if expected_outputs.is_empty()
+            || maximum_references == 0
             || maximum_nar_bytes == 0
             || maximum_total_bytes == 0
             || maximum_diagnostic_bytes == 0
@@ -745,6 +749,7 @@ impl OutputTransferSession {
         }
         Ok(Self {
             outputs,
+            maximum_references,
             maximum_nar_bytes,
             maximum_total_bytes,
             maximum_diagnostic_bytes,
@@ -757,7 +762,7 @@ impl OutputTransferSession {
         if self.complete {
             return Err(invalid_data("Nomad output transfer is complete"));
         }
-        metadata.validate(self.outputs.len(), self.maximum_nar_bytes)?;
+        metadata.validate(self.maximum_references, self.maximum_nar_bytes)?;
         let state = self
             .outputs
             .get_mut(&metadata.path)
