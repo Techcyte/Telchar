@@ -4,7 +4,8 @@ use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
     BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus, WorkerClient,
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST, STDERR_NEXT,
+    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
+    STDERR_NEXT,
 };
 
 const DRV: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-example.drv";
@@ -236,6 +237,33 @@ fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
 }
 
 #[test]
+fn daemon_rejection_is_redacted_and_identifies_build_phase() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_ERROR);
+    string(&mut input, b"sensitive-type");
+    integer(&mut input, 1);
+    string(&mut input, b"sensitive-name");
+    string(&mut input, b"sensitive-message");
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let error = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap_err();
+
+    assert_eq!(error.to_string(), "Nix daemon BuildDerivation was rejected");
+    assert!(!error.to_string().contains("sensitive"));
+}
+
+#[test]
 fn malformed_result_and_log_writer_failure_are_redacted() {
     for (label, status, fail_logs) in [("status", 99, false), ("logs", 0, true)] {
         let mut input = Vec::new();
@@ -262,7 +290,14 @@ fn malformed_result_and_log_writer_failure_are_redacted() {
             })
             .expect_err(label);
 
-        assert_eq!(error.to_string(), "Nix daemon operation failed");
+        assert_eq!(
+            error.to_string(),
+            if fail_logs {
+                "Nix daemon BuildDerivation log sink failed"
+            } else {
+                "Nix daemon BuildDerivation result failed"
+            }
+        );
         assert!(!error.to_string().contains("sensitive"));
     }
 }

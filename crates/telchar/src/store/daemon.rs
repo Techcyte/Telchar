@@ -133,7 +133,13 @@ impl GatewayStoreConnection {
     ) -> io::Result<WorkerBuildResult> {
         self.client
             .build_derivation(request, logs)
-            .map_err(|_| connection_error())
+            .map_err(|error| {
+                let message = error.to_string();
+                let phase = message
+                    .strip_prefix("Nix daemon BuildDerivation ")
+                    .unwrap_or("operation failed");
+                io::Error::other(format!("gateway Nix daemon BuildDerivation {phase}"))
+            })
     }
 
     pub fn shutdown_handle(&self) -> io::Result<UnixStream> {

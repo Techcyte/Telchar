@@ -311,7 +311,7 @@ impl<S: Read + Write> WorkerClient<S> {
         self.stream.flush()?;
         read_build_operation_frames(&mut self.stream, self.profile.version, logs)?;
         read_worker_build_result(&mut self.stream, self.profile.version)
-            .map_err(|_| protocol_client_error())
+            .map_err(|_| io::Error::other("Nix daemon BuildDerivation result failed"))
     }
 
     pub fn nar_from_path(
@@ -529,7 +529,8 @@ fn read_build_operation_frames(
             STDERR_NEXT => {
                 let message =
                     read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
-                logs(&message).map_err(|_| protocol_client_error())?;
+                logs(&message)
+                    .map_err(|_| io::Error::other("Nix daemon BuildDerivation log sink failed"))?;
             }
             STDERR_START_ACTIVITY => {
                 read_worker_integer_from(input)?;
@@ -554,10 +555,12 @@ fn read_build_operation_frames(
                     discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
                     read_worker_integer_from(input)?;
                 }
-                return Err(protocol_client_error());
+                return Err(io::Error::other("Nix daemon BuildDerivation was rejected"));
             }
             STDERR_LAST => return Ok(()),
-            _ => return Err(protocol_client_error()),
+            _ => Err(io::Error::other(
+                "Nix daemon BuildDerivation response failed",
+            ))?,
         }
     }
 }

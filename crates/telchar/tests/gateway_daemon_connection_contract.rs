@@ -147,6 +147,77 @@ fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
 }
 
 #[test]
+fn build_derivation_preserves_sanitized_daemon_rejection() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 36);
+        let _derivation_path = read_byte_string(&mut stream);
+        let output_count = read_integer(&mut stream);
+        for _ in 0..output_count {
+            let _name = read_byte_string(&mut stream);
+            let _path = read_byte_string(&mut stream);
+            let _hash_algorithm = read_byte_string(&mut stream);
+            let _hash = read_byte_string(&mut stream);
+        }
+        let input_count = read_integer(&mut stream);
+        for _ in 0..input_count {
+            let _input = read_byte_string(&mut stream);
+        }
+        let _platform = read_byte_string(&mut stream);
+        let _builder = read_byte_string(&mut stream);
+        let argument_count = read_integer(&mut stream);
+        for _ in 0..argument_count {
+            let _argument = read_byte_string(&mut stream);
+        }
+        let environment_count = read_integer(&mut stream);
+        for _ in 0..environment_count {
+            let _key = read_byte_string(&mut stream);
+            let _value = read_byte_string(&mut stream);
+        }
+        assert_eq!(read_integer(&mut stream), 0);
+        integer(&mut stream, STDERR_ERROR);
+        byte_string(&mut stream, b"sensitive-type");
+        integer(&mut stream, 1);
+        byte_string(&mut stream, b"sensitive-name");
+        byte_string(&mut stream, b"sensitive-message");
+        integer(&mut stream, 0);
+        integer(&mut stream, 0);
+        stream.flush().expect("operation error flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+    let output = nix_worker_protocol::BuildDerivationOutputRequest {
+        name: b"out",
+        path: STORE_PATH,
+        hash_algorithm: b"",
+        hash: b"",
+    };
+    let request = nix_worker_protocol::BuildDerivationClientRequest {
+        drv_path: b"/nix/store/11111111111111111111111111111111-build.drv",
+        outputs: &[output],
+        input_sources: &[],
+        platform: b"x86_64-linux",
+        builder: b"/bin/sh",
+        arguments: &[],
+        environment: &[],
+    };
+
+    let error = connection
+        .build_derivation(&request, &mut |_| Ok(()))
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "gateway Nix daemon BuildDerivation was rejected"
+    );
+    assert!(!error.to_string().contains("sensitive"));
+    server.join().expect("server exits");
+}
+
+#[test]
 fn nar_from_path_preserves_sanitized_sink_failure() {
     struct FailingSink;
     impl Write for FailingSink {
