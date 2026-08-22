@@ -1101,7 +1101,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             Ok(WorkerOperation::BuildPathsWithResults) => {
                 let request_started = std::time::Instant::now();
                 let request = match reader.complete_build_paths_with_results() {
-                    Ok(request) if request.build_mode() == 0 && request.targets().len() == 1 => request,
+                    Ok(request) if request.build_mode() == 0 && request.targets().len() == 1 => {
+                        request
+                    }
                     Ok(_) => {
                         return reject(
                             &mut output,
@@ -1118,6 +1120,47 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 let target = &request.targets()[0];
+                if !target.ends_with(b".drv") && !target.contains(&b'!') {
+                    let valid_paths =
+                        match store_query.query_valid_paths([target.clone()].as_slice()) {
+                            Ok(paths) => paths,
+                            Err(error) => {
+                                tracing::error!(
+                                    event = "worker.build_paths_with_results.validity_failed",
+                                    reason = error.to_string(),
+                                    "BuildPathsWithResults target validity query failed"
+                                );
+                                return reject(
+                                    &mut output,
+                                    "build-paths-with-results-validity",
+                                    "BuildPathsWithResults target validity query failed",
+                                );
+                            }
+                        };
+                    if valid_paths == [target.clone()] {
+                        nix_worker_protocol::write_build_paths_with_results_success_response(
+                            &mut output,
+                            negotiated.version,
+                            [(target.as_slice(), true)],
+                        )?;
+                        crate::service::metrics::build_request_finished(
+                            request_started.elapsed(),
+                            "succeeded",
+                            None,
+                        );
+                        tracing::info!(
+                            event = "worker.build_paths_with_results.completed",
+                            status = "already-valid",
+                            "BuildPathsWithResults request completed"
+                        );
+                        continue;
+                    }
+                    return reject(
+                        &mut output,
+                        "invalid-build-paths-with-results",
+                        "invalid BuildPathsWithResults request",
+                    );
+                }
                 let derivation_path = target
                     .split(|byte| *byte == b'!')
                     .next()
@@ -1132,49 +1175,49 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
-                let admitted = match BuildRequest::load_stored(
-                    derivation_path,
-                    store_export,
-                    backend_targets,
-                ) {
-                    Ok(admitted) => admitted,
-                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                        return reject(
-                            &mut output,
-                            "unsupported-build-paths-with-results",
-                            "unsupported BuildPathsWithResults request",
-                        );
-                    }
-                    Err(error) => {
-                        let dependency_result =
-                            crate::build::stored_load_dependency_result(&error);
-                        let dependency_target = dependency_result
-                            .as_ref()
-                            .map(|result| String::from_utf8_lossy(&result.target).into_owned())
-                            .unwrap_or_else(|| "none".to_owned());
-                        tracing::error!(
-                            event = "gateway.stored_build.failed",
-                            phase = crate::build::stored_load_failure_phase(&error)
-                                .map(crate::build::StoredLoadFailurePhase::as_str)
-                                .unwrap_or("unknown"),
-                            dependency_phase = crate::build::stored_load_dependency_phase(&error)
-                                .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
-                                .unwrap_or("none"),
-                            dependency_target,
-                            dependency_status = dependency_result.as_ref().map(|result| result.status),
-                            dependency_category = dependency_result
+                let admitted =
+                    match BuildRequest::load_stored(derivation_path, store_export, backend_targets)
+                    {
+                        Ok(admitted) => admitted,
+                        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                            return reject(
+                                &mut output,
+                                "unsupported-build-paths-with-results",
+                                "unsupported BuildPathsWithResults request",
+                            );
+                        }
+                        Err(error) => {
+                            let dependency_result =
+                                crate::build::stored_load_dependency_result(&error);
+                            let dependency_target = dependency_result
                                 .as_ref()
-                                .map(|result| result.category)
-                                .unwrap_or("none"),
-                            "stored build request loading failed"
-                        );
-                        return reject(
-                            &mut output,
-                            "invalid-build-paths-with-results",
-                            "invalid BuildPathsWithResults request",
-                        );
-                    }
-                };
+                                .map(|result| String::from_utf8_lossy(&result.target).into_owned())
+                                .unwrap_or_else(|| "none".to_owned());
+                            tracing::error!(
+                                event = "gateway.stored_build.failed",
+                                phase = crate::build::stored_load_failure_phase(&error)
+                                    .map(crate::build::StoredLoadFailurePhase::as_str)
+                                    .unwrap_or("unknown"),
+                                dependency_phase =
+                                    crate::build::stored_load_dependency_phase(&error)
+                                        .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
+                                        .unwrap_or("none"),
+                                dependency_target,
+                                dependency_status =
+                                    dependency_result.as_ref().map(|result| result.status),
+                                dependency_category = dependency_result
+                                    .as_ref()
+                                    .map(|result| result.category)
+                                    .unwrap_or("none"),
+                                "stored build request loading failed"
+                            );
+                            return reject(
+                                &mut output,
+                                "invalid-build-paths-with-results",
+                                "invalid BuildPathsWithResults request",
+                            );
+                        }
+                    };
                 let target = target.clone();
                 let requested_system = admitted.system().as_bytes().to_vec();
                 execute_admitted_build!(
