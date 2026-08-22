@@ -1156,8 +1156,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             dependency_phase = crate::build::stored_load_dependency_phase(&error)
                                 .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
                                 .unwrap_or("none"),
-                            dependency_status = dependency_result.map(|result| result.status),
+                            dependency_status = dependency_result.as_ref().map(|result| result.status),
                             dependency_category = dependency_result
+                                .as_ref()
                                 .map(|result| result.category)
                                 .unwrap_or("none"),
                             "stored build request loading failed"

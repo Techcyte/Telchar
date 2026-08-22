@@ -81,7 +81,7 @@ pub fn stored_load_dependency_result(
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<StoredLoadFailure>())
-        .and_then(|failure| failure.dependency_result)
+        .and_then(|failure| failure.dependency_result.clone())
 }
 
 fn stored_load_error(phase: StoredLoadFailurePhase) -> io::Error {

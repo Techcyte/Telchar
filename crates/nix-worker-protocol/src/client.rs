@@ -149,8 +149,9 @@ impl BuildPathsFailurePhase {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildPathsFailureResult {
+    pub target: Vec<u8>,
     pub status: u64,
     pub category: &'static str,
 }
@@ -180,7 +181,7 @@ pub fn build_paths_failure_result(error: &io::Error) -> Option<BuildPathsFailure
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<BuildPathsFailure>())
-        .and_then(|failure| failure.result)
+        .and_then(|failure| failure.result.clone())
 }
 
 fn build_paths_error(phase: BuildPathsFailurePhase) -> io::Error {
@@ -190,10 +191,14 @@ fn build_paths_error(phase: BuildPathsFailurePhase) -> io::Error {
     })
 }
 
-fn build_paths_result_error(status: u64, category: &'static str) -> io::Error {
+fn build_paths_result_error(target: &[u8], status: u64, category: &'static str) -> io::Error {
     io::Error::other(BuildPathsFailure {
         phase: BuildPathsFailurePhase::Result,
-        result: Some(BuildPathsFailureResult { status, category }),
+        result: Some(BuildPathsFailureResult {
+            target: target.to_vec(),
+            status,
+            category,
+        }),
     })
 }
 
@@ -522,7 +527,7 @@ impl<S: Read + Write> WorkerClient<S> {
                 |error| {
                     worker_build_failure(&error)
                         .map(|failure| {
-                            build_paths_result_error(failure.status, failure.category)
+                            build_paths_result_error(expected, failure.status, failure.category)
                         })
                         .unwrap_or_else(|| build_paths_error(BuildPathsFailurePhase::Result))
                 },

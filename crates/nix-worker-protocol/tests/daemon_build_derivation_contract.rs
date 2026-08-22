@@ -242,6 +242,7 @@ fn preserves_dependency_terminal_status_and_category_without_peer_payload() {
     assert_eq!(
         nix_worker_protocol::build_paths_failure_result(&error),
         Some(nix_worker_protocol::BuildPathsFailureResult {
+            target: TARGET.to_vec(),
             status: 4,
             category: "interrupted",
         })

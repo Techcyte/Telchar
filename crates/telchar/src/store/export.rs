@@ -53,7 +53,7 @@ pub fn dependency_realization_failure_result(
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<DependencyRealizationFailure>())
-        .and_then(|failure| failure.result)
+        .and_then(|failure| failure.result.clone())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
