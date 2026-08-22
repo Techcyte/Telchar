@@ -599,6 +599,32 @@ fn write_transfer_frame<S: io::Read + io::Write>(
     socket.write_binary(message)
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct InputTransferSummary {
+    path_count: usize,
+    nar_bytes: u64,
+}
+
+fn summarize_requested_inputs(
+    manifest_paths: &[PathManifestEntry],
+    requested: &PathSet,
+) -> io::Result<InputTransferSummary> {
+    let mut nar_bytes = 0_u64;
+    for requested_path in &requested.paths {
+        let entry = manifest_paths
+            .iter()
+            .find(|entry| &entry.path == requested_path)
+            .ok_or_else(|| io::Error::other("Nomad input request is not admitted"))?;
+        nar_bytes = nar_bytes
+            .checked_add(entry.nar_size)
+            .ok_or_else(|| io::Error::other("Nomad input transfer size overflows"))?;
+    }
+    Ok(InputTransferSummary {
+        path_count: requested.paths.len(),
+        nar_bytes,
+    })
+}
+
 fn stream_requested_inputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad::callback_http::CallbackSocket<S>,
     session: &mut TransferSession,
@@ -608,6 +634,15 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     limits: crate::service::config::NomadTransferLimits,
     connection_deadline: Instant,
 ) -> io::Result<()> {
+    let summary = summarize_requested_inputs(&manifest.paths, requested)?;
+    let started = Instant::now();
+    tracing::info!(
+        event = "nomad.callback.input_transfer.started",
+        manifest_path_count = manifest.paths.len(),
+        requested_path_count = summary.path_count,
+        requested_nar_bytes = summary.nar_bytes,
+        "Nomad callback input transfer started"
+    );
     let mut store = GatewayStoreConnection::connect(gateway_store)?;
     for requested_path in &requested.paths {
         ensure_before(connection_deadline)?;
@@ -660,6 +695,13 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
         }
         result?;
     }
+    tracing::info!(
+        event = "nomad.callback.input_transfer.completed",
+        transferred_path_count = summary.path_count,
+        transferred_nar_bytes = summary.nar_bytes,
+        duration_milliseconds = started.elapsed().as_millis(),
+        "Nomad callback input transfer completed"
+    );
     Ok(())
 }
 
@@ -780,7 +822,75 @@ fn take_chunk(chunk: &mut Vec<u8>) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::take_chunk;
+    use super::{summarize_requested_inputs, take_chunk, InputTransferSummary};
+    use crate::nomad::protocol::{PathManifestEntry, PathSet};
+
+    #[test]
+    fn input_transfer_summary_counts_only_requested_paths() {
+        let manifest_paths = vec![
+            PathManifestEntry {
+                path: "/nix/store/00000000000000000000000000000000-present".to_owned(),
+                nar_hash: "sha256:00".to_owned(),
+                nar_size: 100,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+            PathManifestEntry {
+                path: "/nix/store/11111111111111111111111111111111-missing".to_owned(),
+                nar_hash: "sha256:11".to_owned(),
+                nar_size: 250,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+        ];
+        let requested = PathSet {
+            paths: vec![manifest_paths[1].path.clone()],
+        };
+
+        assert_eq!(
+            summarize_requested_inputs(&manifest_paths, &requested).expect("summary computes"),
+            InputTransferSummary {
+                path_count: 1,
+                nar_bytes: 250,
+            }
+        );
+    }
+
+    #[test]
+    fn input_transfer_summary_rejects_size_overflow() {
+        let manifest_paths = vec![
+            PathManifestEntry {
+                path: "/nix/store/00000000000000000000000000000000-first".to_owned(),
+                nar_hash: "sha256:00".to_owned(),
+                nar_size: u64::MAX,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+            PathManifestEntry {
+                path: "/nix/store/11111111111111111111111111111111-second".to_owned(),
+                nar_hash: "sha256:11".to_owned(),
+                nar_size: 1,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+        ];
+        let requested = PathSet {
+            paths: manifest_paths
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+
+        let error = summarize_requested_inputs(&manifest_paths, &requested)
+            .expect_err("overflow must fail closed");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "Nomad input transfer size overflows");
+    }
 
     #[test]
     fn taking_full_chunk_preserves_stream_buffer_capacity() {
