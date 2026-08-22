@@ -1145,7 +1145,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             "unsupported BuildPathsWithResults request",
                         );
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::error!(
+                            event = "gateway.stored_build.failed",
+                            phase = crate::build::stored_load_failure_phase(&error)
+                                .map(crate::build::StoredLoadFailurePhase::as_str)
+                                .unwrap_or("unknown"),
+                            "stored build request loading failed"
+                        );
                         return reject(
                             &mut output,
                             "invalid-build-paths-with-results",

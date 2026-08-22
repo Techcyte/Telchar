@@ -15,6 +15,57 @@ mod derivation;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoredLoadFailurePhase {
+    RootExport,
+    RootAdmission,
+    RootParse,
+    DependencyRealization,
+    DependencyPath,
+    DependencyExport,
+    DependencyParse,
+    SelectedOutput,
+    FinalValidation,
+}
+
+impl StoredLoadFailurePhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RootExport => "root-export",
+            Self::RootAdmission => "root-admission",
+            Self::RootParse => "root-parse",
+            Self::DependencyRealization => "dependency-realization",
+            Self::DependencyPath => "dependency-path",
+            Self::DependencyExport => "dependency-export",
+            Self::DependencyParse => "dependency-parse",
+            Self::SelectedOutput => "selected-output",
+            Self::FinalValidation => "final-validation",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StoredLoadFailure(StoredLoadFailurePhase);
+
+impl fmt::Display for StoredLoadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("stored build request loading failed")
+    }
+}
+
+impl std::error::Error for StoredLoadFailure {}
+
+pub fn stored_load_failure_phase(error: &io::Error) -> Option<StoredLoadFailurePhase> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<StoredLoadFailure>())
+        .map(|failure| failure.0)
+}
+
+fn stored_load_error(phase: StoredLoadFailurePhase) -> io::Error {
+    io::Error::other(StoredLoadFailure(phase))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OutputAuthority {
     name: Vec<u8>,
@@ -86,13 +137,16 @@ impl BuildRequest {
             derivation_path,
             MAXIMUM_STORED_DERIVATION_BYTES,
             backend,
-        )?;
+        )
+        .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootExport))?;
         let mut request = Self::from_stored_derivation(
             derivation_path.as_os_str().as_encoded_bytes(),
             &contents,
             backends,
-        )?;
-        let stored = derivation::parse(&contents)?;
+        )
+        .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootAdmission))?;
+        let stored = derivation::parse(&contents)
+            .map_err(|_| stored_load_error(StoredLoadFailurePhase::RootParse))?;
         let dependency_derivations = stored
             .input_derivations
             .iter()
@@ -106,37 +160,38 @@ impl BuildRequest {
             })
             .collect::<Vec<_>>();
         if !dependency_derivations.is_empty() {
-            backend.build_paths_with_results(&dependency_derivations)?;
+            backend
+                .build_paths_with_results(&dependency_derivations)
+                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyRealization))?;
         }
         for (input_derivation, output_names) in stored.input_derivations {
-            let input_path =
-                std::path::Path::new(std::str::from_utf8(&input_derivation).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "invalid input derivation path")
-                })?);
+            let input_path = std::path::Path::new(
+                std::str::from_utf8(&input_derivation)
+                    .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyPath))?,
+            );
             let input_contents = crate::store::export::load_stored_derivation(
                 input_path,
                 MAXIMUM_STORED_DERIVATION_BYTES,
                 backend,
-            )?;
-            let input = derivation::parse(&input_contents)?;
+            )
+            .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyExport))?;
+            let input = derivation::parse(&input_contents)
+                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyParse))?;
             for output_name in output_names {
                 let output_path = input
                     .outputs
                     .iter()
                     .find(|(name, _, _, _)| name == &output_name)
                     .map(|(_, path, _, _)| path.clone())
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "input derivation output is unavailable",
-                        )
-                    })?;
+                    .ok_or_else(|| stored_load_error(StoredLoadFailurePhase::SelectedOutput))?;
                 if !request.input_sources.contains(&output_path) {
                     request.input_sources.push(output_path);
                 }
             }
         }
-        request.validate_for_execution()?;
+        request
+            .validate_for_execution()
+            .map_err(|_| stored_load_error(StoredLoadFailurePhase::FinalValidation))?;
         Ok(request)
     }
 
