@@ -62,7 +62,7 @@ nix build \
 
 The gateway must have its own Nix store. Do not point a local client and Telchar at the same host store; recursive store locking can deadlock the build.
 
-Before production deployment, read the [operator guide](docs/operations.md). Nomad deployments also need the [Nomad guide](docs/nomad.md).
+Before production deployment, read the [operator guide](docs/operations.md). Nomad deployments also need the [Nomad guide](docs/nomad.md). A heavily commented, cluster-independent jobspec is available in [`examples/nomad`](examples/nomad/README.md).
 
 ## Development
 

@@ -1,0 +1,444 @@
+# Generic Telchar gateway deployment for Nomad.
+#
+# This example uses:
+#   - one singleton Telchar gateway;
+#   - PostgreSQL for durable control-plane state;
+#   - a sibling Nix daemon with a persistent store;
+#   - Nomad workload identity for worker callback authentication;
+#   - generated batch allocations using the Docker driver;
+#   - a Nix daemon socket mounted on every eligible worker node.
+#
+# Replace every image reference, endpoint, storage path, namespace, and placement
+# constraint for your cluster. Pin immutable image digests in production.
+#
+# Telchar does not terminate TLS. The callback listener below is plaintext
+# WebSocket. Use cleartext WebSocket only on a trusted network. For encrypted
+# WebSocket, put a reverse proxy or load balancer in front of port 7443 and set callback_public_url to its public
+# URL. The proxy must preserve WebSocket upgrades and the
+# telchar-nomad-transfer-v1 subprotocol, disable retries, and use an idle timeout
+# greater than transfer_idle_timeout_seconds.
+
+variable "namespace" {
+  type        = string
+  description = "Existing Nomad namespace for the gateway and generated build jobs"
+  default     = "telchar"
+}
+
+variable "datacenters" {
+  type        = list(string)
+  description = "Nomad datacenters where the singleton gateway may run"
+  default     = ["dc1"]
+}
+
+variable "gateway_image" {
+  type        = string
+  description = "Immutable telchar OCI image reference"
+}
+
+variable "nix_daemon_image" {
+  type        = string
+  description = "Immutable telchar-nix-daemon OCI image reference"
+}
+
+variable "worker_image" {
+  type        = string
+  description = "Immutable telchar-nomad-worker OCI image reference"
+}
+
+variable "nomad_api_endpoint" {
+  type        = string
+  description = "Nomad API URL reachable from the gateway and used as workload-identity issuer"
+}
+
+variable "callback_public_url" {
+  type        = string
+  description = "Stable WebSocket callback URL reachable from every build allocation"
+}
+
+variable "gateway_store_path" {
+  type        = string
+  description = "Persistent host directory mounted as /nix/store in the gateway Nix daemon"
+  default     = "/srv/telchar/nix/store"
+}
+
+variable "gateway_state_path" {
+  type        = string
+  description = "Persistent host directory mounted as /nix/var/nix in the gateway Nix daemon"
+  default     = "/srv/telchar/nix/var"
+}
+
+variable "worker_daemon_socket" {
+  type        = string
+  description = "Nix daemon socket available at the same host path on every eligible worker node"
+  default     = "/nix/var/nix/daemon-socket/socket"
+}
+
+job "telchar" {
+  type        = "service"
+  namespace   = var.namespace
+  datacenters = var.datacenters
+
+  # Telchar is deliberately single-active. PostgreSQL leasing fences stale
+  # processes, while count = 1 prevents intentional horizontal replication.
+  # Keep max_parallel = 1 so deployments do not overlap singleton candidates.
+  update {
+    max_parallel      = 1
+    stagger           = "30s"
+    healthy_deadline  = "5m"
+    progress_deadline = "10m"
+  }
+
+  # These are examples, not Telchar requirements. Match gateway placement to
+  # nodes that provide gateway_store_path and gateway_state_path.
+  constraint {
+    attribute = "${attr.kernel.name}"
+    value     = "linux"
+  }
+
+  group "gateway" {
+    count = 1
+
+    # Gateway restart/reschedule is safe because PostgreSQL and the gateway Nix
+    # store are durable. This differs from generated execution jobs: execution
+    # jobs explicitly disable restart and reschedule to prevent blind retries.
+    restart {
+      attempts = 10
+      interval = "30m"
+      delay    = "30s"
+      mode     = "delay"
+    }
+
+    reschedule {
+      delay          = "30s"
+      delay_function = "exponential"
+      max_delay      = "5m"
+      unlimited      = true
+    }
+
+    network {
+      mode = "bridge"
+
+      port "callback" {
+        # A static port makes a stable service or load-balancer target simple.
+        # A dynamic port also works if service discovery or your proxy tracks it.
+        static = 7443
+        to     = 7443
+      }
+
+      # Optional stock-Nix SSH ingress commonly listens on 2222. Add this port
+      # only when an SSH sidecar is enabled:
+      #
+      # port "ssh" {
+      #   static = 2222
+      #   to     = 2222
+      # }
+    }
+
+    service {
+      name     = "telchar-callback"
+      provider = "nomad"
+      port     = "callback"
+
+      check {
+        name     = "callback listener"
+        type     = "tcp"
+        interval = "30s"
+        timeout  = "5s"
+      }
+
+      # Alternative: use Consul Connect to reach PostgreSQL. Add a connect
+      # sidecar here, bind an upstream to 127.0.0.1:15432, and put that address
+      # in database_url. Direct PostgreSQL networking works equally well.
+    }
+
+    # The official images run as 995:995. Host directories must already exist
+    # and be writable by that identity. A privileged host setup job, CSI volume,
+    # or operator provisioning may replace this prestart task.
+    task "storage-permissions" {
+      lifecycle {
+        hook    = "prestart"
+        sidecar = false
+      }
+
+      driver = "docker"
+      user   = "0:0"
+
+      config {
+        image   = "busybox:1.37"
+        command = "sh"
+        args = [
+          "-ec",
+          "install -d -m 0700 -o 995 -g 995 /alloc/data/import /alloc/data/gc-roots /alloc/data/run",
+        ]
+      }
+
+      resources {
+        cpu    = 25
+        memory = 16
+      }
+    }
+
+    # Telchar must use a store distinct from the client store. This sibling
+    # daemon owns gateway substitution, registration, validation, and retention.
+    # Persist /nix/store and /nix/var/nix together; restoring only one corrupts
+    # store authority.
+    task "nix-daemon" {
+      driver = "docker"
+      user   = "995:995"
+
+      config {
+        image      = var.nix_daemon_image
+        force_pull = true
+
+        mount {
+          type     = "bind"
+          source   = var.gateway_store_path
+          target   = "/nix/store"
+          readonly = false
+        }
+
+        mount {
+          type     = "bind"
+          source   = var.gateway_state_path
+          target   = "/nix/var/nix"
+          readonly = false
+        }
+      }
+
+      resources {
+        cpu    = 1000
+        memory = 4096
+      }
+    }
+
+    task "gateway" {
+      driver = "docker"
+      user   = "995:995"
+
+      config {
+        image      = var.gateway_image
+        force_pull = true
+        ports      = ["callback"]
+        args = [
+          "daemon",
+          "--socket",
+          "/alloc/data/run/daemon.sock",
+          "--frontend-uid",
+          "995",
+        ]
+
+        # The gateway accesses the sibling daemon only through its Unix socket.
+        # It never manipulates the Nix store database directly.
+        mount {
+          type     = "bind"
+          source   = "${var.gateway_state_path}/daemon-socket"
+          target   = "/nix/var/nix/daemon-socket"
+          readonly = false
+        }
+      }
+
+      env {
+        HOME                               = "/alloc/data"
+        TMPDIR                             = "/alloc/data/import"
+        TELCHAR_CONFIG                     = "/secrets/telchar.toml"
+        TELCHAR_GATEWAY_STORE_URI          = "unix:///nix/var/nix/daemon-socket/socket"
+        TELCHAR_GATEWAY_GC_ROOT_DIRECTORY  = "/alloc/data/gc-roots"
+        TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1073741824"
+        RUST_LOG                           = "info"
+
+        # Optional OTLP example:
+        # OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
+        # OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.example.invalid"
+      }
+
+      # Create this Nomad Variable before registration:
+      #
+      #   nomad var put -namespace=telchar nomad/jobs/telchar/gateway \
+      #     database_url='postgresql://telchar:password@postgres.example:5432/telchar' \
+      #     nomad_token='replace-with-a-restricted-nomad-token'
+      #
+      # Prefer a dynamic Vault template or workload-identity-aware secret broker
+      # when available. Files remain the authority consumed by Telchar; secrets
+      # are not embedded in telchar.toml, command arguments, or job metadata.
+      template {
+        destination = "secrets/database-url"
+        perms       = "0600"
+        uid         = 995
+        gid         = 995
+        change_mode = "restart"
+        data        = <<-EOH
+{{ with nomadVar "nomad/jobs/telchar/gateway" }}{{ .database_url }}{{ end }}
+EOH
+      }
+
+      template {
+        destination   = "secrets/nomad-token"
+        perms         = "0600"
+        uid           = 995
+        gid           = 995
+        change_mode   = "signal"
+        change_signal = "SIGHUP"
+        data          = <<-EOH
+{{ with nomadVar "nomad/jobs/telchar/gateway" }}{{ .nomad_token }}{{ end }}
+EOH
+      }
+
+      template {
+        destination   = "secrets/telchar.toml"
+        perms         = "0600"
+        uid           = 995
+        gid           = 995
+        change_mode   = "signal"
+        change_signal = "SIGHUP"
+        data          = <<-EOH
+running_disconnect_policy = "detach-and-finish"
+output_retention_seconds = 86400
+maximum_retained_input_bytes = 8589934592
+
+[database]
+url_file = "/secrets/database-url"
+# Singleton defaults are renewal = 5 seconds and lease = 20 seconds. Keep the
+# lease at least three times the renewal interval when overriding them.
+
+[ipc]
+socket = "/alloc/data/run/daemon.sock"
+maximum_sessions = 64
+
+[nomad_callback]
+bind = "0.0.0.0:7443"
+public_url = "${var.callback_public_url}"
+maximum_connections = 64
+maximum_header_bytes = 16384
+maximum_body_bytes = 65536
+authentication_request_timeout_seconds = 10
+shutdown_drain_timeout_seconds = 30
+maximum_jwks_bytes = 1048576
+maximum_retained_nonces = 65536
+
+[scheduling.default]
+maximum_queued_builds = 1024
+maximum_active_builds = 64
+
+[backends]
+permit_wait_seconds = 30
+
+[[backends.nomad]]
+name = "nomad-linux-amd64"
+system = "x86_64-linux"
+supported_features = []
+maximum_concurrent_builds = 4
+endpoint = "${var.nomad_api_endpoint}"
+namespace = "${var.namespace}"
+token_file = "/secrets/nomad-token"
+driver = "docker"
+job_name_scope = "telchar-build"
+poll_interval_seconds = 1
+runtime_limit_seconds = 3600
+
+# Placement is operator authority. Add or remove constraints to match nodes
+# where worker_daemon_socket exists. Never infer CPU or memory from closure size.
+[[backends.nomad.constraints]]
+attribute = "$${attr.cpu.arch}"
+operator = "="
+value = "amd64"
+
+[backends.nomad.driver_config]
+image = "${var.worker_image}"
+force_pull = true
+
+# Generated worker allocations mount the host Nix daemon. Docker must permit
+# this bind mount, and the socket must exist at the same path on every eligible
+# node. Alternatives are described in README.md.
+[[backends.nomad.driver_config.mount]]
+source = "${var.worker_daemon_socket}"
+target = "/nix/var/nix/daemon-socket/socket"
+type = "bind"
+readonly = false
+
+[backends.nomad.resources]
+cpu_mhz = 2000
+memory_mb = 4096
+disk_mb = 16384
+
+[backends.nomad.transfer_authentication]
+mode = "workload-identity"
+issuer = "${var.nomad_api_endpoint}"
+# verify_issuer defaults to false because Nomad omits iss unless oidc_issuer is
+# configured. Set verify_issuer = true only when your JWTs contain this issuer.
+verify_issuer = false
+jwks_url = "${var.nomad_api_endpoint}/.well-known/jwks.json"
+audience = "telchar-transfer"
+
+[backends.nomad.store]
+mode = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+[backends.nomad.transfer_limits]
+maximum_manifest_paths = 65536
+maximum_manifest_bytes = 8388608
+maximum_input_nar_bytes = 17179869184
+maximum_total_input_bytes = 68719476736
+maximum_output_nar_bytes = 17179869184
+maximum_total_output_bytes = 68719476736
+maximum_frame_metadata_bytes = 1048576
+stream_buffer_bytes = 262144
+maximum_live_log_chunk_bytes = 65536
+live_log_queue_bytes = 1048576
+transfer_idle_timeout_seconds = 30
+setup_timeout_seconds = 300
+output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 300
+clock_skew_seconds = 30
+nonce_retention_seconds = 600
+reconnect_timeout_seconds = 30
+maximum_diagnostic_bytes = 65536
+EOH
+      }
+
+      resources {
+        cpu    = 1000
+        memory = 2048
+      }
+    }
+
+    # Optional stock-Nix SSH ingress
+    # --------------------------------
+    # Telchar's IPC socket is the frontend boundary. An SSH sidecar can expose
+    # ssh-ng without changing gateway or backend configuration. The repository
+    # packages telchar-ssh-ingress-oci and documents its restricted sshd setup.
+    # It expects Vault-backed host-certificate renewal. A generic OpenSSH image
+    # may instead mount operator-managed HostKey, HostCertificate,
+    # TrustedUserCAKeys, and the forced-command executable.
+    #
+    # Whichever approach you choose:
+    #   - run ingress with UID 995 so SO_PEERCRED matches --frontend-uid;
+    #   - mount /alloc/data/run/daemon.sock from this group;
+    #   - force every accepted key to telchar-ssh-forced-command;
+    #   - disable forwarding, PTY, user environment, and arbitrary commands;
+    #   - expose a stable TCP endpoint, commonly port 2222;
+    #   - keep host keys and client CA material outside PostgreSQL and Telchar.
+    #
+    # Sketch using the packaged Vault-oriented image:
+    #
+    # task "ssh-ingress" {
+    #   driver = "docker"
+    #   user   = "995:995"
+    #
+    #   config {
+    #     image = "registry.example.invalid/telchar-ssh-ingress@sha256:replace-me"
+    #     ports = ["ssh"]
+    #   }
+    #
+    #   env {
+    #     TELCHAR_IPC_SOCKET         = "/alloc/data/run/daemon.sock"
+    #     VAULT_ADDR                 = "https://vault.example.invalid"
+    #     TELCHAR_SSH_HOST_SIGN_PATH = "ssh-host/sign/telchar"
+    #     TELCHAR_SSH_HOST_PRINCIPALS = "telchar.example.invalid"
+    #   }
+    #
+    #   # Supply VAULT_TOKEN through a Nomad workload identity/Vault stanza or
+    #   # another secret broker. Do not put it directly in the jobspec.
+    # }
+  }
+}
