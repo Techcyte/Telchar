@@ -774,10 +774,14 @@ mod tests {
             .parent()
             .expect("test executable directory")
             .to_owned();
-        let telchar_binary = test_directory
-            .parent()
-            .expect("target profile directory")
-            .join("telchar");
+        let telchar_binary = std::env::var_os("CARGO_BIN_EXE_telchar")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                test_directory
+                    .parent()
+                    .expect("target profile directory")
+                    .join("telchar")
+            });
         let operation_dispatch = std::fs::read_dir(test_directory)
             .expect("test binary directory reads")
             .filter_map(Result::ok)
