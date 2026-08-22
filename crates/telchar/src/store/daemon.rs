@@ -130,7 +130,12 @@ impl GatewayStoreConnection {
             .build_paths_with_results(targets)
             .map_err(|error| {
                 nix_worker_protocol::build_paths_failure_phase(&error)
-                    .map(crate::store::export::dependency_realization_error)
+                    .map(|phase| {
+                        crate::store::export::dependency_realization_error_with_result(
+                            phase,
+                            nix_worker_protocol::build_paths_failure_result(&error),
+                        )
+                    })
                     .unwrap_or_else(|| {
                         io::Error::other("gateway Nix daemon dependency realization failed")
                     })

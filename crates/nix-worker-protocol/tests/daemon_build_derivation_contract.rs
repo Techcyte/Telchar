@@ -221,6 +221,36 @@ fn rejects_malformed_selected_output_targets_before_writing_operation() {
 }
 
 #[test]
+fn preserves_dependency_terminal_status_and_category_without_peer_payload() {
+    const TARGET: &[u8] = b"/nix/store/00000000000000000000000000000000-contract.drv!out";
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 1);
+    string(&mut input, TARGET);
+    integer(&mut input, 4);
+    string(
+        &mut input,
+        b"interrupted by the user secret=/run/credentials/token",
+    );
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let error = client
+        .build_paths_with_results(&[TARGET.to_vec()])
+        .expect_err("terminal dependency failure is rejected");
+
+    assert_eq!(
+        nix_worker_protocol::build_paths_failure_result(&error),
+        Some(nix_worker_protocol::BuildPathsFailureResult {
+            status: 4,
+            category: "interrupted",
+        })
+    );
+    assert!(!error.to_string().contains("credentials"));
+    assert!(!error.to_string().contains("token"));
+}
+
+#[test]
 fn classifies_missing_result_count_after_terminal_frame() {
     let mut input = Vec::new();
     handshake(&mut input, 1);

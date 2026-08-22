@@ -12,7 +12,10 @@ use crate::store::promotion::RegisteredPathInfo;
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
-struct DependencyRealizationFailure(nix_worker_protocol::BuildPathsFailurePhase);
+struct DependencyRealizationFailure {
+    phase: nix_worker_protocol::BuildPathsFailurePhase,
+    result: Option<nix_worker_protocol::BuildPathsFailureResult>,
+}
 
 impl std::fmt::Display for DependencyRealizationFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,7 +28,14 @@ impl std::error::Error for DependencyRealizationFailure {}
 pub fn dependency_realization_error(
     phase: nix_worker_protocol::BuildPathsFailurePhase,
 ) -> io::Error {
-    io::Error::other(DependencyRealizationFailure(phase))
+    dependency_realization_error_with_result(phase, None)
+}
+
+pub fn dependency_realization_error_with_result(
+    phase: nix_worker_protocol::BuildPathsFailurePhase,
+    result: Option<nix_worker_protocol::BuildPathsFailureResult>,
+) -> io::Error {
+    io::Error::other(DependencyRealizationFailure { phase, result })
 }
 
 pub fn dependency_realization_failure_phase(
@@ -34,7 +44,16 @@ pub fn dependency_realization_failure_phase(
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<DependencyRealizationFailure>())
-        .map(|failure| failure.0)
+        .map(|failure| failure.phase)
+}
+
+pub fn dependency_realization_failure_result(
+    error: &io::Error,
+) -> Option<nix_worker_protocol::BuildPathsFailureResult> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<DependencyRealizationFailure>())
+        .and_then(|failure| failure.result)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
