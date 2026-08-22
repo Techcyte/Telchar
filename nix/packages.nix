@@ -63,7 +63,10 @@ let
   '';
 
   nixDaemonClosure = pkgs.closureInfo {
-    rootPaths = [ pkgs.nix ];
+    rootPaths = [
+      pkgs.nix
+      pkgs.cacert
+    ];
   };
   nixDaemonBootstrap =
     pkgs.runCommand "telchar-nix-daemon-bootstrap" { nativeBuildInputs = [ pkgs.gnutar ]; }
@@ -160,13 +163,21 @@ let
     '';
     passthru.imageConfig = {
       Entrypoint = [ "/bin/telchar-nix-daemon" ];
+      Env = [
+        "HOME=/var/lib/telchar"
+        "NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+        "PATH=/bin"
+        "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+      ];
       User = "995:995";
     };
     config = {
       Entrypoint = [ "/bin/telchar-nix-daemon" ];
       Env = [
         "HOME=/var/lib/telchar"
+        "NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
         "PATH=/bin"
+        "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       ];
       User = "995:995";
       Labels = {

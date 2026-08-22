@@ -23,6 +23,12 @@ assert nixDaemonImage.imageName == "telchar-nix-daemon";
 assert nixDaemonImage.imageTag == "latest";
 assert nixDaemonImage.imageConfig.Entrypoint == [ "/bin/telchar-nix-daemon" ];
 assert nixDaemonImage.imageConfig.User == "995:995";
+assert builtins.any (
+  value: builtins.match "NIX_SSL_CERT_FILE=.*" value != null
+) nixDaemonImage.imageConfig.Env;
+assert builtins.any (
+  value: builtins.match "SSL_CERT_FILE=.*" value != null
+) nixDaemonImage.imageConfig.Env;
 assert sshIngressImage.imageName == "telchar-ssh-ingress";
 assert sshIngressImage.imageTag == "latest";
 assert sshIngressImage.imageConfig.Entrypoint == [ "/bin/telchar-ssh-ingress" ];
