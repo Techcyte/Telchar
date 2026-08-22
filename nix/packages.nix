@@ -90,6 +90,8 @@ let
     cat > "$out/etc/nix/nix.conf" <<'EOF'
     build-users-group =
     sandbox = false
+    keep-failed = true
+    keep-log = true
     EOF
   '';
 
