@@ -254,18 +254,28 @@ fn receives_exact_bounded_manifest_after_authentication() {
     let environment = workload_environment(&endpoint);
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
         .expect("worker environment parses");
-    let expected = manifest();
+    let mut expected = manifest();
+    for index in 0..2_534 {
+        expected.paths.push(PathManifestEntry {
+            path: format!("/nix/store/00000000000000000000000000000000-input-{index}"),
+            nar_hash: "0".repeat(64),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+            content_address: None,
+        });
+    }
     let sent = expected.clone();
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("callback accepted");
         let mut socket = tungstenite::accept_hdr(stream, select_protocol).expect("socket accepts");
         let _ = socket.read().expect("authentication reads");
-        let metadata = encode_metadata(&sent, 64 * 1024).expect("manifest encodes");
+        let metadata = encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes");
         let mut body = Vec::new();
         write_frame(
             &mut body,
             &Frame::new(FrameKind::InputManifest, metadata, vec![]),
-            ProtocolLimits::new(64 * 1024, 0),
+            ProtocolLimits::new(8 * 1024 * 1024, 0),
         )
         .expect("manifest frame writes");
         socket

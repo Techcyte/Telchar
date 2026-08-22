@@ -671,8 +671,16 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         "sec-websocket-protocol",
         tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
     );
-    let (mut socket, response) = tungstenite::connect(request)
-        .map_err(|_| io::Error::other("worker callback connection failed"))?;
+    let (mut socket, response) = tungstenite::client::connect_with_config(
+        request,
+        Some(
+            tungstenite::protocol::WebSocketConfig::default()
+                .max_message_size(Some(config.maximum_manifest_bytes()))
+                .max_frame_size(Some(config.maximum_manifest_bytes())),
+        ),
+        3,
+    )
+    .map_err(|_| io::Error::other("worker callback connection failed"))?;
     set_socket_timeouts(&mut socket, config.transfer_idle_timeout())?;
     if response.headers().get("sec-websocket-protocol")
         != Some(&tungstenite::http::HeaderValue::from_static(
