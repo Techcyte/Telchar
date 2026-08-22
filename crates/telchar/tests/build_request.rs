@@ -194,7 +194,9 @@ fn classifies_dependency_realization_failure_without_backend_payload() {
             "fixture"
         }
         fn build_paths_with_results(&mut self, _targets: &[Vec<u8>]) -> io::Result<()> {
-            Err(io::Error::other("secret daemon payload"))
+            Err(telchar::store::export::dependency_realization_error(
+                nix_worker_protocol::BuildPathsFailurePhase::Target,
+            ))
         }
         fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
             let nar = self.nars.get(path).expect("fixture path exists");
@@ -230,7 +232,11 @@ fn classifies_dependency_realization_failure_without_backend_payload() {
         telchar::build::stored_load_failure_phase(&error),
         Some(telchar::build::StoredLoadFailurePhase::DependencyRealization)
     );
-    assert!(!error.to_string().contains("secret daemon payload"));
+    assert_eq!(
+        telchar::build::stored_load_dependency_phase(&error),
+        Some(nix_worker_protocol::BuildPathsFailurePhase::Target)
+    );
+    assert!(!error.to_string().contains("Target"));
 }
 
 #[test]
