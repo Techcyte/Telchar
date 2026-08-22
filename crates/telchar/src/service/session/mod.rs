@@ -190,11 +190,16 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let closure = match store_closure.input_closure(admitted.input_sources()) {
                     Ok(closure) => closure,
                     Err(error) => {
+                        let (path, path_kind) = crate::store::closure::failure_path(&error)
+                            .map(|(path, kind)| (path, kind.as_str()))
+                            .unwrap_or(("none", "none"));
                         tracing::error!(
                             event = "gateway.input_closure.failed",
                             phase = crate::store::closure::failure_phase(&error)
                                 .map(crate::store::closure::ClosureFailurePhase::as_str)
                                 .unwrap_or("unknown"),
+                            path,
+                            path_kind,
                             "input closure query failed"
                         );
                         if let Err(error) = release_unattached_request_leases(
