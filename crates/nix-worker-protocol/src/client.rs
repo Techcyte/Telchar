@@ -126,6 +126,49 @@ pub enum WorkerBuildStatus {
     AlreadyValid,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildPathsFailurePhase {
+    Request,
+    Rejected,
+    Response,
+    Target,
+    Result,
+}
+
+impl BuildPathsFailurePhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Rejected => "rejected",
+            Self::Response => "response",
+            Self::Target => "target",
+            Self::Result => "result",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuildPathsFailure(BuildPathsFailurePhase);
+
+impl std::fmt::Display for BuildPathsFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Nix daemon BuildPathsWithResults failed")
+    }
+}
+
+impl std::error::Error for BuildPathsFailure {}
+
+pub fn build_paths_failure_phase(error: &io::Error) -> Option<BuildPathsFailurePhase> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<BuildPathsFailure>())
+        .map(|failure| failure.0)
+}
+
+fn build_paths_error(phase: BuildPathsFailurePhase) -> io::Error {
+    io::Error::other(BuildPathsFailure(phase))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerMissingPaths {
     pub will_build: Vec<Vec<u8>>,
@@ -410,10 +453,11 @@ impl<S: Read + Write> WorkerClient<S> {
 
     pub fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
         if targets.is_empty() || targets.len() > MAXIMUM_QUERY_VALID_PATHS {
-            return Err(protocol_client_error());
+            return Err(build_paths_error(BuildPathsFailurePhase::Request));
         }
         for target in targets {
-            validate_derived_path(target)?;
+            validate_derived_path(target)
+                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Request))?;
         }
         write_worker_integer_to(
             &mut self.stream,
@@ -422,24 +466,37 @@ impl<S: Read + Write> WorkerClient<S> {
         write_byte_string_collection(&mut self.stream, targets)?;
         write_worker_integer_to(&mut self.stream, 0)?;
         self.stream.flush()?;
-        read_operation_frames(&mut self.stream, self.profile.version)?;
-        let count = usize::try_from(read_worker_integer_from(&mut self.stream)?)
-            .map_err(|_| protocol_client_error())?;
+        read_operation_frames(&mut self.stream, self.profile.version).map_err(|error| {
+            if error.kind() == io::ErrorKind::Other
+                && error.to_string() == "Nix daemon operation failed"
+            {
+                build_paths_error(BuildPathsFailurePhase::Rejected)
+            } else {
+                build_paths_error(BuildPathsFailurePhase::Response)
+            }
+        })?;
+        let count = usize::try_from(
+            read_worker_integer_from(&mut self.stream)
+                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Response))?,
+        )
+        .map_err(|_| build_paths_error(BuildPathsFailurePhase::Response))?;
         if count != targets.len() {
-            return Err(protocol_client_error());
+            return Err(build_paths_error(BuildPathsFailurePhase::Target));
         }
         for expected in targets {
             let actual =
-                read_worker_byte_string_from(&mut self.stream, MAXIMUM_WORKER_STORE_PATH_BYTES)?;
+                read_worker_byte_string_from(&mut self.stream, MAXIMUM_WORKER_STORE_PATH_BYTES)
+                    .map_err(|_| build_paths_error(BuildPathsFailurePhase::Response))?;
             if &actual != expected {
-                return Err(protocol_client_error());
+                return Err(build_paths_error(BuildPathsFailurePhase::Target));
             }
-            let result = read_worker_build_result(&mut self.stream, self.profile.version)?;
+            let result = read_worker_build_result(&mut self.stream, self.profile.version)
+                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Result))?;
             if !matches!(
                 result.status(),
                 WorkerBuildStatus::Built | WorkerBuildStatus::AlreadyValid
             ) {
-                return Err(protocol_client_error());
+                return Err(build_paths_error(BuildPathsFailurePhase::Result));
             }
         }
         Ok(())
