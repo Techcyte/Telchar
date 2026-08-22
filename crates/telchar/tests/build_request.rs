@@ -171,7 +171,7 @@ fn loads_selected_input_derivation_outputs() {
 
     assert_eq!(
         backend.built,
-        vec![dependency_path.as_os_str().as_encoded_bytes().to_vec()]
+        vec![b"/nix/store/33333333333333333333333333333333-dependency.drv!out".to_vec()]
     );
     assert!(request
         .input_sources()

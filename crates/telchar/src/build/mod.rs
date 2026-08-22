@@ -96,7 +96,14 @@ impl BuildRequest {
         let dependency_derivations = stored
             .input_derivations
             .iter()
-            .map(|(derivation, _)| derivation.clone())
+            .flat_map(|(derivation, output_names)| {
+                output_names.iter().map(|output_name| {
+                    let mut target = derivation.clone();
+                    target.push(b'!');
+                    target.extend_from_slice(output_name);
+                    target
+                })
+            })
             .collect::<Vec<_>>();
         if !dependency_derivations.is_empty() {
             backend.build_paths_with_results(&dependency_derivations)?;
