@@ -408,6 +408,43 @@ impl<S: Read + Write> WorkerClient<S> {
         })
     }
 
+    pub fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
+        if targets.is_empty() || targets.len() > MAXIMUM_QUERY_VALID_PATHS {
+            return Err(protocol_client_error());
+        }
+        for target in targets {
+            validate_store_path(target)?;
+        }
+        write_worker_integer_to(
+            &mut self.stream,
+            WorkerOperation::BuildPathsWithResults.code(),
+        )?;
+        write_byte_string_collection(&mut self.stream, targets)?;
+        write_worker_integer_to(&mut self.stream, 0)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
+        let count = usize::try_from(read_worker_integer_from(&mut self.stream)?)
+            .map_err(|_| protocol_client_error())?;
+        if count != targets.len() {
+            return Err(protocol_client_error());
+        }
+        for expected in targets {
+            let actual =
+                read_worker_byte_string_from(&mut self.stream, MAXIMUM_WORKER_STORE_PATH_BYTES)?;
+            if &actual != expected {
+                return Err(protocol_client_error());
+            }
+            let result = read_worker_build_result(&mut self.stream, self.profile.version)?;
+            if !matches!(
+                result.status(),
+                WorkerBuildStatus::Built | WorkerBuildStatus::AlreadyValid
+            ) {
+                return Err(protocol_client_error());
+            }
+        }
+        Ok(())
+    }
+
     pub fn ensure_path(&mut self, store_path: &[u8]) -> io::Result<()> {
         validate_store_path_in_directory(store_path, &self.store_directory)
             .map_err(|_| protocol_client_error())?;

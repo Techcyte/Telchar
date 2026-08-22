@@ -138,6 +138,37 @@ fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
 }
 
 #[test]
+fn builds_exact_local_derivation_targets_with_results() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 1); // one keyed result
+    string(&mut input, DRV);
+    integer(&mut input, 0); // Built
+    string(&mut input, b"");
+    integer(&mut input, 1);
+    integer(&mut input, 0);
+    integer(&mut input, 10);
+    integer(&mut input, 20);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    integer(&mut input, 0); // no built outputs
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    client
+        .build_paths_with_results(&[DRV.to_vec()])
+        .expect("local derivation target builds");
+
+    let wire = client.into_inner().output;
+    let mut operation = Vec::new();
+    integer(&mut operation, 46);
+    integer(&mut operation, 1);
+    string(&mut operation, DRV);
+    integer(&mut operation, 0);
+    assert!(wire.ends_with(&operation));
+}
+
+#[test]
 fn writes_exact_fixed_output_authority() {
     let mut input = Vec::new();
     handshake(&mut input, 1);

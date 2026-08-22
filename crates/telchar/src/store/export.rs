@@ -27,6 +27,12 @@ pub struct VerifiedStoreExport {
 
 pub trait StoreExportBackend: Send {
     fn store_uri(&self) -> &str;
+    fn build_paths_with_results(&mut self, _targets: &[Vec<u8>]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "store dependency realization is unavailable",
+        ))
+    }
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo>;
     fn export_nar(
         &mut self,
@@ -101,6 +107,10 @@ impl GatewayStoreExportBackend {
 impl StoreExportBackend for GatewayStoreExportBackend {
     fn store_uri(&self) -> &str {
         "configured-gateway-daemon"
+    }
+
+    fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
+        GatewayStoreConnection::connect(&self.endpoint)?.build_paths_with_results(targets)
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {

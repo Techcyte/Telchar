@@ -120,6 +120,12 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())
     }
 
+    pub fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
+        self.client
+            .build_paths_with_results(targets)
+            .map_err(|_| io::Error::other("gateway Nix daemon dependency realization failed"))
+    }
+
     pub fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
         self.client
             .ensure_path(path)

@@ -113,10 +113,15 @@ fn loads_selected_input_derivation_outputs() {
 
     struct Backend {
         nars: BTreeMap<PathBuf, Vec<u8>>,
+        built: Vec<Vec<u8>>,
     }
     impl StoreExportBackend for Backend {
         fn store_uri(&self) -> &str {
             "fixture"
+        }
+        fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
+            self.built.extend_from_slice(targets);
+            Ok(())
         }
         fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
             let nar = self
@@ -155,14 +160,19 @@ fn loads_selected_input_derivation_outputs() {
     let mut backend = Backend {
         nars: BTreeMap::from([
             (root_path.clone(), regular_nar(root)),
-            (dependency_path, regular_nar(dependency)),
+            (dependency_path.clone(), regular_nar(dependency)),
         ]),
+        built: Vec::new(),
     };
 
     let request =
         BuildRequest::load_stored(&root_path, &mut backend, &backends("x86_64-linux", &[]))
             .expect("stored derivation and selected dependency output load");
 
+    assert_eq!(
+        backend.built,
+        vec![dependency_path.as_os_str().as_encoded_bytes().to_vec()]
+    );
     assert!(request
         .input_sources()
         .iter()
