@@ -1107,24 +1107,45 @@ fn protocol_client_error() -> io::Error {
     io::Error::other("Nix daemon operation failed")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::validate_derived_path;
+
+    #[test]
+    fn derived_path_accepts_all_and_multiple_output_selectors() {
+        let derivation = b"/nix/store/00000000000000000000000000000000-contract.drv";
+
+        assert!(validate_derived_path(&[derivation.as_slice(), b"!*"].concat()).is_ok());
+        assert!(validate_derived_path(&[derivation.as_slice(), b"!dev,out"].concat()).is_ok());
+    }
+}
+
 pub(super) fn validate_store_path(path: &[u8]) -> io::Result<()> {
-    validate_store_path_in_directory(path, NIX_STORE_DIRECTORY.strip_suffix(b"/").unwrap())
+    let directory = NIX_STORE_DIRECTORY
+        .strip_suffix(b"/")
+        .ok_or_else(protocol_client_error)?;
+    validate_store_path_in_directory(path, directory)
 }
 
 fn validate_derived_path(target: &[u8]) -> io::Result<()> {
     let mut parts = target.split(|byte| *byte == b'!');
     let path = parts.next().ok_or_else(protocol_client_error)?;
-    let output = parts.next();
+    let outputs = parts.next();
     if parts.next().is_some() {
         return Err(protocol_client_error());
     }
     validate_store_path(path)?;
-    if let Some(output) = output
+    if let Some(outputs) = outputs
         && (!path.ends_with(b".drv")
-            || output.is_empty()
-            || output.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
-            || !output.iter().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_')
+            || outputs.is_empty()
+            || outputs.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
+            || outputs.split(|byte| *byte == b',').any(|output| {
+                output.is_empty()
+                    || (output != b"*"
+                        && !output.iter().all(|byte| {
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'+' | b'-' | b'.' | b'_')
+                        }))
             }))
     {
         return Err(protocol_client_error());
