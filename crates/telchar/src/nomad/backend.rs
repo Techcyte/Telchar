@@ -551,6 +551,13 @@ fn render_job_at(
             "Mode": "fail",
         }),
     );
+    group.insert(
+        "ReschedulePolicy".to_owned(),
+        json!({
+            "Attempts": 0,
+            "Unlimited": false,
+        }),
+    );
     group.insert("Tasks".to_owned(), Value::Array(tasks));
     let constraints = config
         .constraints()
