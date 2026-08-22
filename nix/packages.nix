@@ -76,7 +76,7 @@ let
         cp ${nixDaemonClosure}/registration "$out/registration"
       '';
   nixDaemonEntrypoint = pkgs.writeText "telchar-nix-daemon" (
-    builtins.replaceStrings [ "@nix@" ] [ "${pkgs.nix}" ] (
+    builtins.replaceStrings [ "@cacert@" "@nix@" ] [ "${pkgs.cacert}" "${pkgs.nix}" ] (
       builtins.readFile ../deploy/nix/telchar-nix-daemon.sh
     )
   );

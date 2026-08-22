@@ -66,6 +66,8 @@ pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar
   tar -xOf ${nixDaemonImage} "$nix_daemon_layer" | tar -xf - -C nix-daemon
   test -f nix-daemon/bin/telchar-nix-daemon || { echo "Nix daemon entrypoint is missing" >&2; exit 1; }
   test -x nix-daemon/bin/telchar-nix-daemon || { echo "Nix daemon entrypoint is not executable" >&2; exit 1; }
+  grep -q 'ca-bundle.crt' nix-daemon/bin/telchar-nix-daemon
+  test "$(grep -c -- '--load-db' nix-daemon/bin/telchar-nix-daemon)" = 1 || { echo "Nix daemon registration is not refreshed" >&2; exit 1; }
   grep -q '^telchar:x:995:995:Telchar Nix daemon:/var/lib/telchar:/bin/false$' nix-daemon/etc/passwd
   grep -q '^telchar:x:995:$' nix-daemon/etc/group
   grep -q '^keep-failed = true$' nix-daemon/etc/nix/nix.conf
