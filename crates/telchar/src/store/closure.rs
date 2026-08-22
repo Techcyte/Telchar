@@ -73,6 +73,7 @@ struct ClosurePathInfo {
 
 trait PathInfoQuery {
     fn query_path(&mut self, path: &[u8]) -> io::Result<Option<ClosurePathInfo>>;
+    fn ensure_path(&mut self, path: &[u8]) -> io::Result<()>;
 }
 
 impl PathInfoQuery for GatewayStoreConnection {
@@ -86,6 +87,10 @@ impl PathInfoQuery for GatewayStoreConnection {
                 content_address: info.content_address().map(ToOwned::to_owned),
             })
         })
+    }
+
+    fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
+        GatewayStoreConnection::ensure_path(self, path)
     }
 }
 
@@ -105,10 +110,12 @@ fn compute_input_closure(
     }
 
     while let Some(path) = pending.pop_front() {
-        let info = store
-            .query_path(&path)
-            .map_err(|_| query_error())?
-            .ok_or_else(query_error)?;
+        let mut info = store.query_path(&path).map_err(|_| query_error())?;
+        if info.is_none() {
+            store.ensure_path(&path).map_err(|_| query_error())?;
+            info = store.query_path(&path).map_err(|_| query_error())?;
+        }
+        let info = info.ok_or_else(query_error)?;
         if info.nar_size == 0 || metadata.insert(path.clone(), info).is_some() {
             return Err(query_error());
         }
@@ -212,7 +219,9 @@ mod tests {
 
     struct Store {
         paths: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+        substitutable: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
         queries: Vec<Vec<u8>>,
+        ensured: Vec<Vec<u8>>,
     }
 
     impl PathInfoQuery for Store {
@@ -231,6 +240,16 @@ mod tests {
                     content_address: None,
                 }))
         }
+
+        fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
+            self.ensured.push(path.to_vec());
+            if let Some(references) = self.substitutable.remove(path) {
+                self.paths.insert(path.to_vec(), references);
+                Ok(())
+            } else {
+                Err(query_error())
+            }
+        }
     }
 
     fn store() -> Store {
@@ -241,7 +260,9 @@ mod tests {
                 (RIGHT.to_vec(), vec![LEAF.to_vec()]),
                 (LEAF.to_vec(), Vec::new()),
             ]),
+            substitutable: BTreeMap::new(),
             queries: Vec::new(),
+            ensured: Vec::new(),
         }
     }
 
@@ -276,6 +297,20 @@ mod tests {
         store.queries.sort();
         store.queries.dedup();
         assert_eq!(store.queries.len(), 4);
+    }
+
+    #[test]
+    fn substitutes_missing_root_before_walking_references() {
+        let mut store = store();
+        store.paths.remove(ROOT);
+        store
+            .substitutable
+            .insert(ROOT.to_vec(), vec![LEFT.to_vec(), RIGHT.to_vec()]);
+
+        let closure = compute_input_closure(&mut store, &[ROOT.to_vec()]).unwrap();
+
+        assert_eq!(store.ensured, vec![ROOT.to_vec()]);
+        assert_eq!(closure.len(), 4);
     }
 
     #[test]
