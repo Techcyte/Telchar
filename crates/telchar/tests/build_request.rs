@@ -35,6 +35,26 @@ fn loads_classic_stored_derivation_into_build_request() {
 }
 
 #[test]
+fn stored_derivation_inputs_include_direct_builder_dependencies() {
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/nix/store/44444444444444444444444444444444-bash/bin/bash",[],[("builder","/nix/store/44444444444444444444444444444444-bash/bin/bash"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let request = BuildRequest::from_stored_derivation(
+        drv_path(),
+        derivation,
+        &backends("x86_64-linux", &[]),
+    )
+    .expect("stored derivation admits");
+
+    assert_eq!(
+        request.input_sources(),
+        &[
+            b"/nix/store/22222222222222222222222222222222-input".to_vec(),
+            b"/nix/store/33333333333333333333333333333333-dependency.drv".to_vec(),
+            b"/nix/store/44444444444444444444444444444444-bash".to_vec(),
+        ]
+    );
+}
+
+#[test]
 fn loads_registered_derivation_through_store_export() {
     use std::path::{Path, PathBuf};
     use telchar::store::export::{StoreExportBackend, StoreExportRequest};

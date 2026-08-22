@@ -140,6 +140,17 @@ impl BuildRequest {
         }
         let mut input_sources = stored.input_sources;
         input_sources.extend(stored.input_derivations);
+        if stored.builder.starts_with(b"/nix/store/") {
+            let builder_path = stored
+                .builder
+                .split(|byte| *byte == b'/')
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(&b'/');
+            if !input_sources.contains(&builder_path) {
+                input_sources.push(builder_path);
+            }
+        }
         let request = Self {
             derivation_path: derivation_path.to_vec(),
             expected_outputs,
