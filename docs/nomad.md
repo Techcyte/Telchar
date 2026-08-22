@@ -18,10 +18,12 @@ Nomad placement and autoscaling are external concerns. Allocation state `complet
 The Nomad API endpoint and transfer endpoint are separate settings:
 
 - Nomad API: `http://` or `https://`;
-- transfer endpoint: `ws://` or externally terminated `wss://`;
+- transfer endpoint: `ws://` directly, `ws://` through a Connect loopback upstream, or externally terminated `wss://`;
 - required WebSocket subprotocol: `telchar-nomad-transfer-v1`.
 
 Telchar's callback listener is plaintext WebSocket. Public `wss://` requires an operator-managed reverse proxy or load balancer. The proxy must preserve upgrades and the subprotocol, disable retries, and keep its idle timeout above Telchar's transfer idle timeout.
+
+A backend may instead configure `callback_connect`. Telchar then renders bridge networking and a Consul Connect sidecar upstream into every generated execution group. The worker connects to the configured loopback `transfer_endpoint`; Envoy carries that connection over Connect mTLS to the gateway callback service. `source_service`, `destination_service`, and `local_bind_port` are operator authority. Consul intentions should allow only the generated source service to reach the gateway destination service. Connect protects and authorizes transport; workload identity or HMAC callback authentication remains mandatory and still binds the exact backend, job, allocation, and task.
 
 The allocation opens the connection; Telchar never discovers Nomad client addresses or dials arbitrary allocations. The first binary TLNW message is `Authenticate`. Text messages, wrong subprotocols, invalid phases, and oversized messages fail closed. WebSocket is only transport; TLNW defines the authenticated session and transfer state.
 

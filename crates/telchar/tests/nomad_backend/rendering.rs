@@ -23,7 +23,12 @@ driver = "raw_exec"
 job_name_scope = "telchar-prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
-transfer_endpoint = "ws://telchar.example:7443"
+transfer_endpoint = "ws://127.0.0.1:17443/callback"
+
+[backends.nomad.callback_connect]
+source_service = "telchar-build-callback"
+destination_service = "telchar-callback"
+local_bind_port = 17443
 
 [[backends.nomad.constraints]]
 attribute = "${attr.cpu.arch}"
@@ -158,6 +163,12 @@ args = ["--stdio"]
         120_000_000_000_u64
     );
     assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Name"], "build");
+    assert_eq!(job["Job"]["TaskGroups"][0]["Networks"][0]["Mode"], "bridge");
+    let callback_service = &job["Job"]["TaskGroups"][0]["Services"][0];
+    assert_eq!(callback_service["Name"], "telchar-build-callback");
+    let callback_upstream = &callback_service["Connect"]["SidecarService"]["Proxy"]["Upstreams"][0];
+    assert_eq!(callback_upstream["DestinationName"], "telchar-callback");
+    assert_eq!(callback_upstream["LocalBindPort"], 17443);
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Attempts"], 0);
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Mode"], "fail");
     assert_eq!(
@@ -179,7 +190,7 @@ args = ["--stdio"]
     );
     assert_eq!(
         environment["TELCHAR_TRANSFER_ENDPOINT"],
-        "ws://telchar.example:7443"
+        "ws://127.0.0.1:17443/callback"
     );
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_NIX_STORE_URI"],
