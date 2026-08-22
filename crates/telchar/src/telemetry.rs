@@ -778,7 +778,7 @@ mod tests {
             .parent()
             .expect("target profile directory")
             .join("telchar");
-        let mut test_binaries = std::fs::read_dir(test_directory)
+        let operation_dispatch = std::fs::read_dir(test_directory)
             .expect("test binary directory reads")
             .filter_map(Result::ok)
             .filter(|entry| {
@@ -788,37 +788,38 @@ mod tests {
                     .is_some_and(|name| name.starts_with("operation_dispatch-"))
                     && entry.path().is_file()
             })
-            .filter(|entry| {
-                Command::new(entry.path())
+            .filter_map(|entry| {
+                let output = Command::new(entry.path())
                     .args(["--list", "--format", "terse"])
                     .output()
-                    .is_ok_and(|output| {
-                        output.status.success()
-                            && String::from_utf8_lossy(&output.stdout)
-                                .contains("live_set_options_request_returns_terminal_frame: test")
-                    })
+                    .ok()?;
+                let tests = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| line.ends_with(": test"))
+                    .count();
+                (output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains(
+                        "protocol::live_set_options_request_returns_terminal_frame: test",
+                    ))
+                .then_some((tests, entry))
             })
-            .collect::<Vec<_>>();
-        test_binaries.sort_by_key(|entry| {
-            std::cmp::Reverse(
-                entry
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .ok(),
-            )
-        });
-        let status = test_binaries
-            .into_iter()
-            .find_map(|entry| {
-                let status = Command::new(entry.path())
-                    .arg("live_set_options_request_returns_terminal_frame")
-                    .env("CARGO_BIN_EXE_telchar", &telchar_binary)
-                    .env("TELCHAR_TEST_OTLP_ENDPOINT", collector.endpoint())
-                    .status()
-                    .expect("SetOptions test process starts");
-                status.success().then_some(status)
+            .max_by_key(|(tests, entry)| {
+                (
+                    *tests,
+                    entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok(),
+                )
             })
+            .map(|(_, entry)| entry)
             .expect("current operation_dispatch test binary");
+        let status = Command::new(operation_dispatch.path())
+            .arg("protocol::live_set_options_request_returns_terminal_frame")
+            .env("CARGO_BIN_EXE_telchar", &telchar_binary)
+            .env("TELCHAR_TEST_OTLP_ENDPOINT", collector.endpoint())
+            .status()
+            .expect("SetOptions test process starts");
         assert!(status.success(), "SetOptions test process failed: {status}");
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && !collector.has_log_event("worker.set_options.completed")
