@@ -157,10 +157,19 @@ pub(super) struct RawNomadBackendConfig {
     #[serde(default)]
     pub(super) constraints: Vec<RawNomadConstraint>,
     pub(super) transfer_endpoint: Option<String>,
+    pub(super) callback_connect: Option<RawNomadCallbackConnect>,
     pub(super) transfer_authentication: RawNomadTransferAuthentication,
     pub(super) store: RawNomadStoreConfig,
     pub(super) transfer_limits: RawNomadTransferLimits,
     pub(super) prestart: Option<RawNomadPrestartConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadCallbackConnect {
+    pub(super) source_service: String,
+    pub(super) destination_service: String,
+    pub(super) local_bind_port: u16,
 }
 
 #[derive(Deserialize)]

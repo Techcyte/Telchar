@@ -246,6 +246,25 @@ pub(super) fn validate_nomad_backends(
         if !valid_nomad_transfer_endpoint(&transfer_endpoint) {
             return Err(invalid("Nomad transfer endpoint is invalid"));
         }
+        let callback_connect = backend
+            .callback_connect
+            .map(|connect| -> io::Result<NomadCallbackConnect> {
+                if connect.local_bind_port == 0 {
+                    return Err(invalid("Nomad callback Connect port is invalid"));
+                }
+                Ok(NomadCallbackConnect {
+                    source_service: validate_subject(
+                        connect.source_service,
+                        "Nomad callback source service is invalid",
+                    )?,
+                    destination_service: validate_subject(
+                        connect.destination_service,
+                        "Nomad callback destination service is invalid",
+                    )?,
+                    local_bind_port: connect.local_bind_port,
+                })
+            })
+            .transpose()?;
         let transfer_authentication =
             validate_nomad_transfer_authentication(backend.transfer_authentication)?;
         let store = validate_nomad_store(backend.store)?;
@@ -273,6 +292,7 @@ pub(super) fn validate_nomad_backends(
             runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
             constraints,
             transfer_endpoint,
+            callback_connect,
             transfer_authentication,
             store,
             transfer_limits,

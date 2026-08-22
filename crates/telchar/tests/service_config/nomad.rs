@@ -379,7 +379,12 @@ driver = "raw_exec"
 job_name_scope = "prod"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
-transfer_endpoint = "wss://telchar.example:7443"
+transfer_endpoint = "ws://127.0.0.1:17443/callback"
+
+[backends.nomad.callback_connect]
+source_service = "telchar-build-callback"
+destination_service = "telchar-callback"
+local_bind_port = 17443
 
 [backends.nomad.resources]
 cpu_mhz = 1000
@@ -441,7 +446,21 @@ args = ["/alloc/data/nix"]
 
     let config = ServiceConfig::load().expect("configuration loads");
     let backend = &config.nomad_backends()[0];
-    assert_eq!(backend.transfer_endpoint(), "wss://telchar.example:7443");
+    assert_eq!(backend.transfer_endpoint(), "ws://127.0.0.1:17443/callback");
+    let connect = backend.callback_connect().expect("Connect configures");
+    assert_eq!(connect.source_service(), "telchar-build-callback");
+    assert_eq!(connect.destination_service(), "telchar-callback");
+    assert_eq!(connect.local_bind_port(), 17443);
+
+    let configured = fs::read_to_string(&config_path).expect("configuration reads");
+    fs::write(
+        &config_path,
+        configured.replace("local_bind_port = 17443", "local_bind_port = 0"),
+    )
+    .expect("invalid Connect configuration writes");
+    assert!(ServiceConfig::load().is_err());
+    fs::write(&config_path, &configured).expect("configuration restores");
+
     let authentication = backend.transfer_authentication();
     assert_eq!(authentication.mode(), "workload-identity");
     assert_eq!(authentication.issuer(), None);
@@ -471,7 +490,6 @@ args = ["/alloc/data/nix"]
         "/opt/operator/bin/configure-nix"
     );
 
-    let configured = fs::read_to_string(&config_path).expect("configuration reads");
     fs::write(
         &config_path,
         configured.replace(

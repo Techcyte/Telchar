@@ -414,6 +414,27 @@ impl NomadConstraint {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadCallbackConnect {
+    pub(super) source_service: String,
+    pub(super) destination_service: String,
+    pub(super) local_bind_port: u16,
+}
+
+impl NomadCallbackConnect {
+    pub fn source_service(&self) -> &str {
+        &self.source_service
+    }
+
+    pub fn destination_service(&self) -> &str {
+        &self.destination_service
+    }
+
+    pub fn local_bind_port(&self) -> u16 {
+        self.local_bind_port
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NomadBackendConfig {
     pub(super) target: BackendTarget,
@@ -432,6 +453,7 @@ pub struct NomadBackendConfig {
     pub(super) runtime_limit: Duration,
     pub(super) constraints: Vec<NomadConstraint>,
     pub(super) transfer_endpoint: String,
+    pub(super) callback_connect: Option<NomadCallbackConnect>,
     pub(super) transfer_authentication: NomadTransferAuthentication,
     pub(super) store: NomadStoreConfig,
     pub(super) transfer_limits: NomadTransferLimits,
@@ -501,6 +523,10 @@ impl NomadBackendConfig {
 
     pub fn transfer_endpoint(&self) -> &str {
         &self.transfer_endpoint
+    }
+
+    pub fn callback_connect(&self) -> Option<&NomadCallbackConnect> {
+        self.callback_connect.as_ref()
     }
 
     pub fn transfer_authentication(&self) -> &NomadTransferAuthentication {

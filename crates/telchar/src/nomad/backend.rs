@@ -559,6 +559,25 @@ fn render_job_at(
         }),
     );
     group.insert("Tasks".to_owned(), Value::Array(tasks));
+    if let Some(connect) = config.callback_connect() {
+        group.insert("Networks".to_owned(), json!([{ "Mode": "bridge" }]));
+        group.insert(
+            "Services".to_owned(),
+            json!([{
+                "Name": connect.source_service(),
+                "Connect": {
+                    "SidecarService": {
+                        "Proxy": {
+                            "Upstreams": [{
+                                "DestinationName": connect.destination_service(),
+                                "LocalBindPort": connect.local_bind_port(),
+                            }],
+                        },
+                    },
+                },
+            }]),
+        );
+    }
     let constraints = config
         .constraints()
         .iter()
