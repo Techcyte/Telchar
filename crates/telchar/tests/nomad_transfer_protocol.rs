@@ -302,6 +302,32 @@ fn rejects_invalid_manifest_and_path_metadata() {
 }
 
 #[test]
+fn permits_terminal_build_failure_before_output_collection() {
+    let mut session = ProtocolSession::new();
+    session
+        .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+        .expect("authentication accepts");
+    session
+        .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+        .expect("manifest accepts");
+    session
+        .accept(Direction::WorkerToGateway, FrameKind::ValidPaths)
+        .expect("valid paths accept");
+    session
+        .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
+        .expect("input request accepts");
+    session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildStarted)
+        .expect("build starts");
+
+    session
+        .accept(Direction::WorkerToGateway, FrameKind::BuildResult)
+        .expect("terminal build failure accepts before outputs");
+
+    assert!(session.is_complete());
+}
+
+#[test]
 fn enforces_direction_and_transfer_phase_order() {
     let mut session = ProtocolSession::new();
     assert!(session

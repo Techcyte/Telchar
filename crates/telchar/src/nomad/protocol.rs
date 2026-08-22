@@ -938,6 +938,9 @@ impl ProtocolSession {
             (Phase::Building, Direction::WorkerToGateway, FrameKind::OutputMetadata) => {
                 Phase::CollectingOutputs
             }
+            (Phase::Building, Direction::WorkerToGateway, FrameKind::BuildResult) => {
+                Phase::Complete
+            }
             (Phase::CollectingOutputs, Direction::WorkerToGateway, FrameKind::OutputMetadata)
             | (Phase::CollectingOutputs, Direction::WorkerToGateway, FrameKind::OutputNar)
             | (Phase::CollectingOutputs, Direction::GatewayToWorker, FrameKind::OutputReceipt) => {
