@@ -45,7 +45,10 @@ impl StoredLoadFailurePhase {
 }
 
 #[derive(Debug)]
-struct StoredLoadFailure(StoredLoadFailurePhase);
+struct StoredLoadFailure {
+    phase: StoredLoadFailurePhase,
+    dependency_phase: Option<nix_worker_protocol::BuildPathsFailurePhase>,
+}
 
 impl fmt::Display for StoredLoadFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,11 +62,30 @@ pub fn stored_load_failure_phase(error: &io::Error) -> Option<StoredLoadFailureP
     error
         .get_ref()
         .and_then(|error| error.downcast_ref::<StoredLoadFailure>())
-        .map(|failure| failure.0)
+        .map(|failure| failure.phase)
+}
+
+pub fn stored_load_dependency_phase(
+    error: &io::Error,
+) -> Option<nix_worker_protocol::BuildPathsFailurePhase> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<StoredLoadFailure>())
+        .and_then(|failure| failure.dependency_phase)
 }
 
 fn stored_load_error(phase: StoredLoadFailurePhase) -> io::Error {
-    io::Error::other(StoredLoadFailure(phase))
+    io::Error::other(StoredLoadFailure {
+        phase,
+        dependency_phase: None,
+    })
+}
+
+fn dependency_realization_error(error: &io::Error) -> io::Error {
+    io::Error::other(StoredLoadFailure {
+        phase: StoredLoadFailurePhase::DependencyRealization,
+        dependency_phase: crate::store::export::dependency_realization_failure_phase(error),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -162,7 +184,7 @@ impl BuildRequest {
         if !dependency_derivations.is_empty() {
             backend
                 .build_paths_with_results(&dependency_derivations)
-                .map_err(|_| stored_load_error(StoredLoadFailurePhase::DependencyRealization))?;
+                .map_err(|error| dependency_realization_error(&error))?;
         }
         for (input_derivation, output_names) in stored.input_derivations {
             let input_path = std::path::Path::new(

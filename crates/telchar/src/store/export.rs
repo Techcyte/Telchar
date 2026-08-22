@@ -11,6 +11,32 @@ use crate::store::promotion::RegisteredPathInfo;
 
 const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 
+#[derive(Debug)]
+struct DependencyRealizationFailure(nix_worker_protocol::BuildPathsFailurePhase);
+
+impl std::fmt::Display for DependencyRealizationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("gateway Nix daemon dependency realization failed")
+    }
+}
+
+impl std::error::Error for DependencyRealizationFailure {}
+
+pub fn dependency_realization_error(
+    phase: nix_worker_protocol::BuildPathsFailurePhase,
+) -> io::Error {
+    io::Error::other(DependencyRealizationFailure(phase))
+}
+
+pub fn dependency_realization_failure_phase(
+    error: &io::Error,
+) -> Option<nix_worker_protocol::BuildPathsFailurePhase> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<DependencyRealizationFailure>())
+        .map(|failure| failure.0)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StoreExportRequest {
     pub version: u32,
