@@ -45,6 +45,67 @@ fn query_valid_paths_returns_only_authoritative_valid_paths() {
 }
 
 #[test]
+fn build_paths_with_results_reports_plain_valid_store_path_as_already_valid() {
+    let name = format!("telchar-valid-output-{}", std::process::id());
+    let expression = format!(
+        "derivation {{ name = \"{name}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf {name} > \\\"$out\\\"\" ]; }}"
+    );
+    let derivation = Command::new("nix-instantiate")
+        .args(["--expr", &expression])
+        .output()
+        .expect("host-store derivation creates");
+    assert!(
+        derivation.status.success(),
+        "nix-instantiate failed: {}",
+        String::from_utf8_lossy(&derivation.stderr)
+    );
+    let derivation = String::from_utf8(derivation.stdout).expect("derivation path is UTF-8");
+    let output = Command::new("nix-store")
+        .args(["--realise", derivation.trim()])
+        .output()
+        .expect("host-store output realises");
+    assert!(
+        output.status.success(),
+        "nix-store --realise failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output_path = String::from_utf8(output.stdout).expect("output path is UTF-8");
+    let output_path = output_path.trim();
+
+    let mut frontend =
+        FrontendFixture::spawn_with_store(None, "unix:///nix/var/nix/daemon-socket/socket", []);
+    let child = &mut frontend.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 46);
+    write_integer(&mut input, 1);
+    write_string(&mut input, output_path.as_bytes());
+    write_integer(&mut input, 0);
+    input
+        .flush()
+        .expect("BuildPathsWithResults request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 1, "one keyed result");
+    assert_eq!(read_string(&mut output), output_path);
+    assert_eq!(read_integer(&mut output), 2, "AlreadyValid status");
+    assert_eq!(read_string(&mut output), "");
+    for _ in 0..7 {
+        assert_eq!(read_integer(&mut output), 0);
+    }
+
+    drop(input);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = frontend.finish();
+    assert!(
+        !stderr.contains("gateway.stored_build.failed"),
+        "valid output was treated as a derivation: {stderr}"
+    );
+}
+
+#[test]
 fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operations() {
     let name = format!("telchar-real-workload-{}", std::process::id());
     let expression = format!(
