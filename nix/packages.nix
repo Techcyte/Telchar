@@ -91,7 +91,7 @@ let
     build-users-group =
     sandbox = false
     keep-failed = true
-    keep-log = true
+    keep-build-log = true
     EOF
   '';
 
