@@ -704,7 +704,7 @@ impl<S: io::Read + io::Write> InputNarSink<'_, S> {
                 self.failure_stage = Some(InputNarSinkFailureStage::Metadata);
                 io::Error::other("Nomad input NAR metadata encoding failed")
             })?,
-            std::mem::take(&mut self.chunk),
+            take_chunk(&mut self.chunk),
         );
         self.offset = self
             .offset
@@ -763,7 +763,6 @@ impl<S: io::Read + io::Write> io::Write for InputNarSink<'_, S> {
                 && self.offset + (self.chunk.len() as u64) < self.entry.nar_size
             {
                 self.send_chunk(false)?;
-                self.chunk = Vec::with_capacity(self.chunk.capacity());
             }
         }
         Ok(input_length)
@@ -771,6 +770,28 @@ impl<S: io::Read + io::Write> io::Write for InputNarSink<'_, S> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+fn take_chunk(chunk: &mut Vec<u8>) -> Vec<u8> {
+    let capacity = chunk.capacity();
+    std::mem::replace(chunk, Vec::with_capacity(capacity))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_chunk;
+
+    #[test]
+    fn taking_full_chunk_preserves_stream_buffer_capacity() {
+        let mut chunk = Vec::with_capacity(262_144);
+        chunk.resize(262_144, 1);
+
+        let taken = take_chunk(&mut chunk);
+
+        assert_eq!(taken.len(), 262_144);
+        assert!(chunk.is_empty());
+        assert_eq!(chunk.capacity(), 262_144);
     }
 }
 
