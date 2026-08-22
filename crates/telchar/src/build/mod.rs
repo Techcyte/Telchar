@@ -87,11 +87,42 @@ impl BuildRequest {
             MAXIMUM_STORED_DERIVATION_BYTES,
             backend,
         )?;
-        Self::from_stored_derivation(
+        let mut request = Self::from_stored_derivation(
             derivation_path.as_os_str().as_encoded_bytes(),
             &contents,
             backends,
-        )
+        )?;
+        let stored = derivation::parse(&contents)?;
+        for (input_derivation, output_names) in stored.input_derivations {
+            let input_path =
+                std::path::Path::new(std::str::from_utf8(&input_derivation).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid input derivation path")
+                })?);
+            let input_contents = crate::store::export::load_stored_derivation(
+                input_path,
+                MAXIMUM_STORED_DERIVATION_BYTES,
+                backend,
+            )?;
+            let input = derivation::parse(&input_contents)?;
+            for output_name in output_names {
+                let output_path = input
+                    .outputs
+                    .iter()
+                    .find(|(name, _, _, _)| name == &output_name)
+                    .map(|(_, path, _, _)| path.clone())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "input derivation output is unavailable",
+                        )
+                    })?;
+                if !request.input_sources.contains(&output_path) {
+                    request.input_sources.push(output_path);
+                }
+            }
+        }
+        request.validate_for_execution()?;
+        Ok(request)
     }
 
     pub fn from_stored_derivation(
@@ -139,7 +170,12 @@ impl BuildRequest {
             });
         }
         let mut input_sources = stored.input_sources;
-        input_sources.extend(stored.input_derivations);
+        input_sources.extend(
+            stored
+                .input_derivations
+                .iter()
+                .map(|(derivation, _)| derivation.clone()),
+        );
         if stored.builder.starts_with(b"/nix/store/") {
             let builder_path = stored
                 .builder

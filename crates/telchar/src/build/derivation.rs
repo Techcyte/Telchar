@@ -7,7 +7,7 @@ const MAXIMUM_NESTING: usize = 16;
 #[derive(Debug)]
 pub(super) struct StoredDerivation {
     pub outputs: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>,
-    pub input_derivations: Vec<Vec<u8>>,
+    pub input_derivations: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
     pub input_sources: Vec<Vec<u8>>,
     pub system: Vec<u8>,
     pub builder: Vec<u8>,
@@ -47,7 +47,12 @@ pub(super) fn parse(input: &[u8]) -> io::Result<StoredDerivation> {
     let input_derivations = tuples_with_minimum_width(fields.next().ok_or_else(invalid)?, 2)
         .map_err(|_| invalid_field("input derivations"))?
         .into_iter()
-        .map(|mut input| string(input.remove(0)))
+        .map(|mut input| {
+            Ok((
+                string(input.remove(0))?,
+                strings(input.remove(0)).map_err(|_| invalid_field("input derivation outputs"))?,
+            ))
+        })
         .collect::<io::Result<Vec<_>>>()?;
     let input_sources =
         strings(fields.next().ok_or_else(invalid)?).map_err(|_| invalid_field("input sources"))?;
