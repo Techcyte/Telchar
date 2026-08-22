@@ -1107,19 +1107,6 @@ fn protocol_client_error() -> io::Error {
     io::Error::other("Nix daemon operation failed")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_derived_path;
-
-    #[test]
-    fn derived_path_accepts_all_and_multiple_output_selectors() {
-        let derivation = b"/nix/store/00000000000000000000000000000000-contract.drv";
-
-        assert!(validate_derived_path(&[derivation.as_slice(), b"!*"].concat()).is_ok());
-        assert!(validate_derived_path(&[derivation.as_slice(), b"!dev,out"].concat()).is_ok());
-    }
-}
-
 pub(super) fn validate_store_path(path: &[u8]) -> io::Result<()> {
     let directory = NIX_STORE_DIRECTORY
         .strip_suffix(b"/")
@@ -1195,4 +1182,17 @@ fn validate_store_path_in_directory(path: &[u8], directory: &[u8]) -> io::Result
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_derived_path;
+
+    #[test]
+    fn derived_path_accepts_all_and_multiple_output_selectors() {
+        let derivation = b"/nix/store/00000000000000000000000000000000-contract.drv";
+
+        assert!(validate_derived_path(&[derivation.as_slice(), b"!*"].concat()).is_ok());
+        assert!(validate_derived_path(&[derivation.as_slice(), b"!dev,out"].concat()).is_ok());
+    }
 }

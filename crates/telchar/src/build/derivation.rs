@@ -4,9 +4,11 @@ const MAXIMUM_DERIVATION_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_COLLECTION_ITEMS: usize = 65_536;
 const MAXIMUM_NESTING: usize = 16;
 
+type StoredOutput = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
 #[derive(Debug)]
 pub(super) struct StoredDerivation {
-    pub outputs: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>,
+    pub outputs: Vec<StoredOutput>,
     pub input_derivations: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
     pub input_sources: Vec<Vec<u8>>,
     pub system: Vec<u8>,

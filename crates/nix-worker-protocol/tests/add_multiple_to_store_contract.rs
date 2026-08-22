@@ -95,10 +95,7 @@ fn streams_one_declared_path_body_without_retaining_it() {
     assert_eq!(body, nar);
 }
 
-#[test]
-fn accepts_realistic_derivation_reference_count() {
-    assert!(MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES >= 275);
-}
+const _: () = assert!(MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES >= 275);
 
 #[test]
 fn accepts_realistic_input_closure_object_count() {

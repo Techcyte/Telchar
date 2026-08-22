@@ -820,91 +820,6 @@ fn take_chunk(chunk: &mut Vec<u8>) -> Vec<u8> {
     std::mem::replace(chunk, Vec::with_capacity(capacity))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{summarize_requested_inputs, take_chunk, InputTransferSummary};
-    use crate::nomad::protocol::{PathManifestEntry, PathSet};
-
-    #[test]
-    fn input_transfer_summary_counts_only_requested_paths() {
-        let manifest_paths = vec![
-            PathManifestEntry {
-                path: "/nix/store/00000000000000000000000000000000-present".to_owned(),
-                nar_hash: "sha256:00".to_owned(),
-                nar_size: 100,
-                references: Vec::new(),
-                deriver: None,
-                content_address: None,
-            },
-            PathManifestEntry {
-                path: "/nix/store/11111111111111111111111111111111-missing".to_owned(),
-                nar_hash: "sha256:11".to_owned(),
-                nar_size: 250,
-                references: Vec::new(),
-                deriver: None,
-                content_address: None,
-            },
-        ];
-        let requested = PathSet {
-            paths: vec![manifest_paths[1].path.clone()],
-        };
-
-        assert_eq!(
-            summarize_requested_inputs(&manifest_paths, &requested).expect("summary computes"),
-            InputTransferSummary {
-                path_count: 1,
-                nar_bytes: 250,
-            }
-        );
-    }
-
-    #[test]
-    fn input_transfer_summary_rejects_size_overflow() {
-        let manifest_paths = vec![
-            PathManifestEntry {
-                path: "/nix/store/00000000000000000000000000000000-first".to_owned(),
-                nar_hash: "sha256:00".to_owned(),
-                nar_size: u64::MAX,
-                references: Vec::new(),
-                deriver: None,
-                content_address: None,
-            },
-            PathManifestEntry {
-                path: "/nix/store/11111111111111111111111111111111-second".to_owned(),
-                nar_hash: "sha256:11".to_owned(),
-                nar_size: 1,
-                references: Vec::new(),
-                deriver: None,
-                content_address: None,
-            },
-        ];
-        let requested = PathSet {
-            paths: manifest_paths
-                .iter()
-                .map(|entry| entry.path.clone())
-                .collect(),
-        };
-
-        let error = summarize_requested_inputs(&manifest_paths, &requested)
-            .expect_err("overflow must fail closed");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::Other);
-        assert_eq!(error.to_string(), "Nomad input transfer size overflows");
-    }
-
-    #[test]
-    fn taking_full_chunk_preserves_stream_buffer_capacity() {
-        let mut chunk = Vec::with_capacity(262_144);
-        chunk.resize(262_144, 1);
-
-        let taken = take_chunk(&mut chunk);
-
-        assert_eq!(taken.len(), 262_144);
-        assert!(chunk.is_empty());
-        assert_eq!(chunk.capacity(), 262_144);
-    }
-}
-
 fn ensure_before(deadline: Instant) -> io::Result<()> {
     if Instant::now() >= deadline {
         return Err(io::Error::new(
@@ -1122,5 +1037,90 @@ impl Drop for ConnectionPermit {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *count = count.saturating_sub(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{summarize_requested_inputs, take_chunk, InputTransferSummary};
+    use crate::nomad::protocol::{PathManifestEntry, PathSet};
+
+    #[test]
+    fn input_transfer_summary_counts_only_requested_paths() {
+        let manifest_paths = vec![
+            PathManifestEntry {
+                path: "/nix/store/00000000000000000000000000000000-present".to_owned(),
+                nar_hash: "sha256:00".to_owned(),
+                nar_size: 100,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+            PathManifestEntry {
+                path: "/nix/store/11111111111111111111111111111111-missing".to_owned(),
+                nar_hash: "sha256:11".to_owned(),
+                nar_size: 250,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+        ];
+        let requested = PathSet {
+            paths: vec![manifest_paths[1].path.clone()],
+        };
+
+        assert_eq!(
+            summarize_requested_inputs(&manifest_paths, &requested).expect("summary computes"),
+            InputTransferSummary {
+                path_count: 1,
+                nar_bytes: 250,
+            }
+        );
+    }
+
+    #[test]
+    fn input_transfer_summary_rejects_size_overflow() {
+        let manifest_paths = vec![
+            PathManifestEntry {
+                path: "/nix/store/00000000000000000000000000000000-first".to_owned(),
+                nar_hash: "sha256:00".to_owned(),
+                nar_size: u64::MAX,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+            PathManifestEntry {
+                path: "/nix/store/11111111111111111111111111111111-second".to_owned(),
+                nar_hash: "sha256:11".to_owned(),
+                nar_size: 1,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            },
+        ];
+        let requested = PathSet {
+            paths: manifest_paths
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+
+        let error = summarize_requested_inputs(&manifest_paths, &requested)
+            .expect_err("overflow must fail closed");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "Nomad input transfer size overflows");
+    }
+
+    #[test]
+    fn taking_full_chunk_preserves_stream_buffer_capacity() {
+        let mut chunk = Vec::with_capacity(262_144);
+        chunk.resize(262_144, 1);
+
+        let taken = take_chunk(&mut chunk);
+
+        assert_eq!(taken.len(), 262_144);
+        assert!(chunk.is_empty());
+        assert_eq!(chunk.capacity(), 262_144);
     }
 }
