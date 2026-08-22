@@ -180,6 +180,60 @@ fn loads_selected_input_derivation_outputs() {
 }
 
 #[test]
+fn classifies_dependency_realization_failure_without_backend_payload() {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use telchar::store::export::{StoreExportBackend, StoreExportRequest};
+    use telchar::store::promotion::RegisteredPathInfo;
+
+    struct Backend {
+        nars: BTreeMap<PathBuf, Vec<u8>>,
+    }
+    impl StoreExportBackend for Backend {
+        fn store_uri(&self) -> &str {
+            "fixture"
+        }
+        fn build_paths_with_results(&mut self, _targets: &[Vec<u8>]) -> io::Result<()> {
+            Err(io::Error::other("secret daemon payload"))
+        }
+        fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
+            let nar = self.nars.get(path).expect("fixture path exists");
+            Ok(RegisteredPathInfo {
+                path: path.to_path_buf(),
+                nar_hash: sha2::Sha256::digest(nar).into(),
+                nar_size: nar.len() as u64,
+                references: Vec::new(),
+                deriver: None,
+                content_address: None,
+            })
+        }
+        fn export_nar(
+            &mut self,
+            request: &StoreExportRequest,
+            _nar_size: u64,
+            sink: &mut dyn io::Write,
+        ) -> io::Result<()> {
+            sink.write_all(self.nars.get(&request.path).expect("fixture NAR exists"))
+        }
+    }
+
+    let root_path = PathBuf::from(std::str::from_utf8(drv_path()).unwrap());
+    let root = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let mut backend = Backend {
+        nars: BTreeMap::from([(root_path.clone(), regular_nar(root))]),
+    };
+
+    let error = BuildRequest::load_stored(&root_path, &mut backend, &backends("x86_64-linux", &[]))
+        .expect_err("dependency realization fails");
+
+    assert_eq!(
+        telchar::build::stored_load_failure_phase(&error),
+        Some(telchar::build::StoredLoadFailurePhase::DependencyRealization)
+    );
+    assert!(!error.to_string().contains("secret daemon payload"));
+}
+
+#[test]
 fn rejects_malformed_or_dynamic_stored_derivations() {
     for derivation in [
         b"Derive([)".as_slice(),
