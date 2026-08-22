@@ -731,20 +731,28 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
 }
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
-    let mut socket = connect(config)?;
-    let message = read_binary_message(&mut socket)?;
+    let mut socket = connect(config).map_err(|error| startup_error("connect", error))?;
+    let message =
+        read_binary_message(&mut socket).map_err(|error| startup_error("receive", error))?;
     let mut input = message.as_slice();
     let frame = read_frame(
         &mut input,
         ProtocolLimits::new(config.maximum_manifest_bytes(), 0),
-    )?;
+    )
+    .map_err(|error| startup_error("frame", error))?;
     if !input.is_empty() || frame.kind() != FrameKind::InputManifest || !frame.payload().is_empty()
     {
-        return Err(invalid("worker manifest frame is invalid"));
+        return Err(startup_error(
+            "frame-shape",
+            invalid("worker manifest frame is invalid"),
+        ));
     }
     let manifest: InputManifest =
-        decode_metadata(frame.metadata(), config.maximum_manifest_bytes())?;
-    manifest.validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)?;
+        decode_metadata(frame.metadata(), config.maximum_manifest_bytes())
+            .map_err(|error| startup_error("metadata", error))?;
+    manifest
+        .validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)
+        .map_err(|error| startup_error("validation", error))?;
     let inputs = InputTransferSession::new(
         manifest.clone(),
         MAXIMUM_MANIFEST_PATHS,
@@ -752,10 +760,15 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         MAXIMUM_INPUT_NAR_BYTES
             .checked_mul(MAXIMUM_MANIFEST_PATHS as u64)
             .ok_or_else(|| invalid("worker manifest limit is invalid"))?,
-    )?;
+    )
+    .map_err(|error| startup_error("input-session", error))?;
     let mut protocol = ProtocolSession::new();
-    protocol.accept(Direction::WorkerToGateway, FrameKind::Authenticate)?;
-    protocol.accept(Direction::GatewayToWorker, FrameKind::InputManifest)?;
+    protocol
+        .accept(Direction::WorkerToGateway, FrameKind::Authenticate)
+        .map_err(|error| startup_error("authentication-phase", error))?;
+    protocol
+        .accept(Direction::GatewayToWorker, FrameKind::InputManifest)
+        .map_err(|error| startup_error("manifest-phase", error))?;
     Ok(WorkerSession {
         socket,
         manifest,
@@ -980,6 +993,10 @@ impl io::Read for InputNarReader<'_> {
     }
 }
 
+fn startup_error(stage: &'static str, _error: io::Error) -> io::Error {
+    io::Error::other(format!("worker startup failed at {stage}"))
+}
+
 pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
     connect(config).map(|_| ())
 }
@@ -1062,6 +1079,17 @@ mod tests {
             .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
             .expect("request records");
         protocol
+    }
+
+    #[test]
+    fn startup_errors_expose_only_bounded_stage() {
+        let error = startup_error(
+            "validation",
+            io::Error::other("sensitive manifest path and payload"),
+        );
+
+        assert_eq!(error.to_string(), "worker startup failed at validation");
+        assert!(!error.to_string().contains("sensitive"));
     }
 
     #[test]
