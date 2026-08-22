@@ -269,16 +269,24 @@ fn execute_remote_build(
         path_count = closure.len(),
         "static SSH closure query completed"
     );
-    for path in closure {
-        let mut source = GatewayStoreConnection::connect(gateway)?;
-        let info = source
-            .query_path_info(path.store_path.as_bytes())?
-            .ok_or_else(|| io::Error::other("gateway input path is unavailable"))?;
+    let closure_paths = closure
+        .iter()
+        .map(|path| path.store_path.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    let missing = remote.query_missing(&closure_paths)?;
+    let inputs = select_missing_inputs(closure, &missing)?;
+    tracing::info!(
+        event = "backend.static_ssh.inputs_selected",
+        path_count = inputs.len(),
+        "static SSH missing inputs selected"
+    );
+    let mut source = GatewayStoreConnection::connect(gateway)?;
+    for path in inputs {
         tracing::info!(
             event = "backend.static_ssh.input_export_started",
             "static SSH input export started"
         );
-        copy_gateway_path_to_remote(&mut source, &mut remote, path.store_path.as_bytes(), &info)?;
+        copy_gateway_path_to_remote(&mut source, &mut remote, &path)?;
         tracing::info!(
             event = "backend.static_ssh.input_export_completed",
             "static SSH input export completed"
@@ -353,21 +361,84 @@ fn execute_remote_build(
     )
 }
 
+fn select_missing_inputs(
+    closure: Vec<crate::store::closure::ClosurePath>,
+    missing: &nix_worker_protocol::WorkerMissingPaths,
+) -> io::Result<Vec<crate::store::closure::ClosurePath>> {
+    let missing_paths = missing
+        .will_build
+        .iter()
+        .chain(&missing.will_substitute)
+        .chain(&missing.unknown)
+        .map(Vec::as_slice)
+        .collect::<std::collections::BTreeSet<_>>();
+    if missing_paths.len()
+        != missing.will_build.len() + missing.will_substitute.len() + missing.unknown.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote missing input set contains duplicates",
+        ));
+    }
+    let selected = closure
+        .into_iter()
+        .filter(|path| missing_paths.contains(path.store_path.as_bytes()))
+        .collect::<Vec<_>>();
+    if selected.len() != missing_paths.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote missing input set contains an unexpected path",
+        ));
+    }
+    Ok(selected)
+}
+
 fn copy_gateway_path_to_remote(
     gateway: &mut GatewayStoreConnection,
     remote: &mut WorkerClient<WorkerStream>,
-    path: &[u8],
-    metadata: &WorkerPathInfo,
+    path: &crate::store::closure::ClosurePath,
 ) -> io::Result<()> {
     let started = Instant::now();
     crate::service::metrics::transfer_started("outbound", "build_input", "static_ssh");
+    let references = path
+        .references
+        .iter()
+        .map(|value| value.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    let metadata = AddToStoreNarInfo {
+        path: path.store_path.as_bytes(),
+        deriver: path.deriver.as_ref().map(|value| value.as_bytes()),
+        nar_hash_hex: &path.nar_hash,
+        references: &references,
+        registration_time: 0,
+        nar_size: path.nar_size,
+        ultimate: false,
+        signatures: &[],
+        content_address: path.content_address.as_ref().map(|value| value.as_bytes()),
+    };
     let result = (|| {
         let mut nar = create_staging_file()?;
-        gateway.nar_from_path(path, metadata.nar_size(), &mut nar)?;
+        gateway.nar_from_path(path.store_path.as_bytes(), path.nar_size, &mut nar)?;
         nar.rewind()?;
-        remote.add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
+        remote.add_to_store_nar(&metadata, &mut nar, false, true)
     })();
-    record_static_ssh_transfer(result, "outbound", "build_input", metadata, started)
+    match &result {
+        Ok(()) => crate::service::metrics::transfer_finished(
+            "outbound",
+            "build_input",
+            "static_ssh",
+            path.nar_size,
+            started.elapsed(),
+        ),
+        Err(error) => crate::service::metrics::transfer_failed(
+            "outbound",
+            "build_input",
+            "static_ssh",
+            crate::service::metrics::io_failure_class(error),
+            started.elapsed(),
+        ),
+    }
+    result
 }
 
 fn copy_remote_path_to_gateway(
@@ -634,3 +705,44 @@ fn configure_child_lifecycle(command: &mut std::process::Command) {
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 fn configure_child_lifecycle(_command: &mut std::process::Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix_worker_protocol::WorkerMissingPaths;
+
+    fn closure_path(store_path: &str) -> crate::store::closure::ClosurePath {
+        crate::store::closure::ClosurePath {
+            store_path: store_path.to_owned(),
+            nar_hash: "sha256:00".to_owned(),
+            nar_size: 1,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        }
+    }
+
+    #[test]
+    fn stages_only_paths_reported_missing_by_remote_store() {
+        let present = "/nix/store/00000000000000000000000000000000-present";
+        let missing = "/nix/store/11111111111111111111111111111111-missing";
+        let closure = vec![closure_path(present), closure_path(missing)];
+        let remote = WorkerMissingPaths {
+            will_build: Vec::new(),
+            will_substitute: Vec::new(),
+            unknown: vec![missing.as_bytes().to_vec()],
+            download_size: 0,
+            nar_size: 0,
+        };
+
+        let selected = select_missing_inputs(closure, &remote).expect("missing inputs select");
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|path| path.store_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![missing]
+        );
+    }
+}
