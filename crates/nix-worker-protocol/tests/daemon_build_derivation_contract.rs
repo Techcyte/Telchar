@@ -169,6 +169,58 @@ fn builds_exact_local_derivation_targets_with_results() {
 }
 
 #[test]
+fn builds_exact_selected_output_target_with_results() {
+    const TARGET: &[u8] = b"/nix/store/00000000000000000000000000000000-contract.drv!out";
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 1);
+    string(&mut input, TARGET);
+    integer(&mut input, 0);
+    string(&mut input, b"");
+    integer(&mut input, 1);
+    integer(&mut input, 0);
+    integer(&mut input, 10);
+    integer(&mut input, 20);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    integer(&mut input, 0);
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    client
+        .build_paths_with_results(&[TARGET.to_vec()])
+        .expect("selected output target builds");
+
+    let wire = client.into_inner().output;
+    let mut operation = Vec::new();
+    integer(&mut operation, 46);
+    integer(&mut operation, 1);
+    string(&mut operation, TARGET);
+    integer(&mut operation, 0);
+    assert!(wire.ends_with(&operation));
+}
+
+#[test]
+fn rejects_malformed_selected_output_targets_before_writing_operation() {
+    for target in [
+        b"/nix/store/00000000000000000000000000000000-contract.drv!".as_slice(),
+        b"/nix/store/00000000000000000000000000000000-contract.drv!out!dev".as_slice(),
+        b"/nix/store/00000000000000000000000000000000-contract.drv!out/name".as_slice(),
+        b"/nix/store/00000000000000000000000000000000-contract!out".as_slice(),
+    ] {
+        let mut input = Vec::new();
+        handshake(&mut input, 1);
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+        client
+            .build_paths_with_results(&[target.to_vec()])
+            .expect_err("malformed selected output target is rejected");
+
+        assert_eq!(client.into_inner().output.len(), 40);
+    }
+}
+
+#[test]
 fn writes_exact_fixed_output_authority() {
     let mut input = Vec::new();
     handshake(&mut input, 1);

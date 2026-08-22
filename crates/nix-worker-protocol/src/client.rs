@@ -413,7 +413,7 @@ impl<S: Read + Write> WorkerClient<S> {
             return Err(protocol_client_error());
         }
         for target in targets {
-            validate_store_path(target)?;
+            validate_derived_path(target)?;
         }
         write_worker_integer_to(
             &mut self.stream,
@@ -982,6 +982,27 @@ fn protocol_client_error() -> io::Error {
 
 pub(super) fn validate_store_path(path: &[u8]) -> io::Result<()> {
     validate_store_path_in_directory(path, NIX_STORE_DIRECTORY.strip_suffix(b"/").unwrap())
+}
+
+fn validate_derived_path(target: &[u8]) -> io::Result<()> {
+    let mut parts = target.split(|byte| *byte == b'!');
+    let path = parts.next().ok_or_else(protocol_client_error)?;
+    let output = parts.next();
+    if parts.next().is_some() {
+        return Err(protocol_client_error());
+    }
+    validate_store_path(path)?;
+    if let Some(output) = output
+        && (!path.ends_with(b".drv")
+            || output.is_empty()
+            || output.len() > MAXIMUM_WORKER_STORE_PATH_BYTES
+            || !output.iter().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_')
+            }))
+    {
+        return Err(protocol_client_error());
+    }
+    Ok(())
 }
 
 fn validate_store_directory(directory: &[u8]) -> io::Result<()> {
