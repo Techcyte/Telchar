@@ -110,7 +110,7 @@ impl StoreExportBackend for GatewayStoreExportBackend {
     }
 
     fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
-        GatewayStoreConnection::connect(&self.endpoint)?.build_paths_with_results(targets)
+        GatewayStoreConnection::build_paths_with_results(&self.endpoint, targets)
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {

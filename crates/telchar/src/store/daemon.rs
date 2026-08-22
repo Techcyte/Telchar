@@ -15,6 +15,7 @@ use nix_worker_protocol::{
 };
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const CONNECTION_ERROR: &str = "gateway Nix daemon connection failed";
 
 #[derive(Clone, Eq, PartialEq)]
@@ -120,8 +121,12 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())
     }
 
-    pub fn build_paths_with_results(&mut self, targets: &[Vec<u8>]) -> io::Result<()> {
-        self.client
+    pub fn build_paths_with_results(
+        endpoint: &GatewayStoreEndpoint,
+        targets: &[Vec<u8>],
+    ) -> io::Result<()> {
+        Self::connect_with_timeout(endpoint, BUILD_OPERATION_TIMEOUT)?
+            .client
             .build_paths_with_results(targets)
             .map_err(|_| io::Error::other("gateway Nix daemon dependency realization failed"))
     }
