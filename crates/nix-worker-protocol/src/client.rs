@@ -578,14 +578,17 @@ fn read_worker_build_result(
     version: WorkerVersion,
 ) -> io::Result<WorkerBuildResult> {
     let raw_status = read_worker_integer_from(input)?;
-    let _message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     let status = match raw_status {
         0 => WorkerBuildStatus::Built,
         2 => WorkerBuildStatus::AlreadyValid,
         1 | 3..=14 => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Nix daemon BuildDerivation failed with status {raw_status}"),
+                format!(
+                    "Nix daemon BuildDerivation failed with status {raw_status} category {}",
+                    build_failure_category(&message)
+                ),
             ));
         }
         _ => return Err(protocol_client_error()),
@@ -613,6 +616,23 @@ fn read_worker_build_result(
         Vec::new()
     };
     Ok(WorkerBuildResult { status, outputs })
+}
+
+fn build_failure_category(message: &[u8]) -> &'static str {
+    let message = String::from_utf8_lossy(message).to_ascii_lowercase();
+    if message.contains("failed with exit code") || message.contains("builder failed") {
+        "builder-exited"
+    } else if message.contains("required input") && message.contains("missing") {
+        "missing-input"
+    } else if message.contains("hash mismatch") {
+        "hash-mismatch"
+    } else if message.contains("timed out") {
+        "timed-out"
+    } else if message.contains("no space left") {
+        "storage-exhausted"
+    } else {
+        "unknown"
+    }
 }
 
 fn read_optional_duration(input: &mut impl Read) -> io::Result<()> {

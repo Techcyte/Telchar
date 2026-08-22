@@ -264,6 +264,45 @@ fn daemon_rejection_is_redacted_and_identifies_build_phase() {
 }
 
 #[test]
+fn terminal_build_failure_exposes_only_allowlisted_reason() {
+    for (message, expected) in [
+        (
+            "builder for '/nix/store/secret-build.drv' failed with exit code 1",
+            "Nix daemon BuildDerivation failed with status 3 category builder-exited",
+        ),
+        (
+            "cannot build derivation because required input is missing",
+            "Nix daemon BuildDerivation failed with status 3 category missing-input",
+        ),
+        (
+            "sensitive arbitrary daemon details",
+            "Nix daemon BuildDerivation failed with status 3 category unknown",
+        ),
+    ] {
+        let mut input = Vec::new();
+        handshake(&mut input, 1);
+        integer(&mut input, STDERR_LAST);
+        integer(&mut input, 3); // PermanentFailure
+        string(&mut input, message.as_bytes());
+        let outputs = [BuildDerivationOutputRequest {
+            name: b"out",
+            path: OUTPUT,
+            hash_algorithm: b"",
+            hash: b"",
+        }];
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+        let error = client
+            .build_derivation(&request(&outputs), &mut |_| Ok(()))
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), expected);
+        assert!(!error.to_string().contains("secret"));
+        assert!(!error.to_string().contains("sensitive"));
+    }
+}
+
+#[test]
 fn terminal_build_status_is_preserved_without_daemon_message() {
     let mut input = Vec::new();
     handshake(&mut input, 1);
@@ -284,7 +323,7 @@ fn terminal_build_status_is_preserved_without_daemon_message() {
 
     assert_eq!(
         error.to_string(),
-        "Nix daemon BuildDerivation failed with status 6"
+        "Nix daemon BuildDerivation failed with status 6 category unknown"
     );
     assert!(!error.to_string().contains("sensitive"));
 }
