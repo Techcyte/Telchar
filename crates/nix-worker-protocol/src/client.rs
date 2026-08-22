@@ -130,6 +130,7 @@ pub enum WorkerBuildStatus {
 pub enum BuildPathsFailurePhase {
     Request,
     Rejected,
+    Count,
     Response,
     Target,
     Result,
@@ -140,6 +141,7 @@ impl BuildPathsFailurePhase {
         match self {
             Self::Request => "request",
             Self::Rejected => "rejected",
+            Self::Count => "count",
             Self::Response => "response",
             Self::Target => "target",
             Self::Result => "result",
@@ -477,9 +479,9 @@ impl<S: Read + Write> WorkerClient<S> {
         })?;
         let count = usize::try_from(
             read_worker_integer_from(&mut self.stream)
-                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Response))?,
+                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Count))?,
         )
-        .map_err(|_| build_paths_error(BuildPathsFailurePhase::Response))?;
+        .map_err(|_| build_paths_error(BuildPathsFailurePhase::Count))?;
         if count != targets.len() {
             return Err(build_paths_error(BuildPathsFailurePhase::Target));
         }

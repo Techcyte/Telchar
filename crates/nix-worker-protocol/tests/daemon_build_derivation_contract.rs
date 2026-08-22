@@ -221,6 +221,23 @@ fn rejects_malformed_selected_output_targets_before_writing_operation() {
 }
 
 #[test]
+fn classifies_missing_result_count_after_terminal_frame() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let error = client
+        .build_paths_with_results(&[DRV.to_vec()])
+        .expect_err("missing result count fails");
+
+    assert_eq!(
+        nix_worker_protocol::build_paths_failure_phase(&error),
+        Some(nix_worker_protocol::BuildPathsFailurePhase::Count)
+    );
+}
+
+#[test]
 fn classifies_selected_output_target_mismatch_without_peer_payload() {
     const TARGET: &[u8] = b"/nix/store/00000000000000000000000000000000-contract.drv!out";
     let mut input = Vec::new();
