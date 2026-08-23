@@ -216,6 +216,7 @@ impl StaticSshBackend {
                     worker
                         .join()
                         .map_err(|_| io::Error::other("static SSH worker failed"))?;
+                    forward_logs(&log_receiver, logs)?;
                     break result;
                 }
                 if cancelled()? {
@@ -727,6 +728,22 @@ mod tests {
             deriver: None,
             content_address: None,
         }
+    }
+
+    #[test]
+    fn forwards_all_queued_logs() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        sender.send(b"first\n".to_vec()).expect("first log queues");
+        sender.send(b"last\n".to_vec()).expect("last log queues");
+        let mut forwarded = Vec::new();
+
+        forward_logs(&receiver, &mut |chunk| {
+            forwarded.extend_from_slice(chunk);
+            Ok(())
+        })
+        .expect("logs forward");
+
+        assert_eq!(forwarded, b"first\nlast\n");
     }
 
     #[test]
