@@ -25,6 +25,21 @@ Not supported:
 - Lix static SSH and Nomad backend fixtures;
 - protocol flows without typed coverage and a real-client fixture.
 
+## Executable evidence
+
+Compatibility claims come from code and tests, not a separate support manifest.
+
+| Claim | Focused authority | End-to-end authority |
+| --- | --- | --- |
+| Production worker-operation dispatch | `crates/telchar/src/service/session/mod.rs`; `crates/telchar/tests/operation_dispatch/` | stock-client VM checks below |
+| Stock Nix local and fixed-output builds | local executor, operation-dispatch, store-transfer, and promotion tests | `nixos-fixed-output-local` |
+| Lix local builds | typed protocol and local executor tests | `nixos-lix-local` |
+| Stock Nix OCI gateway | gateway store, transfer, authentication, and session tests | `nixos-oci-gateway` |
+| Stock Nix static SSH | static SSH backend and worker-protocol tests | `nixos-static-ssh-gateway` |
+| Stock Nix Nomad | Nomad callback, persistence, transfer, and worker tests | `nixos-nomad-gateway` |
+
+`scripts/check-release.sh` names the end-to-end checks required for release. `nix/checks/policy.nix` verifies that the documented production operation set has concrete session dispatch and that release verification still includes every claimed real-workload check. Tests marked `#[ignore]` are counted directly by the same policy check; their reasons remain beside the tests rather than in a second inventory.
+
 ## Gateway Nix daemon
 
 Telchar's pure-Rust gateway-store client advertises worker protocol 1.38 and requires:
