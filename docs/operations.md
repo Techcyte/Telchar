@@ -54,7 +54,7 @@ Minimal local-backend configuration:
 
 The module enables local PostgreSQL, gateway Nix-daemon access, and OpenSSH ingress unless their `enable` options are disabled. `services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
 
-The module currently derives `TELCHAR_AUTHENTICATED_KEY` from the first key in the configured `authorizedKeysFile`, not from the key OpenSSH matched. Configure exactly one key in that file and use a separate ingress account or file for each audit or quota identity. Keep the file operator-owned and restricted to the Telchar account.
+The module enables OpenSSH authentication metadata and derives `TELCHAR_AUTHENTICATED_KEY` from the public key OpenSSH matched for the current connection. Multiple keys may share the configured `authorizedKeysFile` while retaining distinct audit and quota identities. Keep the file operator-owned and restricted to the Telchar account.
 
 ## PostgreSQL and recovery
 

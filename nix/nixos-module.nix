@@ -12,7 +12,13 @@ let
   credentialFiles = map (credential: "${credential.name}:${credential.source}") cfg.credentials;
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
     set -eu
-    fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf ${lib.escapeShellArg cfg.openssh.authorizedKeysFile} | ${pkgs.gawk}/bin/awk 'NR == 1 { print $2 }')"
+    : "''${SSH_USER_AUTH:?OpenSSH authentication metadata is unavailable}"
+    authenticated_key="$(${pkgs.gawk}/bin/awk '$1 == "publickey" { print $2, $3; exit }' "$SSH_USER_AUTH")"
+    if [ -z "$authenticated_key" ]; then
+      echo "OpenSSH public-key identity is unavailable" >&2
+      exit 1
+    fi
+    fingerprint="$(printf '%s\n' "$authenticated_key" | ${pkgs.openssh}/bin/ssh-keygen -lf - | ${pkgs.gawk}/bin/awk '{ print $2 }')"
     exec env \
       TELCHAR_IPC_SOCKET=${lib.escapeShellArg cfg.socketPath} \
       TELCHAR_AUTHENTICATED_KEY="$fingerprint" \
@@ -188,6 +194,7 @@ in
         AllowAgentForwarding = false;
         X11Forwarding = false;
         PermitUserEnvironment = false;
+        ExposeAuthInfo = true;
       };
       extraConfig = ''
         Match User ${cfg.user}
