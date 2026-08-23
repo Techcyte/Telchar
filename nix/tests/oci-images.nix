@@ -8,7 +8,10 @@
   nomadWorkerImage,
 }:
 assert telcharImage.imageName == "telchar";
-assert telcharImage.imageTag == "latest";
+assert telcharImage.imageTag == "0.1.0";
+assert
+  telcharImage.imageConfig.Labels."org.opencontainers.image.source"
+  == "https://github.com/techcyte/telchar";
 assert telcharImage.imageConfig.Entrypoint == [ "/bin/telchar" ];
 assert
   telcharImage.imageConfig.Cmd == [
@@ -20,7 +23,10 @@ assert
   ];
 assert telcharImage.imageConfig.User == "995:995";
 assert nixDaemonImage.imageName == "telchar-nix-daemon";
-assert nixDaemonImage.imageTag == "latest";
+assert nixDaemonImage.imageTag == "0.1.0";
+assert
+  nixDaemonImage.imageConfig.Labels."org.opencontainers.image.source"
+  == "https://github.com/techcyte/telchar";
 assert nixDaemonImage.imageConfig.Entrypoint == [ "/bin/telchar-nix-daemon" ];
 assert nixDaemonImage.imageConfig.User == "995:995";
 assert builtins.any (
@@ -30,10 +36,16 @@ assert builtins.any (
   value: builtins.match "SSL_CERT_FILE=.*" value != null
 ) nixDaemonImage.imageConfig.Env;
 assert sshIngressImage.imageName == "telchar-ssh-ingress";
-assert sshIngressImage.imageTag == "latest";
+assert sshIngressImage.imageTag == "0.1.0";
+assert
+  sshIngressImage.imageConfig.Labels."org.opencontainers.image.source"
+  == "https://github.com/techcyte/telchar";
 assert sshIngressImage.imageConfig.Entrypoint == [ "/bin/telchar-ssh-ingress" ];
 assert nomadWorkerImage.imageName == "telchar-nomad-worker";
-assert nomadWorkerImage.imageTag == "latest";
+assert nomadWorkerImage.imageTag == "0.1.0";
+assert
+  nomadWorkerImage.imageConfig.Labels."org.opencontainers.image.source"
+  == "https://github.com/techcyte/telchar";
 assert nomadWorkerImage.imageConfig.Entrypoint == [ "/bin/telchar-nomad-worker" ];
 pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar ]; } ''
   test -f ${telcharImage}

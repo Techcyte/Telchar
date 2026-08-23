@@ -3,6 +3,8 @@ name = "nix-worker-protocol"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 path = "src/lib.rs"

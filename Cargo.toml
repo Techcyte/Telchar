@@ -8,6 +8,8 @@ resolver = "2"
 
 [workspace.package]
 license = "MIT"
+repository = "https://github.com/techcyte/telchar"
+homepage = "https://github.com/techcyte/telchar"
 
 [workspace.dependencies]
 tracing = "0.1.44"

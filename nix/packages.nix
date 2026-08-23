@@ -100,7 +100,7 @@ let
 
   telchar-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar";
-    tag = "latest";
+    tag = version;
     fakeRootCommands = ''
       cp ${gatewayEtc}/etc/passwd ./etc/passwd
       cp ${gatewayEtc}/etc/group ./etc/group
@@ -139,7 +139,7 @@ let
       ];
       User = "995:995";
       Labels = {
-        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar";
       };
     };
@@ -147,7 +147,7 @@ let
 
   telchar-nix-daemon-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar-nix-daemon";
-    tag = "latest";
+    tag = version;
     fakeRootCommands = ''
       mkdir -p ./bootstrap ./bin ./etc/nix ./nix/var/log/nix/drvs ./tmp ./var/lib/telchar
       chown -R 995:995 ./nix/var/log ./var/lib/telchar
@@ -181,7 +181,7 @@ let
       ];
       User = "995:995";
       Labels = {
-        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar Nix daemon";
       };
     };
@@ -189,7 +189,7 @@ let
 
   telchar-ssh-ingress-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar-ssh-ingress";
-    tag = "latest";
+    tag = version;
     fakeRootCommands = ''
       rm -rf ./etc/ssh ./var/empty
       cp -R ${sshIngressEtc}/etc/. ./etc/
@@ -222,7 +222,7 @@ let
         "2222/tcp" = { };
       };
       Labels = {
-        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar SSH ingress";
       };
     };
@@ -230,7 +230,7 @@ let
 
   telchar-nomad-worker-oci = pkgs.dockerTools.buildLayeredImage {
     name = "telchar-nomad-worker";
-    tag = "latest";
+    tag = version;
     contents = [
       telchar-nomad-worker
       pkgs.cacert
@@ -245,7 +245,7 @@ let
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       ];
       Labels = {
-        "org.opencontainers.image.source" = "https://github.com/tmustier/telchar";
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar Nomad worker";
       };
     };

@@ -8,7 +8,7 @@ let
   common = {
     src = source;
     pname = "telchar";
-    version = "0.1.0";
+    version = (builtins.fromTOML (builtins.readFile ../../crates/telchar/Cargo.toml)).package.version;
   };
   cargoArtifacts = craneLib.buildDepsOnly (
     common
