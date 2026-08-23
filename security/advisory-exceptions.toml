@@ -1,0 +1,3 @@
+# Advisory exceptions require an ID, reason, and ISO expiration date.
+# The same advisory ID must also appear in deny.toml's advisories.ignore list.
+exceptions = []
