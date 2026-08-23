@@ -323,7 +323,7 @@ socket = "/alloc/data/run/daemon.sock"
 # OPERATOR POLICY: Telchar default is 256 sessions.
 maximum_sessions = 64
 
-[nomad_callback]
+[backends.nomad_callback]
 # TELCHAR DEFAULT: repeated to document the actual listener and protocol bounds.
 bind = "0.0.0.0:7443"
 maximum_connections = 64
