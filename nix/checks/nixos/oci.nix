@@ -265,6 +265,7 @@
       {
         networking.firewall.enable = false;
         virtualisation.docker.enable = true;
+        virtualisation.docker.daemon.settings.features.containerd-snapshotter = false;
         services.postgresql = {
           enable = true;
           package = pkgs.postgresql;
