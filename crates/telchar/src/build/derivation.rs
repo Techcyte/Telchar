@@ -46,8 +46,9 @@ pub(super) fn parse(input: &[u8]) -> io::Result<StoredDerivation> {
             ))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let input_derivations = tuples_with_minimum_width(fields.next().ok_or_else(invalid)?, 2)
-        .map_err(|_| invalid_field("input derivations"))?
+    // Input derivation tuples carry only the derivation path and selected outputs.
+    // Reject extension fields until Telchar understands and validates their semantics.
+    let input_derivations = input_derivation_tuples(fields.next().ok_or_else(invalid)?)?
         .into_iter()
         .map(|mut input| {
             Ok((
@@ -170,8 +171,24 @@ fn tuples(value: Value, width: usize) -> io::Result<Vec<Vec<Value>>> {
     tuples_with_width(value, width, |length| length == width)
 }
 
-fn tuples_with_minimum_width(value: Value, width: usize) -> io::Result<Vec<Vec<Value>>> {
-    tuples_with_width(value, width, |length| length >= width)
+fn input_derivation_tuples(value: Value) -> io::Result<Vec<Vec<Value>>> {
+    let Value::List(values) = value else {
+        return Err(invalid_field("input derivations"));
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            Value::Tuple(values) if values.len() == 2 => Ok(values),
+            Value::Tuple(values) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported stored derivation input derivation tuple width {}; expected exactly 2 fields",
+                    values.len()
+                ),
+            )),
+            _ => Err(invalid_field("input derivations")),
+        })
+        .collect()
 }
 
 fn tuples_with_width(
