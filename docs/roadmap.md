@@ -40,11 +40,17 @@ Independent rebuilds or signed provenance need an explicit trust model, quorum o
 
 ### Scheduler-neutral workers and Kubernetes backend
 
-Generalize the current Nomad worker and OCI image only when implementing a Kubernetes backend. Extract the scheduler-neutral callback transport, bounded input and output transfer, Nix execution, log streaming, and terminal-result handling behind explicit workload identity supplied by each backend. Keep thin Nomad and Kubernetes entrypoints rather than pretending the current Nomad environment and authentication contract are portable.
+Generalize the current Nomad worker and OCI image only when implementing a Kubernetes backend. Extract the scheduler-neutral callback transport, bounded input and output transfer, Nix execution, log streaming, and terminal-result handling behind explicit workload identity supplied by each backend. Prefer one generic worker binary and OCI image configured by a small scheduler-specific identity adapter over separate images; the same image should remain usable by a future constrained Lambda backend. Do not pretend the current Nomad environment and authentication contract are portable.
 
-A Kubernetes backend must create and monitor exact Jobs or Pods, bind callbacks to namespace, workload, Pod, container, and shared-build identity, validate projected service-account tokens against configured issuer, JWKS, and audience policy, and preserve exact-target recovery without blind resubmission. Networking, TLS termination, Nix daemon or sidecar topology, persistent store authority, resource requests and limits, placement, and cleanup remain operator policy. Publish a scheduler-neutral worker image only after both backends execute the same generic worker contract with separate executable identity and recovery evidence.
+A Kubernetes backend must create and monitor exact Jobs or Pods, bind callbacks to namespace, workload, Pod, container, and shared-build identity, validate projected service-account tokens against configured issuer, JWKS, and audience policy, and preserve exact-target recovery without blind resubmission. Networking, TLS termination, Nix daemon or sidecar topology, persistent store authority, resource requests and limits, placement, and cleanup remain operator policy. Publish the generic worker image only after Nomad and Kubernetes execute the same worker contract with separate executable identity and recovery evidence.
 
-Add cloud batch or another scheduler only for a real fleet. Preserve exact persisted execution identity, operator-owned credentials, bounded control-plane behavior, and exact-target recovery.
+### Constrained AWS Lambda backend
+
+Treat Lambda as low priority and support it only for workloads admitted within explicit invocation-duration, memory, and ephemeral-storage limits. Reuse the generic worker image through a Lambda runtime adapter, bind callbacks to exact AWS invocation and shared-build identity, disable automatic invocation retries, and classify timeout or indeterminate invocation state without blind resubmission.
+
+Package the immutable Nix bootstrap closure in the image or a Lambda layer and use an invocation-private writable store for execution. Durable EFS or object storage may retain cache or archive data across invocations, but do not treat a layer as writable shared state or assume multiple isolated Nix processes may safely mutate one EFS-backed Nix store. A shared mutable store requires primary Nix support evidence plus concurrent build, locking, garbage collection, interruption, and corruption qualification. Lambda environment reuse and any warm daemon are opportunistic optimizations, never durable execution authority.
+
+Add AWS Batch, cloud batch, or another scheduler only for a real fleet. Preserve exact persisted execution identity, operator-owned credentials, bounded control-plane behavior, and exact-target recovery.
 
 ### Nomad hardware device reservations
 
