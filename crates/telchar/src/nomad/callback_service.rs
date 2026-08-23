@@ -383,6 +383,13 @@ pub fn serve_connection(
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
     )?;
     session.accept(Direction::WorkerToGateway, valid_paths)?;
+    tracing::debug!(
+        event = "nomad.callback.manifest.accepted",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        "Nomad callback input manifest accepted"
+    );
     ensure_before(connection_deadline)?;
     let request_frame = read_transfer_frame(
         &mut socket,
@@ -393,6 +400,14 @@ pub fn serve_connection(
         limits.maximum_frame_metadata_bytes(),
     )?;
     session.accept(Direction::WorkerToGateway, request_frame)?;
+    tracing::debug!(
+        event = "nomad.callback.inputs.requested",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        requested_path_count = requested.paths.len(),
+        "Nomad callback inputs requested"
+    );
     stream_requested_inputs(
         &mut socket,
         &mut session,
@@ -402,6 +417,14 @@ pub fn serve_connection(
         limits,
         connection_deadline,
     )?;
+    tracing::debug!(
+        event = "nomad.callback.output_collection.started",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        expected_output_count = build_request.expected_outputs().len(),
+        "Nomad callback output collection started"
+    );
     let outcome = match receive_build_outputs(
         &mut socket,
         &mut session,
@@ -424,6 +447,18 @@ pub fn serve_connection(
             return Err(error);
         }
     };
+    tracing::debug!(
+        event = "nomad.callback.output_collection.completed",
+        backend = authentication.backend,
+        job_id = authentication.job_id,
+        allocation_id = authentication.allocation_id,
+        result = match &outcome {
+            BuildCollectionOutcome::Built => "succeeded",
+            BuildCollectionOutcome::Failed { .. } => "failed",
+        },
+        expected_output_count = build_request.expected_outputs().len(),
+        "Nomad callback output collection completed"
+    );
     if let BuildCollectionOutcome::Failed { diagnostic } = outcome {
         crate::persistence::complete_shared_build_failure(
             database_url,
@@ -459,6 +494,7 @@ fn read_transfer_frame<S: io::Read + io::Write>(
     socket: &mut crate::nomad::callback_http::CallbackSocket<S>,
     limits: ProtocolLimits,
 ) -> io::Result<Frame> {
+    let started = Instant::now();
     let body = socket.read_binary()?;
     let mut input = body.as_slice();
     let frame = read_frame(&mut input, limits)?;
@@ -468,6 +504,15 @@ fn read_transfer_frame<S: io::Read + io::Write>(
             "Nomad transfer message contains trailing bytes",
         ));
     }
+    tracing::trace!(
+        event = "nomad.callback.frame.received",
+        frame_kind = ?frame.kind(),
+        metadata_bytes = frame.metadata().len(),
+        payload_bytes = frame.payload().len(),
+        message_bytes = body.len(),
+        duration_ms = started.elapsed().as_millis(),
+        "Nomad callback frame received"
+    );
     Ok(frame)
 }
 
@@ -590,13 +635,26 @@ fn write_transfer_frame<S: io::Read + io::Write>(
     limits: crate::service::config::NomadTransferLimits,
     maximum_payload_bytes: usize,
 ) -> io::Result<()> {
+    let started = Instant::now();
     let mut message = Vec::new();
     write_frame(
         &mut message,
         frame,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), maximum_payload_bytes),
     )?;
-    socket.write_binary(message)
+    let message_bytes = message.len();
+    let result = socket.write_binary(message);
+    tracing::trace!(
+        event = "nomad.callback.frame.sent",
+        frame_kind = ?frame.kind(),
+        metadata_bytes = frame.metadata().len(),
+        payload_bytes = frame.payload().len(),
+        message_bytes,
+        result = if result.is_ok() { "succeeded" } else { "failed" },
+        duration_ms = started.elapsed().as_millis(),
+        "Nomad callback frame sent"
+    );
+    result
 }
 
 #[derive(Debug, Eq, PartialEq)]

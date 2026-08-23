@@ -2,7 +2,7 @@
 
 use std::io;
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::persistence::{self, SharedBuild, SharedBuildFailure, SharedBuildState};
 use crate::service::config::SchedulingLimits;
@@ -42,6 +42,11 @@ impl SharedBuildScheduler {
     }
 
     pub fn wait_for_admission(&self, derivation_path: &str) -> io::Result<SharedBuild> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "shared_build.scheduler.wait.started",
+            "shared build scheduler admission wait started"
+        );
         let mut state = self
             .state
             .lock()
@@ -52,7 +57,14 @@ impl SharedBuildScheduler {
                 .map_err(shared_build_error)?
                 .ok_or_else(|| io::Error::other("queued shared build is unavailable"))?;
             match build.state {
-                SharedBuildState::Running => return Ok(build),
+                SharedBuildState::Running => {
+                    tracing::debug!(
+                        event = "shared_build.scheduler.admitted",
+                        duration_ms = started.elapsed().as_millis(),
+                        "shared build admitted by scheduler"
+                    );
+                    return Ok(build);
+                }
                 SharedBuildState::Claimed => {}
                 SharedBuildState::Collecting
                 | SharedBuildState::Succeeded
@@ -73,7 +85,13 @@ impl SharedBuildScheduler {
     }
 
     fn admit_eligible_builds(&self, state: &mut SchedulerState) -> io::Result<()> {
+        let started = Instant::now();
         let mut examined_subjects = 0;
+        let mut admitted_builds = 0_usize;
+        tracing::trace!(
+            event = "shared_build.scheduler.examination.started",
+            "shared build scheduler examination started"
+        );
         let mut cursor = state.last_admitted_subject.clone();
         while examined_subjects < MAXIMUM_SCHEDULING_SUBJECTS {
             let Some(entry) = persistence::read_next_queued_shared_build(
@@ -83,11 +101,25 @@ impl SharedBuildScheduler {
             )
             .map_err(shared_build_error)?
             else {
+                tracing::trace!(
+                    event = "shared_build.scheduler.examination.completed",
+                    examined_subject_count = examined_subjects,
+                    admitted_build_count = admitted_builds,
+                    duration_ms = started.elapsed().as_millis(),
+                    "shared build scheduler examination completed"
+                );
                 return Ok(());
             };
             if examined_subjects > 0
                 && state.last_admitted_subject.as_deref() == Some(entry.quota_subject.as_str())
             {
+                tracing::trace!(
+                    event = "shared_build.scheduler.examination.completed",
+                    examined_subject_count = examined_subjects,
+                    admitted_build_count = admitted_builds,
+                    duration_ms = started.elapsed().as_millis(),
+                    "shared build scheduler examination completed"
+                );
                 return Ok(());
             }
             cursor = Some(entry.quota_subject.clone());
@@ -105,6 +137,7 @@ impl SharedBuildScheduler {
                     )
                     .map_err(shared_build_error)?;
                     state.last_admitted_subject = Some(entry.quota_subject);
+                    admitted_builds += 1;
                     self.changed.notify_all();
                 }
                 Err(error) if error.failure() == SharedBuildFailure::Quota => {}
@@ -112,6 +145,13 @@ impl SharedBuildScheduler {
                 Err(error) => return Err(shared_build_error(error)),
             }
         }
+        tracing::trace!(
+            event = "shared_build.scheduler.examination.completed",
+            examined_subject_count = examined_subjects,
+            admitted_build_count = admitted_builds,
+            duration_ms = started.elapsed().as_millis(),
+            "shared build scheduler examination completed"
+        );
         Ok(())
     }
 }
