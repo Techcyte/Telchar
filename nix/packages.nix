@@ -208,12 +208,7 @@ let
       sshIngressEntrypoint
       sshIngressForcedCommand
       pkgs.bash
-      pkgs.cacert
       pkgs.coreutils
-      pkgs.curl
-      pkgs.gawk
-      pkgs.gnugrep
-      pkgs.jq
       pkgs.openssh
     ];
     passthru.imageConfig = {
