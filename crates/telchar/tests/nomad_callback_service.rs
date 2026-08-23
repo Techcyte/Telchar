@@ -25,7 +25,7 @@ fn shutdown_stops_accepting_and_force_closes_after_bounded_drain() {
     std::fs::write(
         &config_path,
         r#"
-[nomad_callback]
+[backends.nomad_callback]
 bind = "127.0.0.1:17443"
 public_url = "ws://127.0.0.1:17443/callback"
 maximum_connections = 1
@@ -54,7 +54,10 @@ maximum_retained_nonces = 65536
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let mut service = NomadCallbackService::start(
         listener,
-        config.nomad_callback().clone(),
+        config
+            .nomad_callback()
+            .expect("Nomad callback is configured")
+            .clone(),
         database.url().to_owned(),
         vec![],
         telchar::store::daemon::GatewayStoreEndpoint::parse(
