@@ -3,6 +3,7 @@
 mod support;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +43,8 @@ fn durable_commands_report_empty_authoritative_state() {
     let config = root.join("telchar.toml");
     let database_url_file = root.join("database-url");
     fs::write(&database_url_file, format!("{}\n", database.url())).expect("database URL writes");
+    fs::set_permissions(&database_url_file, fs::Permissions::from_mode(0o600))
+        .expect("database URL permissions set");
     fs::write(
         &config,
         format!(
