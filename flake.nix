@@ -29,7 +29,14 @@
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" pathString
           || pathString == "${toString ./.}/deploy"
           || pathString == sshDeployment
-          || pkgs.lib.hasPrefix "${sshDeployment}/" pathString;
+          || pkgs.lib.hasPrefix "${sshDeployment}/" pathString
+          || pathString == "${toString ./.}/deny.toml"
+          || pathString == "${toString ./.}/security"
+          || pkgs.lib.hasPrefix "${toString ./.}/security/" pathString
+          || pathString == "${toString ./.}/scripts"
+          || pkgs.lib.hasPrefix "${toString ./.}/scripts/" pathString
+          || pathString == "${toString ./.}/.github"
+          || pkgs.lib.hasPrefix "${toString ./.}/.github/" pathString;
       };
     in
     {
@@ -71,6 +78,8 @@
         TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
         packages = [
           pkgs.nix
+          pkgs.cargo-deny
+          pkgs.trivy
           pkgs.openssh
           pkgs.postgresql
           pkgs.cargo

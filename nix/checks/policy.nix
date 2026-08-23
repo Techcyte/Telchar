@@ -1,6 +1,34 @@
 # Defines the worker-protocol dependency-direction policy check.
 { pkgs }:
 {
+  supply-chain-authority = pkgs.runCommand "telchar-supply-chain-authority" { } ''
+    root=${../..}
+    deny_policy="$root/deny.toml"
+    advisory_exceptions="$root/security/advisory-exceptions.toml"
+    ci="$root/.github/workflows/ci.yml"
+    release="$root/scripts/check-release.sh"
+
+    for file in "$deny_policy" "$advisory_exceptions"; do
+      if [ ! -f "$file" ]; then
+        echo "supply-chain policy file is missing: $file" >&2
+        exit 1
+      fi
+    done
+
+    for command in \
+      'cargo deny check advisories licenses sources' \
+      'scripts/check-advisory-exceptions.py' \
+      'scripts/check-oci-images.sh'
+    do
+      if ! grep -Fq "$command" "$ci" || ! grep -Fq "$command" "$release"; then
+        echo "CI and release verification must execute supply-chain gate: $command" >&2
+        exit 1
+      fi
+    done
+
+    touch "$out"
+  '';
+
   ignored-test-authority = pkgs.runCommand "telchar-ignored-test-authority" { } ''
     tests=${../..}/crates/telchar/tests
     private_reason='#[ignore = "private fixture paths are outside the production /nix/store namespace"]'

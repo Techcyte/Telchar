@@ -42,6 +42,11 @@ jobs:
       - name: Run workspace tests
         run: nix develop -c cargo test --locked --workspace -- --test-threads=1
 
+      - name: Check Rust dependencies and licenses
+        run: |
+          nix develop -c scripts/check-advisory-exceptions.py
+          nix develop -c cargo deny check advisories licenses sources
+
   nix:
     name: Nix build and evaluation
     runs-on: ubuntu-24.04
@@ -68,7 +73,8 @@ jobs:
             .#checks.x86_64-linux.ignored-test-authority \
             .#checks.x86_64-linux.production-operation-authority \
             .#checks.x86_64-linux.release-workload-authority \
-            .#checks.x86_64-linux.protocol-dependency-boundary
+            .#checks.x86_64-linux.protocol-dependency-boundary \
+            .#checks.x86_64-linux.supply-chain-authority
 
       - name: Build Telchar
         run: nix build --impure --no-link .#telchar
@@ -78,3 +84,6 @@ jobs:
 
       - name: Build OCI image contracts
         run: nix build --impure --no-link .#checks.x86_64-linux.oci-images
+
+      - name: Scan OCI images
+        run: scripts/check-oci-images.sh

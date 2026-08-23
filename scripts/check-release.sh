@@ -10,9 +10,12 @@ nix develop -c cargo fmt --all -- --check
 nix develop -c cargo test --locked --workspace -- --test-threads=1
 nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
+nix develop -c scripts/check-advisory-exceptions.py
+nix develop -c cargo deny check advisories licenses sources
 
 nix build --no-link .#telchar .#telchar-nomad-worker
 nix build --no-link .#checks.x86_64-linux.oci-images
+scripts/check-oci-images.sh
 nix build --no-link .#checks.x86_64-linux.nixos-oci-runtime
 nix build --no-link .#checks.x86_64-linux.nixos-module
 nix build --no-link .#checks.x86_64-linux.nixos-gate-3-contract
