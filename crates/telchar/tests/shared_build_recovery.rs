@@ -9,7 +9,7 @@ use std::time::Duration;
 use telchar::backend::{BackendCapabilities, BackendKind};
 use telchar::persistence::{SharedBuild, SharedBuildState};
 use telchar::shared_build::recovery::{
-    reconcile_active_shared_builds, AdoptedExecution, RecoveryBackend, SharedBuildOutputStore,
+    AdoptedExecution, RecoveryBackend, SharedBuildOutputStore, reconcile_active_shared_builds,
 };
 
 use support::postgres::PostgresFixture;

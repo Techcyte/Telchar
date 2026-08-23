@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use nix_worker_protocol::MAXIMUM_ADD_MULTIPLE_TO_STORE_REFERENCES;
 use nix_worker_protocol::{
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-    WorkerReader, WorkerVersion, LATEST_WORKER_VERSION,
+    LATEST_WORKER_VERSION, ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion,
+    write_worker_byte_string, write_worker_integer,
 };
 
 #[test]

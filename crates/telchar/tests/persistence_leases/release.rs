@@ -405,9 +405,11 @@ fn request_lease_release_page_is_bounded_keyset_ordered_and_includes_output_leas
     let first = telchar::persistence::read_released_request_leases_page(fixture.url(), None, 999)
         .expect("first page reads");
     assert_eq!(first.len(), 256);
-    assert!(first
-        .windows(2)
-        .all(|window| window[0].lease_id < window[1].lease_id));
+    assert!(
+        first
+            .windows(2)
+            .all(|window| window[0].lease_id < window[1].lease_id)
+    );
     assert!(first.iter().all(|lease| {
         lease.owner_kind == telchar::persistence::StoreLeaseOwnerKind::Request
             && lease.state == telchar::persistence::StoreLeaseState::Released

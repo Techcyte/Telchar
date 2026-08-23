@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use telchar::fixture::nix::{NixFixture, TrustMode};
 use telchar::service::transfer_limits::{LimitedReader, TransferBudget};
 use telchar::store::promotion::{
-    validate_and_promote_nar, DeclaredPathInfo, PromotionRequest, RegisteredPathInfo,
-    StorePromotionBackend, MAXIMUM_PROMOTION_REFERENCES,
+    DeclaredPathInfo, MAXIMUM_PROMOTION_REFERENCES, PromotionRequest, RegisteredPathInfo,
+    StorePromotionBackend, validate_and_promote_nar,
 };
 
 type DeclarationMutation = Box<dyn Fn(&mut DeclaredPathInfo)>;

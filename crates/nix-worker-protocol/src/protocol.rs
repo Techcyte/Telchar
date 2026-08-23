@@ -2,12 +2,12 @@
 
 use std::io::{self, Read};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
-use crate::{read_worker_integer, read_worker_integer_from, SessionAllocationCharges};
+use crate::{SessionAllocationCharges, read_worker_integer, read_worker_integer_from};
 
 pub const CLIENT_WORKER_MAGIC: u64 = 0x6e69_7863;
 pub const SERVER_WORKER_MAGIC: u64 = 0x6478_696f;

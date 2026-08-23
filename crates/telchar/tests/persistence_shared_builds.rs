@@ -25,9 +25,11 @@ fn requester_reference_is_deterministic_and_component_separated() {
         "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e"
     );
     assert_eq!(reference.len(), 64);
-    assert!(reference
-        .bytes()
-        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+    assert!(
+        reference
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    );
     assert_ne!(
         telchar::persistence::requester_reference(&telchar::service::ipc::RequesterMetadata {
             credential_id: "ab".into(),
@@ -63,8 +65,8 @@ fn requester_reference_is_deterministic_and_component_separated() {
 
 fn durable_build_request() -> telchar::build::BuildRequest {
     use nix_worker_protocol::{
-        write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-        WorkerReader,
+        ProtocolSessionLimits, WorkerOperation, WorkerReader, write_worker_byte_string,
+        write_worker_integer,
     };
 
     let derivation = b"/nix/store/11111111111111111111111111111111-shared.drv";

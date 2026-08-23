@@ -2,7 +2,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use telchar::backend::static_ssh::StaticSshHealth;

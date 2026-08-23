@@ -4,11 +4,12 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
-use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig as _;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
 };
@@ -16,15 +17,14 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider,
 };
-use opentelemetry_sdk::Resource;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::writer::MakeWriter;
-use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: &str = "telchar";
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -743,8 +743,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        start_collector, start_http_collector, telemetry_tests, Collector, OtlpTransport,
-        SERVICE_NAME,
+        Collector, OtlpTransport, SERVICE_NAME, start_collector, start_http_collector,
+        telemetry_tests,
     };
 
     #[test]

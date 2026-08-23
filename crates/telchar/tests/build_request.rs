@@ -6,7 +6,7 @@ use std::time::Duration;
 use sha2::Digest;
 
 use nix_worker_protocol::{
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
+    ProtocolSessionLimits, WorkerReader, write_worker_byte_string, write_worker_integer,
 };
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
@@ -173,10 +173,12 @@ fn loads_selected_input_derivation_outputs() {
         backend.built,
         vec![b"/nix/store/33333333333333333333333333333333-dependency.drv!out".to_vec()]
     );
-    assert!(request
-        .input_sources()
-        .iter()
-        .any(|path| path.as_slice() == dependency_output));
+    assert!(
+        request
+            .input_sources()
+            .iter()
+            .any(|path| path.as_slice() == dependency_output)
+    );
 }
 
 #[test]
@@ -245,12 +247,14 @@ fn rejects_malformed_or_dynamic_stored_derivations() {
         b"Derive([)".as_slice(),
         br#"DrvWithVersion("xp-dyn-drv",Derive([],[],[],"x86_64-linux","/bin/sh",[],[]))"#,
     ] {
-        assert!(BuildRequest::from_stored_derivation(
-            drv_path(),
-            derivation,
-            &backends("x86_64-linux", &[]),
-        )
-        .is_err());
+        assert!(
+            BuildRequest::from_stored_derivation(
+                drv_path(),
+                derivation,
+                &backends("x86_64-linux", &[]),
+            )
+            .is_err()
+        );
     }
 }
 
@@ -314,9 +318,11 @@ fn normalizes_gate_3_request_without_backend_objects() {
     let request =
         BuildRequest::from_worker_request(&worker, &backends).expect("Gate 3 request is admitted");
 
-    assert!(request
-        .derivation_path()
-        .ends_with(b"-telchar-gate-3-contract.drv"));
+    assert!(
+        request
+            .derivation_path()
+            .ends_with(b"-telchar-gate-3-contract.drv")
+    );
     assert_eq!(request.expected_outputs().len(), 1);
     assert_eq!(request.expected_outputs()[0].0, b"out");
     assert_eq!(request.system(), "x86_64-linux");

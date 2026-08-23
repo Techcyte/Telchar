@@ -4,7 +4,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::time::Duration;
 
-use telchar::service::ipc::{authorize_peer, IpcListener};
+use telchar::service::ipc::{IpcListener, authorize_peer};
 
 #[test]
 fn accepts_socket_peer_with_expected_uid() {

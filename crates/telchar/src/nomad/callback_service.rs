@@ -10,14 +10,14 @@ use crate::nomad::authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad::callback::{
-    decode_authentication, CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
-    PostgresReplayAuthority,
+    CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
+    PostgresReplayAuthority, decode_authentication,
 };
-use crate::nomad::callback_http::{accept_connection, CallbackHttpLimits};
+use crate::nomad::callback_http::{CallbackHttpLimits, accept_connection};
 use crate::nomad::protocol::{
-    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
-    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
-    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
+    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
+    InputManifest, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
+    TransferSession, decode_metadata, encode_metadata, read_frame, write_frame,
 };
 use crate::service::config::{
     NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication,
@@ -1100,7 +1100,7 @@ impl Drop for ConnectionPermit {
 
 #[cfg(test)]
 mod tests {
-    use super::{summarize_requested_inputs, take_chunk, InputTransferSummary};
+    use super::{InputTransferSummary, summarize_requested_inputs, take_chunk};
     use crate::nomad::protocol::{PathManifestEntry, PathSet};
 
     #[test]

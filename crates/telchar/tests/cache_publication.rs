@@ -44,13 +44,15 @@ fn publisher_passes_validated_outputs_through_stdin() {
 
 #[test]
 fn publisher_rejects_relative_executable_and_bounds_diagnostics() {
-    assert!(CachePublisher::new(
-        "publisher",
-        std::iter::empty::<&str>(),
-        Duration::from_secs(1),
-        1024,
-    )
-    .is_err());
+    assert!(
+        CachePublisher::new(
+            "publisher",
+            std::iter::empty::<&str>(),
+            Duration::from_secs(1),
+            1024,
+        )
+        .is_err()
+    );
     let publisher = CachePublisher::new(
         "/bin/sh",
         ["-c", "printf '%02048d' 0 >&2; exit 1"],

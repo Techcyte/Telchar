@@ -219,9 +219,11 @@ fn close_protocol_session_persists_exactly_once() {
         closed.state,
         telchar::persistence::ProtocolSessionState::Closed
     );
-    assert!(closed
-        .closed_at
-        .is_some_and(|closed_at| closed_at >= opened.created_at));
+    assert!(
+        closed
+            .closed_at
+            .is_some_and(|closed_at| closed_at >= opened.created_at)
+    );
     assert_eq!(
         telchar::persistence::close_protocol_session(fixture.url(), "session-1")
             .expect_err("closed session does not close again")

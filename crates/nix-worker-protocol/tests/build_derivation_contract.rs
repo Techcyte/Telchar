@@ -4,8 +4,8 @@ use std::io;
 use std::time::Duration;
 
 use nix_worker_protocol::{
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-    WorkerReader,
+    ProtocolSessionLimits, WorkerOperation, WorkerReader, write_worker_byte_string,
+    write_worker_integer,
 };
 
 #[test]
@@ -21,9 +21,11 @@ fn decodes_gate_3_build_derivation() {
         .complete_build_derivation()
         .expect("Gate 3 derivation decodes");
 
-    assert!(request
-        .drv_path()
-        .ends_with(b"-telchar-gate-3-contract.drv"));
+    assert!(
+        request
+            .drv_path()
+            .ends_with(b"-telchar-gate-3-contract.drv")
+    );
     assert_eq!(request.outputs().len(), 1);
     let output = &request.outputs()[0];
     assert_eq!(output.name(), b"out");
