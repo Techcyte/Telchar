@@ -34,7 +34,8 @@ Compatibility claims come from code and tests, not a separate support manifest.
 | Production worker-operation dispatch | `crates/telchar/src/service/session/mod.rs`; `crates/telchar/tests/operation_dispatch/` | stock-client VM checks below |
 | Stock Nix local and fixed-output builds | local executor, operation-dispatch, store-transfer, and promotion tests | `nixos-fixed-output-local` |
 | Lix local builds | typed protocol and local executor tests | `nixos-lix-local` |
-| Stock Nix OCI gateway | gateway store, transfer, authentication, and session tests | `nixos-oci-gateway` |
+| Stock Nix OCI gateway | gateway store, transfer, authentication, and session tests | `nixos-oci-gateway`; `nixos-oci-runtime` |
+| OCI archive metadata and loadability | package and entrypoint contracts | `oci-images`; `nixos-oci-runtime` |
 | Stock Nix static SSH | static SSH backend and worker-protocol tests | `nixos-static-ssh-gateway` |
 | Stock Nix Nomad | Nomad callback, persistence, transfer, and worker tests | `nixos-nomad-gateway` |
 
