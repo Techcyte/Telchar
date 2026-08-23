@@ -1001,6 +1001,7 @@ pub fn nomad_callback_finished(outcome: &str) {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::GaugeState;
     use crate::persistence::SharedBuildState;
