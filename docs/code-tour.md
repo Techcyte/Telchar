@@ -58,7 +58,7 @@ The public crate API is grouped by domain rather than mirroring every source fil
 - `telchar::fixture`: real-Nix and trace test infrastructure;
 - `telchar::persistence`: durable domain operations.
 
-`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/metrics.rs` defines bounded-cardinality OTLP instruments used across scheduling, backends, cache, transfer, retention, and Nomad. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target and constructs its exact executor.
+`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity; `build/derivation.rs` parses bounded stored derivations. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/config_reload.rs` validates and publishes transactional static SSH inventory and Nomad credential reloads. `service/metrics.rs` defines bounded-cardinality OTLP instruments used across scheduling, backends, cache, transfer, retention, and Nomad, while top-level `telemetry.rs` composes local tracing and OTLP exporters. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target, rejects ambiguous Nomad resource-profile selectors, and constructs its exact executor.
 
 ### 4. Gateway store
 
@@ -105,10 +105,11 @@ Persistence integration authority is split into:
 ### 6. Backend execution
 
 - `backend/local.rs`: gateway-daemon or helper-driven local execution, bounded logs, cancellation, and output trust.
-- `backend/static_ssh.rs`: configured SSH identity, transfer, execution, and exact-target recovery.
-- `nomad/backend.rs`: deterministic jobs, submission, monitoring, adoption, and exact cancellation.
+- `backend/static_ssh.rs`: configured SSH identity, transfer, execution, and exact-target recovery;
+- `backend/static_ssh/health.rs`: SSH plus Nix worker-protocol readiness and schedulability;
+- `nomad/backend.rs`: deterministic jobs, bounded resource-profile rendering, submission, monitoring, adoption, and exact cancellation.
 
-The local executor IPC service lives under `service/executor_service.rs`. Backend registration remains deliberately direct; no speculative plugin framework exists.
+The standalone `telchar executor` command is composed in `runtime.rs`; `service/executor_service.rs` owns its IPC boundary and `persistence/executor.rs` owns durable execution records. See `executor_service.rs` and `executor_execution.rs` for authority. This service is distinct from the daemon's directly constructed local backend. Backend registration remains deliberately direct; no speculative plugin framework exists.
 
 ### 7. Nomad callback
 
@@ -125,7 +126,9 @@ See [Nomad](nomad.md) for deployment and protocol detail.
 
 ### 8. Ownership and maintenance
 
-`service/singleton_ownership.rs` acquires and renews PostgreSQL ownership leases. Each takeover increments a fencing generation, and PostgreSQL triggers reject durable mutations from expired generations. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` owns top-level composition; `runtime/daemon.rs` owns daemon socket, accepted-connection, and session lifecycle. Services start only after configuration, migration, reconciliation, and ownership succeed.
+`service/singleton_ownership.rs` acquires and renews PostgreSQL ownership leases. Each takeover increments a fencing generation, and PostgreSQL triggers reject durable mutations from expired generations. `service/daemon_services.rs` owns cancellable maintenance and recovery threads. `runtime.rs` owns top-level composition; `runtime/daemon.rs` owns daemon socket, accepted-connection, and session lifecycle. Services start only after configuration, migration, reconciliation, and ownership succeed. See [Singleton ownership lease](adr/singleton-ownership-lease.md) and `tests/singleton_ownership.rs`.
+
+`operator.rs` and `operator/report.rs` implement bounded read-only inspection through `telchar operator`; `tests/operator_cli.rs` is the command contract.
 
 Never edit an applied migration. Add the next numbered migration and tests.
 
@@ -133,7 +136,7 @@ Never edit an applied migration. Add the next numbered migration and tests.
 
 Integration tests are organized by behavior. Larger suites use a small root fixture module plus focused files:
 
-- `operation_dispatch.rs` with `operation_dispatch/{protocol,store_transfer,build_lifecycle,scheduling,disconnect,validation}.rs`;
+- `operation_dispatch.rs` with focused protocol/store, admission/lifecycle, scheduling/coalescing, cancellation/disconnect, log, and backpressure modules under `operation_dispatch/`; current modules are `protocol`, `store_transfer`, `validation`, `build_admission`, `build_cleanup`, `build_completion`, `build_logs`, `queueing`, `coalescing`, `request_state`, `cancellation`, `detached_completion`, and `backpressure`; 
 - the four `persistence_*.rs` suites listed above;
 - `service_config.rs` with `service_config/{core,environment,nomad,static_ssh}.rs`;
 - `nomad_backend.rs` with `nomad_backend/{client,execution,identity,rendering}.rs`;
@@ -143,6 +146,7 @@ Shared PostgreSQL and admitted-request helpers live under `tests/support/`.
 
 Release-relevant files:
 
+- `scripts/check-release.sh`: curated release verification across Rust, packages, and selected VM contracts;
 - `flake.nix`: output composition;
 - `nix/packages.nix`: packages and OCI archives;
 - `nix/checks/rust.nix`: sandbox-compatible Rust checks;
@@ -154,7 +158,7 @@ Release-relevant files:
 Full process and PostgreSQL authority remains:
 
 ```text
-nix develop -c cargo test --locked --workspace
+nix develop -c cargo test --locked --workspace -- --test-threads=1
 ```
 
 Flake evaluation authority remains:
@@ -168,7 +172,7 @@ NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 | Question | Start with |
 | --- | --- |
 | Why did a client request fail? | `service/session/`, then the matching worker-protocol operation |
-| Why was a backend incompatible? | `build/request.rs`, `backend/mod.rs`, `backend/routing.rs` |
+| Why was a backend incompatible? | `build/mod.rs`, `build/derivation.rs`, `backend/mod.rs`, `backend/routing.rs` |
 | Why is a build queued? | `shared_build/scheduler.rs`, shared-build persistence, scheduling tests |
 | Why did duplicate requests execute once or twice? | `shared_build/mod.rs`, shared-build claims in `persistence/shared_builds.rs` |
 | Why did restart mark work failed? | `shared_build/recovery.rs`, persisted backend and attempt fields |
@@ -176,6 +180,9 @@ NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 | Why is a path retained? | `store/retention.rs`, `persistence/leases.rs` |
 | Why did SSH ingress reject a client? | NixOS module, `service/identity.rs`, `service/ipc.rs` |
 | Why did a Nomad callback fail? | callback HTTP → callback/authentication → callback service |
+| Why did Nomad choose these resources? | `service/config/model.rs`, `service/config/validation.rs`, `backend/routing.rs`, `nomad/backend.rs` |
+| Why did a configuration reload fail? | `service/config_reload.rs`, static SSH health, `tests/config_reload.rs` |
+| Where does operator status come from? | `operator.rs`, `operator/report.rs`, persistence read APIs |
 | Where is a configuration key defined? | `service/config/model.rs`, `raw.rs`, and `validation.rs` |
 | Where is a database column used? | introducing migration, matching `persistence/` domain, integration suite |
 

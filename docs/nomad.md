@@ -52,18 +52,13 @@ The gateway independently supports either a host daemon socket or a sibling Noma
 
 Mounting daemon sockets and persistent directories is privileged operator policy. Telchar does not create arbitrary mounts or allow clients to select the store.
 
-For each path in the complete admitted closure manifest, the worker:
+For each path in the complete admitted closure manifest, the worker checks the allocation store and requests only paths that are still invalid. Ordinary allocation-side Nix configuration may provide warm or pre-populated paths before callback startup, but the current callback flow does not invoke substitution or local realization between its validity check and input request.
 
-1. checks the allocation store;
-2. lets its configured substituters resolve missing paths;
-3. checks validity again;
-4. requests only unresolved admitted paths from Telchar.
-
-The manifest is transfer authority. Cache availability changes traffic volume, not which paths may be requested. NARs are streamed in ordered, non-interleaved chunks with exact paths, offsets, sizes, and final markers. Empty chunks, gaps, overlap, interleaving, duplicate paths, early completion, late completion, and aggregate-limit violations fail closed. Complete NARs and closures are not retained in memory.
+The manifest is transfer authority. Store availability changes traffic volume, not which paths may be requested. NARs are streamed in ordered, non-interleaved chunks with exact paths, offsets, sizes, and final markers. Empty chunks, gaps, overlap, interleaving, duplicate paths, early completion, late completion, and aggregate-limit violations fail closed. Transfer memory is bounded; output imports use bounded spooling and may retain a small complete NAR in memory before spilling to disk.
 
 ## Optional prestart task
 
-A backend may add one Nomad lifecycle `prestart` task in the same job and task group. It has operator-controlled driver configuration, bounded resources, and a finite timeout. Typical uses include preparing `nix.conf`, cache credentials, proxies, mounts, or allocation directories.
+A backend may add one Nomad lifecycle `prestart` task in the same job and task group. It has operator-controlled driver configuration, bounded resources, and a configured Nomad kill timeout. That value controls termination grace; it is not a standalone runtime deadline for the prestart command. Typical uses include preparing `nix.conf`, cache credentials, proxies, mounts, or allocation directories.
 
 Client data is never interpolated into the prestart command or driver configuration. Failure prevents the build task from starting and terminates the attempt without retry.
 
@@ -71,7 +66,7 @@ Client data is never interpolated into the prestart command or driver configurat
 
 After the complete input closure is valid, the worker runs normal-mode `BuildDerivation` through its configured Nix daemon.
 
-Logs are bounded and delivered only to clients attached at the time. Slow or disconnected clients cannot block the worker. Telchar does not store log bytes in PostgreSQL or replay them after reconnect.
+The worker emits bounded `LogChunk` frames during `BuildDerivation`. The gateway validates and consumes those frames, but the current Nomad callback path does not forward them to attached Nix clients. Telchar does not store log bytes in PostgreSQL or replay them after reconnect.
 
 After `BuildDerivation` succeeds, the worker returns only the exact declared output paths. Fixed-output method, algorithm, digest, and Nix content-address metadata remain bound to the admitted build specification through the job and callback protocol. Telchar checks metadata, references, NAR identity and structure, expected path set, admitted content authority, and gateway-store registration before acknowledging each output.
 
@@ -79,9 +74,9 @@ Missing, extra, corrupt, duplicate, oversized, out-of-order, or rejected output 
 
 ## Recovery and failure
 
-Telchar persists the exact backend name, cluster endpoint, namespace, deterministic job ID, allocation ID when known, transfer phase, manifest digests, and admitted build specification. It never stores capabilities, credentials, NAR bodies, or logs in PostgreSQL.
+Telchar persists the backend name, deterministic job ID, expected outputs, and admitted build specification. Callback replay records separately retain bounded allocation and nonce identity. It never stores secret credentials, capabilities, NAR bodies, or logs in PostgreSQL.
 
-After restart it checks gateway outputs first; otherwise it adopts only that exact job on that exact backend. Repeating a verified object transfer may recover transport. Submitting another job or repeating `BuildDerivation` is an execution retry and is never automatic.
+After restart it checks gateway outputs first; otherwise it resolves the persisted backend name against current operator configuration and adopts only the deterministic job ID through that backend. Do not change a Nomad backend's endpoint or namespace under the same name while it owns in-flight work. The current worker does not reconnect after callback failure. Submitting another job or repeating `BuildDerivation` is an execution retry and is never automatic.
 
 Timeout and cancellation purge only the persisted deterministic job. Missing jobs, foreign identities, failed allocations, callback authentication errors, transfer failures, and unverifiable outputs become one terminal failure. Telchar does not submit a replacement job or move the build to another compatible backend.
 
@@ -149,6 +144,6 @@ The selected profile's `priority_default` is rendered into the Nomad job. The co
 
 Profiles never infer CPU, memory, priority, or placement from derivation size, closure size, input count, or presumed workload cost. Placement constraints can select GPU-capable nodes but do not reserve a GPU. Bounded Nomad device reservations are deferred on the roadmap.
 
-Limits separately bound profile and constraint counts and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, live logs, idle time, setup, runtime, output collection, connection lifetime, authentication, replay retention, reconnect, and diagnostics. These settings are strict: unknown fields or unsafe credential files fail startup.
+Limits bound profile and constraint counts and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, per-frame log bytes, idle time, total runtime, connection lifetime, authentication, replay retention, and diagnostics. Configuration also accepts setup, reconnect, live-log queue, and output-collection limits, but those phase-specific controls are not yet fully enforced by the current worker and callback path. These settings remain strict input: unknown fields or unsafe credential files fail startup.
 
 Consult `crates/telchar/tests/service_config.rs` for complete exercised TOML examples until a generated configuration reference exists.

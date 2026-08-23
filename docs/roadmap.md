@@ -6,7 +6,7 @@ This is a ranked list, not a release promise. New work should solve a concrete o
 
 ### Broaden Nix compatibility
 
-Expand beyond the executable stock Nix 2.34.8 and Lix 2.94.2 local-backend fixtures. Test selected client releases with complete static SSH and Nomad gateway flows; keep each client and release as separate evidence.
+Extend the pinned Lix package beyond the local backend and test additional pinned Nix and Lix releases. Stock Nix already has local, OCI, static SSH, and Nomad gateway coverage; keep every client release and backend combination as separate executable evidence.
 
 ### Archive logs locally
 
@@ -28,7 +28,7 @@ Resuming an exact disconnected session needs authentication-bound resume authori
 
 ### Administrative cancellation
 
-Define who may cancel shared work, follower and owner authority, collection races, audit records, unsupported backend behavior, and replacement semantics. Read-only status should come first.
+Bounded read-only operator inspection already exists. Define who may cancel shared work, follower and owner authority, collection races, audit records, unsupported backend behavior, and replacement semantics before adding mutation commands.
 
 ### Floating content-addressed derivations
 
@@ -45,10 +45,6 @@ Add Kubernetes, cloud batch, or another scheduler only for a real fleet. Preserv
 ### Nomad hardware device reservations
 
 Add operator-defined, bounded Nomad device requests only when a real hardware workload requires them. Resource-profile constraints may select a GPU-capable node class, but placement does not reserve exclusive hardware. GPU and other device support must validate allowlisted device names and counts, render Nomad task `Devices` resources, expose reservation telemetry without workload-derived guesses, and include executable scheduling and oversubscription evidence.
-
-### OCI images
-
-The executable Docker-backed fixtures prove archive loading, declared entrypoints, non-root gateway execution, real Nix-daemon socket access, stock-Nix classic and fixed-output builds, PostgreSQL migration and ownership fencing, retained-result reuse, graceful and crash restart, store interruption, exact-archive redeployment, future-schema rejection, backup restore, and no blind resubmission. Operator-owned secret delivery remains deployment policy. Images run the same Telchar binaries without a container-specific product mode.
 
 ### Soak and load qualification
 

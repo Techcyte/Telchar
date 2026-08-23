@@ -54,7 +54,7 @@ Minimal local-backend configuration:
 
 The module enables local PostgreSQL, gateway Nix-daemon access, and OpenSSH ingress unless their `enable` options are disabled. `services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
 
-The module's forced command derives the accepted key fingerprint from the configured `authorized_keys` file. Keep that file operator-owned and restricted to the Telchar account.
+The module currently derives `TELCHAR_AUTHENTICATED_KEY` from the first key in the configured `authorizedKeysFile`, not from the key OpenSSH matched. Configure exactly one key in that file and use a separate ingress account or file for each audit or quota identity. Keep the file operator-owned and restricted to the Telchar account.
 
 ## PostgreSQL and recovery
 
@@ -67,9 +67,9 @@ Back up PostgreSQL with a PostgreSQL-aware tool such as `pg_dump -Fc`. The backu
 - attempt and backend execution identity;
 - transfer, retention, attachment, and terminal metadata.
 
-PostgreSQL must not contain NAR bodies, credentials, capabilities, signatures, or build logs. Back up the gateway Nix store and GC-root directory separately. A database-only restore does not restore missing store objects.
+PostgreSQL must not contain NAR bodies, secret credential material, signatures, or build-log bytes. It does contain bounded credential identifiers and authentication authority, backend capability metadata, admitted build specifications, and execution identities required for scheduling and recovery. Back up the gateway Nix store and GC-root directory separately. A database-only restore does not restore missing store objects.
 
-Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery remains bound to the original backend, namespace, and job identity. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
+Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery uses the persisted backend name and deterministic job identity, resolving the backend through current configuration; do not change endpoint or namespace under the same name while work is in flight. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
 
 ## Static SSH readiness
 
@@ -205,17 +205,13 @@ Deployment procedure:
 
 Telchar rejects an unknown future schema version. Before a migration is applied, rollback means replacing the container with the previously retained artifact. After a migration is applied, changing the image alone is not rollback. Use proven schema compatibility or restore PostgreSQL and store state from the coordinated pre-deployment recovery point.
 
-Verification commands:
+Run the curated release verification:
 
 ```bash
-nix develop -c cargo fmt --all -- --check
-nix develop -c cargo check --locked --workspace
-nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
-nix develop -c cargo test --locked --workspace -- --test-threads=1
-NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
+./scripts/check-release.sh
 ```
 
-Build release artifacts and selected VM checks directly from their flake attributes. The suite covers packages, the public NixOS module, stock-Nix local and fixed-output builds, static SSH, Nomad, duplicate coalescing, requester disconnect, output reuse, and restart recovery.
+The script runs formatting, workspace checks, Clippy, serial integration tests, package builds, and selected NixOS workload and recovery contracts. `NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build` is useful as an evaluation-only check; it does not build or execute the release suite.
 
 ## Unsupported expectations
 

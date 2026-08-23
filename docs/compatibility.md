@@ -4,12 +4,12 @@ Telchar's compatibility promise is deliberately narrow. A worker-protocol versio
 
 ## Verified client
 
-The release suite uses stock Nix 2.34.8 and Lix 2.94.2 from the flake lock on `x86_64-linux`. Both clients exercise `ssh-ng` ingress and the local backend with classic input-addressed derivations, correct flat and recursive SHA-256 fixed-output derivations, and an incorrect-hash failure.
+The release suite uses the stock Nix and Lix packages resolved by the pinned nixpkgs revision in `flake.lock` on `x86_64-linux`. Both clients exercise `ssh-ng` ingress and the local backend with classic input-addressed derivations, correct flat and recursive SHA-256 fixed-output derivations, and an incorrect-hash failure. Exact package versions are deployment evidence from the lock, not currently asserted by the executable fixtures.
 
 Supported behavior:
 
-- stock Nix 2.34.8 `ssh-ng` ingress;
-- Lix 2.94.2 `ssh-ng` ingress;
+- pinned stock Nix `ssh-ng` ingress;
+- pinned Lix `ssh-ng` ingress;
 - worker-protocol negotiation through version 1.38;
 - normal build mode (`0`);
 - classic input-addressed and fixed-output builds through the stock-client `QueryMissing` and `BuildPathsWithResults` workflow;
@@ -21,7 +21,7 @@ Not supported:
 
 - repair and check build modes;
 - floating content-addressed derivations;
-- Lix releases other than the exact release named above;
+- Lix releases other than the pinned release exercised by the suite;
 - Lix static SSH and Nomad backend fixtures;
 - protocol flows without typed coverage and a real-client fixture.
 
@@ -33,7 +33,7 @@ Telchar's pure-Rust gateway-store client advertises worker protocol 1.38 and req
 - daemon protocol 1.35 or later;
 - the bounded operations and trust result used by Telchar.
 
-The tested range is 1.35–1.38. Older daemons, another protocol major, malformed negotiation, and unsupported operation semantics fail closed.
+The implemented acceptance window is worker protocol 1.35–1.38. Scripted negotiation fixtures explicitly cover 1.35, 1.37, and 1.38; real-daemon integration uses the daemon supplied by the pinned nixpkgs revision. Older daemons, another protocol major, malformed negotiation, and unsupported operation semantics fail closed.
 
 ## Expanding support
 

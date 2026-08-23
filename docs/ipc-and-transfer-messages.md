@@ -106,9 +106,9 @@ worker  → gateway  BuildResult
 
 `LogChunk` and output pairs repeat as permitted by session state. Invalid reordering or direction is rejected by the transfer state machine.
 
-### Authentication
+### Nomad callback authentication
 
-`Authenticate` metadata contains:
+This section is specific to callbacks from `telchar-nomad-worker` running inside a Nomad allocation. `Authenticate` metadata contains:
 
 - backend name;
 - namespace;
@@ -118,7 +118,9 @@ worker  → gateway  BuildResult
 - shared-build digest;
 - either a workload-identity JWT or HMAC capability proof.
 
-Workload identity requires RS256 signature validation, exact audience, timing, namespace, job, allocation, and task claims. Issuer verification is optional configuration. Authentication material is not stored in PostgreSQL and must not be logged.
+**Nomad workload identity** uses the JWT that Nomad issues to the allocation task. Telchar validates its RS256 signature against the configured Nomad JWKS, plus exact audience, timing, namespace, job, allocation, and task claims. Issuer verification is optional configuration.
+
+The alternative HMAC mode is a Telchar callback capability scoped to the same execution identity. Authentication secrets, JWTs, and capabilities are not stored in PostgreSQL and must not be logged.
 
 ### Input authority
 
@@ -131,7 +133,7 @@ Workload identity requires RS256 signature validation, exact audience, timing, n
 
 Each path entry contains path, NAR hash, NAR size, references, optional deriver, and optional content address. The build specification contains exact outputs and fixed-output authority, input sources, system, required features, builder, arguments, and environment.
 
-The worker reports `ValidPaths`, attempts configured substitution or local realization, then sends `InputRequest` containing exactly the unresolved admitted set. The gateway rejects missing, duplicate, extra, or foreign request membership.
+The worker reports `ValidPaths` from its allocation-side store, then sends `InputRequest` containing exactly the unresolved admitted set. The gateway rejects missing, duplicate, extra, or foreign request membership. Ordinary allocation-side Nix daemon configuration may make paths valid before the callback starts, but the current transfer session does not invoke substitution or realization between `ValidPaths` and `InputRequest`.
 
 Each `InputNar` carries `NarMetadata` plus raw NAR payload:
 
@@ -145,9 +147,9 @@ Chunks are ordered and non-interleaved. Empty chunks, gaps, overlap, early compl
 
 ### Build, logs, and outputs
 
-`BuildStarted` identifies the admitted derivation. `LogChunk` metadata carries a monotonic sequence number; payload contains bounded live log bytes. Logs are transient and are not stored in PostgreSQL.
+`BuildStarted` identifies the admitted derivation. `LogChunk` metadata carries a monotonic sequence number; payload contains bounded log bytes. The worker sends these frames and the gateway validates their phase and size, but the current Nomad callback path does not forward them to attached Nix clients. Logs are not stored in PostgreSQL.
 
-For each expected output, the worker sends `OutputMetadata` followed by ordered `OutputNar` chunks. The gateway validates declared identity and authority, NAR structure and hash, references, exact path set, transfer bounds, and gateway registration. It replies with `OutputReceipt` only after accepting or rejecting that exact path.
+For each expected output, the worker sends `OutputMetadata` followed by ordered `OutputNar` chunks. The gateway validates declared identity and authority, NAR structure and hash, references, exact path set, transfer bounds, and gateway registration. The current gateway sends an accepted `OutputReceipt` only after successful import; rejection terminates the callback. The protocol model reserves rejected receipts, but production does not emit them.
 
 `BuildResult` is terminal. `Built` requires every expected output to have an accepted receipt and no diagnostic. `Failed` may carry one bounded diagnostic. Allocation completion alone is not build success.
 
@@ -161,9 +163,9 @@ The transfer resembles selective cache filling, but Telchar is not a binary cach
 
 ## Durable control-plane boundary
 
-PostgreSQL stores build identity, backend selection, execution identity, transfer phase, manifest digests, admitted build specification, recovery state, and terminal result metadata. It does not store NAR bodies, credentials, capabilities, JWTs, signatures, or log streams.
+PostgreSQL stores build identity, backend selection, deterministic backend execution ID, expected outputs, admitted build specification, recovery state, and terminal result metadata. Callback replay records separately store bounded allocation and nonce identity. It does not store NAR bodies, secret credential material, capabilities, JWTs, signatures, or log streams.
 
-Safe callback reconnection may repeat verified object transfer. It must not submit another job, migrate an in-flight build, or repeat `BuildDerivation`; those are execution retries and require a new request.
+The current worker does not reconnect a failed callback. A callback or transfer failure terminates the attempt; Telchar must not submit another job, migrate an in-flight build, or repeat `BuildDerivation` automatically.
 
 ## Executable references
 
