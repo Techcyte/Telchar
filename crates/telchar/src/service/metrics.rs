@@ -846,9 +846,17 @@ pub fn recovery_monitoring_changed(delta: i64) {
         .record(state.recovery_monitoring, &[]);
 }
 
-pub fn nomad_submission_finished(backend: &str, duration: Duration, outcome: &str) {
+pub fn nomad_submission_finished(
+    backend: &str,
+    resource_profile: &str,
+    priority: u8,
+    duration: Duration,
+    outcome: &str,
+) {
     let attributes = [
         KeyValue::new("backend.name", backend.to_owned()),
+        KeyValue::new("resource.profile", resource_profile.to_owned()),
+        KeyValue::new("nomad.priority", i64::from(priority)),
         KeyValue::new("outcome", outcome.to_owned()),
     ];
     instruments().nomad_submissions.add(1, &attributes);
@@ -980,7 +988,13 @@ pub fn emit_smoke_metrics() {
     recovery_finished("startup", Duration::from_millis(2), 1, 1, 1);
     recovery_monitoring_changed(1);
     recovery_monitoring_changed(-1);
-    nomad_submission_finished("smoke", Duration::from_millis(1), "succeeded");
+    nomad_submission_finished(
+        "smoke",
+        "default",
+        50,
+        Duration::from_millis(1),
+        "succeeded",
+    );
     nomad_pending_changed("smoke", 1);
     nomad_placed("smoke", Duration::from_millis(3));
     nomad_pending_changed("smoke", -1);

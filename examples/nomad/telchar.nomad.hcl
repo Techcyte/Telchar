@@ -350,7 +350,9 @@ permit_wait_seconds = 30
 [[backends.nomad]]
 name = "nomad-linux-amd64"
 system = "x86_64-linux"
-supported_features = []
+# Advertise profile selectors only when their operator policy below is enabled.
+# A derivation requirement is not authorization; these mappings and bounds are.
+supported_features = ["overflow-aws"]
 maximum_concurrent_builds = 4
 endpoint = "${var.nomad_api_endpoint}"
 namespace = "${var.namespace}"
@@ -386,6 +388,35 @@ readonly = false
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
+
+# OPERATOR POLICY: default Nomad job priority. Priority controls preemption when
+# enabled; it does not order pending jobs. Telchar does not accept a derivation-
+# supplied numeric priority.
+[backends.nomad.priority]
+minimum = 40
+default = 50
+maximum = 60
+
+# OPERATOR POLICY EXAMPLE: requiring the arbitrary Nix feature "overflow-aws"
+# selects this profile. Base backend constraints above still apply. Replace or
+# remove this mapping when your cluster has no such placement class.
+[[backends.nomad.resource_profiles]]
+name = "overflow"
+required_feature = "overflow-aws"
+cpu_mhz = 4000
+memory_mb = 8192
+disk_mb = 32768
+priority_minimum = 50
+priority_default = 60
+priority_maximum = 70
+
+[[backends.nomad.resource_profiles.constraints]]
+attribute = "$${node.class}"
+operator = "="
+value = "aws-overflow"
+
+# Profile constraints can select a hardware-capable class but do not reserve a
+# device. GPU/device reservations are intentionally deferred.
 
 # REQUIRED: every callback is authenticated even on a trusted private network.
 [backends.nomad.transfer_authentication]

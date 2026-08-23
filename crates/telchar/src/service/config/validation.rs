@@ -217,7 +217,13 @@ pub(super) fn validate_nomad_backends(
             return Err(invalid("Nomad timing bounds are invalid"));
         }
         let resources = validate_nomad_resources(backend.resources)?;
+        let priority = validate_nomad_priority(backend.priority)?;
         let constraints = validate_nomad_constraints(backend.constraints)?;
+        let resource_profiles = validate_nomad_resource_profiles(
+            backend.resource_profiles,
+            &backend.supported_features,
+            constraints.len(),
+        )?;
         let token_file = backend
             .token_file
             .map(|path| validate_protected_file(path, "Nomad token file is invalid"))
@@ -287,6 +293,8 @@ pub(super) fn validate_nomad_backends(
             driver,
             driver_config,
             resources,
+            priority,
+            resource_profiles,
             job_name_scope,
             poll_interval: Duration::from_secs(backend.poll_interval_seconds),
             runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
@@ -490,6 +498,96 @@ pub(super) fn validate_nomad_constraints(
             })
         })
         .collect()
+}
+
+pub(super) fn validate_nomad_priority(raw: Option<RawNomadPriority>) -> io::Result<NomadPriority> {
+    let raw = raw.unwrap_or(RawNomadPriority {
+        minimum: DEFAULT_NOMAD_PRIORITY,
+        default: DEFAULT_NOMAD_PRIORITY,
+        maximum: DEFAULT_NOMAD_PRIORITY,
+    });
+    validate_nomad_priority_values(raw.minimum, raw.default, raw.maximum)
+}
+
+fn validate_nomad_priority_values(
+    minimum: u8,
+    default: u8,
+    maximum: u8,
+) -> io::Result<NomadPriority> {
+    if minimum < MINIMUM_NOMAD_PRIORITY
+        || maximum > MAXIMUM_NOMAD_PRIORITY
+        || minimum > default
+        || default > maximum
+    {
+        return Err(invalid("Nomad priority is invalid"));
+    }
+    Ok(NomadPriority {
+        minimum,
+        default,
+        maximum,
+    })
+}
+
+pub(super) fn validate_nomad_resource_profiles(
+    raw: Vec<RawNomadResourceProfile>,
+    supported_features: &[String],
+    base_constraint_count: usize,
+) -> io::Result<Vec<NomadResourceProfile>> {
+    if raw.len() > MAXIMUM_NOMAD_RESOURCE_PROFILES {
+        return Err(invalid("Nomad resource profile count exceeds limit"));
+    }
+    let mut profiles = Vec::with_capacity(raw.len());
+    for profile in raw {
+        if profile.name == "default"
+            || profiles.iter().any(|existing: &NomadResourceProfile| {
+                existing.name() == profile.name
+                    || existing.required_feature() == profile.required_feature
+            })
+            || !supported_features
+                .iter()
+                .any(|feature| feature == &profile.required_feature)
+        {
+            return Err(invalid("Nomad resource profile is invalid"));
+        }
+        let name = validate_profile_component(profile.name)?;
+        let required_feature = validate_profile_component(profile.required_feature)?;
+        let resources = validate_nomad_resources(RawNomadResources {
+            cpu_mhz: profile.cpu_mhz,
+            memory_mb: profile.memory_mb,
+            disk_mb: profile.disk_mb,
+        })?;
+        let priority = validate_nomad_priority_values(
+            profile.priority_minimum,
+            profile.priority_default,
+            profile.priority_maximum,
+        )?;
+        if base_constraint_count.saturating_add(profile.constraints.len())
+            > MAXIMUM_NOMAD_CONSTRAINTS
+        {
+            return Err(invalid("Nomad constraint count exceeds limit"));
+        }
+        let constraints = validate_nomad_constraints(profile.constraints)?;
+        profiles.push(NomadResourceProfile {
+            name,
+            required_feature,
+            resources,
+            priority,
+            constraints,
+        });
+    }
+    Ok(profiles)
+}
+
+fn validate_profile_component(value: String) -> io::Result<String> {
+    if value.is_empty()
+        || value.len() > MAXIMUM_SUBJECT_BYTES
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.' | b'+'))
+    {
+        return Err(invalid("Nomad resource profile is invalid"));
+    }
+    Ok(value)
 }
 
 pub(super) fn validate_nomad_resources(raw: RawNomadResources) -> io::Result<NomadResources> {

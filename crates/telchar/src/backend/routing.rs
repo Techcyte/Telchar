@@ -279,6 +279,23 @@ impl BuildBackend for BackendExecutor {
             .cloned();
         match selected {
             Some(target) => {
+                if target.kind() == BackendKind::Nomad {
+                    let config = self
+                        .backends
+                        .inner
+                        .nomad
+                        .iter()
+                        .find(|config| config.target().name() == target.name())
+                        .ok_or_else(|| io::Error::other("selected backend is not configured"))?;
+                    config
+                        .select_resource_profile(required_features)
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Nomad resource profile selection is ambiguous",
+                            )
+                        })?;
+                }
                 tracing::debug!(
                     event = "backend.routing.selected",
                     backend_name = target.name(),

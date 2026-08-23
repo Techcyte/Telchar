@@ -139,7 +139,13 @@ value = "amd64"
 
 Add constraints for your storage/socket topology. For example, a node metadata flag can assert that the worker Nix daemon is installed. Do not copy a cluster-specific node class into a generic deployment.
 
-Resource values are operator-defined profiles. Never infer CPU or memory from derivation or closure byte size. Those byte counts bound transfer and storage, not compilation demand.
+The required `[backends.nomad.resources]` table is the default profile. Optional profiles map an advertised Nix system feature to operator-defined CPU, memory, disk, bounded priority, and additive placement constraints. For example, a derivation requiring `overflow-aws` can select a profile constrained to an operator-approved overflow node class. Base backend constraints remain in force.
+
+A profile-selecting feature is a workload requirement, not authenticated authorization. Keep feature advertisement and mappings explicit, and retain hard resource, priority, queue, concurrency, and placement limits. No mapped feature selects the default profile; one selects its profile; multiple mapped profile features fail as ambiguous. Unknown required features remain incompatible with the backend.
+
+Never infer CPU, memory, priority, or placement from derivation or closure byte size. Those byte counts bound transfer and storage, not compilation demand. Nomad priority affects preemption when enabled; it does not order pending jobs. Dependency readiness and Telchar admission remain separate gates.
+
+Profile constraints may select GPU-capable nodes but do not reserve GPU hardware. Nomad device reservations remain future work in the project roadmap.
 
 Generated execution jobs disable task restart and group rescheduling. A failed allocation is a terminal attempt; Telchar never blindly retries `BuildDerivation` or migrates it to another node.
 

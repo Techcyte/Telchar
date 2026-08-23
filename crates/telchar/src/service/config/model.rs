@@ -175,6 +175,95 @@ impl NomadResources {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NomadPriority {
+    pub(super) minimum: u8,
+    pub(super) default: u8,
+    pub(super) maximum: u8,
+}
+
+impl NomadPriority {
+    pub fn minimum(self) -> u8 {
+        self.minimum
+    }
+
+    pub fn default(self) -> u8 {
+        self.default
+    }
+
+    pub fn maximum(self) -> u8 {
+        self.maximum
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadResourceProfile {
+    pub(super) name: String,
+    pub(super) required_feature: String,
+    pub(super) resources: NomadResources,
+    pub(super) priority: NomadPriority,
+    pub(super) constraints: Vec<NomadConstraint>,
+}
+
+impl NomadResourceProfile {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn required_feature(&self) -> &str {
+        &self.required_feature
+    }
+
+    pub fn resources(&self) -> NomadResources {
+        self.resources
+    }
+
+    pub fn priority(&self) -> NomadPriority {
+        self.priority
+    }
+
+    pub fn constraints(&self) -> &[NomadConstraint] {
+        &self.constraints
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedNomadResourceProfile<'a> {
+    name: &'a str,
+    resources: NomadResources,
+    priority: NomadPriority,
+    constraints: &'a [NomadConstraint],
+}
+
+impl<'a> SelectedNomadResourceProfile<'a> {
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
+    pub fn resources(&self) -> NomadResources {
+        self.resources
+    }
+
+    pub fn priority(&self) -> NomadPriority {
+        self.priority
+    }
+
+    pub fn constraints(&self) -> &'a [NomadConstraint] {
+        self.constraints
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadResourceProfileSelectionError;
+
+impl std::fmt::Display for NomadResourceProfileSelectionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Nomad resource profile selection is ambiguous")
+    }
+}
+
+impl std::error::Error for NomadResourceProfileSelectionError {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NomadTransferAuthentication {
     WorkloadIdentity {
@@ -448,6 +537,8 @@ pub struct NomadBackendConfig {
     pub(super) driver: String,
     pub(super) driver_config: serde_json::Map<String, serde_json::Value>,
     pub(super) resources: NomadResources,
+    pub(super) priority: NomadPriority,
+    pub(super) resource_profiles: Vec<NomadResourceProfile>,
     pub(super) job_name_scope: String,
     pub(super) poll_interval: Duration,
     pub(super) runtime_limit: Duration,
@@ -503,6 +594,47 @@ impl NomadBackendConfig {
 
     pub fn resources(&self) -> NomadResources {
         self.resources
+    }
+
+    pub fn priority(&self) -> NomadPriority {
+        self.priority
+    }
+
+    pub fn resource_profiles(&self) -> &[NomadResourceProfile] {
+        &self.resource_profiles
+    }
+
+    pub fn select_resource_profile<'a, S: AsRef<str>>(
+        &'a self,
+        required_features: &[S],
+    ) -> Result<SelectedNomadResourceProfile<'a>, NomadResourceProfileSelectionError> {
+        let mut selected = None;
+        for profile in &self.resource_profiles {
+            let matched = required_features
+                .iter()
+                .filter(|feature| feature.as_ref() == profile.required_feature())
+                .count();
+            if matched > 1 || (matched == 1 && selected.is_some()) {
+                return Err(NomadResourceProfileSelectionError);
+            }
+            if matched == 1 {
+                selected = Some(profile);
+            }
+        }
+        Ok(match selected {
+            Some(profile) => SelectedNomadResourceProfile {
+                name: profile.name(),
+                resources: profile.resources(),
+                priority: profile.priority(),
+                constraints: profile.constraints(),
+            },
+            None => SelectedNomadResourceProfile {
+                name: "default",
+                resources: self.resources,
+                priority: self.priority,
+                constraints: &[],
+            },
+        })
     }
 
     pub fn job_name_scope(&self) -> &str {
