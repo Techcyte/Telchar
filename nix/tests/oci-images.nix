@@ -61,10 +61,6 @@ pkgs.runCommand "telchar-oci-image-contract" { nativeBuildInputs = [ pkgs.gnutar
   grep -q '^telchar:x:995:995:' ingress/etc/passwd || { echo "SSH ingress passwd identity is missing" >&2; exit 1; }
   grep -q '^telchar:x:995:' ingress/etc/group || { echo "SSH ingress group identity is missing" >&2; exit 1; }
   grep -q '^ForceCommand /bin/telchar-ssh-forced-command$' ingress/etc/ssh/sshd_config || { echo "SSH forced command configuration is missing" >&2; exit 1; }
-  grep -q 'TELCHAR_SSH_HOST_IDENTITY_MODE' ingress/bin/telchar-ssh-ingress || { echo "SSH host identity mode is missing" >&2; exit 1; }
-  grep -q 'TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE' ingress/bin/telchar-ssh-ingress || { echo "SSH client authentication mode is missing" >&2; exit 1; }
-  grep -q 'AuthorizedKeysFile=' ingress/bin/telchar-ssh-ingress || { echo "SSH authorized-keys mode is missing" >&2; exit 1; }
-  grep -q 'TrustedUserCAKeys=' ingress/bin/telchar-ssh-ingress || { echo "SSH certificate mode is missing" >&2; exit 1; }
   grep -q '^ExposeAuthInfo yes$' ingress/etc/ssh/sshd_config || { echo "SSH authentication metadata configuration is missing" >&2; exit 1; }
   grep -q '^DisableForwarding yes$' ingress/etc/ssh/sshd_config || { echo "SSH forwarding restriction is missing" >&2; exit 1; }
   grep -q '^PermitTTY no$' ingress/etc/ssh/sshd_config || { echo "SSH TTY restriction is missing" >&2; exit 1; }

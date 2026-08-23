@@ -41,6 +41,14 @@ Telchar is packaged through the flake and includes a NixOS module:
   services.telchar = {
     enable = true;
     package = inputs.telchar.packages.${pkgs.system}.telchar;
+    database.manage = true;
+    gatewayStore.manageTrustedUser = true;
+    gatewayStore.manageGcRootDirectory = true;
+    ingress.openssh = {
+      enable = true;
+      hostKeyFile = "/etc/ssh/ssh_host_ed25519_key";
+      authorizedKeysFile = "/var/lib/telchar/.ssh/authorized_keys";
+    };
     settings = {
       backends.local = {
         name = "local";
@@ -52,7 +60,7 @@ Telchar is packaged through the flake and includes a NixOS module:
 }
 ```
 
-The module enables a local PostgreSQL database, trusted gateway-store access, and restricted OpenSSH ingress by default. Add client keys to `/var/lib/telchar/.ssh/authorized_keys`, or set `services.telchar.openssh.authorizedKeysFile` to another operator-managed file.
+The module manages only the Telchar daemon by default. Local PostgreSQL provisioning, host Nix trusted-user configuration, GC-root directory creation, and SSH ingress are explicit options. The optional ingress runs a dedicated `telchar-sshd.service` on port `2222`; it does not alter the host's regular `services.openssh` configuration.
 
 A stock Nix client can then use the gateway as a remote builder:
 
