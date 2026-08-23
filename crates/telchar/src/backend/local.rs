@@ -69,6 +69,13 @@ impl GatewayStoreExecutor {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "backend.local.daemon.started",
+            operation = "build_derivation",
+            output_count = request.build().expected_outputs().len(),
+            "gateway Nix daemon operation started"
+        );
         let mut connection =
             GatewayStoreConnection::connect_with_timeout(&self.endpoint, request.timeout())?;
         let shutdown = connection.shutdown_handle()?;
@@ -167,14 +174,27 @@ impl GatewayStoreExecutor {
                 ));
             }
         }
-        BuildResult::new(
+        let result = BuildResult::new(
             match result.status() {
                 WorkerBuildStatus::Built => BuildStatus::Built,
                 WorkerBuildStatus::AlreadyValid => BuildStatus::AlreadyValid,
             },
             build.expected_outputs().to_vec(),
             OutputTrust::TrustedExecutor,
-        )
+        );
+        tracing::trace!(
+            event = "backend.local.daemon.completed",
+            operation = "build_derivation",
+            result = if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            output_count = expected_outputs.len(),
+            duration_ms = started.elapsed().as_millis(),
+            "gateway Nix daemon operation completed"
+        );
+        result
     }
 }
 

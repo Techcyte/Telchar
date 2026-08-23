@@ -166,6 +166,13 @@ impl StaticSshBackend {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "backend.static_ssh.transport.started",
+            operation = "execute",
+            backend_name = self.config.target().name(),
+            "static SSH transport operation started"
+        );
         let mut command = ssh_command(&self.config);
         let mut child = ChildGuard::new(command.spawn()?);
         let stdin = child
@@ -228,6 +235,14 @@ impl StaticSshBackend {
         child.kill_and_reap();
         drop(log_receiver);
         join_log_reader(stderr_reader)?;
+        tracing::trace!(
+            event = "backend.static_ssh.transport.completed",
+            operation = "execute",
+            backend_name = self.config.target().name(),
+            result = "succeeded",
+            duration_ms = started.elapsed().as_millis(),
+            "static SSH transport operation completed"
+        );
         Ok(result)
     }
 }
@@ -249,52 +264,54 @@ fn execute_remote_build(
     build: &crate::build::BuildRequest,
     logs: &std::sync::mpsc::SyncSender<Vec<u8>>,
 ) -> io::Result<BuildResult> {
+    let connected_started = Instant::now();
     let mut remote = WorkerClient::connect(stream)
         .map_err(|_| io::Error::other("static SSH worker protocol failed"))?;
-    tracing::info!(
-        event = "backend.static_ssh.connected",
-        "static SSH backend connected"
+    tracing::trace!(
+        event = "backend.static_ssh.protocol.connected",
+        duration_ms = connected_started.elapsed().as_millis(),
+        "static SSH worker protocol connected"
     );
     let mut roots = Vec::with_capacity(build.input_sources().len() + 1);
     roots.push(build.derivation_path().to_vec());
     roots.extend_from_slice(build.input_sources());
     let mut closure = GatewayStoreClosureBackend::new(gateway.clone());
-    tracing::info!(
-        event = "backend.static_ssh.closure_started",
+    let closure_started = Instant::now();
+    tracing::trace!(
+        event = "backend.static_ssh.closure.started",
+        root_count = roots.len(),
         "static SSH closure query started"
     );
     let closure = closure.input_closure(&roots)?;
-    tracing::info!(
-        event = "backend.static_ssh.closure_completed",
+    tracing::trace!(
+        event = "backend.static_ssh.closure.completed",
         path_count = closure.len(),
+        duration_ms = closure_started.elapsed().as_millis(),
         "static SSH closure query completed"
     );
     let closure_paths = closure
         .iter()
         .map(|path| path.store_path.as_bytes().to_vec())
         .collect::<Vec<_>>();
+    let missing_started = Instant::now();
     let missing = remote.query_missing(&closure_paths)?;
     let inputs = select_missing_inputs(closure, &missing)?;
-    tracing::info!(
-        event = "backend.static_ssh.inputs_selected",
-        path_count = inputs.len(),
+    tracing::debug!(
+        event = "backend.static_ssh.inputs.selected",
+        closure_path_count = closure_paths.len(),
+        missing_path_count = inputs.len(),
+        duration_ms = missing_started.elapsed().as_millis(),
         "static SSH missing inputs selected"
     );
+    let input_count = inputs.len();
     let mut source = GatewayStoreConnection::connect(gateway)?;
     for path in inputs {
-        tracing::info!(
-            event = "backend.static_ssh.input_export_started",
-            "static SSH input export started"
-        );
         copy_gateway_path_to_remote(&mut source, &mut remote, &path)?;
-        tracing::info!(
-            event = "backend.static_ssh.input_export_completed",
-            "static SSH input export completed"
-        );
     }
 
-    tracing::info!(
-        event = "backend.static_ssh.inputs_staged",
+    tracing::debug!(
+        event = "backend.static_ssh.inputs.staged",
+        path_count = input_count,
         "static SSH inputs staged"
     );
     let outputs = build
@@ -316,11 +333,21 @@ fn execute_remote_build(
         arguments: build.arguments(),
         environment: build.environment(),
     };
+    let build_started = Instant::now();
+    tracing::trace!(
+        event = "backend.static_ssh.protocol.started",
+        operation = "build_derivation",
+        output_count = outputs.len(),
+        "static SSH worker protocol operation started"
+    );
     let remote_result =
         remote.build_derivation(&request, &mut |message| send_logs(logs, message))?;
-    tracing::info!(
-        event = "backend.static_ssh.build_completed",
-        "static SSH build completed"
+    tracing::trace!(
+        event = "backend.static_ssh.protocol.completed",
+        operation = "build_derivation",
+        result = "succeeded",
+        duration_ms = build_started.elapsed().as_millis(),
+        "static SSH worker protocol operation completed"
     );
     let mut actual_outputs = remote_result.outputs().to_vec();
     actual_outputs.sort();
@@ -338,10 +365,6 @@ fn execute_remote_build(
             io::Error::new(io::ErrorKind::InvalidData, "remote output is unavailable")
         })?;
         copy_remote_path_to_gateway(&mut remote, gateway, path, &info)?;
-        tracing::info!(
-            event = "backend.static_ssh.output_imported",
-            "static SSH output imported"
-        );
         let mut verification = GatewayStoreConnection::connect(gateway)?;
         if verification.query_path_info(path)?.is_none() {
             return Err(io::Error::new(
@@ -451,25 +474,9 @@ fn copy_remote_path_to_gateway(
     crate::service::metrics::transfer_started("inbound", "build_output", "static_ssh");
     let result = (|| {
         let mut nar = create_staging_file()?;
-        tracing::info!(
-            event = "backend.static_ssh.output_export_started",
-            "static SSH output export started"
-        );
         remote.nar_from_path(path, metadata.nar_size(), &mut nar)?;
-        tracing::info!(
-            event = "backend.static_ssh.output_export_completed",
-            "static SSH output export completed"
-        );
         nar.rewind()?;
-        tracing::info!(
-            event = "backend.static_ssh.output_import_connect_started",
-            "static SSH output import connection started"
-        );
         let mut destination = GatewayStoreConnection::connect(gateway)?;
-        tracing::info!(
-            event = "backend.static_ssh.output_import_started",
-            "static SSH output import started"
-        );
         destination
             .add_to_store_nar(&add_info(path, metadata), &mut nar, false, true)
             .map_err(|error| io::Error::new(error.kind(), "static SSH output import failed"))

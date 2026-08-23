@@ -24,7 +24,10 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        [
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ("RUST_LOG", "debug".to_owned()),
+        ],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -72,6 +75,12 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     assert!(
         stderr.contains("worker.build_derivation.completed"),
         "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=\"backend.routing.selected\"")
+            && stderr.contains("event=\"backend.execution.started\"")
+            && stderr.contains("event=\"backend.execution.completed\""),
+        "missing backend lifecycle telemetry: {stderr}"
     );
     assert!(!stderr.contains("build-log-line"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
