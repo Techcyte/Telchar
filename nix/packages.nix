@@ -5,7 +5,7 @@
   source,
 }:
 let
-  version = "0.1.0";
+  version = "2026.8.0";
 
   nix-worker-protocol = craneLib.buildPackage {
     src = source;
