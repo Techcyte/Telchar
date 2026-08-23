@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 
 struct Instruments {
     service_sessions: Gauge<u64>,
