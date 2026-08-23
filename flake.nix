@@ -70,6 +70,7 @@
         TELCHAR_NIX = "${pkgs.nix}/bin/nix";
         TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";
         packages = [
+          pkgs.nix
           pkgs.openssh
           pkgs.postgresql
           pkgs.cargo
