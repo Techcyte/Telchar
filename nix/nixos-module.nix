@@ -24,6 +24,29 @@ let
       TELCHAR_AUTHENTICATED_KEY="$fingerprint" \
       ${cfg.package}/bin/telchar serve-stdio
   '';
+  sshdConfiguration = pkgs.writeText "telchar-sshd_config" ''
+    Port ${toString cfg.ingress.openssh.port}
+    ${lib.concatMapStringsSep "\n" (address: "ListenAddress ${address}") cfg.ingress.openssh.listenAddresses}
+    HostKey ${cfg.ingress.openssh.hostKeyFile}
+    PidFile /run/telchar-sshd/sshd.pid
+    AuthorizedKeysFile ${cfg.ingress.openssh.authorizedKeysFile}
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitRootLogin no
+    PermitEmptyPasswords no
+    StrictModes yes
+    UsePAM no
+    AllowUsers ${cfg.user}
+    ForceCommand ${forcedCommand}
+    ExposeAuthInfo yes
+    DisableForwarding yes
+    PermitTTY no
+    PermitUserEnvironment no
+    PermitUserRC no
+    UseDNS no
+  '';
 in
 {
   options.services.telchar = {
@@ -96,9 +119,7 @@ in
     };
 
     database = {
-      enable = lib.mkEnableOption "local PostgreSQL coordination" // {
-        default = true;
-      };
+      manage = lib.mkEnableOption "local PostgreSQL coordination";
       name = lib.mkOption {
         type = lib.types.str;
         default = "telchar";
@@ -113,9 +134,6 @@ in
     };
 
     gatewayStore = {
-      enable = lib.mkEnableOption "trusted gateway Nix daemon access" // {
-        default = true;
-      };
       uri = lib.mkOption {
         type = lib.types.str;
         default = "unix:///nix/var/nix/daemon-socket/socket";
@@ -126,11 +144,26 @@ in
         default = "/var/lib/telchar/gc-roots";
         description = "Directory holding retained gateway-store GC roots.";
       };
+      manageTrustedUser = lib.mkEnableOption "Telchar access through the host Nix trusted-users list";
+      manageGcRootDirectory = lib.mkEnableOption "the gateway-store GC-root directory";
     };
 
-    openssh = {
-      enable = lib.mkEnableOption "restricted stock-Nix OpenSSH ingress" // {
-        default = true;
+    ingress.openssh = {
+      enable = lib.mkEnableOption "isolated stock-Nix OpenSSH ingress";
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 2222;
+        description = "TCP port for the isolated Telchar SSH daemon.";
+      };
+      listenAddresses = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "0.0.0.0" ];
+        description = "Addresses for the isolated Telchar SSH daemon.";
+      };
+      hostKeyFile = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/telchar-ssh/ssh_host_ed25519_key";
+        description = "Static host key used by the isolated Telchar SSH daemon.";
       };
       authorizedKeysFile = lib.mkOption {
         type = lib.types.str;
@@ -147,8 +180,11 @@ in
         message = "services.telchar.socketPath must be below /run";
       }
       {
-        assertion = cfg.openssh.enable -> lib.hasPrefix "/" cfg.openssh.authorizedKeysFile;
-        message = "services.telchar.openssh.authorizedKeysFile must be absolute";
+        assertion = cfg.ingress.openssh.enable -> lib.all (path: lib.hasPrefix "/" path) [
+          cfg.ingress.openssh.hostKeyFile
+          cfg.ingress.openssh.authorizedKeysFile
+        ];
+        message = "services.telchar.ingress.openssh file paths must be absolute";
       }
       {
         assertion = lib.all (
@@ -171,7 +207,7 @@ in
 
     environment.systemPackages = [ cfg.package ] ++ cfg.backendPackages;
 
-    services.postgresql = lib.mkIf cfg.database.enable {
+    services.postgresql = lib.mkIf cfg.database.manage {
       enable = true;
       ensureDatabases = [ cfg.database.name ];
       ensureUsers = [
@@ -182,35 +218,33 @@ in
       ];
     };
 
-    nix.settings.trusted-users = lib.mkIf cfg.gatewayStore.enable [ cfg.user ];
+    nix.settings.trusted-users = lib.mkIf cfg.gatewayStore.manageTrustedUser [ cfg.user ];
 
-    services.openssh = lib.mkIf cfg.openssh.enable {
-      enable = true;
-      settings = {
-        PasswordAuthentication = false;
-        KbdInteractiveAuthentication = false;
-        PermitTTY = false;
-        AllowTcpForwarding = false;
-        AllowAgentForwarding = false;
-        X11Forwarding = false;
-        PermitUserEnvironment = false;
-        ExposeAuthInfo = true;
-      };
-      extraConfig = ''
-        Match User ${cfg.user}
-          AuthorizedKeysFile ${cfg.openssh.authorizedKeysFile}
-          ForceCommand ${forcedCommand}
-          DisableForwarding yes
-          PermitTTY no
-      '';
+    environment.etc."telchar/sshd_config" = lib.mkIf cfg.ingress.openssh.enable {
+      source = sshdConfiguration;
+      mode = "0444";
     };
+
+    systemd.services.telchar-sshd = lib.mkIf cfg.ingress.openssh.enable {
+      description = "Telchar isolated SSH ingress";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" "telchar.service" ];
+      wants = [ "network-online.target" ];
+      requires = [ "telchar.service" ];
+      serviceConfig = {
+        RuntimeDirectory = "telchar-sshd";
+        RuntimeDirectoryMode = "0755";
+        ExecStart = "${pkgs.openssh}/bin/sshd -D -e -f /etc/telchar/sshd_config";
+        Restart = "on-failure";
+      };
+    }; 
 
     systemd.services.telchar = {
       description = "Telchar Nix build gateway";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ] ++ lib.optional cfg.database.enable "postgresql.service";
+      after = [ "network-online.target" ] ++ lib.optional cfg.database.manage "postgresql.service";
       wants = [ "network-online.target" ];
-      requires = lib.optional cfg.database.enable "postgresql.service";
+      requires = lib.optional cfg.database.manage "postgresql.service";
       environment = {
         TELCHAR_CONFIG = configurationFile;
         TELCHAR_DATABASE_URL = cfg.database.url;
@@ -237,9 +271,9 @@ in
       };
     };
 
-    systemd.tmpfiles.rules = [
-      "d /var/lib/telchar/import 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -"
-    ];
+    systemd.tmpfiles.rules =
+      [ "d /var/lib/telchar/import 0700 ${cfg.user} ${cfg.group} -" ]
+      ++ lib.optional cfg.gatewayStore.manageGcRootDirectory
+        "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -";
   };
 }

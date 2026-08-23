@@ -26,6 +26,7 @@
           ingress.openssh = {
             enable = true;
             port = 2222;
+            hostKeyFile = "/etc/ssh/ssh_host_ed25519_key";
             authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
           };
           settings = {
