@@ -45,7 +45,7 @@ fn run_executor() -> io::Result<()> {
     let database_url = ownership.database_url().to_owned();
     let ownership_renewal_interval = config.ownership_renewal_interval();
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
-    let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw());
+    let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw())?;
     prepare_socket_path(&socket)?;
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
@@ -800,11 +800,16 @@ fn duration_from_env(name: &str, default_ms: u64) -> Duration {
         .unwrap_or(Duration::from_millis(default_ms))
 }
 
-fn u32_from_env(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+fn u32_from_env(name: &str, default: u32) -> io::Result<u32> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .map_err(|_| invalid("numeric environment override is invalid")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(invalid("numeric environment override is invalid"))
+        }
+    }
 }
 
 fn error_reason(error: &io::Error) -> &'static str {
