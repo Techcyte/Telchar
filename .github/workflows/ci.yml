@@ -62,6 +62,14 @@ jobs:
       - name: Evaluate flake checks
         run: nix flake check --impure --no-build
 
+      - name: Build policy checks
+        run: |
+          nix build --no-link \
+            .#checks.x86_64-linux.ignored-test-authority \
+            .#checks.x86_64-linux.production-operation-authority \
+            .#checks.x86_64-linux.release-workload-authority \
+            .#checks.x86_64-linux.protocol-dependency-boundary
+
       - name: Build Telchar
         run: nix build --impure --no-link .#telchar
 
