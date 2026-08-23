@@ -34,6 +34,7 @@ mod leases;
 mod migrations;
 mod sessions;
 mod shared_builds;
+mod telemetry;
 
 pub use attachments::*;
 pub use build_requests::*;

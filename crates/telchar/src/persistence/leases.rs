@@ -134,6 +134,7 @@ pub fn create_store_lease(
     store_path: &str,
     purpose: StoreLeasePurpose,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(create_store_lease));
     let result = create_store_lease_inner(
         database_url,
         lease_id,
@@ -155,6 +156,8 @@ pub fn create_request_retained_lease(
     nar_size: u64,
     maximum_retained_bytes: u64,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(create_request_retained_lease));
     if !matches!(
         purpose,
         StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
@@ -248,6 +251,8 @@ pub fn create_request_input_leases(
     request_id: &str,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(create_request_input_leases));
     let sized = leases
         .iter()
         .map(|(lease_id, store_path)| (lease_id.clone(), store_path.clone(), 1_u64))
@@ -261,6 +266,8 @@ pub fn create_request_input_leases_with_limit(
     maximum_retained_bytes: u64,
     leases: &[(String, String, u64)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(create_request_input_leases_with_limit));
     if leases.is_empty() {
         return Ok(Vec::new());
     }
@@ -415,6 +422,8 @@ pub fn create_request_output_leases(
     retention: Duration,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(create_request_output_leases));
     let retention_seconds = retention.as_secs();
     if retention.subsec_nanos() != 0 || !(60..=86_400).contains(&retention_seconds) {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
@@ -434,6 +443,8 @@ pub fn ensure_request_output_leases(
     retention: Duration,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(ensure_request_output_leases));
     let retention_seconds = retention.as_secs();
     if retention.subsec_nanos() != 0 || !(60..=86_400).contains(&retention_seconds) {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
@@ -592,6 +603,8 @@ pub fn detach_request_and_release_leases(
     session_id: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(detach_request_and_release_leases));
     validate_request_lease_release_inputs(database_url, session_id, request_id)?;
     let result = detach_request_and_release_leases_inner(database_url, session_id, request_id);
     emit_request_lease_release_result(
@@ -661,6 +674,8 @@ pub fn release_unattached_request_leases(
     database_url: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(release_unattached_request_leases));
     if database_url.trim().is_empty()
         || request_id.is_empty()
         || request_id.len() > MAX_IPC_COMPONENT_BYTES
@@ -839,6 +854,7 @@ pub fn release_store_lease(
     database_url: &str,
     lease_id: &str,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(release_store_lease));
     let result = release_store_lease_inner(database_url, lease_id);
     emit_store_lease_failure("release", &result);
     result
@@ -900,6 +916,8 @@ pub fn release_expired_request_output_leases(
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(release_expired_request_output_leases));
     let result = release_expired_request_output_leases_inner(
         database_url,
         now,
@@ -982,6 +1000,8 @@ pub fn read_released_request_leases_page(
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_released_request_leases_page));
     if database_url.trim().is_empty() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
@@ -1017,6 +1037,7 @@ pub fn read_store_lease(
     database_url: &str,
     lease_id: &str,
 ) -> Result<Option<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_store_lease));
     let result = read_store_lease_inner(database_url, lease_id);
     emit_store_lease_failure("read", &result);
     result

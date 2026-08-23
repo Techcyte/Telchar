@@ -100,6 +100,8 @@ pub fn open_protocol_session(
     audit_subject: &str,
     quota_subject: &str,
 ) -> Result<ProtocolSession, ProtocolSessionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(open_protocol_session));
     let authentication_authority = validate_protocol_session_inputs(
         database_url,
         session_id,
@@ -130,6 +132,8 @@ pub fn close_protocol_session(
     database_url: &str,
     session_id: &str,
 ) -> Result<ProtocolSession, ProtocolSessionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(close_protocol_session));
     validate_session_id(session_id)?;
     if database_url.trim().is_empty() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
@@ -170,6 +174,8 @@ pub fn read_protocol_session(
     database_url: &str,
     session_id: &str,
 ) -> Result<Option<ProtocolSession>, ProtocolSessionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_protocol_session));
     validate_session_id(session_id)?;
     if database_url.trim().is_empty() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
