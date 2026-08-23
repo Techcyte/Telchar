@@ -38,9 +38,13 @@ Require real fixtures and primary Nix evidence for identity, realization, transf
 
 Independent rebuilds or signed provenance need an explicit trust model, quorum or policy rules, key custody, replay protection, retention, and disagreement handling. This is separate from gateway output validation.
 
-### Additional backends
+### Scheduler-neutral workers and Kubernetes backend
 
-Add Kubernetes, cloud batch, or another scheduler only for a real fleet. Preserve exact persisted execution identity, operator-owned credentials, bounded control-plane behavior, and exact-target recovery.
+Generalize the current Nomad worker and OCI image only when implementing a Kubernetes backend. Extract the scheduler-neutral callback transport, bounded input and output transfer, Nix execution, log streaming, and terminal-result handling behind explicit workload identity supplied by each backend. Keep thin Nomad and Kubernetes entrypoints rather than pretending the current Nomad environment and authentication contract are portable.
+
+A Kubernetes backend must create and monitor exact Jobs or Pods, bind callbacks to namespace, workload, Pod, container, and shared-build identity, validate projected service-account tokens against configured issuer, JWKS, and audience policy, and preserve exact-target recovery without blind resubmission. Networking, TLS termination, Nix daemon or sidecar topology, persistent store authority, resource requests and limits, placement, and cleanup remain operator policy. Publish a scheduler-neutral worker image only after both backends execute the same generic worker contract with separate executable identity and recovery evidence.
+
+Add cloud batch or another scheduler only for a real fleet. Preserve exact persisted execution identity, operator-owned credentials, bounded control-plane behavior, and exact-target recovery.
 
 ### Nomad hardware device reservations
 
