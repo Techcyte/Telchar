@@ -14,10 +14,20 @@
       {
         imports = [ telcharModule ];
         networking.firewall.enable = false;
+        services.openssh.enable = true;
+        services.openssh.ports = [ 22 ];
         services.telchar = {
           enable = true;
           package = telchar;
           frontendUid = 995;
+          database.manage = true;
+          gatewayStore.manageTrustedUser = true;
+          gatewayStore.manageGcRootDirectory = true;
+          ingress.openssh = {
+            enable = true;
+            port = 2222;
+            authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
+          };
           settings = {
             running_disconnect_policy = "detach-and-finish";
             backends.local = {
@@ -35,7 +45,6 @@
           ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGQ5k8KfV+TWbrZG7MBXn9cKbIYB1vLLtvbCeK6ucvE3 telchar-module-test
           ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG31m7DcBk/wDNv27MOMNXD9Yk6tfhpj1dBl1VOdnyou telchar-module-second-test
         '';
-        services.telchar.openssh.authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
         system.stateVersion = "26.05";
       };
     testScript = ''
@@ -43,14 +52,18 @@
       gateway.wait_for_unit("postgresql.service")
       gateway.wait_for_unit("telchar.service")
       gateway.succeed("systemctl is-active sshd.service")
+      gateway.succeed("systemctl is-active telchar-sshd.service")
       gateway.succeed("systemctl is-active telchar.service || { systemctl status telchar.service --no-pager >&2; journalctl -u telchar.service --no-pager >&2; exit 1; }")
+      gateway.succeed("sshd -T | grep -qx 'port 22'")
+      gateway.succeed("${pkgs.openssh}/bin/sshd -T -f /etc/telchar/sshd_config | grep -qx 'port 2222'")
+      gateway.succeed("! grep -q 'telchar-forced-command' /etc/ssh/sshd_config")
       gateway.succeed("test -S /run/telchar/daemon.sock")
       gateway.succeed("test $(stat -c %a /run/telchar) = 700")
       gateway.succeed("sudo -u postgres psql -Atc \"select 1 from pg_database where datname = 'telchar'\" | grep -qx 1")
       gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")
-      gateway.succeed("grep -q 'ForceCommand /nix/store/' /etc/ssh/sshd_config")
-      gateway.succeed("grep -q '^ExposeAuthInfo yes$' /etc/ssh/sshd_config")
-      gateway.succeed("forced_command=$(awk '/^  ForceCommand / { print $2; exit }' /etc/ssh/sshd_config); ! grep -Fq '/etc/ssh/authorized_keys.d/telchar' \"$forced_command\" && grep -Fq 'SSH_USER_AUTH' \"$forced_command\" && grep -Fq 'ssh-keygen -lf -' \"$forced_command\"")
+      gateway.succeed("grep -q '^ForceCommand /nix/store/' /etc/telchar/sshd_config")
+      gateway.succeed("grep -q '^ExposeAuthInfo yes$' /etc/telchar/sshd_config")
+      gateway.succeed("forced_command=$(awk '/^ForceCommand / { print $2; exit }' /etc/telchar/sshd_config); ! grep -Fq '/etc/ssh/authorized_keys.d/telchar' \"$forced_command\" && grep -Fq 'SSH_USER_AUTH' \"$forced_command\" && grep -Fq 'ssh-keygen -lf -' \"$forced_command\"")
     '';
   };
   nixos-test-library =
