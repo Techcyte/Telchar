@@ -80,6 +80,7 @@
           pkgs.nix
           pkgs.cargo-deny
           pkgs.trivy
+          pkgs.skopeo
           pkgs.openssh
           pkgs.postgresql
           pkgs.cargo

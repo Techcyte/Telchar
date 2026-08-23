@@ -1,6 +1,73 @@
 # Defines the worker-protocol dependency-direction policy check.
 { pkgs }:
 {
+  release-publication-authority = pkgs.runCommand "telchar-release-publication-authority" { } ''
+    root=${../..}
+    prepare_workflow="$root/.github/workflows/prepare-release.yml"
+    publish_workflow="$root/.github/workflows/release.yml"
+    version_script="$root/scripts/prepare-release.py"
+    publish_script="$root/scripts/publish-oci-images.sh"
+
+    for file in "$prepare_workflow" "$publish_workflow" "$version_script" "$publish_script"; do
+      if [ ! -f "$file" ]; then
+        echo "release publication file is missing: $file" >&2
+        exit 1
+      fi
+    done
+
+    for value in \
+      'workflow_dispatch:' \
+      'pull-requests: write' \
+      'scripts/prepare-release.py' \
+      'gh pr create'
+    do
+      if ! grep -Fq -- "$value" "$prepare_workflow"; then
+        echo "release preparation workflow omits: $value" >&2
+        exit 1
+      fi
+    done
+
+    for value in \
+      'workflow_dispatch:' \
+      'contents: write' \
+      'packages: write' \
+      'scripts/publish-oci-images.sh' \
+      'gh release view' \
+      'git ls-remote --exit-code --tags' \
+      'gh release create' \
+      '--draft' \
+      'gh release edit' \
+      '--draft=false'
+    do
+      if ! grep -Fq -- "$value" "$publish_workflow"; then
+        echo "release publication workflow omits: $value" >&2
+        exit 1
+      fi
+    done
+
+    for value in \
+      '^[1-9][0-9]{3}\.([1-9]|1[0-2])\.[0-9]+$' \
+      'registry=ghcr.io/techcyte' \
+      'telchar-oci:telchar' \
+      'telchar-nomad-worker-oci:telchar-nomad-worker' \
+      'telchar-nix-daemon-oci:telchar-nix-daemon' \
+      'telchar-ssh-ingress-oci:telchar-ssh-ingress' \
+      'docker://$registry/$image:$RELEASE_VERSION'
+    do
+      if ! grep -Fq -- "$value" "$publish_script"; then
+        echo "release publication script omits: $value" >&2
+        exit 1
+      fi
+    done
+
+    if grep -Fq ':latest' "$publish_script" || grep -Fq 'tags:' "$publish_workflow"; then
+      echo "release publication must remain manual and exact-version only" >&2
+      exit 1
+    fi
+
+    touch "$out"
+  '';
+
   supply-chain-authority = pkgs.runCommand "telchar-supply-chain-authority" { } ''
     root=${../..}
     deny_policy="$root/deny.toml"

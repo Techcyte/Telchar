@@ -15,7 +15,7 @@ stock Nix client
 
 ## Status
 
-Current pre-1.0 release: `0.1.0`. Version tags are the release authority; OCI archives use the same version tag.
+Telchar uses SemVer-compatible calendar versions in `YYYY.M.PATCH` form. OCI archives always carry the package version; only manually approved releases are published.
 
 The MVP supports classic input-addressed and fixed-output derivations in normal build mode. It includes durable PostgreSQL coordination, duplicate suppression, gateway cache substitution, per-subject queue limits, exact-target restart recovery, bounded transfers, and client-independent execution.
 
@@ -95,7 +95,7 @@ nix build .#telchar-nomad-worker-oci
 nix build .#telchar-ssh-ingress-oci
 ```
 
-Tagged releases publish all four archives to `ghcr.io/techcyte`: `telchar`, `telchar-nomad-worker`, `telchar-nix-daemon`, and `telchar-ssh-ingress`. Images are tagged with the exact release version; pre-1.0 releases do not publish a moving `latest` tag.
+Releases use two manual GitHub Actions workflows. **Prepare release** increments the patch when the package is already versioned for the current month, otherwise starts the month at `YYYY.M.0`; it updates all Cargo/Nix version authorities and opens a reviewable pull request. After that pull request is merged, **Publish release** verifies the prepared revision, publishes all four archives to `ghcr.io/techcyte`, and creates the matching GitHub Release and `vYYYY.M.PATCH` tag. Images receive only the exact version tag; no moving `latest` tag is published.
 
 The gateway and worker images are the application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. Load or publish the exact archives with your container tooling.
 
