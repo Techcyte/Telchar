@@ -135,6 +135,7 @@ pub fn enqueue_shared_build(
     quota_subject: &str,
     maximum_queued_builds: usize,
 ) -> Result<SharedBuildQueueEntry, SharedBuildError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(enqueue_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
     if quota_subject.is_empty()
         || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
@@ -195,6 +196,8 @@ pub fn start_queued_shared_build(
     derivation_path: &str,
     maximum_active_builds: usize,
 ) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(start_queued_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
     if maximum_active_builds == 0 || maximum_active_builds > 65_536 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
@@ -260,6 +263,8 @@ pub fn read_queued_shared_builds(
     database_url: &str,
     limit: usize,
 ) -> Result<Vec<SharedBuildQueueEntry>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_queued_shared_builds));
     if database_url.trim().is_empty() || limit == 0 || limit > 256 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
@@ -285,6 +290,8 @@ pub fn read_queued_shared_builds(
 pub fn read_shared_build_scheduler_subject(
     database_url: &str,
 ) -> Result<Option<String>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_scheduler_subject));
     if database_url.trim().is_empty() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
@@ -304,6 +311,8 @@ pub fn record_shared_build_scheduler_subject(
     database_url: &str,
     quota_subject: &str,
 ) -> Result<(), SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(record_shared_build_scheduler_subject));
     if database_url.trim().is_empty()
         || quota_subject.is_empty()
         || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
@@ -329,6 +338,8 @@ pub fn read_next_queued_shared_build(
     after_quota_subject: Option<&str>,
     maximum_subjects: usize,
 ) -> Result<Option<SharedBuildQueueEntry>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_next_queued_shared_build));
     if database_url.trim().is_empty()
         || maximum_subjects == 0
         || maximum_subjects > 256
@@ -397,6 +408,7 @@ pub fn claim_shared_build(
     backend_execution_id: Option<&str>,
     expected_outputs: &[&str],
 ) -> Result<SharedBuildClaim, SharedBuildError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(claim_shared_build));
     claim_shared_build_inner(
         database_url,
         derivation_path,
@@ -422,6 +434,8 @@ pub fn claim_shared_build_with_request(
     expected_outputs: &[&str],
     build_request: &crate::build::BuildRequest,
 ) -> Result<SharedBuildClaim, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(claim_shared_build_with_request));
     if build_request.validate_for_execution().is_err()
         || build_request.derivation_path() != derivation_path.as_bytes()
         || build_request.shared_build_digest().as_slice() != request_digest
@@ -571,6 +585,8 @@ pub fn read_shared_build_by_execution(
     backend_name: &str,
     backend_execution_id: &str,
 ) -> Result<Option<SharedBuild>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_by_execution));
     if database_url.trim().is_empty()
         || backend_name.is_empty()
         || backend_name.len() > MAX_IPC_COMPONENT_BYTES
@@ -605,6 +621,7 @@ pub fn read_shared_build(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<Option<SharedBuild>, SharedBuildError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -626,6 +643,8 @@ pub fn read_shared_build(
 pub fn read_shared_build_operational_counts(
     database_url: &str,
 ) -> Result<SharedBuildOperationalCounts, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_operational_counts));
     if database_url.trim().is_empty() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
@@ -658,6 +677,8 @@ pub fn read_active_shared_builds(
     database_url: &str,
     limit: usize,
 ) -> Result<Vec<SharedBuild>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_active_shared_builds));
     if database_url.trim().is_empty() || limit == 0 || limit > 256 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
@@ -688,6 +709,7 @@ pub fn start_shared_build(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(start_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -720,6 +742,7 @@ pub fn collect_shared_build(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(collect_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -764,6 +787,8 @@ pub fn complete_shared_build_success(
     result_metadata: &serde_json::Value,
     retention: Duration,
 ) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(complete_shared_build_success));
     complete_shared_build(
         database_url,
         derivation_path,
@@ -781,6 +806,8 @@ pub fn complete_shared_build_failure(
     result_metadata: &serde_json::Value,
     retention: Duration,
 ) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(complete_shared_build_failure));
     complete_shared_build(
         database_url,
         derivation_path,
@@ -829,6 +856,8 @@ pub fn read_shared_build_attempt(
     database_url: &str,
     derivation_path: &str,
 ) -> Result<Option<SharedBuildAttempt>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt));
     validate_shared_build_identity(database_url, derivation_path)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -852,6 +881,8 @@ pub fn read_shared_build_attempt_outcome(
     database_url: &str,
     attempt_id: &i64,
 ) -> Result<Option<SharedBuildAttemptOutcome>, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt_outcome));
     if database_url.trim().is_empty() || *attempt_id <= 0 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }

@@ -58,6 +58,7 @@ pub fn create_build_request(
     audit_subject: &str,
     quota_subject: &str,
 ) -> Result<BuildRequestState, BuildRequestError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(create_build_request));
     validate_build_request_inputs(
         database_url,
         request_id,
@@ -96,6 +97,7 @@ pub fn read_build_request(
     database_url: &str,
     request_id: &str,
 ) -> Result<Option<BuildRequestState>, BuildRequestError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_build_request));
     validate_build_request_id(request_id)?;
     if database_url.trim().is_empty() {
         return Err(BuildRequestError(BuildRequestFailure::Configuration));

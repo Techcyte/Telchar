@@ -11,7 +11,8 @@ fn live_set_options_request_returns_terminal_frame() {
         otlp_endpoint
             .as_ref()
             .into_iter()
-            .map(|endpoint| ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone())),
+            .map(|endpoint| ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()))
+            .chain([("RUST_LOG", "trace".to_owned())]),
         Some("cancel-running"),
     );
     let child = &mut fixture.frontend;
@@ -67,6 +68,11 @@ fn live_set_options_request_returns_terminal_frame() {
     assert!(
         stderr.contains("worker.set_options.completed"),
         "missing local SetOptions telemetry: {stderr}"
+    );
+    assert!(
+        stderr.contains("event=\"database.operation.started\"")
+            && stderr.contains("event=\"database.operation.completed\""),
+        "missing trace-level database operation telemetry: {stderr}"
     );
 }
 

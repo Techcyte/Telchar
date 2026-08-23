@@ -67,6 +67,8 @@ pub fn register_local_backend_execution(
     idempotency_key: &str,
     specification_digest: &[u8; 32],
 ) -> Result<LocalBackendExecution, LocalBackendExecutionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(register_local_backend_execution));
     validate_local_backend_execution_identity(database_url, backend_execution_id, idempotency_key)?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
@@ -119,6 +121,8 @@ pub fn record_local_backend_running(
     database_url: &str,
     backend_execution_id: &str,
 ) -> Result<LocalBackendExecution, LocalBackendExecutionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(record_local_backend_running));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
@@ -141,6 +145,8 @@ pub fn complete_local_backend_execution(
     classification: &str,
     result_metadata: &serde_json::Value,
 ) -> Result<CompletedLocalBackendExecution, LocalBackendExecutionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(complete_local_backend_execution));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
     let expected_classification = match terminal_state {
         LocalBackendExecutionState::Succeeded => "succeeded",
@@ -258,6 +264,8 @@ pub fn read_local_backend_execution_result(
     database_url: &str,
     backend_execution_id: &str,
 ) -> Result<Option<LocalBackendExecutionResult>, LocalBackendExecutionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_local_backend_execution_result));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
@@ -275,6 +283,8 @@ pub fn read_local_backend_execution(
     database_url: &str,
     backend_execution_id: &str,
 ) -> Result<Option<LocalBackendExecution>, LocalBackendExecutionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(read_local_backend_execution));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
     let mut client = Client::connect(database_url, NoTls)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;

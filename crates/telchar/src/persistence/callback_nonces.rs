@@ -28,6 +28,8 @@ pub fn reserve_nomad_callback_nonce(
     expires_at: SystemTime,
     maximum_retained_nonces: usize,
 ) -> Result<bool, NomadCallbackNonceError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(reserve_nomad_callback_nonce));
     if database_url.trim().is_empty()
         || !valid_nomad_callback_component(backend_name)
         || !valid_nomad_callback_component(job_id)
