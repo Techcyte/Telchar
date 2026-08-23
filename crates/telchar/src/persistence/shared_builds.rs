@@ -735,6 +735,7 @@ pub fn start_shared_build(
     transaction
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    crate::service::metrics::shared_build_started();
     Ok(build)
 }
 
@@ -778,6 +779,7 @@ pub fn collect_shared_build(
     transaction
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    crate::service::metrics::shared_build_collecting();
     Ok(build)
 }
 
@@ -1040,10 +1042,16 @@ fn complete_shared_build(
             )
             .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     }
+    let previous_state = match current_state.as_str() {
+        "running" => SharedBuildState::Running,
+        "collecting" => SharedBuildState::Collecting,
+        _ => SharedBuildState::Claimed,
+    };
     let build = decode_shared_build(&row).map_err(SharedBuildError)?;
     transaction
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    crate::service::metrics::shared_build_finished(previous_state);
     Ok(build)
 }
 
