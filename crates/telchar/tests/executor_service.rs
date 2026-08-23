@@ -14,11 +14,26 @@ use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 use telchar::service::executor_service::{
-    EXECUTOR_PROTOCOL_VERSION, ExecutorExecutionState, ExecutorRequest, ExecutorResult,
-    ExecutorSpecification, send_request,
+    send_request, ExecutorExecutionState, ExecutorRequest, ExecutorResult, ExecutorSpecification,
+    EXECUTOR_PROTOCOL_VERSION,
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn executor_rejects_invalid_expected_uid_configuration() {
+    let database = PostgresFixture::start();
+    let root = temporary_root();
+    let socket = root.join("executor.sock");
+    let mut command = executor_command(&socket, database.url());
+    command.env("TELCHAR_EXECUTOR_UID", "invalid");
+
+    let status = command.status().expect("executor exits");
+
+    assert!(!status.success());
+    assert!(!socket.exists());
+    let _ = fs::remove_dir_all(root);
+}
 
 #[test]
 fn executor_service_persists_idempotent_submit_and_status_across_restart() {
