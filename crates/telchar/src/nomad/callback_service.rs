@@ -4,20 +4,20 @@ use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::nomad::authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad::callback::{
-    CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
-    PostgresReplayAuthority, decode_authentication,
+    decode_authentication, CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
+    PostgresReplayAuthority,
 };
-use crate::nomad::callback_http::{CallbackHttpLimits, accept_connection};
+use crate::nomad::callback_http::{accept_connection, CallbackHttpLimits};
 use crate::nomad::protocol::{
-    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
-    InputManifest, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
-    TransferSession, decode_metadata, encode_metadata, read_frame, write_frame,
+    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
+    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
+    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
 };
 use crate::service::config::{
     NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication,
@@ -318,9 +318,16 @@ pub fn serve_connection(
         (limits.maximum_manifest_bytes() as usize)
             .max(limits.maximum_frame_metadata_bytes() + limits.stream_buffer_bytes()),
     );
-    let connection_deadline = Instant::now()
-        .checked_add(limits.maximum_connection_lifetime())
-        .ok_or_else(|| io::Error::other("Nomad connection lifetime is invalid"))?;
+    let connection_deadline = phase_deadline(
+        Instant::now(),
+        limits.maximum_connection_lifetime(),
+        "Nomad connection lifetime is invalid",
+    )?;
+    let setup_deadline = phase_deadline(
+        Instant::now(),
+        limits.setup_timeout(),
+        "Nomad setup timeout is invalid",
+    )?;
     let keepalive_interval = limits.transfer_idle_timeout() / 2;
     socket.configure_keepalive(keepalive_interval, connection_deadline);
     socket
@@ -377,7 +384,7 @@ pub fn serve_connection(
         allocation_id = authentication.allocation_id,
         "Nomad callback input manifest sent"
     );
-    ensure_before(connection_deadline)?;
+    ensure_before(setup_deadline, "Nomad transfer setup timed out")?;
     let valid_paths = read_transfer_frame(
         &mut socket,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
@@ -390,7 +397,7 @@ pub fn serve_connection(
         allocation_id = authentication.allocation_id,
         "Nomad callback input manifest accepted"
     );
-    ensure_before(connection_deadline)?;
+    ensure_before(setup_deadline, "Nomad transfer setup timed out")?;
     let request_frame = read_transfer_frame(
         &mut socket,
         ProtocolLimits::new(limits.maximum_frame_metadata_bytes(), 0),
@@ -415,7 +422,7 @@ pub fn serve_connection(
         &requested,
         gateway_store,
         limits,
-        connection_deadline,
+        setup_deadline,
     )?;
     tracing::debug!(
         event = "nomad.callback.output_collection.started",
@@ -425,6 +432,11 @@ pub fn serve_connection(
         expected_output_count = build_request.expected_outputs().len(),
         "Nomad callback output collection started"
     );
+    let output_collection_deadline = phase_deadline(
+        Instant::now(),
+        limits.output_collection_timeout(),
+        "Nomad output collection timeout is invalid",
+    )?;
     let outcome = match receive_build_outputs(
         &mut socket,
         &mut session,
@@ -433,7 +445,7 @@ pub fn serve_connection(
         build_request,
         gateway_store,
         limits,
-        connection_deadline,
+        output_collection_deadline.min(connection_deadline),
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -535,7 +547,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
     loop {
-        ensure_before(connection_deadline)?;
+        ensure_before(connection_deadline, "Nomad output collection timed out")?;
         let frame = read_transfer_frame(
             socket,
             ProtocolLimits::new(
@@ -703,7 +715,7 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     );
     let mut store = GatewayStoreConnection::connect(gateway_store)?;
     for requested_path in &requested.paths {
-        ensure_before(connection_deadline)?;
+        ensure_before(connection_deadline, "Nomad transfer setup timed out")?;
         let entry = manifest
             .paths
             .iter()
@@ -878,12 +890,15 @@ fn take_chunk(chunk: &mut Vec<u8>) -> Vec<u8> {
     std::mem::replace(chunk, Vec::with_capacity(capacity))
 }
 
-fn ensure_before(deadline: Instant) -> io::Result<()> {
+fn phase_deadline(started: Instant, timeout: Duration, error: &str) -> io::Result<Instant> {
+    started
+        .checked_add(timeout)
+        .ok_or_else(|| io::Error::other(error))
+}
+
+fn ensure_before(deadline: Instant, error: &str) -> io::Result<()> {
     if Instant::now() >= deadline {
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Nomad connection lifetime exceeded",
-        ));
+        return Err(io::Error::new(io::ErrorKind::TimedOut, error));
     }
     Ok(())
 }
@@ -1100,8 +1115,23 @@ impl Drop for ConnectionPermit {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputTransferSummary, summarize_requested_inputs, take_chunk};
+    use super::{
+        ensure_before, phase_deadline, summarize_requested_inputs, take_chunk, InputTransferSummary,
+    };
     use crate::nomad::protocol::{PathManifestEntry, PathSet};
+    use std::io;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn phase_deadline_rejects_work_after_phase_timeout() {
+        let deadline = phase_deadline(Instant::now(), Duration::ZERO, "invalid phase timeout")
+            .unwrap_or_else(|error| panic!("deadline computes: {error}"));
+
+        let error = ensure_before(deadline, "phase timed out").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), "phase timed out");
+    }
 
     #[test]
     fn input_transfer_summary_counts_only_requested_paths() {
