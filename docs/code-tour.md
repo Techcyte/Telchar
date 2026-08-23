@@ -136,7 +136,7 @@ Never edit an applied migration. Add the next numbered migration and tests.
 
 Integration tests are organized by behavior. Larger suites use a small root fixture module plus focused files:
 
-- `operation_dispatch.rs` with focused protocol/store, admission/lifecycle, scheduling/coalescing, cancellation/disconnect, log, and backpressure modules under `operation_dispatch/`; current modules are `protocol`, `store_transfer`, `validation`, `build_admission`, `build_cleanup`, `build_completion`, `build_logs`, `queueing`, `coalescing`, `request_state`, `cancellation`, `detached_completion`, and `backpressure`; 
+- `operation_dispatch.rs` with focused protocol/store, admission/lifecycle, scheduling/coalescing, cancellation/disconnect, log, and backpressure modules under `operation_dispatch/`; current modules are `protocol`, `store_transfer`, `validation`, `build_admission`, `build_cleanup`, `build_completion`, `build_logs`, `queueing`, `coalescing`, `request_state`, `cancellation`, `detached_completion`, and `backpressure`;
 - the four `persistence_*.rs` suites listed above;
 - `service_config.rs` with `service_config/{core,environment,nomad,static_ssh}.rs`;
 - `nomad_backend.rs` with `nomad_backend/{client,execution,identity,rendering}.rs`;
