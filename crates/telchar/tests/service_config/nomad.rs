@@ -11,7 +11,7 @@ fn loads_configured_nomad_callback_service() {
     fs::write(
         &config_path,
         r#"
-[nomad_callback]
+[backends.nomad_callback]
 bind = "127.0.0.1:17443"
 public_url = "wss://gateway.internal/build-callback"
 maximum_connections = 12
@@ -27,7 +27,7 @@ maximum_retained_nonces = 4096
     unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
 
     let config = ServiceConfig::load().expect("configuration loads");
-    let callback = config.nomad_callback();
+    let callback = config.nomad_callback().expect("Nomad callback is configured");
     assert_eq!(callback.bind().to_string(), "127.0.0.1:17443");
     assert_eq!(
         callback.public_url(),
@@ -54,7 +54,7 @@ fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
     fs::write(
         &config_path,
         r#"
-[nomad_callback]
+[backends.nomad_callback]
 public_url = "ws://gateway.internal:17443/build-callback"
 
 [[backends.nomad]]
@@ -140,7 +140,10 @@ fn rejects_invalid_nomad_callback_service_configuration() {
         "maximum_jwks_bytes = 0",
         "maximum_retained_nonces = 0",
     ] {
-        fs::write(&config_path, format!("[nomad_callback]\n{callback}\n"))
+        fs::write(
+            &config_path,
+            format!("[backends.nomad_callback]\n{callback}\n"),
+        )
             .expect("configuration writes");
         unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
         assert!(ServiceConfig::load().is_err(), "accepted {callback}");
