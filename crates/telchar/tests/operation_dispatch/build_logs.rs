@@ -26,7 +26,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
         "unix:///fixed-gateway.sock",
         [
             ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
-            ("RUST_LOG", "debug".to_owned()),
+            ("RUST_LOG", "trace".to_owned()),
         ],
     );
     let child = &mut fixture.frontend;
@@ -81,6 +81,13 @@ fn build_derivation_streams_helper_logs_before_success_result() {
             && stderr.contains("event=\"backend.execution.started\"")
             && stderr.contains("event=\"backend.execution.completed\""),
         "missing backend lifecycle telemetry: {stderr}"
+    );
+    assert!(
+        stderr.contains("event=\"shared_build.coalescing.leader\"")
+            && stderr.contains("event=\"shared_build.queue.enqueued\"")
+            && stderr.contains("event=\"shared_build.scheduler.admitted\"")
+            && stderr.contains("event=\"shared_build.queue.admitted\""),
+        "missing shared-build scheduling telemetry: {stderr}"
     );
     assert!(!stderr.contains("build-log-line"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");

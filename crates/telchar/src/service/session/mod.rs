@@ -423,6 +423,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
                         crate::service::metrics::shared_build_leader();
+                        tracing::debug!(
+                            event = "shared_build.coalescing.leader",
+                            backend_name = selected_target.name(),
+                            backend_kind = selected_target.kind().as_str(),
+                            "request became shared-build leader"
+                        );
                         let execution_started = std::time::Instant::now();
                         let durable_claim = crate::persistence::claim_shared_build_with_request(
                             database_url,
@@ -454,6 +460,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             match durable_claim.build.state {
                                 crate::persistence::SharedBuildState::Succeeded => {
                                     crate::service::metrics::shared_build_reused_result();
+                                    tracing::debug!(
+                                        event = "shared_build.result.reused",
+                                        backend_name = selected_target.name(),
+                                        backend_kind = selected_target.kind().as_str(),
+                                        "durable shared-build result reused"
+                                    );
                                     match durable_shared_build_result(&durable_claim.build) {
                                         Ok(result) => leader.complete(Ok(result)).map_err(|_| {
                                             io::Error::other(
@@ -531,6 +543,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             durable_execution_owned.set(true);
                             let queue_started = std::time::Instant::now();
                             crate::service::metrics::shared_build_enqueued();
+                            tracing::debug!(
+                                event = "shared_build.queue.enqueued",
+                                backend_name = selected_target.name(),
+                                backend_kind = selected_target.kind().as_str(),
+                                "shared build enqueued"
+                            );
                             if let Err(error) = crate::persistence::enqueue_shared_build(
                                 database_url,
                                 derivation_path,
@@ -559,6 +577,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 );
                             }
                             crate::service::metrics::shared_build_admitted(queue_started.elapsed());
+                            tracing::debug!(
+                                event = "shared_build.queue.admitted",
+                                backend_name = selected_target.name(),
+                                backend_kind = selected_target.kind().as_str(),
+                                duration_ms = queue_started.elapsed().as_millis(),
+                                "shared build left queue for execution"
+                            );
                             let substitution_started = std::time::Instant::now();
                             let result = match substitute_build_outputs(
                                 store_substitution,
@@ -662,6 +687,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                     crate::shared_build::SharedBuildAccess::Follower(follower) => {
                         crate::service::metrics::shared_build_follower();
+                        tracing::debug!(
+                            event = "shared_build.coalescing.follower",
+                            backend_name = selected_target.name(),
+                            backend_kind = selected_target.kind().as_str(),
+                            "request joined shared-build leader"
+                        );
                         nix_worker_protocol::write_stderr_frame(
                             &mut output,
                             nix_worker_protocol::StderrFrame::Next {
