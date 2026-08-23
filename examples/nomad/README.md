@@ -157,16 +157,30 @@ Two reasonable approaches:
 
 ### Packaged ingress image
 
-`telchar-ssh-ingress-oci` runs restricted OpenSSH and renews a host certificate through Vault. It requires:
+`telchar-ssh-ingress-oci` runs restricted OpenSSH. It reads SSH identity and authentication files mounted by the operator; the image does not contact Vault or any other credential provider.
 
-- a Vault token delivered outside the jobspec;
-- a host-signing endpoint;
-- client CA access;
-- exact host principals;
-- access to the gateway IPC socket;
-- UID `995` so Linux `SO_PEERCRED` matches the gateway's `--frontend-uid`.
+The simplest mode uses a static host key and `authorized_keys`:
 
-The jobspec contains a commented task sketch.
+```text
+TELCHAR_SSH_HOST_IDENTITY_MODE=key
+TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=authorized-keys
+TELCHAR_SSH_HOST_KEY_FILE=/alloc/data/ssh/ssh_host_ed25519_key
+TELCHAR_SSH_AUTHORIZED_KEYS_FILE=/alloc/data/ssh/authorized_keys
+```
+
+Certificate mode uses a host key, host certificate, and trusted client CA:
+
+```text
+TELCHAR_SSH_HOST_IDENTITY_MODE=certificate
+TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=certificate
+TELCHAR_SSH_HOST_KEY_FILE=/alloc/data/ssh/ssh_host_ed25519_key
+TELCHAR_SSH_HOST_CERTIFICATE_FILE=/alloc/data/ssh/ssh_host_ed25519_key-cert.pub
+TELCHAR_SSH_CLIENT_CA_FILE=/alloc/data/ssh/client-ca.pub
+```
+
+Vault is one optional way to populate and rotate certificate-mode files. Run Vault integration in a separate sidecar that writes credentials atomically into a shared volume. The ingress watches those files and reloads OpenSSH when they change. A Vault Agent, Nomad template task, Smallstep client, Kubernetes sidecar, systemd credential service, or operator script can provide the same file contract.
+
+The jobspec contains a commented sidecar sketch based on a production deployment. The ingress process starts as root so `sshd` can perform normal privilege separation; authenticated sessions run as packaged UID `995`, which must match the gateway's `--frontend-uid`.
 
 ### Operator-managed OpenSSH
 

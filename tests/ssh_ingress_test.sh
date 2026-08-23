@@ -21,7 +21,7 @@ printf 'sshd %s\n' "$*" >>"$TEST_LOG"
 if [[ " $* " == *" -D "* ]]; then
   trap 'printf "hup\n" >>"$TEST_LOG"' HUP
   trap 'exit 0' TERM INT
-  while true; do sleep 1; done
+  while true; do /bin/sleep 1; done
 fi
 EOF
 chmod +x "$bin_directory/sshd"
@@ -81,18 +81,21 @@ run_mode() {
   if [[ "$host_mode" == certificate ]]; then
     grep -q -- "-o HostCertificate=$host_certificate" "$log_file"
   else
-    ! grep -q -- 'HostCertificate=' "$log_file"
+    grep -q -- '-o HostCertificate=none' "$log_file"
   fi
   if [[ "$client_mode" == certificate ]]; then
     grep -q -- "-o TrustedUserCAKeys=$client_ca" "$log_file"
-    ! grep -q -- 'AuthorizedKeysFile=' "$log_file"
+    grep -q -- '-o AuthorizedKeysFile=none' "$log_file"
   else
     grep -q -- "-o AuthorizedKeysFile=$authorized_keys" "$log_file"
-    ! grep -q -- 'TrustedUserCAKeys=' "$log_file"
+    grep -q -- '-o TrustedUserCAKeys=none' "$log_file"
   fi
 
   /bin/sleep 0.15
-  ! grep -q '^hup$' "$log_file"
+  if grep -q '^hup$' "$log_file"; then
+    echo "unchanged credentials triggered a reload" >&2
+    exit 1
+  fi
   printf 'changed\n' >>"$credential_directory/$changed_file"
   wait_for_log '^hup$' "$log_file"
   [[ "$(grep -c '^hup$' "$log_file")" -eq 1 ]]
