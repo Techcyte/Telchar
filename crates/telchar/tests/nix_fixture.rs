@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix_worker_protocol::{LATEST_WORKER_VERSION, WorkerOperation, WorkerTrust};
+use nix_worker_protocol::{WorkerOperation, WorkerTrust, LATEST_WORKER_VERSION};
 use telchar::fixture::nix::{NixFixture, TrustMode};
 use telchar::fixture::worker_trace::TraceCapture;
 
@@ -86,6 +86,27 @@ fn killed_fixture_owner_cleans_process_and_store() {
     }
     assert!(!root.exists(), "killed fixture owner leaked root: {root:?}");
     let _ = std::fs::remove_file(evidence);
+}
+
+#[test]
+fn development_shell_uses_the_flake_pinned_nix_client() {
+    let expected = std::env::var_os("TELCHAR_NIX_BIN")
+        .map(std::path::PathBuf::from)
+        .expect("TELCHAR_NIX_BIN identifies flake-pinned Nix");
+    let resolved = Command::new("sh")
+        .args(["-c", "command -v nix"])
+        .output()
+        .expect("shell resolves Nix client");
+    assert!(
+        resolved.status.success(),
+        "Nix client is available: {resolved:?}"
+    );
+    let resolved = String::from_utf8(resolved.stdout).expect("Nix client path is UTF-8");
+
+    assert_eq!(
+        std::fs::canonicalize(resolved.trim()).expect("resolved Nix client canonicalizes"),
+        std::fs::canonicalize(expected).expect("flake-pinned Nix client canonicalizes")
+    );
 }
 
 #[test]
@@ -270,11 +291,9 @@ fn real_store_import_registers_valid_nar_and_export_streams_it() {
     source_daemon
         .import_nar(body.as_slice())
         .expect("valid NAR imports");
-    assert!(
-        source_daemon
-            .is_valid_path(&path)
-            .expect("imported path query")
-    );
+    assert!(source_daemon
+        .is_valid_path(&path)
+        .expect("imported path query"));
     let imported = source_daemon
         .query_path_info(&path)
         .expect("imported metadata query");
@@ -307,11 +326,9 @@ fn legacy_import_rejects_structurally_corrupt_export() {
         .import_nar(exported.as_slice())
         .expect_err("structurally corrupt export must be rejected");
     assert!(error.to_string().contains("import"));
-    assert!(
-        !source_daemon
-            .is_valid_path(&path)
-            .expect("corrupt path query")
-    );
+    assert!(!source_daemon
+        .is_valid_path(&path)
+        .expect("corrupt path query"));
 
     source_daemon.stop().expect("source daemon stops");
     source_fixture.cleanup().expect("source fixture cleans");
