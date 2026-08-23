@@ -15,6 +15,8 @@ stock Nix client
 
 ## Status
 
+Current pre-1.0 release: `0.1.0`. Version tags are the release authority; OCI archives use the same version tag.
+
 The MVP supports classic input-addressed and fixed-output derivations in normal build mode. It includes durable PostgreSQL coordination, duplicate suppression, gateway cache substitution, per-subject queue limits, exact-target restart recovery, bounded transfers, and client-independent execution.
 
 Current limits:
@@ -92,6 +94,8 @@ nix build .#telchar-nix-daemon-oci
 nix build .#telchar-nomad-worker-oci
 nix build .#telchar-ssh-ingress-oci
 ```
+
+Tagged releases publish all four archives to `ghcr.io/techcyte`: `telchar`, `telchar-nomad-worker`, `telchar-nix-daemon`, and `telchar-ssh-ingress`. Images are tagged with the exact release version; pre-1.0 releases do not publish a moving `latest` tag.
 
 The gateway and worker images are the application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. Load or publish the exact archives with your container tooling.
 
