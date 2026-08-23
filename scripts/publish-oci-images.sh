@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Publishes the four exact-version release OCI archives to GitHub Container Registry.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+: "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+if [[ ! $RELEASE_VERSION =~ ^[1-9][0-9]{3}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
+  echo "release version must match YYYY.M.PATCH" >&2
+  exit 1
+fi
+
+manifest_version=$(nix eval --raw .#packages.x86_64-linux.telchar.version)
+if [[ $RELEASE_VERSION != "$manifest_version" ]]; then
+  echo "release version $RELEASE_VERSION does not match package version $manifest_version" >&2
+  exit 1
+fi
+
+: "${GITHUB_ACTOR:?GITHUB_ACTOR is required}"
+: "${GHCR_TOKEN:?GHCR_TOKEN is required}"
+printf '%s' "$GHCR_TOKEN" | nix develop --command skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+registry=ghcr.io/techcyte
+for specification in \
+  'telchar-oci:telchar' \
+  'telchar-nomad-worker-oci:telchar-nomad-worker' \
+  'telchar-nix-daemon-oci:telchar-nix-daemon' \
+  'telchar-ssh-ingress-oci:telchar-ssh-ingress'; do
+  package=${specification%%:*}
+  image=${specification#*:}
+  archive=$(nix build --no-link --print-out-paths ".#$package")
+  nix develop --command skopeo copy \
+    "docker-archive:$archive" \
+    "docker://$registry/$image:$RELEASE_VERSION"
+done

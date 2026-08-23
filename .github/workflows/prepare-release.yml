@@ -1,0 +1,77 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: CalVer release version (YYYY.M.PATCH); defaults to the current month with patch 0
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open release pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@2126ae7fc54c9df00dd18f7f18754393182c73cd # v31.9.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version=$(nix develop -c scripts/prepare-release.py --version "$REQUESTED_VERSION")
+          else
+            version=$(nix develop -c scripts/prepare-release.py)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release metadata
+        run: |
+          nix develop -c cargo check --locked --workspace
+          nix build --no-link .#checks.x86_64-linux.oci-images
+          nix build --no-link .#checks.x86_64-linux.release-publication-authority
+
+      - name: Open release pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          title="release: prepare v$VERSION"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" || true
+          git switch -C "$branch"
+          git add Cargo.lock crates/*/Cargo.toml nix/packages.nix nix/tests/oci-images.nix
+          if git diff --cached --quiet; then
+            echo "release version is already prepared: $VERSION" >&2
+            exit 1
+          fi
+          git commit -m "$title"
+          git push --force-with-lease origin "$branch"
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            gh pr edit "$branch" --title "$title" --body "Prepares Telchar v$VERSION. Merge after review, then run the Publish release workflow for this version."
+          else
+            gh pr create --base main --head "$branch" --title "$title" --body "Prepares Telchar v$VERSION. Merge after review, then run the Publish release workflow for this version."
+          fi
+          gh workflow run ci.yml --ref "$branch"

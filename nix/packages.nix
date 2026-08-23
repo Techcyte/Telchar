@@ -122,6 +122,10 @@ let
         "995"
       ];
       User = "995:995";
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
+        "org.opencontainers.image.title" = "Telchar";
+      };
     };
     config = {
       Entrypoint = [ "/bin/telchar" ];
@@ -170,6 +174,10 @@ let
         "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       ];
       User = "995:995";
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
+        "org.opencontainers.image.title" = "Telchar Nix daemon";
+      };
     };
     config = {
       Entrypoint = [ "/bin/telchar-nix-daemon" ];
@@ -210,6 +218,10 @@ let
     ];
     passthru.imageConfig = {
       Entrypoint = [ "/bin/telchar-ssh-ingress" ];
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
+        "org.opencontainers.image.title" = "Telchar SSH ingress";
+      };
     };
     config = {
       Entrypoint = [ "/bin/telchar-ssh-ingress" ];
@@ -237,6 +249,10 @@ let
     ];
     passthru.imageConfig = {
       Entrypoint = [ "/bin/telchar-nomad-worker" ];
+      Labels = {
+        "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
+        "org.opencontainers.image.title" = "Telchar Nomad worker";
+      };
     };
     config = {
       Entrypoint = [ "/bin/telchar-nomad-worker" ];
