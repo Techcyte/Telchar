@@ -314,6 +314,10 @@ args = ["--stdio"]
     assert_eq!(backends[0].resources().cpu_mhz(), 2000);
     assert_eq!(backends[0].resources().memory_mb(), 4096);
     assert_eq!(backends[0].resources().disk_mb(), 16384);
+    assert_eq!(backends[0].priority().minimum(), 50);
+    assert_eq!(backends[0].priority().default(), 50);
+    assert_eq!(backends[0].priority().maximum(), 50);
+    assert!(backends[0].resource_profiles().is_empty());
     assert_eq!(backends[0].constraints().len(), 2);
     assert_eq!(backends[0].constraints()[0].attribute(), "${attr.cpu.arch}");
     assert_eq!(backends[0].constraints()[0].operator(), "=");

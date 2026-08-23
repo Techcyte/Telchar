@@ -42,6 +42,10 @@ Independent rebuilds or signed provenance need an explicit trust model, quorum o
 
 Add Kubernetes, cloud batch, or another scheduler only for a real fleet. Preserve exact persisted execution identity, operator-owned credentials, bounded control-plane behavior, and exact-target recovery.
 
+### Nomad hardware device reservations
+
+Add operator-defined, bounded Nomad device requests only when a real hardware workload requires them. Resource-profile constraints may select a GPU-capable node class, but placement does not reserve exclusive hardware. GPU and other device support must validate allowlisted device names and counts, render Nomad task `Devices` resources, expose reservation telemetry without workload-derived guesses, and include executable scheduling and oversubscription evidence.
+
 ### OCI images
 
 The executable Docker-backed fixtures prove archive loading, declared entrypoints, non-root gateway execution, real Nix-daemon socket access, stock-Nix classic and fixed-output builds, PostgreSQL migration and ownership fencing, retained-result reuse, graceful and crash restart, store interruption, exact-archive redeployment, future-schema rejection, backup restore, and no blind resubmission. Operator-owned secret delivery remains deployment policy. Images run the same Telchar binaries without a container-specific product mode.

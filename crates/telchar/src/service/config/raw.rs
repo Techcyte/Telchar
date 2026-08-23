@@ -151,6 +151,9 @@ pub(super) struct RawNomadBackendConfig {
     #[serde(default)]
     pub(super) driver_config: toml::Table,
     pub(super) resources: RawNomadResources,
+    pub(super) priority: Option<RawNomadPriority>,
+    #[serde(default)]
+    pub(super) resource_profiles: Vec<RawNomadResourceProfile>,
     pub(super) job_name_scope: String,
     pub(super) poll_interval_seconds: u64,
     pub(super) runtime_limit_seconds: u64,
@@ -243,6 +246,29 @@ pub(super) struct RawNomadResources {
     pub(super) cpu_mhz: u64,
     pub(super) memory_mb: u64,
     pub(super) disk_mb: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadPriority {
+    pub(super) minimum: u8,
+    pub(super) default: u8,
+    pub(super) maximum: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadResourceProfile {
+    pub(super) name: String,
+    pub(super) required_feature: String,
+    pub(super) cpu_mhz: u64,
+    pub(super) memory_mb: u64,
+    pub(super) disk_mb: u64,
+    pub(super) priority_minimum: u8,
+    pub(super) priority_default: u8,
+    pub(super) priority_maximum: u8,
+    #[serde(default)]
+    pub(super) constraints: Vec<RawNomadConstraint>,
 }
 
 #[derive(Deserialize)]

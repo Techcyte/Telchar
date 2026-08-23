@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
-use crate::service::config::{NomadBackendConfig, NomadTransferAuthentication};
+use crate::service::config::{NomadBackendConfig, NomadConstraint, NomadTransferAuthentication};
 
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 
@@ -316,10 +316,24 @@ impl NomadClient {
             backend_name = self.config.target().name(),
             "Nomad execution submission started"
         );
-        let submission = match self.submit(shared_build_key) {
+        let profile = self
+            .config
+            .select_resource_profile(execution.build().required_system_features())
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Nomad resource profile selection is ambiguous",
+                )
+            })?;
+        let submission = match self.submit_for_features(
+            shared_build_key,
+            execution.build().required_system_features(),
+        ) {
             Ok(submission) => {
                 crate::service::metrics::nomad_submission_finished(
                     self.config.target().name(),
+                    profile.name(),
+                    profile.priority().default(),
                     submission_started.elapsed(),
                     "succeeded",
                 );
@@ -334,6 +348,8 @@ impl NomadClient {
             Err(error) => {
                 crate::service::metrics::nomad_submission_finished(
                     self.config.target().name(),
+                    profile.name(),
+                    profile.priority().default(),
                     submission_started.elapsed(),
                     "failed",
                 );
@@ -456,6 +472,14 @@ impl NomadClient {
     }
 
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {
+        self.submit_for_features(shared_build_key, &[] as &[&str])
+    }
+
+    pub fn submit_for_features<S: AsRef<str>>(
+        &self,
+        shared_build_key: &[u8],
+        required_features: &[S],
+    ) -> io::Result<NomadSubmission> {
         let started = Instant::now();
         tracing::trace!(
             event = "nomad.api.request.started",
@@ -468,7 +492,11 @@ impl NomadClient {
             .client
             .post(format!("{}/v1/jobs", self.config.endpoint()))
             .query(&[("namespace", self.config.namespace())])
-            .json(&render_job(&self.config, shared_build_key)?)
+            .json(&render_job_for_features(
+                &self.config,
+                shared_build_key,
+                required_features,
+            )?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|_| io::Error::other("Nomad job submission failed"))?;
@@ -538,22 +566,54 @@ pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u
 }
 
 pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> io::Result<Value> {
-    render_job_at(config, shared_build_key, SystemTime::now())
+    render_job_for_features(config, shared_build_key, &[] as &[&str])
 }
 
-fn render_job_at(
+pub fn render_job_for_features<S: AsRef<str>>(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
+    required_features: &[S],
+) -> io::Result<Value> {
+    render_job_at(
+        config,
+        shared_build_key,
+        required_features,
+        SystemTime::now(),
+    )
+}
+
+fn render_job_at<S: AsRef<str>>(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    required_features: &[S],
     issued_at: SystemTime,
 ) -> io::Result<Value> {
+    let profile = config
+        .select_resource_profile(required_features)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Nomad resource profile selection is ambiguous",
+            )
+        })?;
+    tracing::debug!(
+        event = "nomad.resource_profile.selected",
+        backend_name = config.target().name(),
+        resource_profile = profile.name(),
+        priority = profile.priority().default(),
+        cpu_mhz = profile.resources().cpu_mhz(),
+        memory_mb = profile.resources().memory_mb(),
+        disk_mb = profile.resources().disk_mb(),
+        "Nomad resource profile selected"
+    );
     let mut task = json!({
         "Name": "build",
         "Driver": config.driver(),
         "Config": Value::Object(config.driver_config().clone()),
         "Resources": {
-            "CPU": config.resources().cpu_mhz(),
-            "MemoryMB": config.resources().memory_mb(),
-            "DiskMB": config.resources().disk_mb(),
+            "CPU": profile.resources().cpu_mhz(),
+            "MemoryMB": profile.resources().memory_mb(),
+            "DiskMB": profile.resources().disk_mb(),
         },
         "Env": {
             "TELCHAR_TRANSFER_ENDPOINT": config.transfer_endpoint(),
@@ -660,13 +720,8 @@ fn render_job_at(
     let constraints = config
         .constraints()
         .iter()
-        .map(|constraint| {
-            json!({
-                "LTarget": constraint.attribute(),
-                "Operand": constraint.operator(),
-                "RTarget": constraint.value(),
-            })
-        })
+        .chain(profile.constraints())
+        .map(render_constraint)
         .collect::<Vec<_>>();
     Ok(json!({
         "Job": {
@@ -675,14 +730,24 @@ fn render_job_at(
             "Type": "batch",
             "Namespace": config.namespace(),
             "Datacenters": ["*"],
+            "Priority": profile.priority().default(),
             "Constraints": constraints,
             "TaskGroups": [Value::Object(group)],
             "Meta": {
                 "telchar_backend": config.target().name(),
                 "telchar_system": config.target().system(),
+                "telchar_resource_profile": profile.name(),
             },
         }
     }))
+}
+
+fn render_constraint(constraint: &NomadConstraint) -> Value {
+    json!({
+        "LTarget": constraint.attribute(),
+        "Operand": constraint.operator(),
+        "RTarget": constraint.value(),
+    })
 }
 
 fn hmac_capability(

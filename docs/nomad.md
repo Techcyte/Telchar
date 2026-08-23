@@ -107,6 +107,48 @@ operator = "="
 value = "general"
 ```
 
-Limits separately bound constraint count and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, live logs, idle time, setup, runtime, output collection, connection lifetime, authentication, replay retention, reconnect, and diagnostics. These settings are strict: unknown fields or unsafe credential files fail startup.
+The required `[backends.nomad.resources]` table remains the backward-compatible default resource profile. Its priority defaults to `50`; an operator may bound it explicitly:
+
+```toml
+[backends.nomad.resources]
+cpu_mhz = 2000
+memory_mb = 4096
+disk_mb = 16384
+
+[backends.nomad.priority]
+minimum = 40
+default = 50
+maximum = 60
+```
+
+Additional profiles map one operator-advertised Nix system feature to resources, bounded priority policy, and optional additive placement constraints:
+
+```toml
+# The selector must also be advertised by supported_features.
+supported_features = ["big-parallel", "overflow-aws"]
+
+[[backends.nomad.resource_profiles]]
+name = "overflow"
+required_feature = "overflow-aws"
+cpu_mhz = 4000
+memory_mb = 8192
+disk_mb = 32768
+priority_minimum = 50
+priority_default = 60
+priority_maximum = 70
+
+[[backends.nomad.resource_profiles.constraints]]
+attribute = "${node.class}"
+operator = "="
+value = "aws-overflow"
+```
+
+Selection is deterministic: no mapped feature selects `default`, exactly one mapped feature selects that profile, and multiple mapped profile features fail as ambiguous. Unrecognized required features remain ordinary backend incompatibility. Base backend constraints always remain in force; selected profile constraints are appended. A requested feature is workload placement input, not authenticated authorization. Operators retain authority through explicit feature advertisement, mappings, hard resource and priority bounds, placement constraints, and queue/concurrency limits.
+
+The selected profile's `priority_default` is rendered into the Nomad job. The configured minimum and maximum reserve bounded policy for later operator-controlled adjustments; derivations cannot supply a numeric priority. Nomad priority affects preemption when enabled and does not order pending jobs. Telchar's dependency readiness and durable admission remain separate gates.
+
+Profiles never infer CPU, memory, priority, or placement from derivation size, closure size, input count, or presumed workload cost. Placement constraints can select GPU-capable nodes but do not reserve a GPU. Bounded Nomad device reservations are deferred on the roadmap.
+
+Limits separately bound profile and constraint counts and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, live logs, idle time, setup, runtime, output collection, connection lifetime, authentication, replay retention, reconnect, and diagnostics. These settings are strict: unknown fields or unsafe credential files fail startup.
 
 Consult `crates/telchar/tests/service_config.rs` for complete exercised TOML examples until a generated configuration reference exists.

@@ -15,7 +15,7 @@ fn renders_operator_selected_driver_and_stable_backend_bound_job() {
 [[backends.nomad]]
 name = "nomad-arm"
 system = "aarch64-linux"
-supported_features = ["big-parallel"]
+supported_features = ["big-parallel", "telchar-ci", "telchar-memory"]
 maximum_concurrent_builds = 4
 endpoint = "http://nomad.example:4646"
 namespace = "telchar"
@@ -89,6 +89,36 @@ cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
 
+[backends.nomad.priority]
+minimum = 40
+default = 50
+maximum = 60
+
+[[backends.nomad.resource_profiles]]
+name = "ci"
+required_feature = "telchar-ci"
+cpu_mhz = 4000
+memory_mb = 8192
+disk_mb = 32768
+priority_minimum = 55
+priority_default = 60
+priority_maximum = 70
+
+[[backends.nomad.resource_profiles.constraints]]
+attribute = "${node.class}"
+operator = "="
+value = "overflow-aws"
+
+[[backends.nomad.resource_profiles]]
+name = "memory"
+required_feature = "telchar-memory"
+cpu_mhz = 2000
+memory_mb = 32768
+disk_mb = 16384
+priority_minimum = 45
+priority_default = 55
+priority_maximum = 65
+
 [backends.nomad.driver_config]
 command = "/opt/telchar/bin/worker"
 args = ["--stdio"]
@@ -127,6 +157,36 @@ args = ["--stdio"]
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"]["CPU"],
         2000
+    );
+    assert_eq!(job["Job"]["Priority"], 50);
+    assert_eq!(job["Job"]["Meta"]["telchar_resource_profile"], "default");
+
+    let ci_job =
+        telchar::nomad::backend::render_job_for_features(backend, b"ci-build-key", &["telchar-ci"])
+            .expect("CI job renders");
+    assert_eq!(
+        ci_job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"],
+        serde_json::json!({"CPU": 4000, "MemoryMB": 8192, "DiskMB": 32768})
+    );
+    assert_eq!(ci_job["Job"]["Priority"], 60);
+    assert_eq!(ci_job["Job"]["Meta"]["telchar_resource_profile"], "ci");
+    assert_eq!(
+        ci_job["Job"]["Constraints"][2],
+        serde_json::json!({
+            "LTarget": "${node.class}",
+            "Operand": "=",
+            "RTarget": "overflow-aws",
+        })
+    );
+
+    assert!(
+        telchar::nomad::backend::render_job_for_features(
+            backend,
+            b"ambiguous-build-key",
+            &["telchar-ci", "telchar-memory"],
+        )
+        .is_err(),
+        "multiple resource-profile features must be rejected"
     );
     assert_eq!(job["Job"]["Meta"]["telchar_backend"], "nomad-arm");
     assert_eq!(job["Job"]["Meta"]["telchar_system"], "aarch64-linux");
@@ -217,6 +277,25 @@ args = ["--stdio"]
     assert_eq!(identity["Audience"][0], "telchar-transfer");
     assert_eq!(identity["TTL"], 3_600_000_000_000_u64);
     assert!(job["Job"]["TaskGroups"][0]["Tasks"][1]["Identity"].is_null());
+
+    let configured = fs::read_to_string(&config_path).expect("configuration reads");
+    for invalid_config in [
+        configured.replace("minimum = 40", "minimum = 0"),
+        configured.replace(
+            "required_feature = \"telchar-memory\"",
+            "required_feature = \"telchar-ci\"",
+        ),
+        configured.replace(
+            "required_feature = \"telchar-memory\"",
+            "required_feature = \"unadvertised\"",
+        ),
+    ] {
+        fs::write(&config_path, invalid_config).expect("invalid configuration writes");
+        assert!(
+            ServiceConfig::load().is_err(),
+            "invalid resource profile configuration must fail"
+        );
+    }
 
     unsafe {
         match saved {
