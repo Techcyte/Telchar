@@ -200,6 +200,8 @@ pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let telemetry = telemetry::Telemetry::initialize()?;
+    let frontend = tracing::info_span!("ipc.frontend");
+    let _entered = frontend.enter();
     let result = run_frontend();
     if let Err(error) = &result {
         tracing::error!(
