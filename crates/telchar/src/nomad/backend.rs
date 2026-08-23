@@ -302,6 +302,7 @@ impl NomadClient {
         Ok(state)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
         database_url: &str,
