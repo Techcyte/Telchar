@@ -448,14 +448,12 @@ fn run_daemon() -> io::Result<()> {
             static_ssh_health,
             Duration::from_secs(1),
         )?;
-    let mut callback_service = if config.nomad_backends().is_empty() {
-        None
-    } else {
-        let callback_listener = std::net::TcpListener::bind(config.nomad_callback().bind())?;
+    let mut callback_service = if let Some(callback) = config.nomad_callback() {
+        let callback_listener = std::net::TcpListener::bind(callback.bind())?;
         Some(
             telchar::nomad::callback_service::NomadCallbackService::start(
                 callback_listener,
-                config.nomad_callback().clone(),
+                callback.clone(),
                 database_url.clone(),
                 config.nomad_backends().to_vec(),
                 gateway_store
@@ -466,6 +464,8 @@ fn run_daemon() -> io::Result<()> {
                 Arc::clone(&shared_builds),
             )?,
         )
+    } else {
+        None
     };
     let object_admission =
         telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);

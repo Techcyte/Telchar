@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn loads_configured_nomad_callback_service() {
+fn rejects_nomad_callback_without_nomad_backend() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
     let root = fixture_root("nomad-callback");
@@ -26,20 +26,12 @@ maximum_retained_nonces = 4096
     .expect("configuration writes");
     unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
 
-    let config = ServiceConfig::load().expect("configuration loads");
-    let callback = config.nomad_callback().expect("Nomad callback is configured");
-    assert_eq!(callback.bind().to_string(), "127.0.0.1:17443");
     assert_eq!(
-        callback.public_url(),
-        "wss://gateway.internal/build-callback"
+        ServiceConfig::load()
+            .expect_err("orphaned Nomad callback rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
     );
-    assert_eq!(callback.maximum_connections(), 12);
-    assert_eq!(callback.maximum_header_bytes(), 8192);
-    assert_eq!(callback.maximum_body_bytes(), 32768);
-    assert_eq!(callback.authentication_request_timeout().as_secs(), 7);
-    assert_eq!(callback.shutdown_drain_timeout().as_secs(), 11);
-    assert_eq!(callback.maximum_jwks_bytes(), 131072);
-    assert_eq!(callback.maximum_retained_nonces(), 4096);
 
     restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
@@ -144,7 +136,7 @@ fn rejects_invalid_nomad_callback_service_configuration() {
             &config_path,
             format!("[backends.nomad_callback]\n{callback}\n"),
         )
-            .expect("configuration writes");
+        .expect("configuration writes");
         unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
         assert!(ServiceConfig::load().is_err(), "accepted {callback}");
     }

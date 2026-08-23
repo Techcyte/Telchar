@@ -83,7 +83,7 @@ pub struct ServiceConfig {
     ownership_lease_duration: Duration,
     ipc_socket: Option<PathBuf>,
     maximum_ipc_sessions: usize,
-    nomad_callback: NomadCallbackConfig,
+    nomad_callback: Option<NomadCallbackConfig>,
     credential_mappings: BTreeMap<String, CredentialMapping>,
     default_scheduling_limits: SchedulingLimits,
     subject_scheduling_limits: BTreeMap<String, SchedulingLimits>,
@@ -159,8 +159,8 @@ impl ServiceConfig {
         self.maximum_ipc_sessions
     }
 
-    pub fn nomad_callback(&self) -> &NomadCallbackConfig {
-        &self.nomad_callback
+    pub fn nomad_callback(&self) -> Option<&NomadCallbackConfig> {
+        self.nomad_callback.as_ref()
     }
 
     pub fn credential_mapping(&self, credential_id: &str) -> Option<&CredentialMapping> {
@@ -366,7 +366,6 @@ impl ServiceConfig {
             return Err(invalid("IPC session limit is invalid"));
         }
 
-        let nomad_callback = validate_nomad_callback(raw.nomad_callback.unwrap_or_default())?;
         let credential_mappings = validate_mappings(
             raw.identity
                 .map(|identity| identity.credentials)
@@ -400,7 +399,17 @@ impl ServiceConfig {
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
         let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
-        let nomad_backends = validate_nomad_backends(backends.nomad, nomad_callback.public_url())?;
+        let nomad_callback = match (backends.nomad.is_empty(), backends.nomad_callback) {
+            (true, None) => None,
+            (true, Some(_)) => {
+                return Err(invalid("Nomad callback requires a Nomad backend"));
+            }
+            (false, callback) => Some(validate_nomad_callback(callback.unwrap_or_default())?),
+        };
+        let nomad_backends = match nomad_callback.as_ref() {
+            Some(callback) => validate_nomad_backends(backends.nomad, callback.public_url())?,
+            None => Vec::new(),
+        };
         validate_unique_backend_names(
             local_backend.as_ref(),
             &static_ssh_backends,

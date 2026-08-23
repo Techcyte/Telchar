@@ -114,23 +114,7 @@ maximum_concurrent_builds = 2
         Path::new("/run/telchar/daemon.sock")
     );
     assert_eq!(config.maximum_ipc_sessions(), 32);
-    assert_eq!(config.nomad_callback().bind().to_string(), "0.0.0.0:7443");
-    assert_eq!(
-        config.nomad_callback().public_url(),
-        "ws://127.0.0.1:7443/callback"
-    );
-    assert_eq!(config.nomad_callback().maximum_connections(), 64);
-    assert_eq!(config.nomad_callback().maximum_header_bytes(), 16 * 1024);
-    assert_eq!(config.nomad_callback().maximum_body_bytes(), 64 * 1024);
-    assert_eq!(
-        config
-            .nomad_callback()
-            .authentication_request_timeout()
-            .as_secs(),
-        10
-    );
-    assert_eq!(config.nomad_callback().maximum_jwks_bytes(), 1024 * 1024);
-    assert_eq!(config.nomad_callback().maximum_retained_nonces(), 65_536);
+    assert!(config.nomad_callback().is_none());
     assert_eq!(config.backend_permit_wait().as_secs(), 30);
     assert_eq!(
         config.scheduling_limits("unknown-subject"),

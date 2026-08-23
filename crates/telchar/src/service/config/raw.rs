@@ -9,7 +9,6 @@ pub(super) struct RawServiceConfig {
     pub(super) cache_publication: Option<CachePublicationSection>,
     pub(super) database: Option<DatabaseSection>,
     pub(super) ipc: Option<IpcSection>,
-    pub(super) nomad_callback: Option<RawNomadCallbackConfig>,
     pub(super) identity: Option<IdentityConfig>,
     pub(super) scheduling: Option<SchedulingConfig>,
     pub(super) backends: Option<BackendConfig>,
@@ -100,6 +99,7 @@ pub(super) struct RawSchedulingLimits {
 pub(super) struct BackendConfig {
     pub(super) permit_wait_seconds: Option<u64>,
     pub(super) local: Option<RawLocalBackendConfig>,
+    pub(super) nomad_callback: Option<RawNomadCallbackConfig>,
     #[serde(default)]
     pub(super) static_ssh: Vec<RawStaticSshBackendConfig>,
     #[serde(default)]

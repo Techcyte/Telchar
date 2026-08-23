@@ -21,10 +21,18 @@ fn shutdown_stops_accepting_and_force_closes_after_bounded_drain() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("fixture creates");
+    let hmac_secret = root.join("hmac-secret");
+    std::fs::write(&hmac_secret, "callback-secret\n").expect("HMAC secret writes");
+    std::fs::set_permissions(
+        &hmac_secret,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("HMAC secret permissions set");
     let config_path = root.join("telchar.toml");
     std::fs::write(
         &config_path,
-        r#"
+        format!(
+            r#"
 [backends.nomad_callback]
 bind = "127.0.0.1:17443"
 public_url = "ws://127.0.0.1:17443/callback"
@@ -35,7 +43,59 @@ authentication_request_timeout_seconds = 30
 shutdown_drain_timeout_seconds = 1
 maximum_jwks_bytes = 1048576
 maximum_retained_nonces = 65536
+
+[[backends.nomad]]
+name = "nomad-primary"
+system = "x86_64-linux"
+supported_features = []
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.internal:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+
+[backends.nomad.driver_config]
+command = "/bin/true"
+
+[backends.nomad.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+
+[backends.nomad.transfer_authentication]
+mode = "hmac"
+key_id = "callback-test"
+secret_file = "{}"
+
+[backends.nomad.store]
+mode = "daemon"
+uri = "daemon"
+
+[backends.nomad.transfer_limits]
+maximum_manifest_paths = 1
+maximum_manifest_bytes = 1024
+maximum_input_nar_bytes = 1024
+maximum_total_input_bytes = 1024
+maximum_output_nar_bytes = 1024
+maximum_total_output_bytes = 1024
+maximum_frame_metadata_bytes = 1024
+stream_buffer_bytes = 1024
+maximum_live_log_chunk_bytes = 1024
+live_log_queue_bytes = 1024
+transfer_idle_timeout_seconds = 60
+setup_timeout_seconds = 60
+output_collection_timeout_seconds = 60
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 60
+clock_skew_seconds = 5
+nonce_retention_seconds = 120
+reconnect_timeout_seconds = 60
+maximum_diagnostic_bytes = 1024
 "#,
+            hmac_secret.display()
+        ),
     )
     .expect("configuration writes");
     let saved = std::env::var_os("TELCHAR_CONFIG");
