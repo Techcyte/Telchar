@@ -470,25 +470,68 @@ EOH
     # Optional stock-Nix SSH ingress
     # --------------------------------
     # Telchar's IPC socket is the frontend boundary. An SSH sidecar can expose
-    # ssh-ng without changing gateway or backend configuration. The repository
-    # packages telchar-ssh-ingress-oci and documents its restricted sshd setup.
-    # It expects Vault-backed host-certificate renewal. A generic OpenSSH image
-    # may instead mount operator-managed HostKey, HostCertificate,
-    # TrustedUserCAKeys, and the forced-command executable.
+    # ssh-ng without changing gateway or backend configuration. The packaged
+    # image reads operator-managed files; it does not contact Vault.
     #
-    # Whichever approach you choose:
-    #   - run ingress with UID 995 so SO_PEERCRED matches --frontend-uid;
+    # Static-key mode needs a host key and authorized_keys. Certificate mode
+    # needs a host key, host certificate, and trusted client CA. In either mode:
+    #   - start the packaged sshd as root; authenticated sessions use UID 995;
+    #   - match gateway --frontend-uid to that session UID;
     #   - mount /alloc/data/run/daemon.sock from this group;
-    #   - force every accepted key to telchar-ssh-forced-command;
-    #   - disable forwarding, PTY, user environment, and arbitrary commands;
     #   - expose a stable TCP endpoint, commonly port 2222;
-    #   - keep host keys and client CA material outside PostgreSQL and Telchar.
+    #   - keep SSH identity files outside PostgreSQL and Telchar configuration.
     #
-    # Sketch using the packaged Vault-oriented image:
+    # Optional Vault certificate sidecar. Vault is merely one credential
+    # provider. This sidecar writes files atomically into the shared allocation
+    # directory; telchar-ssh-ingress watches them and reloads sshd.
+    #
+    # task "ssh-certificates" {
+    #   driver = "docker"
+    #
+    #   config {
+    #     image   = "hashicorp/vault:replace-me"
+    #     command = "/bin/sh"
+    #     args    = ["local/ssh-certificates.sh"]
+    #   }
+    #
+    #   vault {
+    #     role         = "telchar-gateway"
+    #     env          = false
+    #     disable_file = false
+    #   }
+    #
+    #   env {
+    #     VAULT_ADDR       = "https://vault.example.invalid"
+    #     VAULT_TOKEN_FILE = "/secrets/vault_token"
+    #   }
+    #
+    #   template {
+    #     destination = "local/ssh-certificates.sh"
+    #     perms       = "0755"
+    #     data        = <<'EOH'
+    #!/bin/sh
+    # set -eu
+    # credential_directory=/alloc/data/ssh
+    # host_public_key="$credential_directory/ssh_host_ed25519_key.pub"
+    # while true; do
+    #   token="$(cat "$VAULT_TOKEN_FILE")"
+    #   temporary_ca="$(mktemp "$credential_directory/client-ca.XXXXXX")"
+    #   temporary_certificate="$(mktemp "$credential_directory/host-certificate.XXXXXX")"
+    #   VAULT_TOKEN="$token" vault read -field=public_key ssh-client/config/ca >"$temporary_ca"
+    #   VAULT_TOKEN="$token" vault write -field=signed_key ssh-host/sign/telchar \
+    #     public_key="$(cat "$host_public_key")" cert_type=host \
+    #     valid_principals=telchar.example.invalid >"$temporary_certificate"
+    #   chmod 0644 "$temporary_ca" "$temporary_certificate"
+    #   mv -f "$temporary_ca" "$credential_directory/client-ca.pub"
+    #   mv -f "$temporary_certificate" "$credential_directory/ssh_host_ed25519_key-cert.pub"
+    #   sleep 43200
+    # done
+    # EOH
+    #   }
+    # }
     #
     # task "ssh-ingress" {
     #   driver = "docker"
-    #   user   = "995:995"
     #
     #   config {
     #     image = "registry.example.invalid/telchar-ssh-ingress@sha256:replace-me"
@@ -496,14 +539,13 @@ EOH
     #   }
     #
     #   env {
-    #     TELCHAR_IPC_SOCKET         = "/alloc/data/run/daemon.sock"
-    #     VAULT_ADDR                 = "https://vault.example.invalid"
-    #     TELCHAR_SSH_HOST_SIGN_PATH = "ssh-host/sign/telchar"
-    #     TELCHAR_SSH_HOST_PRINCIPALS = "telchar.example.invalid"
+    #     TELCHAR_IPC_SOCKET                    = "/alloc/data/run/daemon.sock"
+    #     TELCHAR_SSH_HOST_IDENTITY_MODE        = "certificate"
+    #     TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE = "certificate"
+    #     TELCHAR_SSH_HOST_KEY_FILE              = "/alloc/data/ssh/ssh_host_ed25519_key"
+    #     TELCHAR_SSH_HOST_CERTIFICATE_FILE      = "/alloc/data/ssh/ssh_host_ed25519_key-cert.pub"
+    #     TELCHAR_SSH_CLIENT_CA_FILE             = "/alloc/data/ssh/client-ca.pub"
     #   }
-    #
-    #   # Supply VAULT_TOKEN through a Nomad workload identity/Vault stanza or
-    #   # another secret broker. Do not put it directly in the jobspec.
     # }
   }
 }
