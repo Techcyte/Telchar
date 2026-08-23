@@ -221,6 +221,13 @@ impl NomadClient {
     }
 
     pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "nomad.api.request.started",
+            operation = "status",
+            backend_name = self.config.target().name(),
+            "Nomad API request started"
+        );
         if job_id.is_empty() || job_id.len() > 256 {
             return Err(io::Error::other("Nomad job monitoring failed"));
         }
@@ -231,6 +238,14 @@ impl NomadClient {
             .send()
             .map_err(|_| io::Error::other("Nomad job monitoring failed"))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
+            tracing::trace!(
+                event = "nomad.api.request.completed",
+                operation = "status",
+                backend_name = self.config.target().name(),
+                result = "missing",
+                duration_ms = started.elapsed().as_millis(),
+                "Nomad API request completed"
+            );
             return Ok(NomadExecutionState::Missing);
         }
         let job: JobResponse = bounded_json(
@@ -261,22 +276,31 @@ impl NomadClient {
                 .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
             "Nomad job monitoring failed",
         )?;
-        if allocations.is_empty() {
-            return Ok(NomadExecutionState::Pending);
-        }
-        if allocations
+        let state = if allocations.is_empty() {
+            NomadExecutionState::Pending
+        } else if allocations
             .iter()
             .any(|allocation| allocation.client_status == "failed")
         {
-            return Ok(NomadExecutionState::Failed);
-        }
-        if allocations
+            NomadExecutionState::Failed
+        } else if allocations
             .iter()
             .all(|allocation| allocation.client_status == "complete")
         {
-            return Ok(NomadExecutionState::Succeeded);
-        }
-        Ok(NomadExecutionState::Placed)
+            NomadExecutionState::Succeeded
+        } else {
+            NomadExecutionState::Placed
+        };
+        tracing::trace!(
+            event = "nomad.api.request.completed",
+            operation = "status",
+            backend_name = self.config.target().name(),
+            result = ?state,
+            allocation_count = allocations.len(),
+            duration_ms = started.elapsed().as_millis(),
+            "Nomad API request completed"
+        );
+        Ok(state)
     }
 
     pub fn execute(
@@ -287,12 +311,23 @@ impl NomadClient {
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
         let submission_started = Instant::now();
+        tracing::debug!(
+            event = "nomad.execution.submission_started",
+            backend_name = self.config.target().name(),
+            "Nomad execution submission started"
+        );
         let submission = match self.submit(shared_build_key) {
             Ok(submission) => {
                 crate::service::metrics::nomad_submission_finished(
                     self.config.target().name(),
                     submission_started.elapsed(),
                     "succeeded",
+                );
+                tracing::debug!(
+                    event = "nomad.execution.submitted",
+                    backend_name = self.config.target().name(),
+                    duration_ms = submission_started.elapsed().as_millis(),
+                    "Nomad execution submitted"
                 );
                 submission
             }
@@ -324,6 +359,12 @@ impl NomadClient {
                             crate::service::metrics::nomad_placed(
                                 self.config.target().name(),
                                 started.elapsed(),
+                            );
+                            tracing::debug!(
+                                event = "nomad.execution.placed",
+                                backend_name = self.config.target().name(),
+                                duration_ms = started.elapsed().as_millis(),
+                                "Nomad execution placed"
                             );
                             placement_recorded = true;
                         }
@@ -363,19 +404,34 @@ impl NomadClient {
             }
         })();
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
+        let result_name = if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        };
         crate::service::metrics::nomad_execution_finished(
             self.config.target().name(),
             started.elapsed(),
-            if result.is_ok() {
-                "succeeded"
-            } else {
-                "failed"
-            },
+            result_name,
+        );
+        tracing::debug!(
+            event = "nomad.execution.completed",
+            backend_name = self.config.target().name(),
+            result = result_name,
+            duration_ms = started.elapsed().as_millis(),
+            "Nomad execution completed"
         );
         result
     }
 
     fn stop(&self, job_id: &str) -> io::Result<()> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "nomad.api.request.started",
+            operation = "stop",
+            backend_name = self.config.target().name(),
+            "Nomad API request started"
+        );
         if !valid_nomad_identity(job_id) {
             return Err(io::Error::other("Nomad job cancellation failed"));
         }
@@ -388,10 +444,25 @@ impl NomadClient {
                 .map_err(|_| io::Error::other("Nomad job cancellation failed"))?,
             "Nomad job cancellation failed",
         )?;
+        tracing::trace!(
+            event = "nomad.api.request.completed",
+            operation = "stop",
+            backend_name = self.config.target().name(),
+            result = "succeeded",
+            duration_ms = started.elapsed().as_millis(),
+            "Nomad API request completed"
+        );
         Ok(())
     }
 
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {
+        let started = Instant::now();
+        tracing::trace!(
+            event = "nomad.api.request.started",
+            operation = "submit",
+            backend_name = self.config.target().name(),
+            "Nomad API request started"
+        );
         let job_id = deterministic_job_name(&self.config, shared_build_key);
         let response = self
             .client
@@ -405,6 +476,14 @@ impl NomadClient {
         if parsed.eval_id.is_empty() || parsed.eval_id.len() > 256 {
             return Err(io::Error::other("Nomad job submission failed"));
         }
+        tracing::trace!(
+            event = "nomad.api.request.completed",
+            operation = "submit",
+            backend_name = self.config.target().name(),
+            result = "succeeded",
+            duration_ms = started.elapsed().as_millis(),
+            "Nomad API request completed"
+        );
         Ok(NomadSubmission {
             job_id,
             evaluation_id: parsed.eval_id,

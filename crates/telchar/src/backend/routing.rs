@@ -255,7 +255,8 @@ impl BuildBackend for BackendExecutor {
         system: &str,
         required_features: &[&str],
     ) -> io::Result<crate::backend::BackendTarget> {
-        self.backends
+        let selected = self
+            .backends
             .inner
             .pool
             .targets()
@@ -275,13 +276,32 @@ impl BuildBackend for BackendExecutor {
                                 .static_ssh_health
                                 .is_ready(target.name())))
             })
-            .cloned()
-            .ok_or_else(|| {
-                io::Error::new(
+            .cloned();
+        match selected {
+            Some(target) => {
+                tracing::debug!(
+                    event = "backend.routing.selected",
+                    backend_name = target.name(),
+                    backend_kind = target.kind().as_str(),
+                    system,
+                    required_feature_count = required_features.len(),
+                    "build backend selected"
+                );
+                Ok(target)
+            }
+            None => {
+                tracing::debug!(
+                    event = "backend.routing.unavailable",
+                    system,
+                    required_feature_count = required_features.len(),
+                    "no compatible build backend available"
+                );
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "BuildDerivation execution is unavailable",
-                )
-            })
+                ))
+            }
+        }
     }
 
     fn execute_with_logs(
@@ -301,6 +321,12 @@ impl BuildBackend for BackendExecutor {
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();
         let started = std::time::Instant::now();
+        tracing::debug!(
+            event = "backend.execution.started",
+            backend_name = target_name,
+            backend_kind = target_kind.as_str(),
+            "backend execution started"
+        );
         let mut backend: Box<dyn BuildBackend> = match target_kind {
             BackendKind::Local => match (
                 &self.backends.inner.local_build_helper,
@@ -346,39 +372,61 @@ impl BuildBackend for BackendExecutor {
                     shared_build_key.as_bytes(),
                     cancelled,
                 );
+                let result_name = if result.is_ok() {
+                    "succeeded"
+                } else {
+                    "failed"
+                };
+                let failure_class = result.as_ref().err().map(|error| match error.kind() {
+                    io::ErrorKind::TimedOut => "timeout",
+                    io::ErrorKind::Interrupted => "cancelled",
+                    _ => "infrastructure",
+                });
                 crate::service::metrics::backend_execution_finished(
                     &target_name,
                     target_kind.as_str(),
                     started.elapsed(),
-                    if result.is_ok() {
-                        "succeeded"
-                    } else {
-                        "failed"
-                    },
-                    result.as_ref().err().map(|error| match error.kind() {
-                        io::ErrorKind::TimedOut => "timeout",
-                        io::ErrorKind::Interrupted => "cancelled",
-                        _ => "infrastructure",
-                    }),
+                    result_name,
+                    failure_class,
+                );
+                tracing::debug!(
+                    event = "backend.execution.completed",
+                    backend_name = target_name,
+                    backend_kind = target_kind.as_str(),
+                    result = result_name,
+                    failure_class,
+                    duration_ms = started.elapsed().as_millis(),
+                    "backend execution completed"
                 );
                 return result;
             }
         };
         let result = backend.execute_with_logs(execution, logs, cancelled);
+        let result_name = if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        let failure_class = result.as_ref().err().map(|error| match error.kind() {
+            io::ErrorKind::TimedOut => "timeout",
+            io::ErrorKind::Interrupted => "cancelled",
+            _ => "infrastructure",
+        });
         crate::service::metrics::backend_execution_finished(
             &target_name,
             target_kind.as_str(),
             started.elapsed(),
-            if result.is_ok() {
-                "succeeded"
-            } else {
-                "failed"
-            },
-            result.as_ref().err().map(|error| match error.kind() {
-                io::ErrorKind::TimedOut => "timeout",
-                io::ErrorKind::Interrupted => "cancelled",
-                _ => "infrastructure",
-            }),
+            result_name,
+            failure_class,
+        );
+        tracing::debug!(
+            event = "backend.execution.completed",
+            backend_name = target_name,
+            backend_kind = target_kind.as_str(),
+            result = result_name,
+            failure_class,
+            duration_ms = started.elapsed().as_millis(),
+            "backend execution completed"
         );
         result
     }
