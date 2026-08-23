@@ -40,11 +40,11 @@ The infrastructure scheduler owns machine placement and autoscaling. Nix stores 
 
 OpenSSH starts `telchar serve-stdio` as a restricted forced command for each client connection. The frontend attaches authenticated identity to the worker-protocol stream and forwards it over a private Unix socket. It has no database access and does not schedule work.
 
-One `telchar daemon` process owns the socket, scheduling, gateway-store access, backends, callback service, recovery monitors, and maintenance work. Before becoming ready it takes the fixed PostgreSQL advisory lock `0x5445_4c43_4841_5202` on a dedicated lifetime connection. The lock connection performs no ordinary transactions.
+One `telchar daemon` process owns the socket, scheduling, gateway-store access, backends, callback service, recovery monitors, and maintenance work. Before becoming ready it acquires the daemon ownership lease in PostgreSQL. The lease has an opaque token and monotonically increasing fencing generation; database time determines acquisition, renewal, and expiration.
 
-Lock contention rejects startup before listeners or backend side effects begin. Losing the connection permanently fences the daemon: it closes admission, prevents new mutations and submissions, joins bounded service work, and exits. Reconnecting does not restore ownership. PostgreSQL releases the lock after connection loss or process death, allowing a replacement daemon to perform normal recovery.
+A second daemon rejects startup while the lease remains current. The owner renews through ordinary short-lived PostgreSQL connections, so a transient connection loss does not itself surrender ownership if renewal succeeds before expiration. After expiration, a replacement may acquire a higher generation. Statement-level PostgreSQL triggers reject durable mutations from an expired generation, and a daemon that cannot renew closes admission, removes its IPC socket, joins bounded service work, and exits unsuccessfully.
 
-This is single-active process exclusion, not high availability. A standby design would need leadership epochs, callback routing, dispatch fencing, and shared or replicated gateway-store authority.
+This is single-active process exclusion, not high availability. A standby design would still need callback routing and shared or replicated gateway-store authority. See [Singleton ownership lease](adr/singleton-ownership-lease.md) for rationale and fencing details.
 
 ## Build lifecycle
 
@@ -78,8 +78,9 @@ PostgreSQL stores bounded request identity, attachments, shared-build state, adm
 
 Recovery first checks the exact expected outputs in the gateway store. If they are valid, they win regardless of the previous transient state. Otherwise recovery follows the persisted backend identity:
 
-- local and static SSH execution are output-only; missing outputs fail closed;
-- Nomad execution is adoptable only through the original backend, namespace, and persisted job identity.
+- local execution is output-only; absent gateway outputs fail recovery;
+- static SSH may reconnect only to the exact persisted backend and succeeds only if every expected output can be imported and validated;
+- Nomad execution is adoptable only through the persisted backend name and deterministic job identity. Recovery resolves that backend against current operator configuration, so endpoint and namespace changes under the same name are unsafe during in-flight work.
 
 A compatible backend is fungible only before dispatch. In-flight work is never migrated or blindly resubmitted.
 
@@ -134,7 +135,7 @@ Hostile multi-tenancy needs a separate store, cache, log, backend, and recovery 
 
 ## Protocol boundary
 
-The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, property tests, and fuzz targets. It may emit `tracing` instrumentation but contains no Telchar identity, scheduling, persistence, backend, service configuration, or OpenTelemetry exporter policy. Telchar may depend on the protocol crate; the reverse dependency is forbidden. `scripts/check-protocol-boundary.sh` enforces that direction.
+The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, property tests, and fuzz targets. It may emit `tracing` instrumentation but contains no Telchar identity, scheduling, persistence, backend, service configuration, or OpenTelemetry exporter policy. Telchar may depend on the protocol crate; the reverse dependency is forbidden. The `protocol-dependency-boundary` check in `nix/checks/policy.nix` enforces that direction through `nix flake check`.
 
 Unknown or unsupported operations fail closed because the worker protocol has no generic envelope that can safely skip arbitrary messages. Compatibility claims require typed coverage and real Nix fixtures, not only a matching protocol number.
 

@@ -92,7 +92,7 @@ The example mounts a host Nix daemon socket into every generated worker allocati
 /nix/var/nix/daemon-socket/socket
 ```
 
-This provides warm dependencies and lets ordinary Nix configuration own substituters, signatures, credentials, and registration. The socket must exist at the same path on every node selected by the backend constraints, and Docker must permit the bind mount.
+This provides access to whatever paths are already valid in that store and lets ordinary Nix configuration own substituters, signatures, credentials, and registration outside the callback session. The current worker checks validity once and requests unresolved paths from Telchar; it does not invoke substitution between that check and the request. The socket must exist at the same path on every node selected by the backend constraints, and Docker must permit the bind mount.
 
 Other supported topology:
 

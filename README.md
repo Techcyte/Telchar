@@ -66,12 +66,14 @@ Before production deployment, read the [operator guide](docs/operations.md). Nom
 
 ## Development
 
-Run the sandbox-compatible flake checks and the full integration suite:
+Run the sandbox-compatible flake evaluation and full integration suite:
 
 ```bash
-nix flake check
-nix develop -c cargo test --locked --workspace
+NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
+nix develop -c cargo test --locked --workspace -- --test-threads=1
 ```
+
+For curated release verification, including package builds and selected VM contracts, run `./scripts/check-release.sh`.
 
 Useful packages:
 
@@ -84,10 +86,12 @@ Reproducible OCI image archives are also flake packages:
 
 ```bash
 nix build .#telchar-oci
-podman load < result
+nix build .#telchar-nix-daemon-oci
 nix build .#telchar-nomad-worker-oci
-podman load < result
+nix build .#telchar-ssh-ingress-oci
 ```
+
+The gateway and worker images are the application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. Load or publish the exact archives with your container tooling.
 
 The gateway image runs as `995:995` with `HOME=/var/lib/telchar` and starts `telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995`; override the user, home, and command together when using another UID. Mount `/etc/telchar`, `/run/telchar`, persistent import and GC-root state, and the gateway Nix daemon socket. Supply PostgreSQL, credentials, configuration, and OTLP settings through operator-owned files or environment variables. The same binary provides bounded JSON inspection through `telchar operator status`, `queue`, `build`, `backends`, `recovery`, and `config-check`; see the [operator guide](docs/operations.md#read-only-operator-cli). The worker image starts `telchar-nomad-worker` and expects the bounded Nomad allocation environment documented in [Nomad backend](docs/nomad.md).
 
@@ -101,6 +105,7 @@ Executable release coverage loads both archives into Docker and exercises the ga
 - [Nomad backend](docs/nomad.md)
 - [Nix compatibility](docs/compatibility.md)
 - [OTLP metrics](docs/metrics.md)
+- [IPC and Nomad transfer messages](docs/ipc-and-transfer-messages.md)
 - [Roadmap](docs/roadmap.md)
 
 ## AI Usage Disclosure

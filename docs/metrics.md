@@ -46,7 +46,7 @@ Metric attributes must have bounded cardinality. Allowed dimensions describe con
 | `telchar.build.execution.duration` | histogram | `s` | Shared-build leader time from execution ownership to terminal result. |
 | `telchar.build.output.count` | histogram | `{output}` | Expected output count per admitted build. |
 
-Build attributes are bounded enums: `build_mode` and `fixed_output`. Terminal instruments may add `outcome` and `failure_class`.
+`telchar.build.requests` and `telchar.build.output.count` carry the bounded `build_mode` and `fixed_output` attributes. Request and execution terminal instruments carry `outcome` and optional `failure_class`; they do not carry build-mode attributes. Request duration currently also records successful already-valid `BuildPathsWithResults` handling, so it is broader than pure backend execution latency.
 
 ## Shared-build scheduling
 
@@ -99,7 +99,7 @@ Reload metrics never contain configuration paths, backend names, destinations, c
 
 | Instrument | Kind | Unit | Meaning |
 | --- | --- | --- | --- |
-| `telchar.cache.substitutions` | counter | `{attempt}` | Gateway substitution attempts by hit, miss, or failure. |
+| `telchar.cache.substitutions` | counter | `{attempt}` | Gateway substitution attempts by `hit` or `miss`; the current implementation classifies `EnsurePath` errors as misses. |
 | `telchar.cache.substitution.duration` | histogram | `s` | Complete substitution attempt duration. |
 | `telchar.cache.publications` | counter | `{attempt}` | Publication hook attempts by outcome. |
 | `telchar.cache.publication.duration` | histogram | `s` | Publication hook runtime. |
@@ -136,6 +136,8 @@ Transfer attributes are bounded enums: `direction`, `purpose`, `transport`, and 
 
 Recovery attributes are bounded `operation`, `outcome`, and optional `failure_class`. Startup outcomes count durable builds reconciled as succeeded, failed, or still monitoring. Monitor demand is balanced across terminal completion, monitor failure, and daemon shutdown.
 
+Nomad submission attributes are `backend.name`, `resource.profile`, bounded integer `nomad.priority`, and `outcome`. Pending and placement instruments carry `backend.name`; execution instruments carry `backend.name` and `outcome`.
+
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
 ## Interpretation
@@ -152,4 +154,4 @@ Useful service-level views include:
 - Nomad pending demand and placement latency;
 - fixed-output versus input-addressed validation outcomes.
 
-Counters and histograms are monotonic within a process lifetime. Gauges report current state. Shared-build queue, active, and collecting gauges are initialized from PostgreSQL after startup recovery; queue depth then follows durable enqueue and admission transitions. Backend limits and session limits are established during composition; active session, permit, Nomad, and callback gauges change as the running process performs those operations.
+Counters and histograms are monotonic within a process lifetime. Gauges generally report current process state. Shared-build queue depth is initialized from PostgreSQL after startup recovery and then follows durable enqueue and admission transitions. `telchar.shared_build.active` and `telchar.shared_build.collecting` are currently startup reconciliation snapshots and are not updated by later durable state transitions; use PostgreSQL or `telchar operator status` for current counts. Backend limits and session limits are established during composition; active session, permit, Nomad, and callback gauges change as the running process performs those operations.
