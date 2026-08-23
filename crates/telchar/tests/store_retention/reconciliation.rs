@@ -191,12 +191,10 @@ fn committed_expiry_retries_root_removal_from_released_row() {
         .expect("retention backend configures");
     let now = lease.expires_at.expect("deadline exists");
 
-    assert!(telchar::store::retention::reconcile_output_retention(
-        fixture.url(),
-        &mut backend,
-        now
-    )
-    .is_err());
+    assert!(
+        telchar::store::retention::reconcile_output_retention(fixture.url(), &mut backend, now)
+            .is_err()
+    );
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.url(), "expiry-retry-output")
             .expect("lease reads")

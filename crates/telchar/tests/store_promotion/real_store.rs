@@ -108,9 +108,11 @@ fn real_store_rejects_mutated_nar_before_authoritative_registration() {
         error.to_string().contains("NAR hash mismatch"),
         "mutation did not reach staged hash comparison: {error}"
     );
-    assert!(!source_daemon
-        .is_valid_path(&path)
-        .expect("authoritative path query"));
+    assert!(
+        !source_daemon
+            .is_valid_path(&path)
+            .expect("authoritative path query")
+    );
 
     source_daemon.stop().expect("source daemon stops");
     source_fixture.cleanup().expect("source fixture cleans");

@@ -88,9 +88,11 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
         "initial retain fails"
     );
     daemon.collect_garbage().expect("first private GC succeeds");
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("first GC preserves lease"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("first GC preserves lease")
+    );
     daemon.stop().expect("fixture daemon stops");
 
     let mut restarted = fixture
@@ -100,9 +102,11 @@ fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     restarted
         .collect_garbage()
         .expect("second private GC succeeds");
-    assert!(restarted
-        .is_valid_path(&leased)
-        .expect("second GC preserves lease"));
+    assert!(
+        restarted
+            .is_valid_path(&leased)
+            .expect("second GC preserves lease")
+    );
     assert_eq!(fs::read(&leased).expect("leased content reads"), b"restart");
 
     restarted.stop().expect("restarted daemon stops");
@@ -122,12 +126,16 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
 
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("leased path valid before GC"));
-    assert!(daemon
-        .is_valid_path(&control)
-        .expect("control path valid before GC"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("leased path valid before GC")
+    );
+    assert!(
+        daemon
+            .is_valid_path(&control)
+            .expect("control path valid before GC")
+    );
 
     let mut backend = NixStoreRetentionBackend::new_with_store_directory(
         daemon.store_url(),
@@ -148,9 +156,11 @@ fn real_permanent_root_preserves_leased_path_while_gc_collects_unrooted_control(
     daemon
         .collect_garbage()
         .expect("private store garbage collects");
-    assert!(daemon
-        .is_valid_path(&leased)
-        .expect("leased path valid after GC"));
+    assert!(
+        daemon
+            .is_valid_path(&leased)
+            .expect("leased path valid after GC")
+    );
     assert_eq!(fs::read(&leased).expect("leased path reads"), b"leased");
     assert!(
         !daemon

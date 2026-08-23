@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use telchar::service::identity::{normalize_requester, CertificateIdentity, IdentityInput};
+use telchar::service::identity::{CertificateIdentity, IdentityInput, normalize_requester};
 
 #[test]
 fn normalizes_public_key_and_certificate_requesters_deterministically() {

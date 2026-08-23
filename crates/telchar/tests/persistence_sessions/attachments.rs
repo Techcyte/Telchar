@@ -48,13 +48,15 @@ fn request_attachment_persists_exact_pair_across_restart() {
         .expect("attachment reads"),
         Some(attached.clone())
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        &session.session_id,
-        "absent-request",
-    )
-    .expect("absent attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            &session.session_id,
+            "absent-request",
+        )
+        .expect("absent attachment reads")
+        .is_none()
+    );
 
     fixture.restart();
 
@@ -216,9 +218,11 @@ fn request_attachment_completed_delivery_survives_restart() {
         telchar::persistence::RequestAttachmentState::Delivered
     );
     assert!(delivered.detached_at.is_none());
-    assert!(delivered
-        .delivered_at
-        .is_some_and(|delivered_at| delivered_at >= attached.attached_at));
+    assert!(
+        delivered
+            .delivered_at
+            .is_some_and(|delivered_at| delivered_at >= attached.attached_at)
+    );
     fixture.restart();
     assert_eq!(
         telchar::persistence::read_request_attachment(
@@ -312,9 +316,11 @@ fn request_attachment_detaches_once_without_mutating_references() {
         telchar::persistence::RequestAttachmentState::Detached
     );
     assert_eq!(detached.attached_at, attached.attached_at);
-    assert!(detached
-        .detached_at
-        .is_some_and(|detached_at| detached_at >= attached.attached_at));
+    assert!(
+        detached
+            .detached_at
+            .is_some_and(|detached_at| detached_at >= attached.attached_at)
+    );
     assert_eq!(
         telchar::persistence::detach_request(fixture.url(), "missing", "request")
             .expect_err("missing attachment rejects")
@@ -428,13 +434,15 @@ fn attach_rejects_malformed_referenced_session() {
         .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "invalid-reference-session",
-        "invalid-reference-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "invalid-reference-session",
+            "invalid-reference-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
 }
 
 #[test]
@@ -472,13 +480,15 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
             .failure(),
         telchar::persistence::RequestAttachmentFailure::Query
     );
-    assert!(telchar::persistence::read_request_attachment(
-        fixture.url(),
-        "failure-session",
-        "failure-request",
-    )
-    .expect("attachment reads")
-    .is_none());
+    assert!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "failure-session",
+            "failure-request",
+        )
+        .expect("attachment reads")
+        .is_none()
+    );
     client
         .batch_execute("DROP TRIGGER reject_attachment_insert ON request_attachments; DROP FUNCTION reject_attachment_insert()")
         .expect("insert failure trigger removes");

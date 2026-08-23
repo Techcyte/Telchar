@@ -1,7 +1,7 @@
 //! Tests ipc schema contracts and failure boundaries, including envelope round trips authenticated metadata and session.
 
-use telchar::service::identity::{normalize_requester, IdentityInput};
-use telchar::service::ipc::{IpcEnvelope, IpcError, RequesterMetadata, IPC_VERSION};
+use telchar::service::identity::{IdentityInput, normalize_requester};
+use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, RequesterMetadata};
 
 #[test]
 fn envelope_round_trips_authenticated_metadata_and_session() {

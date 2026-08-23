@@ -1,9 +1,9 @@
 //! Tests build result contract contracts and failure boundaries, including writes latest empty success result matching pinned field order.
 
 use nix_worker_protocol::{
+    ProtocolSessionLimits, WorkerOperation, WorkerReader, WorkerVersion,
     write_build_derivation_success_response, write_build_paths_with_results_success_response,
-    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerOperation,
-    WorkerReader, WorkerVersion,
+    write_worker_byte_string, write_worker_integer,
 };
 
 #[test]

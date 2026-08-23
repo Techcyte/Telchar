@@ -11,10 +11,12 @@ fn empty_retention_set_does_not_connect_to_daemon() {
     let mut backend =
         NixStoreRetentionBackend::new("unix:///missing", &root).expect("backend configures");
 
-    assert!(backend
-        .retain(&[])
-        .expect("empty retain succeeds")
-        .is_empty());
+    assert!(
+        backend
+            .retain(&[])
+            .expect("empty retain succeeds")
+            .is_empty()
+    );
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 
@@ -101,12 +103,16 @@ fn released_root_is_collectable_while_active_root_survives_private_gc() {
         .expect("released root removes");
     daemon.collect_garbage().expect("private GC succeeds");
 
-    assert!(!daemon
-        .is_valid_path(&released)
-        .expect("released path validity reads"));
-    assert!(daemon
-        .is_valid_path(&active)
-        .expect("active path validity reads"));
+    assert!(
+        !daemon
+            .is_valid_path(&released)
+            .expect("released path validity reads")
+    );
+    assert!(
+        daemon
+            .is_valid_path(&active)
+            .expect("active path validity reads")
+    );
     daemon.stop().expect("fixture daemon stops");
     fixture.cleanup().expect("fixture cleans up");
 }
@@ -135,10 +141,12 @@ fn release_accepts_distinct_leases_for_the_same_store_path() {
         ])
         .expect("shared store path roots release");
 
-    assert!(fs::read_dir(&root_directory)
-        .expect("root directory reads")
-        .next()
-        .is_none());
+    assert!(
+        fs::read_dir(&root_directory)
+            .expect("root directory reads")
+            .next()
+            .is_none()
+    );
     fs::remove_dir_all(root_directory).expect("root directory cleans");
 }
 
@@ -210,12 +218,14 @@ fn release_rejects_conflicts_without_removing_any_root() {
     fs::remove_file(&root).expect("root removes");
     std::os::unix::fs::symlink(&other, &root).expect("conflicting root creates");
 
-    assert!(backend
-        .release(&[ReleasedRetentionEntry::new(
-            "release-conflict",
-            released.to_string_lossy(),
-        )])
-        .is_err());
+    assert!(
+        backend
+            .release(&[ReleasedRetentionEntry::new(
+                "release-conflict",
+                released.to_string_lossy(),
+            )])
+            .is_err()
+    );
     assert_eq!(fs::read_link(&root).expect("conflict persists"), other);
     daemon.stop().expect("fixture daemon stops");
     fixture.cleanup().expect("fixture cleans up");

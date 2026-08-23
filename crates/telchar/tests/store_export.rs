@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use telchar::fixture::nix::{NixFixture, TrustMode};
 use telchar::service::transfer_limits::{TransferBudget, TransferLimits};
 use telchar::store::export::{
+    GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest, VerifiedStoreExport,
     export_verified_nar, export_verified_nar_with_limits, load_stored_derivation,
-    validate_store_output, GatewayStoreExportBackend, StoreExportBackend, StoreExportRequest,
-    VerifiedStoreExport,
+    validate_store_output,
 };
 use telchar::store::promotion::RegisteredPathInfo;
 
@@ -119,12 +119,14 @@ fn rejects_stored_derivation_hash_mismatch() {
     };
     let mut backend = RecordingExportBackend::successful(metadata, nar);
 
-    assert!(load_stored_derivation(
-        Path::new("/nix/store/00000000000000000000000000000000-contract.drv"),
-        4096,
-        &mut backend,
-    )
-    .is_err());
+    assert!(
+        load_stored_derivation(
+            Path::new("/nix/store/00000000000000000000000000000000-contract.drv"),
+            4096,
+            &mut backend,
+        )
+        .is_err()
+    );
 }
 
 #[test]

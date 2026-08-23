@@ -3,9 +3,9 @@
 use std::io::{self, Cursor, Read, Write};
 
 use nix_worker_protocol::{
-    BuildDerivationClientRequest, BuildDerivationOutputRequest, WorkerBuildStatus, WorkerClient,
-    CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST,
-    STDERR_NEXT,
+    BuildDerivationClientRequest, BuildDerivationOutputRequest, CLIENT_WORKER_MAGIC,
+    LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_ERROR, STDERR_LAST, STDERR_NEXT,
+    WorkerBuildStatus, WorkerClient,
 };
 
 const DRV: &[u8] = b"/nix/store/0123456789abcdfghijklmnpqrsvwxyz-example.drv";
@@ -286,9 +286,11 @@ fn classifies_selected_output_target_mismatch_without_peer_payload() {
         nix_worker_protocol::build_paths_failure_phase(&error),
         Some(nix_worker_protocol::BuildPathsFailurePhase::Target)
     );
-    assert!(!error
-        .to_string()
-        .contains(String::from_utf8_lossy(DRV).as_ref()));
+    assert!(
+        !error
+            .to_string()
+            .contains(String::from_utf8_lossy(DRV).as_ref())
+    );
 }
 
 #[test]
@@ -324,9 +326,10 @@ fn writes_exact_fixed_output_authority() {
     string(&mut authority, OUTPUT);
     string(&mut authority, b"r:sha256");
     string(&mut authority, hash);
-    assert!(wire
-        .windows(authority.len())
-        .any(|window| window == authority));
+    assert!(
+        wire.windows(authority.len())
+            .any(|window| window == authority)
+    );
 }
 
 #[test]

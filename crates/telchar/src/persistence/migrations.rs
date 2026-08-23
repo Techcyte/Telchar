@@ -278,16 +278,20 @@ mod tests {
 
         assert_eq!(error.failure(), MigrationFailure::MigrationSql);
         let mut client = Client::connect(fixture.url(), NoTls).expect("test database reconnects");
-        assert!(client
-            .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
-            .expect("table lookup succeeds")
-            .get::<_, Option<String>>(0)
-            .is_none());
-        assert!(client
-            .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
-            .expect("ledger lookup succeeds")
-            .get::<_, Option<String>>(0)
-            .is_none());
+        assert!(
+            client
+                .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
+                .expect("table lookup succeeds")
+                .get::<_, Option<String>>(0)
+                .is_none()
+        );
+        assert!(
+            client
+                .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
+                .expect("ledger lookup succeeds")
+                .get::<_, Option<String>>(0)
+                .is_none()
+        );
     }
 
     #[test]

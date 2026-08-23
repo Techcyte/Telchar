@@ -88,9 +88,11 @@ fn thousand_concurrent_requests_coalesce_into_one_in_flight_build() {
         assert_eq!(registry.active_build_count(), 1);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         release.wait();
-        assert!(handles
-            .into_iter()
-            .all(|handle| handle.join().expect("request joins").is_ok()));
+        assert!(
+            handles
+                .into_iter()
+                .all(|handle| handle.join().expect("request joins").is_ok())
+        );
     });
 
     assert_eq!(registry.active_build_count(), 0);
@@ -122,13 +124,17 @@ fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
             .collect::<Vec<_>>()
     });
 
-    assert!(failures
-        .iter()
-        .all(|result| *result == Err(SharedBuildTerminalFailure::Backend)));
+    assert!(
+        failures
+            .iter()
+            .all(|result| *result == Err(SharedBuildTerminalFailure::Backend))
+    );
     assert_eq!(registry.active_build_count(), 0);
-    assert!(registry
-        .execute_or_wait("failed-build", successful_result)
-        .is_ok());
+    assert!(
+        registry
+            .execute_or_wait("failed-build", successful_result)
+            .is_ok()
+    );
 }
 
 #[test]

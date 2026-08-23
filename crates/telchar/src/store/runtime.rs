@@ -17,7 +17,7 @@ use crate::store::import::{GatewayStoreImport, StoreImportBackend, UnavailableSt
 use crate::store::query::GatewayStoreQuery;
 #[cfg(debug_assertions)]
 use crate::store::retention::filesystem_backend;
-use crate::store::retention::{backend_for_gateway_store, StoreRetentionBackend};
+use crate::store::retention::{StoreRetentionBackend, backend_for_gateway_store};
 use crate::store::substitution::{
     GatewayStoreSubstitution, StoreSubstitutionBackend, UnavailableStoreSubstitution,
 };

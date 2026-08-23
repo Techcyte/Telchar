@@ -3,10 +3,10 @@
 use std::io::{self, Write};
 
 use crate::{
-    write_worker_byte_string_to, write_worker_integer_to, ProtocolError,
-    MAXIMUM_STRUCTURED_FRAME_FIELDS, MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES,
-    MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, STDERR_ERROR, STDERR_LAST, STDERR_NEXT, STDERR_RESULT,
-    STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY,
+    MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES, MAXIMUM_STRUCTURED_FRAME_FIELDS,
+    MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES, ProtocolError, STDERR_ERROR, STDERR_LAST, STDERR_NEXT,
+    STDERR_RESULT, STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY, write_worker_byte_string_to,
+    write_worker_integer_to,
 };
 
 pub fn write_worker_error(output: &mut impl Write, message: &str) -> io::Result<()> {

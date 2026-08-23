@@ -106,11 +106,13 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         .set_target_name("builder-a")
         .expect("exact target records");
     assert!(old_executor.execute(&execution).is_err());
-    assert!(!old_snapshot
-        .static_ssh_scheduling()
-        .read()
-        .expect("scheduling reads")
-        .contains("builder-a"));
+    assert!(
+        !old_snapshot
+            .static_ssh_scheduling()
+            .read()
+            .expect("scheduling reads")
+            .contains("builder-a")
+    );
     assert_eq!(
         reloadable.snapshot().static_ssh_health().state("builder-c"),
         Some(StaticSshHealthState::Unavailable)
@@ -173,9 +175,11 @@ fn reload_refreshes_nomad_token_file_contents() {
             }
         }
         let request_text = String::from_utf8(bytes).expect("request is UTF-8");
-        assert!(request_text
-            .to_ascii_lowercase()
-            .contains("x-nomad-token: replacement-token\r\n"));
+        assert!(
+            request_text
+                .to_ascii_lowercase()
+                .contains("x-nomad-token: replacement-token\r\n")
+        );
         write!(
             request,
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

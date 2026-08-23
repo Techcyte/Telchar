@@ -90,9 +90,11 @@ fn local_backend_execution_transitions_to_running_once() {
         running.state,
         telchar::persistence::LocalBackendExecutionState::Running
     );
-    assert!(running
-        .started_at
-        .is_some_and(|started_at| started_at >= accepted.created_at));
+    assert!(
+        running
+            .started_at
+            .is_some_and(|started_at| started_at >= accepted.created_at)
+    );
     assert!(running.completed_at.is_none());
     assert_eq!(
         telchar::persistence::record_local_backend_running(
