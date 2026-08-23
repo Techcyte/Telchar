@@ -9,6 +9,8 @@ fn environment_overrides_toml_scalars() {
     let root = fixture_root("overrides");
     let database_url_file = root.join("database-url");
     fs::write(&database_url_file, "postgresql://file/db").expect("database URL writes");
+    fs::set_permissions(&database_url_file, fs::Permissions::from_mode(0o600))
+        .expect("database URL permissions set");
     let config_path = root.join("telchar.toml");
     fs::write(
         &config_path,
@@ -99,11 +101,9 @@ quota_subject = "replacement-team"
 
     let config = ServiceConfig::load().expect("configuration loads");
 
-    assert!(
-        config
-            .credential_mapping("ssh-pubkey:SHA256:file")
-            .is_none()
-    );
+    assert!(config
+        .credential_mapping("ssh-pubkey:SHA256:file")
+        .is_none());
     assert_eq!(
         config
             .credential_mapping("ssh-pubkey:SHA256:replacement")

@@ -106,9 +106,7 @@ pub(super) fn validate_subject(value: String, message: &'static str) -> io::Resu
 }
 
 pub(super) fn read_secret(path: PathBuf) -> io::Result<String> {
-    if !path.is_absolute() {
-        return Err(invalid("database URL file path is invalid"));
-    }
+    validate_protected_file(path.clone(), "database URL file is invalid")?;
     let value =
         fs::read_to_string(path).map_err(|_| invalid("database URL file could not be read"))?;
     nonempty(value.trim().to_owned(), "database URL is invalid")
