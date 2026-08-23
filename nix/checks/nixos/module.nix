@@ -31,8 +31,10 @@
             TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           };
         };
-        environment.etc."ssh/authorized_keys.d/telchar".text =
-          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGQ5k8KfV+TWbrZG7MBXn9cKbIYB1vLLtvbCeK6ucvE3 telchar-module-test\n";
+        environment.etc."ssh/authorized_keys.d/telchar".text = ''
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGQ5k8KfV+TWbrZG7MBXn9cKbIYB1vLLtvbCeK6ucvE3 telchar-module-test
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG31m7DcBk/wDNv27MOMNXD9Yk6tfhpj1dBl1VOdnyou telchar-module-second-test
+        '';
         services.telchar.openssh.authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
         system.stateVersion = "26.05";
       };
@@ -47,6 +49,8 @@
       gateway.succeed("sudo -u postgres psql -Atc \"select 1 from pg_database where datname = 'telchar'\" | grep -qx 1")
       gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")
       gateway.succeed("grep -q 'ForceCommand /nix/store/' /etc/ssh/sshd_config")
+      gateway.succeed("grep -q '^ExposeAuthInfo yes$' /etc/ssh/sshd_config")
+      gateway.succeed("forced_command=$(awk '/^  ForceCommand / { print $2; exit }' /etc/ssh/sshd_config); ! grep -Fq '/etc/ssh/authorized_keys.d/telchar' \"$forced_command\" && grep -Fq 'SSH_USER_AUTH' \"$forced_command\" && grep -Fq 'ssh-keygen -lf -' \"$forced_command\"")
     '';
   };
   nixos-test-library =
