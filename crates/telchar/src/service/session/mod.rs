@@ -555,10 +555,33 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 quota_subject,
                                 scheduling_limits.maximum_queued_builds(),
                             )
-                            .map_err(|error| io::Error::other(shared_build_error_message(&error)))
+                            .map_err(|error| {
+                                tracing::warn!(
+                                    event = "shared_build.scheduling.operation_failed",
+                                    operation = "enqueue",
+                                    failure = ?error.failure(),
+                                    "shared build scheduling operation failed"
+                                );
+                                io::Error::other(shared_build_error_message(&error))
+                            })
                             .and_then(|_| {
-                                shared_build_scheduler.wait_for_admission(derivation_path)
+                                shared_build_scheduler
+                                    .wait_for_admission(derivation_path)
+                                    .map_err(|error| {
+                                        tracing::warn!(
+                                            event = "shared_build.scheduling.operation_failed",
+                                            operation = "admission-wait",
+                                            diagnostic = %error,
+                                            "shared build scheduling operation failed"
+                                        );
+                                        error
+                                    })
                             }) {
+                                tracing::warn!(
+                                    event = "shared_build.scheduling.failed",
+                                    diagnostic = %error,
+                                    "shared build scheduling failed"
+                                );
                                 crate::service::metrics::shared_build_left_queue();
                                 let _ = crate::persistence::complete_shared_build_failure(
                                     database_url,
@@ -1119,13 +1142,25 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         return Ok(());
                     }
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        tracing::warn!(
+                            event = "worker.build_derivation.rejected",
+                            phase = "decode",
+                            diagnostic = %error,
+                            "BuildDerivation request rejected"
+                        );
                         return reject(
                             &mut output,
                             "invalid-build-derivation",
                             "invalid BuildDerivation request",
                         );
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!(
+                            event = "worker.build_derivation.rejected",
+                            phase = "decode",
+                            diagnostic = %error,
+                            "BuildDerivation request rejected"
+                        );
                         return reject(
                             &mut output,
                             "invalid-build-derivation",
@@ -1136,13 +1171,25 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
                     Ok(admitted) => admitted,
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        tracing::warn!(
+                            event = "worker.build_derivation.rejected",
+                            phase = "admission",
+                            diagnostic = %error,
+                            "BuildDerivation request rejected"
+                        );
                         return reject(
                             &mut output,
                             "unsupported-build-derivation",
                             "unsupported BuildDerivation request",
                         );
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!(
+                            event = "worker.build_derivation.rejected",
+                            phase = "admission",
+                            diagnostic = %error,
+                            "BuildDerivation request rejected"
+                        );
                         return reject(
                             &mut output,
                             "invalid-build-derivation",

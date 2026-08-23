@@ -464,6 +464,24 @@ fn rejects_system_mismatch_before_execution() {
 }
 
 #[test]
+fn structured_fixed_output_request_without_metadata_environment_is_admitted() {
+    let worker = decode_wire(build_structured_fixed_output_request());
+    let backends = backends("x86_64-linux", &[]);
+
+    let request = BuildRequest::from_worker_request(&worker, &backends)
+        .expect("structured attributes do not duplicate derivation metadata in the environment");
+
+    assert_eq!(
+        request.expected_outputs(),
+        &[(b"out".to_vec(), output_path().to_vec())]
+    );
+    assert_eq!(request.output_authorities()[0].hash_algorithm(), b"sha256");
+    request
+        .validate_for_execution()
+        .expect("admitted structured request is executable");
+}
+
+#[test]
 fn rejects_output_environment_mismatch() {
     let worker = decode_request(
         "x86_64-linux",
@@ -649,6 +667,31 @@ fn build_request_wire_with_environment(
         b"",
         b"",
     )
+}
+
+fn build_structured_fixed_output_request() -> Vec<u8> {
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 36);
+    write_worker_byte_string(&mut wire, drv_path());
+    write_worker_integer(&mut wire, 1);
+    write_worker_byte_string(&mut wire, b"out");
+    write_worker_byte_string(&mut wire, output_path());
+    write_worker_byte_string(&mut wire, b"sha256");
+    write_worker_byte_string(
+        &mut wire,
+        b"0000000000000000000000000000000000000000000000000000000000000000",
+    );
+    write_worker_integer(&mut wire, 0);
+    write_worker_byte_string(&mut wire, b"x86_64-linux");
+    write_worker_byte_string(&mut wire, b"/bin/sh");
+    write_worker_integer(&mut wire, 2);
+    write_worker_byte_string(&mut wire, b"-c");
+    write_worker_byte_string(&mut wire, b"printf fixed > $out");
+    write_worker_integer(&mut wire, 1);
+    write_worker_byte_string(&mut wire, b"out");
+    write_worker_byte_string(&mut wire, output_path());
+    write_worker_integer(&mut wire, 0);
+    wire
 }
 
 fn build_request_wire_with_output_authority(

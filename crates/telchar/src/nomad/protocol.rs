@@ -203,8 +203,14 @@ impl BuildSpecification {
             }
             validate_store_path_bytes(&output.path, false)?;
             validate_output_authority(&output.hash_algorithm, &output.hash)?;
-            if environment_value(&self.environment, &output.name) != Some(output.path.as_slice()) {
-                return Err(invalid_data("Nomad transfer build output is inconsistent"));
+            match environment_value(&self.environment, &output.name) {
+                Some(path) if path != output.path.as_slice() => {
+                    return Err(invalid_data("Nomad transfer build output is inconsistent"));
+                }
+                None if output.hash_algorithm.is_empty() || output.hash.is_empty() => {
+                    return Err(invalid_data("Nomad transfer build output is inconsistent"));
+                }
+                _ => {}
             }
         }
         let mut inputs = BTreeSet::new();
@@ -214,8 +220,10 @@ impl BuildSpecification {
                 return Err(invalid_data("Nomad transfer build input is duplicated"));
             }
         }
-        if environment_value(&self.environment, b"system") != Some(self.system.as_bytes())
-            || environment_value(&self.environment, b"builder") != Some(self.builder.as_slice())
+        if environment_value(&self.environment, b"system")
+            .is_some_and(|system| system != self.system.as_bytes())
+            || environment_value(&self.environment, b"builder")
+                .is_some_and(|builder| builder != self.builder.as_slice())
             || self.environment.iter().any(|(name, _)| name.is_empty())
         {
             return Err(invalid_data(

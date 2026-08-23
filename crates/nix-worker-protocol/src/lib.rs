@@ -388,17 +388,21 @@ impl<R: WorkerInput> WorkerReader<R> {
     }
 
     pub fn complete_build_derivation(&mut self) -> io::Result<BuildDerivationRequest> {
-        let invalid = |message: &'static str| io::Error::new(io::ErrorKind::InvalidData, message);
+        let invalid = |stage: &'static str| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid BuildDerivation request at {stage}"),
+            )
+        };
         let (drv_path, drv_charge) = read_build_string(
             &mut self.input,
             MAXIMUM_WORKER_STORE_PATH_BYTES,
             &self.budget,
         )
-        .map_err(|_| invalid("invalid BuildDerivation request"))?;
-        validate_build_store_path(&drv_path)
-            .map_err(|_| invalid("invalid BuildDerivation request"))?;
+        .map_err(|_| invalid("derivation-path-read"))?;
+        validate_build_store_path(&drv_path).map_err(|_| invalid("derivation-path"))?;
         if !drv_path.ends_with(b".drv") {
-            return Err(invalid("invalid BuildDerivation request"));
+            return Err(invalid("derivation-suffix"));
         }
 
         let (outputs, output_collection_charge) = read_build_count(
@@ -442,7 +446,7 @@ impl<R: WorkerInput> WorkerReader<R> {
                 &self.budget,
             )?;
             validate_build_output_hash(&hash_algorithm, &hash)
-                .map_err(|_| invalid("invalid BuildDerivation request"))?;
+                .map_err(|_| invalid("output-authority"))?;
             output_values.push(BuildDerivationOutput {
                 name,
                 path,
@@ -547,7 +551,7 @@ impl<R: WorkerInput> WorkerReader<R> {
         }
         let build_mode = self
             .read_integer()
-            .map_err(|_| invalid("invalid BuildDerivation request"))?;
+            .map_err(|_| invalid("build-mode-read"))?;
         if build_mode != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

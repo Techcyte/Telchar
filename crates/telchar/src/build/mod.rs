@@ -330,13 +330,28 @@ impl BuildRequest {
                 "invalid BuildDerivation request",
             )
         })?;
-        if environment_value(environment, b"system") != Some(request.platform())
-            || environment_value(environment, b"builder") != Some(request.builder())
-            || environment_value(environment, b"name") != Some(expected_name)
+        if let Some(system) = environment_value(environment, b"system")
+            && system != request.platform()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid BuildDerivation request",
+                "invalid BuildDerivation system environment",
+            ));
+        }
+        if let Some(builder) = environment_value(environment, b"builder")
+            && builder != request.builder()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid BuildDerivation builder environment",
+            ));
+        }
+        if let Some(name) = environment_value(environment, b"name")
+            && name != expected_name
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid BuildDerivation name environment",
             ));
         }
         if request.outputs().is_empty() {
@@ -348,11 +363,15 @@ impl BuildRequest {
         let mut expected_outputs = Vec::with_capacity(request.outputs().len());
         let mut output_authorities = Vec::with_capacity(request.outputs().len());
         for output in request.outputs() {
-            if environment_value(environment, output.name()) != Some(output.path()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid BuildDerivation request",
-                ));
+            match environment_value(environment, output.name()) {
+                Some(path) if path == output.path() => {}
+                None if !output.hash_algorithm().is_empty() && !output.hash().is_empty() => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid BuildDerivation output environment",
+                    ));
+                }
             }
             expected_outputs.push((output.name().to_vec(), output.path().to_vec()));
             output_authorities.push(OutputAuthority {
@@ -379,10 +398,12 @@ impl BuildRequest {
         if self.derivation_path.is_empty()
             || self.builder.is_empty()
             || derivation_name(&self.derivation_path).is_none()
-            || environment_value(&self.environment, b"system") != Some(self.system.as_bytes())
-            || environment_value(&self.environment, b"builder") != Some(self.builder.as_slice())
+            || environment_value(&self.environment, b"system")
+                .is_some_and(|system| system != self.system.as_bytes())
+            || environment_value(&self.environment, b"builder")
+                .is_some_and(|builder| builder != self.builder.as_slice())
             || environment_value(&self.environment, b"name")
-                != derivation_name(&self.derivation_path)
+                .is_some_and(|name| Some(name) != derivation_name(&self.derivation_path))
             || self.expected_outputs.is_empty()
             || self.output_authorities.len() != self.expected_outputs.len()
             || self
@@ -390,11 +411,20 @@ impl BuildRequest {
                 .iter()
                 .zip(&self.expected_outputs)
                 .any(|(authority, (name, path))| authority.name != *name || authority.path != *path)
-            || self.expected_outputs.iter().any(|(name, path)| {
-                name.is_empty()
-                    || path.is_empty()
-                    || environment_value(&self.environment, name) != Some(path.as_slice())
-            })
+            || self
+                .expected_outputs
+                .iter()
+                .zip(&self.output_authorities)
+                .any(|((name, path), authority)| {
+                    name.is_empty()
+                        || path.is_empty()
+                        || matches!(
+                            environment_value(&self.environment, name),
+                            Some(environment_path) if environment_path != path.as_slice()
+                        )
+                        || (environment_value(&self.environment, name).is_none()
+                            && (authority.hash_algorithm.is_empty() || authority.hash.is_empty()))
+                })
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

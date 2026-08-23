@@ -33,6 +33,35 @@ fn build_specification(derivation: &str, input: &str, output: &str) -> BuildSpec
 }
 
 #[test]
+fn structured_fixed_output_manifest_without_metadata_environment_is_valid() {
+    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv";
+    let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input";
+    let output = "/nix/store/cccccccccccccccccccccccccccccccc-output";
+    let mut build = build_specification(derivation, input, output);
+    build.outputs[0].hash_algorithm = b"r:sha256".to_vec();
+    build.outputs[0].hash =
+        b"0000000000000000000000000000000000000000000000000000000000000000".to_vec();
+    build.environment.clear();
+    let manifest = InputManifest {
+        derivation_path: derivation.to_owned(),
+        build,
+        paths: vec![PathManifestEntry {
+            path: input.to_owned(),
+            nar_hash: "0".repeat(64),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+            content_address: None,
+        }],
+        outputs: vec![output.to_owned()],
+    };
+
+    manifest
+        .validate(8, 1024)
+        .expect("structured fixed-output manifest validates");
+}
+
+#[test]
 fn manifest_preserves_fixed_output_authority() {
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv";
     let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input";
