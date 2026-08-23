@@ -147,7 +147,7 @@ Chunks are ordered and non-interleaved. Empty chunks, gaps, overlap, early compl
 
 ### Build, logs, and outputs
 
-`BuildStarted` identifies the admitted derivation. `LogChunk` metadata carries a monotonic sequence number; payload contains bounded log bytes. The worker sends these frames and the gateway validates their phase and size, but the current Nomad callback path does not forward them to attached Nix clients. Logs are not stored in PostgreSQL.
+`BuildStarted` identifies the admitted derivation. `LogChunk` metadata carries a monotonic sequence number; payload contains bounded log bytes. After validating phase, sequence, and size, the gateway publishes each payload to every process-local Nix client attached to the exact shared build. Each attachment has an independent byte-bounded queue. Overflow drops oldest queued chunks and produces an explicit truncation marker without blocking the callback or failing execution. Logs are not stored in PostgreSQL or replayed after restart.
 
 For each expected output, the worker sends `OutputMetadata` followed by ordered `OutputNar` chunks. The gateway validates declared identity and authority, NAR structure and hash, references, exact path set, transfer bounds, and gateway registration. The current gateway sends an accepted `OutputReceipt` only after successful import; rejection terminates the callback. The protocol model reserves rejected receipts, but production does not emit them.
 

@@ -9,15 +9,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::telemetry;
-use telchar::service::identity::{IdentityInput, normalize_requester};
-use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+use telchar::service::identity::{normalize_requester, IdentityInput};
+use telchar::service::ipc::{IpcEnvelope, IpcListener, RequesterMetadata, IPC_VERSION};
 
 #[path = "runtime/daemon.rs"]
 mod daemon_runtime;
 
 use daemon_runtime::{
-    SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection, serve_connection,
-    shutdown_daemon_services,
+    prepare_socket_path, serve_accepted_connection, serve_connection, shutdown_daemon_services,
+    SessionPermit, SocketGuard,
 };
 
 pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -463,6 +463,7 @@ fn run_daemon() -> io::Result<()> {
                     .cloned()
                     .ok_or_else(|| invalid("gateway store endpoint is not configured"))?,
                 output_retention.duration(),
+                Arc::clone(&shared_builds),
             )?,
         )
     };

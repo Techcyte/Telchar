@@ -3,8 +3,8 @@
   pkgs,
   system,
   telchar,
-  nomadWorker,
   telcharModule,
+  ...
 }:
 {
   nixos-module = pkgs.testers.nixosTest {

@@ -34,15 +34,26 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
     let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
         .expect("execution creates");
     let client = NomadClient::new(backend).expect("Nomad client constructs");
+    let shared_builds = telchar::shared_build::SharedBuildRegistry::new();
+    let leader = match shared_builds
+        .acquire(std::str::from_utf8(shared_build_key).expect("shared build key is UTF-8"))
+    {
+        telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
+        telchar::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
+    };
     let error = client
         .execute(
             "postgresql://unused",
             &execution,
             shared_build_key,
+            &mut |_| Ok(()),
+            &shared_builds,
+            1024,
             &mut || Ok(true),
         )
         .expect_err("cancelled execution rejects");
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    drop(leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }
@@ -141,15 +152,24 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
     let execution = BuildExecution::new("request-1", &admitted, Duration::from_nanos(1))
         .expect("execution creates");
     let client = NomadClient::new(backend).expect("Nomad client constructs");
+    let shared_builds = telchar::shared_build::SharedBuildRegistry::new();
+    let leader = match shared_builds.acquire(&shared_build_key) {
+        telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
+        telchar::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
+    };
     let error = client
         .execute(
             database.url(),
             &execution,
             shared_build_key.as_bytes(),
+            &mut |_| Ok(()),
+            &shared_builds,
+            1024,
             &mut || Ok(false),
         )
         .expect_err("timed out execution rejects");
     assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    drop(leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }
@@ -239,15 +259,21 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         Duration::from_secs(60),
     )
     .expect("shared build completes");
+    let live_builds = Arc::new(telchar::shared_build::SharedBuildRegistry::new());
+    let live_leader = match live_builds.acquire(&request.shared_build_key()) {
+        telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
+        telchar::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
+    };
     let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
-        .executor(database.url())
+        .executor(database.url(), Arc::clone(&live_builds))
         .expect("executor configures");
     let result = executor
         .execute(&execution)
         .expect("Nomad execution completes");
     assert_eq!(result.status(), BuildStatus::Built);
     assert_eq!(result.output_trust(), OutputTrust::TrustedExecutor);
+    drop(live_leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }

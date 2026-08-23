@@ -63,8 +63,10 @@ Metric attributes must have bounded cardinality. Allowed dimensions describe con
 | `telchar.shared_build.collecting` | gauge | `{build}` | Durable builds collecting or validating outputs. |
 | `telchar.shared_build.queue.wait.duration` | histogram | `s` | Time a leader waits for subject admission. |
 | `telchar.shared_build.queue.admissions` | counter | `{build}` | Durable queue admissions. |
+| `telchar.shared_build.live_log.truncations` | counter | `{truncation}` | Attached-session log queues that dropped one or more oldest chunks while accepting a callback chunk. |
+| `telchar.shared_build.live_log.dropped_bytes` | counter | `By` | Log bytes dropped from or rejected by bounded attached-session queues. |
 
-Queue depth and wait duration are primary subject-admission autoscaling and overload signals. `in_flight` and `waiting_followers` are authoritative process-local coalescing gauges. Shared-build metrics have no requester, quota subject, derivation, path, request, or trace attributes.
+Queue depth and wait duration are primary subject-admission autoscaling and overload signals. `in_flight` and `waiting_followers` are authoritative process-local coalescing gauges. Live-log truncation counters expose slow attached clients without labeling their identity or build. Shared-build metrics have no requester, quota subject, derivation, path, request, or trace attributes.
 
 ## Backends
 

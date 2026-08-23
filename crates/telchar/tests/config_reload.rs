@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -67,7 +67,10 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         .expect("initial backends configure");
     let old_snapshot = initial.clone();
     let mut old_executor = old_snapshot
-        .executor("postgresql://fixture")
+        .executor(
+            "postgresql://fixture",
+            Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        )
         .expect("old executor configures");
     let selected = old_executor
         .selected_target("x86_64-linux", &[])
@@ -106,13 +109,11 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         .set_target_name("builder-a")
         .expect("exact target records");
     assert!(old_executor.execute(&execution).is_err());
-    assert!(
-        !old_snapshot
-            .static_ssh_scheduling()
-            .read()
-            .expect("scheduling reads")
-            .contains("builder-a")
-    );
+    assert!(!old_snapshot
+        .static_ssh_scheduling()
+        .read()
+        .expect("scheduling reads")
+        .contains("builder-a"));
     assert_eq!(
         reloadable.snapshot().static_ssh_health().state("builder-c"),
         Some(StaticSshHealthState::Unavailable)
@@ -175,11 +176,9 @@ fn reload_refreshes_nomad_token_file_contents() {
             }
         }
         let request_text = String::from_utf8(bytes).expect("request is UTF-8");
-        assert!(
-            request_text
-                .to_ascii_lowercase()
-                .contains("x-nomad-token: replacement-token\r\n")
-        );
+        assert!(request_text
+            .to_ascii_lowercase()
+            .contains("x-nomad-token: replacement-token\r\n"));
         write!(
             request,
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

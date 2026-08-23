@@ -1,10 +1,8 @@
 # Defines static SSH fixture, backend, and gateway checks.
 {
   pkgs,
-  system,
   telchar,
-  nomadWorker,
-  telcharModule,
+  ...
 }:
 {
   nixos-static-ssh-fixture =

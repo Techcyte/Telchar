@@ -62,6 +62,7 @@ maximum_retained_nonces = 65536
         )
         .expect("gateway endpoint is valid"),
         Duration::from_secs(60),
+        std::sync::Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
     )
     .expect("service starts");
     let mut client = TcpStream::connect(address).expect("client connects");

@@ -27,6 +27,8 @@ struct Instruments {
     shared_build_collecting: Gauge<u64>,
     shared_build_queue_wait_duration: Histogram<f64>,
     shared_build_queue_admissions: Counter<u64>,
+    shared_build_live_log_truncations: Counter<u64>,
+    shared_build_live_log_dropped_bytes: Counter<u64>,
     backend_permits_active: Gauge<u64>,
     backend_permits_limit: Gauge<u64>,
     backend_permits_waiting: Gauge<u64>,
@@ -190,6 +192,14 @@ fn instruments() -> &'static Instruments {
             shared_build_queue_admissions: meter
                 .u64_counter("telchar.shared_build.queue.admissions")
                 .with_unit("{build}")
+                .build(),
+            shared_build_live_log_truncations: meter
+                .u64_counter("telchar.shared_build.live_log.truncations")
+                .with_unit("{truncation}")
+                .build(),
+            shared_build_live_log_dropped_bytes: meter
+                .u64_counter("telchar.shared_build.live_log.dropped_bytes")
+                .with_unit("By")
                 .build(),
             backend_permits_active: meter
                 .u64_gauge("telchar.backend.permits.active")
@@ -561,6 +571,13 @@ pub fn shared_build_finished(previous_state: crate::persistence::SharedBuildStat
     instruments()
         .shared_build_collecting
         .record(state.shared_build_collecting, &[]);
+}
+
+pub fn shared_build_live_logs_truncated(dropped_bytes: u64) {
+    instruments().shared_build_live_log_truncations.add(1, &[]);
+    instruments()
+        .shared_build_live_log_dropped_bytes
+        .add(dropped_bytes, &[]);
 }
 
 pub fn shared_build_enqueued() {
@@ -1027,6 +1044,7 @@ pub fn emit_smoke_metrics() {
     shared_build_leader();
     shared_build_follower();
     shared_build_reused_result();
+    shared_build_live_logs_truncated(4);
     shared_build_in_flight_started();
     shared_build_follower_wait_started();
     shared_build_follower_wait_finished(Duration::from_millis(3), "succeeded");

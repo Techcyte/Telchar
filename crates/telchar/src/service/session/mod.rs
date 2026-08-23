@@ -686,6 +686,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         }
                     }
                     crate::shared_build::SharedBuildAccess::Follower(follower) => {
+                        let live_log_queue_bytes =
+                            build_executor.live_log_queue_bytes(&selected_target);
+                        let mut live_logs = follower.subscribe_logs(live_log_queue_bytes);
                         crate::service::metrics::shared_build_follower();
                         tracing::debug!(
                             event = "shared_build.coalescing.follower",
@@ -701,7 +704,33 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         )?;
                         output.flush()?;
                         let result = follower
-                            .wait_timeout(execution.timeout())
+                            .wait_timeout_with_logs(
+                                execution.timeout(),
+                                &mut live_logs,
+                                &mut |chunk: &[u8]| -> io::Result<()> {
+                                    if requester_detached.get() {
+                                        return Ok(());
+                                    }
+                                    match nix_worker_protocol::write_stderr_frame(
+                                        &mut output,
+                                        nix_worker_protocol::StderrFrame::Next {
+                                            message: chunk.to_vec(),
+                                        },
+                                    )
+                                    .and_then(|_| output.flush())
+                                    {
+                                        Ok(()) => Ok(()),
+                                        Err(_error)
+                                            if running_disconnect_policy
+                                                == crate::service::deployment::RunningDisconnectPolicy::DetachAndFinish =>
+                                        {
+                                            requester_detached.set(true);
+                                            Ok(())
+                                        }
+                                        Err(error) => Err(error),
+                                    }
+                                },
+                            )?
                             .ok_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::TimedOut,
