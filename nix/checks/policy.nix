@@ -64,6 +64,8 @@
     release_script=${../..}/scripts/check-release.sh
 
     for check in \
+      oci-images \
+      nixos-oci-runtime \
       nixos-lix-local \
       nixos-fixed-output-local \
       nixos-oci-gateway \

@@ -12,6 +12,8 @@ nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
 
 nix build --no-link .#telchar .#telchar-nomad-worker
+nix build --no-link .#checks.x86_64-linux.oci-images
+nix build --no-link .#checks.x86_64-linux.nixos-oci-runtime
 nix build --no-link .#checks.x86_64-linux.nixos-module
 nix build --no-link .#checks.x86_64-linux.nixos-gate-3-contract
 nix build --no-link .#checks.x86_64-linux.nixos-lix-local

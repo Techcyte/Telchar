@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};

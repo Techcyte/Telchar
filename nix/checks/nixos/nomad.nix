@@ -1,10 +1,9 @@
 # Defines Nomad fixture and gateway checks.
 {
   pkgs,
-  system,
   telchar,
   nomadWorker,
-  telcharModule,
+  ...
 }:
 {
   nixos-nomad-fixture =

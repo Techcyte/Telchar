@@ -75,6 +75,8 @@ nix develop -c cargo test --locked --workspace -- --test-threads=1
 
 For curated release verification, including package builds and selected VM contracts, run `./scripts/check-release.sh`.
 
+The flake currently publishes and tests `x86_64-linux` outputs only.
+
 Useful packages:
 
 ```bash
@@ -95,7 +97,7 @@ The gateway and worker images are the application runtimes. The Nix-daemon image
 
 The gateway image runs as `995:995` with `HOME=/var/lib/telchar` and starts `telchar daemon --socket /run/telchar/daemon.sock --frontend-uid 995`; override the user, home, and command together when using another UID. Mount `/etc/telchar`, `/run/telchar`, persistent import and GC-root state, and the gateway Nix daemon socket. Supply PostgreSQL, credentials, configuration, and OTLP settings through operator-owned files or environment variables. The same binary provides bounded JSON inspection through `telchar operator status`, `queue`, `build`, `backends`, `recovery`, and `config-check`; see the [operator guide](docs/operations.md#read-only-operator-cli). The worker image starts `telchar-nomad-worker` and expects the bounded Nomad allocation environment documented in [Nomad backend](docs/nomad.md).
 
-Executable release coverage loads both archives into Docker and exercises the gateway image as a non-root process against PostgreSQL and a real Nix daemon. It proves stock-Nix classic and fixed-output builds, retained-result reuse, graceful and crash restart, gateway-store interruption, PostgreSQL ownership fencing, exact-archive redeployment, idempotent migration, future-schema rejection, backup restore, and no blind resubmission.
+Executable release coverage validates and loads both application archives into Docker. The OCI runtime check verifies image entrypoints and bounded startup behavior, while the gateway VM exercises the gateway image as a non-root process against PostgreSQL and a real Nix daemon. Together the selected checks prove stock-Nix classic and fixed-output builds, retained-result reuse, graceful and crash restart, gateway-store interruption, PostgreSQL ownership fencing, exact-archive redeployment, idempotent migration, future-schema rejection, and no blind resubmission.
 
 ## Documentation
 

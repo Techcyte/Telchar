@@ -3,8 +3,7 @@
   pkgs,
   system,
   telchar,
-  nomadWorker,
-  telcharModule,
+  ...
 }:
 {
   nixos-gate-3-contract =

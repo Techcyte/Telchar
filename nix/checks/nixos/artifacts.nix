@@ -1,10 +1,8 @@
 # Defines journal, machine-state, and collector artifact checks.
 {
   pkgs,
-  system,
   telchar,
-  nomadWorker,
-  telcharModule,
+  ...
 }:
 {
   nixos-artifacts =
