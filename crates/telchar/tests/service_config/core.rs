@@ -5,6 +5,34 @@ use std::time::Duration;
 use super::*;
 
 #[test]
+fn rejects_database_url_file_with_unsafe_permissions() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("unsafe-database-url");
+    let database_url_file = root.join("database-url");
+    fs::write(&database_url_file, "postgresql://telchar@localhost/telchar")
+        .expect("database URL writes");
+    fs::set_permissions(&database_url_file, fs::Permissions::from_mode(0o644))
+        .expect("database URL permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[database]\nurl_file = \"{}\"\n",
+            database_url_file.display()
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let error = ServiceConfig::load().expect_err("unsafe database URL file rejects");
+
+    assert_eq!(error.to_string(), "database URL file is invalid");
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn loads_strict_toml_and_identity_mappings() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
@@ -15,6 +43,8 @@ fn loads_strict_toml_and_identity_mappings() {
         "postgresql://telchar@localhost/telchar\n",
     )
     .expect("database URL writes");
+    fs::set_permissions(&database_url_file, fs::Permissions::from_mode(0o600))
+        .expect("database URL permissions set");
     let config_path = root.join("telchar.toml");
     fs::write(
         &config_path,
