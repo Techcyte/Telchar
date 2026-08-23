@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "nix-worker-protocol"
-version = "0.1.0"
+version = "2026.8.0"
 dependencies = [
  "proptest",
  "serde_json",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "telchar"
-version = "0.1.0"
+version = "2026.8.0"
 dependencies = [
  "base64",
  "hmac 0.12.1",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "telchar-nomad-worker"
-version = "0.1.0"
+version = "2026.8.0"
 dependencies = [
  "base64",
  "hmac 0.12.1",
