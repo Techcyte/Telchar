@@ -12,6 +12,27 @@ mod support;
 use support::postgres::PostgresFixture;
 
 #[test]
+fn frontend_failure_has_trace_id() {
+    let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_IPC_SOCKET", "/nonexistent/telchar/daemon.sock")
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .output()
+        .expect("stdio frontend runs");
+
+    assert!(!output.status.success(), "frontend unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let failure = stderr
+        .lines()
+        .find(|line| line.contains("event=\"ipc.frontend.failed\""))
+        .unwrap_or_else(|| panic!("frontend failure event missing: {stderr}"));
+    assert!(
+        failure.contains("trace_id=") && !failure.contains("trace_id=none"),
+        "frontend failure has no trace ID: {failure}"
+    );
+}
+
+#[test]
 fn serve_stdio_does_not_require_database_configuration() {
     let fixture = Fixture::start("database-free");
     let output = fixture
