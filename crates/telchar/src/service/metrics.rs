@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{global, KeyValue};
 
 struct Instruments {
     service_sessions: Gauge<u64>,
@@ -73,6 +73,8 @@ struct Instruments {
 struct GaugeState {
     service_sessions: u64,
     shared_build_queue_depth: u64,
+    shared_build_active: u64,
+    shared_build_collecting: u64,
     shared_build_in_flight: u64,
     shared_build_waiting_followers: u64,
     backend_permits: BTreeMap<String, (String, u64, u64, u64)>,
@@ -81,6 +83,31 @@ struct GaugeState {
     recovery_monitoring: u64,
     nomad_pending: BTreeMap<String, u64>,
     nomad_callback_connections: u64,
+}
+
+impl GaugeState {
+    fn shared_build_started(&mut self) {
+        self.shared_build_active = self.shared_build_active.saturating_add(1);
+    }
+
+    fn shared_build_collecting(&mut self) {
+        self.shared_build_active = self.shared_build_active.saturating_sub(1);
+        self.shared_build_collecting = self.shared_build_collecting.saturating_add(1);
+    }
+
+    fn shared_build_finished(&mut self, previous_state: crate::persistence::SharedBuildState) {
+        match previous_state {
+            crate::persistence::SharedBuildState::Running => {
+                self.shared_build_active = self.shared_build_active.saturating_sub(1);
+            }
+            crate::persistence::SharedBuildState::Collecting => {
+                self.shared_build_collecting = self.shared_build_collecting.saturating_sub(1);
+            }
+            crate::persistence::SharedBuildState::Claimed
+            | crate::persistence::SharedBuildState::Succeeded
+            | crate::persistence::SharedBuildState::Failed => {}
+        }
+    }
 }
 
 fn instruments() -> &'static Instruments {
@@ -487,6 +514,8 @@ pub fn record_shared_build_operational_counts(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.shared_build_queue_depth = counts.queued;
+    state.shared_build_active = counts.running;
+    state.shared_build_collecting = counts.collecting;
     instruments()
         .shared_build_queue_depth
         .record(counts.queued, &[]);
@@ -496,6 +525,42 @@ pub fn record_shared_build_operational_counts(
     instruments()
         .shared_build_collecting
         .record(counts.collecting, &[]);
+}
+
+pub fn shared_build_started() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_started();
+    instruments()
+        .shared_build_active
+        .record(state.shared_build_active, &[]);
+}
+
+pub fn shared_build_collecting() {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_collecting();
+    instruments()
+        .shared_build_active
+        .record(state.shared_build_active, &[]);
+    instruments()
+        .shared_build_collecting
+        .record(state.shared_build_collecting, &[]);
+}
+
+pub fn shared_build_finished(previous_state: crate::persistence::SharedBuildState) {
+    let mut state = gauge_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.shared_build_finished(previous_state);
+    instruments()
+        .shared_build_active
+        .record(state.shared_build_active, &[]);
+    instruments()
+        .shared_build_collecting
+        .record(state.shared_build_collecting, &[]);
 }
 
 pub fn shared_build_enqueued() {
@@ -916,6 +981,39 @@ pub fn nomad_callback_finished(outcome: &str) {
     instruments()
         .nomad_callback_outcomes
         .add(1, &[KeyValue::new("outcome", outcome.to_owned())]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GaugeState;
+    use crate::persistence::SharedBuildState;
+
+    #[test]
+    fn durable_shared_build_gauges_follow_committed_state_transitions() {
+        let mut state = GaugeState::default();
+
+        state.shared_build_started();
+        assert_eq!(state.shared_build_active, 1);
+        assert_eq!(state.shared_build_collecting, 0);
+
+        state.shared_build_collecting();
+        assert_eq!(state.shared_build_active, 0);
+        assert_eq!(state.shared_build_collecting, 1);
+
+        state.shared_build_finished(SharedBuildState::Collecting);
+        assert_eq!(state.shared_build_active, 0);
+        assert_eq!(state.shared_build_collecting, 0);
+    }
+
+    #[test]
+    fn failed_claim_does_not_change_running_or_collecting_gauges() {
+        let mut state = GaugeState::default();
+
+        state.shared_build_finished(SharedBuildState::Claimed);
+
+        assert_eq!(state.shared_build_active, 0);
+        assert_eq!(state.shared_build_collecting, 0);
+    }
 }
 
 pub fn emit_smoke_metrics() {
