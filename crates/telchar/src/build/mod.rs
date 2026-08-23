@@ -339,6 +339,12 @@ impl BuildRequest {
                 "invalid BuildDerivation request",
             ));
         }
+        if request.outputs().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid BuildDerivation request",
+            ));
+        }
         let mut expected_outputs = Vec::with_capacity(request.outputs().len());
         let mut output_authorities = Vec::with_capacity(request.outputs().len());
         for output in request.outputs() {
