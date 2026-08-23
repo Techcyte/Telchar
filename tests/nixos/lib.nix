@@ -169,7 +169,7 @@ let
             printf 'client_supplied_key=%s\n' "''${TELCHAR_AUTHENTICATED_KEY-}"
             printf 'agent_socket=%s\n' "''${SSH_AUTH_SOCK-}"
             printf 'display=%s\n' "''${DISPLAY-}"
-          } > /run/telchar/forced-command-evidence
+          } > /tmp/telchar-forced-command-evidence
           exec env OTEL_EXPORTER_OTLP_ENDPOINT=http://otlp-collector:4317 TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock TELCHAR_AUTHENTICATED_KEY="$fingerprint" ${telchar}/bin/telchar serve-stdio
         '';
       };
@@ -297,6 +297,7 @@ let
         [[backends.static_ssh]]
         name = "builder"
         system = "${pkgs.stdenv.hostPlatform.system}"
+        maximum_concurrent_builds = 1
         destination = "telchar-builder@builder"
         identity_file = "/var/lib/telchar-static-ssh/identity"
         known_hosts_file = "/var/lib/telchar-static-ssh/known-hosts"
@@ -481,6 +482,7 @@ rec {
         gateway.succeed("${pkgs.openssh}/bin/ssh-keyscan -t ed25519 builder > /var/lib/telchar-static-ssh/known-hosts 2>/dev/null && chown telchar-ingress:telchar /var/lib/telchar-static-ssh/known-hosts && chmod 644 /var/lib/telchar-static-ssh/known-hosts")
         gateway.succeed("systemctl start telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")
+        gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
         stock_client.succeed("mkdir -p /root/.ssh && ssh-keygen -q -t ed25519 -N \"\" -f /root/.ssh/telchar")
         ingress_key = stock_client.succeed("cat /root/.ssh/telchar.pub").strip()
         gateway.succeed("mkdir -p /var/lib/telchar-ingress/.ssh")
