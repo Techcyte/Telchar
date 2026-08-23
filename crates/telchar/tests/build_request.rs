@@ -6,7 +6,7 @@ use std::time::Duration;
 use sha2::Digest;
 
 use nix_worker_protocol::{
-    ProtocolSessionLimits, WorkerReader, write_worker_byte_string, write_worker_integer,
+    write_worker_byte_string, write_worker_integer, ProtocolSessionLimits, WorkerReader,
 };
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
@@ -173,12 +173,10 @@ fn loads_selected_input_derivation_outputs() {
         backend.built,
         vec![b"/nix/store/33333333333333333333333333333333-dependency.drv!out".to_vec()]
     );
-    assert!(
-        request
-            .input_sources()
-            .iter()
-            .any(|path| path.as_slice() == dependency_output)
-    );
+    assert!(request
+        .input_sources()
+        .iter()
+        .any(|path| path.as_slice() == dependency_output));
 }
 
 #[test]
@@ -247,15 +245,23 @@ fn rejects_malformed_or_dynamic_stored_derivations() {
         b"Derive([)".as_slice(),
         br#"DrvWithVersion("xp-dyn-drv",Derive([],[],[],"x86_64-linux","/bin/sh",[],[]))"#,
     ] {
-        assert!(
-            BuildRequest::from_stored_derivation(
-                drv_path(),
-                derivation,
-                &backends("x86_64-linux", &[]),
-            )
-            .is_err()
-        );
+        assert!(BuildRequest::from_stored_derivation(
+            drv_path(),
+            derivation,
+            &backends("x86_64-linux", &[]),
+        )
+        .is_err());
     }
+}
+
+#[test]
+fn rejects_worker_request_without_outputs() {
+    let worker = decode_wire(build_request_wire_without_outputs());
+
+    let error = BuildRequest::from_worker_request(&worker, &backends("x86_64-linux", &[]))
+        .expect_err("worker request without outputs rejects");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
 
 #[test]
@@ -318,11 +324,9 @@ fn normalizes_gate_3_request_without_backend_objects() {
     let request =
         BuildRequest::from_worker_request(&worker, &backends).expect("Gate 3 request is admitted");
 
-    assert!(
-        request
-            .derivation_path()
-            .ends_with(b"-telchar-gate-3-contract.drv")
-    );
+    assert!(request
+        .derivation_path()
+        .ends_with(b"-telchar-gate-3-contract.drv"));
     assert_eq!(request.expected_outputs().len(), 1);
     assert_eq!(request.expected_outputs()[0].0, b"out");
     assert_eq!(request.system(), "x86_64-linux");
@@ -562,6 +566,30 @@ fn decode_wire(wire: Vec<u8>) -> nix_worker_protocol::BuildDerivationRequest {
     reader
         .complete_build_derivation()
         .expect("worker request decodes")
+}
+
+fn build_request_wire_without_outputs() -> Vec<u8> {
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 36);
+    write_worker_byte_string(&mut wire, drv_path());
+    write_worker_integer(&mut wire, 0);
+    write_worker_integer(&mut wire, 0);
+    write_worker_byte_string(&mut wire, b"x86_64-linux");
+    write_worker_byte_string(&mut wire, b"/bin/sh");
+    write_worker_integer(&mut wire, 2);
+    write_worker_byte_string(&mut wire, b"-c");
+    write_worker_byte_string(&mut wire, b"printf telchar-remote-build");
+    write_worker_integer(&mut wire, 3);
+    for (key, value) in [
+        (b"builder".as_slice(), b"/bin/sh".as_slice()),
+        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (b"system".as_slice(), b"x86_64-linux".as_slice()),
+    ] {
+        write_worker_byte_string(&mut wire, key);
+        write_worker_byte_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    wire
 }
 
 fn build_request_wire(system: &str, environment_output: &[u8], mode: u64) -> Vec<u8> {
