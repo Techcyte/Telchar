@@ -66,7 +66,9 @@ Client data is never interpolated into the prestart command or driver configurat
 
 After the complete input closure is valid, the worker runs normal-mode `BuildDerivation` through its configured Nix daemon.
 
-The worker emits bounded `LogChunk` frames during `BuildDerivation`. The gateway validates and consumes those frames, but the current Nomad callback path does not forward them to attached Nix clients. Telchar does not store log bytes in PostgreSQL or replay them after reconnect.
+The worker emits bounded `LogChunk` frames during `BuildDerivation`. After protocol validation, the callback publishes each chunk to every process-local Nix client currently attached to the exact shared build. Leader and follower sessions receive chunks in callback order before the terminal result.
+
+Each attached session has an independent byte-bounded queue controlled by `live_log_queue_bytes`. Callback and build execution threads never wait for client writes. When a slow session exceeds its queue, Telchar drops its oldest queued chunks and sends `\n[telchar: earlier build logs truncated]\n` before the retained chunks. A slow or disconnected client never fails the remote build. Log bytes remain live-only: Telchar does not store them in PostgreSQL or replay them after process restart or callback reconnect.
 
 After `BuildDerivation` succeeds, the worker returns only the exact declared output paths. Fixed-output method, algorithm, digest, and Nix content-address metadata remain bound to the admitted build specification through the job and callback protocol. Telchar checks metadata, references, NAR identity and structure, expected path set, admitted content authority, and gateway-store registration before acknowledging each output.
 
@@ -144,6 +146,6 @@ The selected profile's `priority_default` is rendered into the Nomad job. The co
 
 Profiles never infer CPU, memory, priority, or placement from derivation size, closure size, input count, or presumed workload cost. Placement constraints can select GPU-capable nodes but do not reserve a GPU. Bounded Nomad device reservations are deferred on the roadmap.
 
-Limits bound profile and constraint counts and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, per-frame log bytes, idle time, total runtime, connection lifetime, authentication, replay retention, and diagnostics. The callback enforces setup and output-collection phase deadlines in addition to the total connection lifetime. Reconnect and live-log queue limits remain strict configuration input but are not yet fully enforced by the current worker and callback path. Unknown fields or unsafe credential files fail startup.
+Limits bound profile and constraint counts and field sizes, manifest count and bytes, individual and aggregate NAR sizes, metadata, buffers, per-frame log bytes, per-attached-session live-log queues, idle time, total runtime, connection lifetime, authentication, replay retention, and diagnostics. The callback enforces setup and output-collection phase deadlines in addition to the total connection lifetime. Reconnect limits remain strict configuration input but are not yet enforced because the current worker does not reconnect. Unknown fields or unsafe credential files fail startup.
 
 Consult `crates/telchar/tests/service_config.rs` for complete exercised TOML examples until a generated configuration reference exists.

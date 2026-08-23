@@ -113,13 +113,18 @@ impl ConfiguredBackends {
         Arc::clone(&self.inner.schedulable_static_ssh)
     }
 
-    pub fn executor(&self, database_url: &str) -> io::Result<BackendExecutor> {
+    pub fn executor(
+        &self,
+        database_url: &str,
+        shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
+    ) -> io::Result<BackendExecutor> {
         if database_url.trim().is_empty() {
             return Err(io::Error::other("database URL is not configured"));
         }
         Ok(BackendExecutor {
             backends: self.clone(),
             database_url: database_url.to_owned(),
+            shared_builds,
         })
     }
 }
@@ -224,9 +229,23 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
 pub struct BackendExecutor {
     backends: ConfiguredBackends,
     database_url: String,
+    shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
 }
 
 impl BuildBackend for BackendExecutor {
+    fn live_log_queue_bytes(&self, target: &crate::backend::BackendTarget) -> usize {
+        if target.kind() != BackendKind::Nomad {
+            return 1;
+        }
+        self.backends
+            .inner
+            .nomad
+            .iter()
+            .find(|config| config.target().name() == target.name())
+            .map(|config| config.transfer_limits().live_log_queue_bytes())
+            .unwrap_or(1)
+    }
+
     fn execution_id(
         &self,
         target: &crate::backend::BackendTarget,
@@ -387,6 +406,9 @@ impl BuildBackend for BackendExecutor {
                     &self.database_url,
                     execution,
                     shared_build_key.as_bytes(),
+                    logs,
+                    &self.shared_builds,
+                    config.transfer_limits().live_log_queue_bytes(),
                     cancelled,
                 );
                 let result_name = if result.is_ok() {

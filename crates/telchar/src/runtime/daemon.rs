@@ -44,7 +44,7 @@ pub(super) fn serve_connection(
     disk_reserve: telchar::service::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::service::disk_reserve::DiskReserveProbe,
     backends: &telchar::backend::routing::ConfiguredBackends,
-    shared_builds: &telchar::shared_build::SharedBuildRegistry,
+    shared_builds: &Arc<telchar::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
     gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
@@ -81,7 +81,7 @@ pub(super) fn serve_accepted_connection(
     disk_reserve: telchar::service::disk_reserve::DiskReserve,
     disk_probe: &dyn telchar::service::disk_reserve::DiskReserveProbe,
     backends: &telchar::backend::routing::ConfiguredBackends,
-    shared_builds: &telchar::shared_build::SharedBuildRegistry,
+    shared_builds: &Arc<telchar::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
     gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
@@ -129,7 +129,7 @@ pub(super) fn serve_accepted_connection(
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = gateway_store.query();
-        let mut build_executor = backends.executor(database_url)?;
+        let mut build_executor = backends.executor(database_url, Arc::clone(shared_builds))?;
         let mut store_export = gateway_store.export();
         let mut store_import = gateway_store.import()?;
         let mut store_closure = gateway_store.closure();

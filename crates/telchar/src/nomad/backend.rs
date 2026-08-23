@@ -4,14 +4,13 @@ use std::fs;
 use std::io::{self, Read};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Certificate, Identity};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
@@ -308,6 +307,9 @@ impl NomadClient {
         database_url: &str,
         execution: &BuildExecution<'_>,
         shared_build_key: &[u8],
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        shared_builds: &crate::shared_build::SharedBuildRegistry,
+        live_log_queue_bytes: usize,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
         let submission_started = Instant::now();
@@ -358,9 +360,17 @@ impl NomadClient {
         };
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
         let started = Instant::now();
+        let shared_build_key = std::str::from_utf8(shared_build_key)
+            .map_err(|_| io::Error::other("Nomad shared build key is invalid"))?;
+        let mut live_logs = shared_builds
+            .subscribe_logs(shared_build_key, live_log_queue_bytes)
+            .ok_or_else(|| io::Error::other("Nomad shared build live logs are unavailable"))?;
         let result = (|| {
             let mut placement_recorded = false;
             loop {
+                for chunk in live_logs.drain() {
+                    logs(&chunk)?;
+                }
                 if cancelled()? {
                     self.stop(submission.job_id())?;
                     break Err(io::Error::new(
@@ -416,9 +426,17 @@ impl NomadClient {
                         "Nomad job execution timed out",
                     ));
                 }
-                std::thread::sleep(self.config.poll_interval());
+                for chunk in live_logs.wait_and_drain(self.config.poll_interval()) {
+                    logs(&chunk)?;
+                }
             }
         })();
+        let result = result.and_then(|result| {
+            for chunk in live_logs.drain() {
+                logs(&chunk)?;
+            }
+            Ok(result)
+        });
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
         let result_name = if result.is_ok() {
             "succeeded"

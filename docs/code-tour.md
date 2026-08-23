@@ -80,7 +80,7 @@ Backend success is insufficient. Every expected output must be transferred, vali
 
 ### 5. Shared-build durability
 
-`shared_build/mod.rs` coalesces equivalent requests inside one daemon. `shared_build/scheduler.rs` applies round-robin admission across quota subjects and FIFO order within a subject. Queue admission and backend capacity remain separate gates.
+`shared_build/mod.rs` coalesces equivalent requests inside one daemon and owns independent bounded live-log queues for attached leader and follower sessions. Callback publication is nonblocking; slow sessions drop their oldest queued chunks and receive an explicit truncation marker. `shared_build/scheduler.rs` applies round-robin admission across quota subjects and FIFO order within a subject. Queue admission and backend capacity remain separate gates.
 
 `persistence/` is split by durable aggregate:
 
@@ -119,7 +119,7 @@ Nomad security and transfer boundaries are separate:
 - `nomad/callback.rs`: exact execution resolution and replay admission;
 - `nomad/authentication.rs`: workload JWT or scoped HMAC verification;
 - `nomad/protocol.rs`: bounded TLNW frames and phases;
-- `nomad/callback_service.rs`: listener lifecycle, input transfer, logs, outputs, receipts, and durable completion;
+- `nomad/callback_service.rs`: listener lifecycle, input transfer, live-log publication to attached shared-build sessions, outputs, receipts, and durable completion;
 - `crates/telchar-nomad-worker/src/lib.rs`: allocation-side session.
 
 See [Nomad](nomad.md) for deployment and protocol detail.

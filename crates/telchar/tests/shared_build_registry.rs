@@ -88,11 +88,9 @@ fn thousand_concurrent_requests_coalesce_into_one_in_flight_build() {
         assert_eq!(registry.active_build_count(), 1);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         release.wait();
-        assert!(
-            handles
-                .into_iter()
-                .all(|handle| handle.join().expect("request joins").is_ok())
-        );
+        assert!(handles
+            .into_iter()
+            .all(|handle| handle.join().expect("request joins").is_ok()));
     });
 
     assert_eq!(registry.active_build_count(), 0);
@@ -124,17 +122,13 @@ fn shared_failure_wakes_all_waiters_and_later_request_can_execute() {
             .collect::<Vec<_>>()
     });
 
-    assert!(
-        failures
-            .iter()
-            .all(|result| *result == Err(SharedBuildTerminalFailure::Backend))
-    );
+    assert!(failures
+        .iter()
+        .all(|result| *result == Err(SharedBuildTerminalFailure::Backend)));
     assert_eq!(registry.active_build_count(), 0);
-    assert!(
-        registry
-            .execute_or_wait("failed-build", successful_result)
-            .is_ok()
-    );
+    assert!(registry
+        .execute_or_wait("failed-build", successful_result)
+        .is_ok());
 }
 
 #[test]
@@ -225,6 +219,110 @@ fn dropped_leader_fails_followers_and_releases_build_key() {
         registry.acquire("abandoned-build"),
         SharedBuildAccess::Leader(_)
     ));
+}
+
+#[test]
+fn live_logs_reach_each_attached_session_in_order() {
+    let registry = SharedBuildRegistry::new();
+    let leader = match registry.acquire("logged-build") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let follower = match registry.acquire("logged-build") {
+        SharedBuildAccess::Follower(follower) => follower,
+        SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
+    };
+    let mut leader_logs = leader.subscribe_logs(64);
+    let mut follower_logs = follower.subscribe_logs(64);
+
+    assert_eq!(registry.publish_log("logged-build", b"first"), 2);
+    assert_eq!(registry.publish_log("logged-build", b"second"), 2);
+
+    assert_eq!(
+        leader_logs.drain(),
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+    assert_eq!(
+        follower_logs.drain(),
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+}
+
+#[test]
+fn follower_wait_forwards_logs_before_terminal_result() {
+    let registry = Arc::new(SharedBuildRegistry::new());
+    let leader = match registry.acquire("waiting-logs") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let follower = match registry.acquire("waiting-logs") {
+        SharedBuildAccess::Follower(follower) => follower,
+        SharedBuildAccess::Leader(_) => panic!("second acquisition must follow"),
+    };
+    let mut logs = follower.subscribe_logs(64);
+    let mut forwarded = Vec::new();
+    thread::scope(|scope| {
+        let publisher = Arc::clone(&registry);
+        let worker = scope.spawn(move || {
+            publisher.publish_log("waiting-logs", b"live");
+            leader.complete(successful_result())
+        });
+        let mut forward = |chunk: &[u8]| -> std::io::Result<()> {
+            forwarded.extend_from_slice(chunk);
+            Ok(())
+        };
+
+        let result = follower
+            .wait_timeout_with_logs(Duration::from_secs(1), &mut logs, &mut forward)
+            .expect("wait succeeds")
+            .expect("wait completes");
+
+        assert!(result.is_ok());
+        worker
+            .join()
+            .expect("worker joins")
+            .expect("leader succeeds");
+    });
+    assert_eq!(forwarded, b"live");
+}
+
+#[test]
+fn slow_session_drops_oldest_logs_and_receives_truncation_marker() {
+    let registry = SharedBuildRegistry::new();
+    let leader = match registry.acquire("bounded-logs") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let mut logs = leader.subscribe_logs(8);
+
+    assert_eq!(registry.publish_log("bounded-logs", b"first"), 1);
+    assert_eq!(registry.publish_log("bounded-logs", b"second"), 1);
+
+    assert_eq!(
+        logs.drain(),
+        vec![
+            telchar::shared_build::LIVE_LOG_TRUNCATION_MARKER.to_vec(),
+            b"second".to_vec(),
+        ]
+    );
+}
+
+#[test]
+fn detached_log_session_does_not_prevent_build_completion() {
+    let registry = SharedBuildRegistry::new();
+    let leader = match registry.acquire("detached-logs") {
+        SharedBuildAccess::Leader(leader) => leader,
+        SharedBuildAccess::Follower(_) => panic!("first acquisition must lead"),
+    };
+    let logs = leader.subscribe_logs(8);
+    drop(logs);
+
+    assert_eq!(registry.publish_log("detached-logs", b"ignored"), 0);
+
+    leader
+        .complete(successful_result())
+        .expect("build completes after log receiver detaches");
+    assert_eq!(registry.active_build_count(), 0);
 }
 
 #[test]

@@ -527,6 +527,10 @@ pub trait BuildBackend: Send {
         Ok(None)
     }
 
+    fn live_log_queue_bytes(&self, _target: &BackendTarget) -> usize {
+        1
+    }
+
     fn selected_target(
         &self,
         _system: &str,

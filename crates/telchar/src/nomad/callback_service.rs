@@ -41,6 +41,7 @@ impl NomadCallbackService {
         backends: Vec<NomadBackendConfig>,
         gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
+        shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -83,6 +84,7 @@ impl NomadCallbackService {
                 let backends = backends.clone();
                 let connections = Arc::clone(&listener_connections);
                 let gateway_store = gateway_store.clone();
+                let shared_builds = Arc::clone(&shared_builds);
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     crate::service::metrics::nomad_callback_started();
@@ -93,6 +95,7 @@ impl NomadCallbackService {
                         &backends,
                         &gateway_store,
                         output_retention,
+                        &shared_builds,
                     );
                     match result {
                         Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
@@ -190,6 +193,7 @@ pub fn serve_connection(
     backends: &[NomadBackendConfig],
     gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
+    shared_builds: &crate::shared_build::SharedBuildRegistry,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -446,6 +450,8 @@ pub fn serve_connection(
         gateway_store,
         limits,
         output_collection_deadline.min(connection_deadline),
+        shared_builds,
+        &build_request.shared_build_key(),
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -543,6 +549,8 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     gateway_store: &GatewayStoreEndpoint,
     limits: crate::service::config::NomadTransferLimits,
     connection_deadline: Instant,
+    shared_builds: &crate::shared_build::SharedBuildRegistry,
+    shared_build_key: &str,
 ) -> io::Result<BuildCollectionOutcome> {
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
@@ -556,8 +564,18 @@ fn receive_build_outputs<S: io::Read + io::Write>(
             ),
         )?;
         match frame.kind() {
-            FrameKind::BuildStarted | FrameKind::LogChunk => {
+            FrameKind::BuildStarted => {
                 session.accept(Direction::WorkerToGateway, frame)?;
+            }
+            FrameKind::LogChunk => {
+                session.accept(Direction::WorkerToGateway, frame.clone())?;
+                if publish_live_log(shared_builds, shared_build_key, frame.payload()) == 0 {
+                    tracing::debug!(
+                        event = "nomad.callback.log.unattached",
+                        derivation_path,
+                        "Nomad callback log had no attached live client"
+                    );
+                }
             }
             FrameKind::OutputMetadata => {
                 if current.is_some() {
@@ -890,6 +908,14 @@ fn take_chunk(chunk: &mut Vec<u8>) -> Vec<u8> {
     std::mem::replace(chunk, Vec::with_capacity(capacity))
 }
 
+fn publish_live_log(
+    shared_builds: &crate::shared_build::SharedBuildRegistry,
+    shared_build_key: &str,
+    payload: &[u8],
+) -> usize {
+    shared_builds.publish_log(shared_build_key, payload)
+}
+
 fn phase_deadline(started: Instant, timeout: Duration, error: &str) -> io::Result<Instant> {
     started
         .checked_add(timeout)
@@ -1116,11 +1142,28 @@ impl Drop for ConnectionPermit {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_before, phase_deadline, summarize_requested_inputs, take_chunk, InputTransferSummary,
+        ensure_before, phase_deadline, publish_live_log, summarize_requested_inputs, take_chunk,
+        InputTransferSummary,
     };
     use crate::nomad::protocol::{PathManifestEntry, PathSet};
     use std::io;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn validated_callback_log_reaches_attached_shared_build_session() {
+        let shared_builds = crate::shared_build::SharedBuildRegistry::new();
+        let leader = match shared_builds.acquire("callback-build") {
+            crate::shared_build::SharedBuildAccess::Leader(leader) => leader,
+            crate::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
+        };
+        let mut logs = leader.subscribe_logs(64);
+
+        assert_eq!(
+            publish_live_log(&shared_builds, "callback-build", b"callback-log"),
+            1
+        );
+        assert_eq!(logs.drain(), vec![b"callback-log".to_vec()]);
+    }
 
     #[test]
     fn phase_deadline_rejects_work_after_phase_timeout() {
