@@ -3,7 +3,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image_archive="${TELCHAR_SSH_INGRESS_IMAGE_ARCHIVE:-}"
-image="${TELCHAR_SSH_INGRESS_IMAGE:-telchar-ssh-ingress:2026.8.0}"
+image="${TELCHAR_SSH_INGRESS_IMAGE:-}"
 container_name="telchar-ssh-ingress-test-$$"
 temporary_directory="$(mktemp -d "$repository_root/.ssh-ingress-test.XXXXXX")"
 
@@ -24,7 +24,16 @@ if [[ -z "$image_archive" ]]; then
   )"
 fi
 
-docker load <"$image_archive" >/dev/null
+if [[ -z "$image" ]]; then
+  load_output="$(docker load <"$image_archive")"
+  image="${load_output##*Loaded image: }"
+  [[ "$image" != "$load_output" ]] || {
+    printf 'docker load did not report an image tag: %s\n' "$load_output" >&2
+    exit 1
+  }
+else
+  docker load <"$image_archive" >/dev/null
+fi
 
 credentials="$temporary_directory/credentials"
 mkdir -p "$credentials" "$temporary_directory/run"
