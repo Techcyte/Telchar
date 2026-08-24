@@ -3,6 +3,40 @@
 use super::*;
 
 #[test]
+fn retention_backends_initialize_concurrently() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("daemon starts");
+    let root = fixture.root().join("retention-concurrent-roots");
+    fs::create_dir(&root).expect("root directory creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("root permissions set");
+    let workers = (0..32)
+        .map(|_| {
+            let store_url = daemon.store_url().to_owned();
+            let store_directory = daemon.store_dir().to_owned();
+            let root = root.clone();
+            std::thread::spawn(move || {
+                NixStoreRetentionBackend::new_with_store_directory(store_url, store_directory, root)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for worker in workers {
+        worker
+            .join()
+            .expect("backend thread exits")
+            .expect("backend configures");
+    }
+    assert!(
+        fs::read_dir(&root)
+            .expect("root directory reads")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn retention_backend_uses_full_lifecycle_timeout() {
     let fixture = NixFixture::create().expect("fixture creates");
     let daemon = fixture
