@@ -157,10 +157,11 @@ impl GatewayStoreConnection {
             .build_derivation(request, logs)
             .map_err(|error| {
                 let message = error.to_string();
-                let phase = message
+                let diagnostic = message
                     .strip_prefix("Nix daemon BuildDerivation ")
-                    .unwrap_or("operation failed");
-                io::Error::other(format!("gateway Nix daemon BuildDerivation {phase}"))
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("operation failed: {message}"));
+                io::Error::other(format!("gateway Nix daemon BuildDerivation {diagnostic}"))
             })
     }
 
