@@ -452,6 +452,21 @@ fn run_daemon() -> io::Result<()> {
             static_ssh_health,
             Duration::from_secs(1),
         )?;
+    let mut static_ssh_consul_service = if config.static_ssh_consul().is_empty() {
+        None
+    } else {
+        Some(
+            telchar::service::static_ssh_consul::ConsulSshDiscoveryService::start(
+                config.static_ssh_consul().to_vec(),
+                config
+                    .static_ssh_consul()
+                    .iter()
+                    .map(|source| source.refresh_interval())
+                    .min()
+                    .ok_or_else(|| invalid("Consul SSH discovery configuration is invalid"))?,
+            )?,
+        )
+    };
     let mut callback_service = if let Some(callback) = config.nomad_callback() {
         let callback_listener = std::net::TcpListener::bind(callback.bind())?;
         Some(
@@ -601,6 +616,19 @@ fn run_daemon() -> io::Result<()> {
                     );
                 }
             }
+        }
+        if let Some(service) = static_ssh_consul_service.as_mut()
+            && let Some(discovered) = service.check()?
+        {
+            telchar::service::static_ssh_consul::publish_inventory(
+                &config,
+                &discovered,
+                &backends,
+                gateway_store.endpoint().cloned(),
+                gateway_store
+                    .build_helper()
+                    .map(std::path::Path::to_path_buf),
+            )?;
         }
         if let Err(error) = static_ssh_health_service.check() {
             shutdown_daemon_services(

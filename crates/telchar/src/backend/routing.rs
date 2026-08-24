@@ -76,6 +76,47 @@ impl ConfiguredBackends {
         static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
         schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     ) -> io::Result<Self> {
+        Self::with_inventory_and_health(
+            config,
+            config.static_ssh_backends().to_vec(),
+            gateway_store,
+            local_build_helper,
+            static_ssh_health,
+            schedulable_static_ssh,
+        )
+    }
+
+    pub fn with_static_ssh_inventory(
+        config: &ServiceConfig,
+        static_ssh: Vec<StaticSshBackendConfig>,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        local_build_helper: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let health = crate::backend::static_ssh::StaticSshHealth::probe_all(&static_ssh);
+        let scheduling = Arc::new(RwLock::new(
+            static_ssh
+                .iter()
+                .map(|backend| backend.target().name().to_owned())
+                .collect(),
+        ));
+        Self::with_inventory_and_health(
+            config,
+            static_ssh,
+            gateway_store,
+            local_build_helper,
+            health,
+            scheduling,
+        )
+    }
+
+    fn with_inventory_and_health(
+        config: &ServiceConfig,
+        static_ssh: Vec<StaticSshBackendConfig>,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        local_build_helper: Option<PathBuf>,
+        static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
+        schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
+    ) -> io::Result<Self> {
         let gateway_store = gateway_store.into();
         let mut targets = Vec::new();
         let mut maximums = Vec::new();
@@ -83,7 +124,7 @@ impl ConfiguredBackends {
             targets.push(local.target().clone());
             maximums.push(local.maximum_concurrent_builds());
         }
-        for backend in config.static_ssh_backends() {
+        for backend in &static_ssh {
             targets.push(backend.target().clone());
             maximums.push(backend.maximum_concurrent_builds());
         }
@@ -97,12 +138,16 @@ impl ConfiguredBackends {
                 permit_wait: config.backend_permit_wait(),
                 gateway_store,
                 local_build_helper,
-                static_ssh: config.static_ssh_backends().to_vec(),
+                static_ssh,
                 static_ssh_health,
                 schedulable_static_ssh,
                 nomad: config.nomad_backends().to_vec(),
             }),
         })
+    }
+
+    pub fn targets(&self) -> impl Iterator<Item = &crate::backend::BackendTarget> {
+        self.inner.pool.targets()
     }
 
     pub fn static_ssh_health(&self) -> crate::backend::static_ssh::StaticSshHealth {
