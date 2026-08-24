@@ -474,7 +474,12 @@ fn validate_root_directory(directory: PathBuf) -> io::Result<PathBuf> {
     if !metadata.is_dir() || metadata.permissions().mode() & 0o022 != 0 {
         return Err(retention_error());
     }
-    let probe = directory.join(format!(".telchar-retention-probe-{}", std::process::id()));
+    static PROBE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let probe = directory.join(format!(
+        ".telchar-retention-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
