@@ -65,6 +65,13 @@
       exit 1
     fi
 
+    for workflow in "$prepare_workflow" "$publish_workflow"; do
+      if grep -Eq 'scripts/check-release\.sh|cargo (test|check|clippy)|nixos-[a-z-]+|checks\.x86_64-linux\.oci-images' "$workflow"; then
+        echo "manual release workflow runs deep validation: $workflow" >&2
+        exit 1
+      fi
+    done
+
     touch "$out"
   '';
 

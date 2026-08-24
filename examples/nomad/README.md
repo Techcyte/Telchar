@@ -147,7 +147,7 @@ Never infer CPU, memory, priority, or placement from derivation or closure byte 
 
 Profile constraints may select GPU-capable nodes but do not reserve GPU hardware. Nomad device reservations remain future work in the project roadmap.
 
-Generated execution jobs disable task restart and group rescheduling. A failed allocation is a terminal attempt; Telchar never blindly retries `BuildDerivation` or migrates it to another node.
+Generated execution jobs disable Nomad task restart and group rescheduling. Telchar instead owns bounded attempt retries through the backend's `max_retries` setting. Each retry submits a distinct job identity after an infrastructure loss, while the original logical-build timeout and backend permit remain in force. Builder failures, transfer failures, cancellation, and timeout are terminal and never retry. Telchar does not migrate a build to another configured backend.
 
 ## Optional SSH ingress
 

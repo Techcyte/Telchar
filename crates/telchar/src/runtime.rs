@@ -452,6 +452,21 @@ fn run_daemon() -> io::Result<()> {
             static_ssh_health,
             Duration::from_secs(1),
         )?;
+    let mut static_ssh_consul_service = if config.static_ssh_consul().is_empty() {
+        None
+    } else {
+        Some(
+            telchar::service::static_ssh_consul::ConsulSshDiscoveryService::start(
+                config.static_ssh_consul().to_vec(),
+                config
+                    .static_ssh_consul()
+                    .iter()
+                    .map(|source| source.refresh_interval())
+                    .min()
+                    .ok_or_else(|| invalid("Consul SSH discovery configuration is invalid"))?,
+            )?,
+        )
+    };
     let mut callback_service = if let Some(callback) = config.nomad_callback() {
         let callback_listener = std::net::TcpListener::bind(callback.bind())?;
         Some(
@@ -545,6 +560,7 @@ fn run_daemon() -> io::Result<()> {
     let maximum_sessions = config.maximum_ipc_sessions();
     telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
+    let mut discovered_static_ssh = Vec::new();
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
@@ -552,6 +568,7 @@ fn run_daemon() -> io::Result<()> {
                 &mut callback_service,
                 &mut maintenance_service,
                 &mut static_ssh_health_service,
+                &mut static_ssh_consul_service,
                 &mut recovery_services,
             )?;
             return Ok(());
@@ -564,6 +581,7 @@ fn run_daemon() -> io::Result<()> {
             );
             match telchar::service::config_reload::BackendReload::prepare(
                 &config,
+                &discovered_static_ssh,
                 gateway_store.endpoint().cloned(),
                 gateway_store
                     .build_helper()
@@ -602,11 +620,26 @@ fn run_daemon() -> io::Result<()> {
                 }
             }
         }
+        if let Some(service) = static_ssh_consul_service.as_mut()
+            && let Some(discovered) = service.check()?
+        {
+            telchar::service::static_ssh_consul::publish_inventory(
+                &config,
+                &discovered,
+                &backends,
+                gateway_store.endpoint().cloned(),
+                gateway_store
+                    .build_helper()
+                    .map(std::path::Path::to_path_buf),
+            )?;
+            discovered_static_ssh = discovered;
+        }
         if let Err(error) = static_ssh_health_service.check() {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
                 &mut static_ssh_health_service,
+                &mut static_ssh_consul_service,
                 &mut recovery_services,
             )?;
             return Err(error);
@@ -622,6 +655,7 @@ fn run_daemon() -> io::Result<()> {
                 &mut callback_service,
                 &mut maintenance_service,
                 &mut static_ssh_health_service,
+                &mut static_ssh_consul_service,
                 &mut recovery_services,
             )?;
             return Err(error);
@@ -644,6 +678,7 @@ fn run_daemon() -> io::Result<()> {
                         &mut callback_service,
                         &mut maintenance_service,
                         &mut static_ssh_health_service,
+                        &mut static_ssh_consul_service,
                         &mut recovery_services,
                     )?;
                     return Err(error);
@@ -663,6 +698,7 @@ fn run_daemon() -> io::Result<()> {
                     &mut callback_service,
                     &mut maintenance_service,
                     &mut static_ssh_health_service,
+                    &mut static_ssh_consul_service,
                     &mut recovery_services,
                 )?;
                 return Err(invalid("singleton daemon ownership lost"));

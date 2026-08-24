@@ -195,6 +195,79 @@ fn shared_build_attempt_records_backend_progress_and_terminal_outcome() {
 }
 
 #[test]
+fn retry_transition_closes_active_attempt_and_starts_next_identity_atomically() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation = "/nix/store/abababababababababababababababab-retry.drv";
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[14; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("nomad-attempt-1"),
+        &["/nix/store/ffffffffffffffffffffffffffffffff-output"],
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(fixture.url(), derivation)
+        .expect("shared build starts");
+    let first = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .expect("first attempt reads")
+        .expect("first attempt exists");
+
+    let second = telchar::persistence::retry_shared_build(
+        fixture.url(),
+        derivation,
+        "nomad-attempt-1",
+        "nomad-attempt-2",
+        "nomad-infrastructure-lost",
+        &serde_json::json!({"reason": "allocation-missing"}),
+    )
+    .expect("shared build retries");
+
+    assert_eq!(second.ordinal, 2);
+    assert_eq!(
+        second.backend_execution_id.as_deref(),
+        Some("nomad-attempt-2")
+    );
+    assert_eq!(
+        second.state,
+        telchar::persistence::SharedBuildAttemptState::Running
+    );
+    let first_outcome =
+        telchar::persistence::read_shared_build_attempt_outcome(fixture.url(), &first.attempt_id)
+            .expect("first outcome reads")
+            .expect("first outcome exists");
+    assert_eq!(first_outcome.classification, "nomad-infrastructure-lost");
+    assert_eq!(
+        first_outcome.result_metadata["reason"],
+        "allocation-missing"
+    );
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation)
+            .expect("shared build reads")
+            .expect("shared build exists")
+            .backend_execution_id
+            .as_deref(),
+        Some("nomad-attempt-2")
+    );
+    assert_eq!(
+        telchar::persistence::retry_shared_build(
+            fixture.url(),
+            derivation,
+            "nomad-attempt-1",
+            "nomad-attempt-3",
+            "nomad-infrastructure-lost",
+            &serde_json::json!({"reason": "stale-transition"}),
+        )
+        .expect_err("stale attempt identity rejects")
+        .failure(),
+        telchar::persistence::SharedBuildFailure::InvalidState
+    );
+}
+
+#[test]
 fn shared_build_failure_records_one_terminal_attempt_outcome() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

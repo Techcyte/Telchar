@@ -42,7 +42,7 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     let config_path = root.path().join("telchar.toml");
     let backend = |name: &str| {
         format!(
-            "[[backends.static_ssh]]\nname = \"{name}\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"{name}\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.{name}]\naddress = \"{name}\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()
@@ -59,8 +59,8 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     let health = StaticSshHealth::from_states(
         current.static_ssh_backends(),
         [
-            ("builder-a", StaticSshHealthState::Ready),
-            ("builder-b", StaticSshHealthState::Ready),
+            ("pool.builder-a", StaticSshHealthState::Ready),
+            ("pool.builder-b", StaticSshHealthState::Ready),
         ],
     );
     let initial = ConfiguredBackends::with_health(&current, None, None, health.clone())
@@ -75,7 +75,7 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     let selected = old_executor
         .selected_target("x86_64-linux", &[])
         .expect("old generation selects first backend");
-    assert_eq!(selected.name(), "builder-a");
+    assert_eq!(selected.name(), "pool.builder-a");
     let reloadable = ReloadableBackends::new(initial);
     let mut health_service = StaticSshHealthService::start(health, Duration::from_secs(60))
         .expect("health service starts");
@@ -99,14 +99,17 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         }
     );
 
-    assert_eq!(old_snapshot.static_ssh_health().state("builder-c"), None);
+    assert_eq!(
+        old_snapshot.static_ssh_health().state("pool.builder-c"),
+        None
+    );
     assert!(old_executor.selected_target("x86_64-linux", &[]).is_ok());
     let build = admitted_request();
     let mut execution =
         BuildExecution::new("assigned-before-reload", &build, Duration::from_secs(1))
             .expect("execution constructs");
     execution
-        .set_target_name("builder-a")
+        .set_target_name("pool.builder-a")
         .expect("exact target records");
     assert!(old_executor.execute(&execution).is_err());
     assert!(
@@ -114,16 +117,81 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
             .static_ssh_scheduling()
             .read()
             .expect("scheduling reads")
-            .contains("builder-a")
+            .contains("pool.builder-a")
     );
     assert_eq!(
-        reloadable.snapshot().static_ssh_health().state("builder-c"),
+        reloadable
+            .snapshot()
+            .static_ssh_health()
+            .state("pool.builder-c"),
         Some(StaticSshHealthState::Unavailable)
     );
     assert_eq!(current.static_ssh_backends().len(), 2);
     health_service
         .shutdown()
         .expect("health service shuts down");
+    unsafe {
+        match saved {
+            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
+            None => std::env::remove_var("TELCHAR_CONFIG"),
+        }
+    }
+}
+
+#[test]
+fn reload_preserves_discovered_inventory_while_replacing_static_leaves() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let root = tempfile::tempdir().expect("fixture creates");
+    let identity = root.path().join("identity");
+    let known_hosts = root.path().join("known-hosts");
+    let ssh = root.path().join("ssh");
+    fs::write(&identity, "identity").expect("identity writes");
+    fs::set_permissions(&identity, fs::Permissions::from_mode(0o600))
+        .expect("identity permissions set");
+    fs::write(&known_hosts, "builder ssh-ed25519 AAAA\n").expect("known hosts writes");
+    fs::write(&ssh, "#!/bin/sh\nexit 1\n").expect("SSH writes");
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).expect("SSH permissions set");
+    let config_path = root.path().join("telchar.toml");
+    let config = |host: &str| {
+        format!(
+            "[[backends.ssh]]\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.{host}]\naddress = \"{host}\"\n[backends.ssh.dynamic]\nsource = \"consul\"\nendpoint = \"http://127.0.0.1:8500\"\nservice = \"builder\"\n",
+            identity.display(),
+            known_hosts.display(),
+            ssh.display()
+        )
+    };
+    let saved = std::env::var_os("TELCHAR_CONFIG");
+    fs::write(&config_path, config("first")).expect("initial config writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    let current = ServiceConfig::load().expect("initial config loads");
+    let discovered = telchar::service::static_ssh_consul::map_members(
+        &current.static_ssh_consul()[0],
+        &serde_json::json!([{
+            "Node": {"Node": "node-a", "Address": "10.0.0.1"},
+            "Service": {
+                "ID": "builder-a", "Service": "builder", "Tags": [],
+                "Address": "10.0.1.1", "Port": 22
+            },
+            "Checks": [{"Status": "passing"}]
+        }]),
+    )
+    .expect("discovered inventory maps");
+    fs::write(&config_path, config("second")).expect("replacement config writes");
+    let replacement = ServiceConfig::load().expect("replacement config loads");
+
+    let reload = BackendReload::prepare_config_with_inventory(
+        &current,
+        replacement,
+        &discovered,
+        None,
+        None,
+        Duration::from_secs(60),
+    )
+    .expect("reload prepares");
+    let names = reload.target_names();
+    assert!(names.contains(&"pool.second".to_owned()));
+    assert!(names.iter().any(|name| name.starts_with("dynamic-")));
+
     unsafe {
         match saved {
             Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
