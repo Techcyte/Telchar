@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 export NIXPKGS_ALLOW_UNFREE=1
 
 nix develop -c cargo fmt --all -- --check
+nix develop -c scripts/test-prepare-release.py
 nix develop -c cargo test --locked --workspace -- --test-threads=1
 nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
