@@ -201,6 +201,9 @@ pub(super) fn validate_nomad_backends(
             return Err(invalid("Nomad backend name is ambiguous"));
         }
         validate_backend_capacity(backend.maximum_concurrent_builds)?;
+        if backend.max_retries > MAXIMUM_NOMAD_RETRIES {
+            return Err(invalid("Nomad retry count exceeds limit"));
+        }
         if !valid_nomad_endpoint(&backend.endpoint) {
             return Err(invalid("Nomad endpoint is invalid"));
         }
@@ -284,6 +287,7 @@ pub(super) fn validate_nomad_backends(
                 &backend.supported_features,
             )?,
             maximum_concurrent_builds: backend.maximum_concurrent_builds,
+            max_retries: backend.max_retries,
             endpoint: backend.endpoint,
             namespace,
             token_file,

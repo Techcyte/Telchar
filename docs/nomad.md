@@ -78,9 +78,11 @@ Missing, extra, corrupt, duplicate, oversized, out-of-order, or rejected output 
 
 Telchar persists the backend name, deterministic job ID, expected outputs, and admitted build specification. Callback replay records separately retain bounded allocation and nonce identity. It never stores secret credentials, capabilities, NAR bodies, or logs in PostgreSQL.
 
-After restart it checks gateway outputs first; otherwise it resolves the persisted backend name against current operator configuration and adopts only the deterministic job ID through that backend. Do not change a Nomad backend's endpoint or namespace under the same name while it owns in-flight work. The current worker does not reconnect after callback failure. Submitting another job or repeating `BuildDerivation` is an execution retry and is never automatic.
+After restart it checks gateway outputs first; otherwise it resolves the persisted backend name against current operator configuration and adopts only the active attempt's deterministic job ID through that backend. Do not change a Nomad backend's endpoint or namespace under the same name while it owns in-flight work. The current worker does not reconnect after callback failure.
 
-Timeout and cancellation purge only the persisted deterministic job. Missing jobs, foreign identities, failed allocations, callback authentication errors, transfer failures, and unverifiable outputs become one terminal failure. Telchar does not submit a replacement job or move the build to another compatible backend.
+`max_retries` controls infrastructure retries for each Nomad backend. It defaults to `0` and counts retries after the initial attempt, so `max_retries = 2` permits at most three attempts. Each attempt has a distinct persisted ordinal and deterministic Nomad job ID. Missing jobs, failed allocations, and Nomad API transport failures may rotate to the next identity after bounded exponential backoff with jitter. The original BuildDerivation timeout covers submission, monitoring, backoff, and every retry; it never resets.
+
+Timeout and cancellation purge only the active deterministic job and never retry. Callback-recorded build failures, transfer failures, invalid configuration, persistence failures, and client log delivery failures are terminal. A retry remains on the configured backend; Telchar does not move the build to another compatible backend. Stale callbacks from a replaced attempt fail identity resolution after the active job ID rotates.
 
 ## Cache publication
 
@@ -104,7 +106,17 @@ shutdown_drain_timeout_seconds = 30
 maximum_jwks_bytes = 1048576
 ```
 
-A Nomad target controls its own endpoint, namespace, credentials, capacity, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
+A Nomad target controls its own endpoint, namespace, credentials, capacity, retry count, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. For example:
+
+```toml
+[[backends.nomad]]
+maximum_concurrent_builds = 4
+max_retries = 2
+```
+
+`maximum_concurrent_builds` limits logical builds using the backend; a retry keeps that logical build's permit while replacing its Nomad execution attempt. `max_retries` is bounded to `100` and should normally remain small.
+
+Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
 
 ```toml
 [[backends.nomad.constraints]]

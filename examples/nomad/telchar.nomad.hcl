@@ -354,6 +354,10 @@ system = "x86_64-linux"
 # A derivation requirement is not authorization; these mappings and bounds are.
 supported_features = ["overflow-aws"]
 maximum_concurrent_builds = 4
+# OPERATOR POLICY: retries after the initial attempt. Use for infrastructure
+# loss such as disappearing ephemeral nodes; builder and transfer failures do
+# not retry. The original BuildDerivation timeout covers every attempt.
+max_retries = 2
 endpoint = "${var.nomad_api_endpoint}"
 namespace = "${var.namespace}"
 token_file = "/secrets/nomad-token"
