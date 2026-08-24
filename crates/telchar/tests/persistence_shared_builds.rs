@@ -509,6 +509,8 @@ fn later_request_replaces_failed_shared_build_without_automatic_retry() {
         &[output_path],
     )
     .expect("first shared build claims");
+    telchar::persistence::enqueue_shared_build(fixture.url(), derivation_path, "alice", 1)
+        .expect("first shared build enqueues");
     telchar::persistence::complete_shared_build_failure(
         fixture.url(),
         derivation_path,
@@ -542,6 +544,8 @@ fn later_request_replaces_failed_shared_build_without_automatic_retry() {
     assert_eq!(replacement.build.backend_name, "ssh-fast");
     assert!(replacement.build.result_metadata.is_none());
     assert!(replacement.build.completed_at.is_none());
+    telchar::persistence::enqueue_shared_build(fixture.url(), derivation_path, "alice", 2)
+        .expect("replacement shared build enqueues");
     assert_eq!(
         fixture
             .connect()
