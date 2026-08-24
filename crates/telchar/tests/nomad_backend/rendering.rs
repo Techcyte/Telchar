@@ -135,8 +135,17 @@ args = ["--stdio"]
     let first = deterministic_job_name(backend, b"shared-build-key");
     let second = deterministic_job_name(backend, b"shared-build-key");
     let other = deterministic_job_name(backend, b"other-build-key");
+    let retry = telchar::nomad::backend::deterministic_job_name_for_attempt(
+        backend,
+        b"shared-build-key",
+        2,
+    )
+    .expect("retry identity derives");
     assert_eq!(first, second);
     assert_ne!(first, other);
+    assert_ne!(first, retry);
+    assert!(first.ends_with("-1"));
+    assert!(retry.ends_with("-2"));
     assert!(first.starts_with("telchar-prod-"));
 
     let job = render_job(backend, b"shared-build-key").expect("job renders");

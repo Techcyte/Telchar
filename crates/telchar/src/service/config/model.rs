@@ -528,6 +528,7 @@ impl NomadCallbackConnect {
 pub struct NomadBackendConfig {
     pub(super) target: BackendTarget,
     pub(super) maximum_concurrent_builds: usize,
+    pub(super) max_retries: usize,
     pub(super) endpoint: String,
     pub(super) namespace: String,
     pub(super) token_file: Option<PathBuf>,
@@ -558,6 +559,10 @@ impl NomadBackendConfig {
 
     pub fn maximum_concurrent_builds(&self) -> usize {
         self.maximum_concurrent_builds
+    }
+
+    pub fn max_retries(&self) -> usize {
+        self.max_retries
     }
 
     pub fn endpoint(&self) -> &str {

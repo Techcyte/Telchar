@@ -141,6 +141,8 @@ pub(super) struct RawNomadBackendConfig {
     #[serde(default)]
     pub(super) supported_features: Vec<String>,
     pub(super) maximum_concurrent_builds: usize,
+    #[serde(default)]
+    pub(super) max_retries: usize,
     pub(super) endpoint: String,
     pub(super) namespace: String,
     pub(super) token_file: Option<PathBuf>,

@@ -70,6 +70,53 @@ fn submits_one_deterministic_job_with_operator_authentication() {
 }
 
 #[test]
+fn submits_distinct_job_identity_for_each_attempt() {
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("fixture address reads")
+    );
+    let server = thread::spawn(move || {
+        for expected_ordinal in [1, 2] {
+            let mut stream = listener.accept().expect("request accepts").0;
+            let request = read_http_request_with_body(&mut stream);
+            assert!(request.contains(&format!("-{expected_ordinal}\"")));
+            write_json_response(&mut stream, 200, r#"{"EvalID":"evaluation-1"}"#);
+        }
+    });
+    let config = load_nomad_config(&root, &endpoint, None);
+    let client = NomadClient::new(config.clone()).expect("Nomad client constructs");
+
+    let first = client
+        .submit_for_attempt(b"shared-build-key", 1)
+        .expect("initial attempt submits");
+    let second = client
+        .submit_for_attempt(b"shared-build-key", 2)
+        .expect("retry attempt submits");
+
+    assert_eq!(
+        first.job_id(),
+        deterministic_job_name(&config, b"shared-build-key")
+    );
+    assert_eq!(
+        second.job_id(),
+        telchar::nomad::backend::deterministic_job_name_for_attempt(
+            &config,
+            b"shared-build-key",
+            2,
+        )
+        .expect("retry identity derives")
+    );
+    assert_ne!(first.job_id(), second.job_id());
+    server.join().expect("HTTP fixture joins");
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn rejects_invalid_configured_tls_material() {
     let _guard = CONFIGURATION_TESTS
         .lock()

@@ -114,6 +114,7 @@ fn load_service_config(
 name = "nomad-test"
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
+max_retries = 1
 endpoint = "{endpoint}"
 namespace = "telchar"
 {token}driver = "raw_exec"
