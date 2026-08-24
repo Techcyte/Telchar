@@ -175,6 +175,15 @@ pub(super) fn serve_accepted_connection(
         .run()
     })();
     telchar::service::metrics::session_finished();
+    if let Err(error) = &result {
+        tracing::warn!(
+            event = "ipc.daemon.session_run_failed",
+            session_id,
+            reason = super::error_reason(error),
+            diagnostic = %error,
+            "frontend session run failed"
+        );
+    }
     match telchar::persistence::close_protocol_session(database_url, &session_id) {
         Ok(_) => tracing::info!(
             event = "database.protocol_session.closed",
