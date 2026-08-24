@@ -170,6 +170,7 @@ supported_features = ["docker"]
 maximum_concurrent_builds = 8
 endpoint = "https://nomad-a.example:4646"
 namespace = "telchar-a"
+node_pool = "builders"
 token_file = "{}"
 ca_certificate_file = "{}"
 driver = "docker"
@@ -297,6 +298,7 @@ args = ["--stdio"]
     assert_eq!(backends[0].target().kind(), BackendKind::Nomad);
     assert_eq!(backends[0].endpoint(), "https://nomad-a.example:4646");
     assert_eq!(backends[0].namespace(), "telchar-a");
+    assert_eq!(backends[0].node_pool(), "builders");
     assert_eq!(backends[0].token_file(), Some(token_file.as_path()));
     assert_eq!(
         backends[0].ca_certificate_file(),
@@ -325,6 +327,7 @@ args = ["--stdio"]
     );
     assert_eq!(backends[0].driver_config()["privileged"], false);
     assert_eq!(backends[1].target().name(), "nomad-raw");
+    assert_eq!(backends[1].node_pool(), "default");
     assert_eq!(backends[1].driver(), "raw_exec");
     assert_eq!(
         backends[1].driver_config()["command"],
