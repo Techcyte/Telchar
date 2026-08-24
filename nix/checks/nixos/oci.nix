@@ -5,6 +5,23 @@
   telcharImage,
   nomadWorkerImage,
 }:
+let
+  migrationDirectory = ../../../crates/telchar/migrations;
+  migrationEntries = builtins.readDir migrationDirectory;
+  migrationNames = builtins.attrNames migrationEntries;
+  migrationMatches = map (
+    name: builtins.match "0*([1-9][0-9]*)_[a-z0-9_]+\\.sql" name
+  ) migrationNames;
+  migrationVersions =
+    assert migrationNames != [ ];
+    assert builtins.all (name: migrationEntries.${name} == "regular") migrationNames;
+    assert builtins.all (match: match != null) migrationMatches;
+    map (match: builtins.fromJSON (builtins.elemAt match 0)) migrationMatches;
+  currentSchemaVersion =
+    assert migrationVersions == builtins.genList (index: index + 1) (builtins.length migrationVersions);
+    builtins.elemAt migrationVersions (builtins.length migrationVersions - 1);
+  futureSchemaVersion = currentSchemaVersion + 1;
+in
 {
   nixos-oci-gateway =
     let
@@ -192,7 +209,7 @@
         client.succeed("set -m; " + "; ".join(soak_commands + soak_waits))
         for index, _ in soak_derivations:
             client.succeed("test \"$(cat $(cat /tmp/oci-soak-" + str(index) + "))\" = telchar-oci-soak-" + str(index))
-        gateway.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx 16")
+        gateway.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx ${toString currentSchemaVersion}")
         gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc 'select count(*) from shared_build_attempts') -eq 9")
         gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc \"select count(*) from shared_builds where state = 'succeeded'\") -eq 9")
         gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc \"select count(*) from shared_build_attempts where state in ('running', 'collecting')\") -eq 0")
@@ -241,9 +258,9 @@
         assert gateway.succeed("docker image inspect telchar:2026.8.0 --format '{{.Id}}'").strip() == image_id
         gateway.succeed("docker run -d --name telchar-daemon --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket telchar:2026.8.0 daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
         gateway.wait_until_succeeds("test -S /run/telchar-oci/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true", timeout=30)
-        gateway.succeed("docker logs telchar-daemon > /tmp/telchar-redeployment.log 2>&1 && grep -q 'previously_applied_count=16 applied_this_run_count=0 resulting_schema_version=16' /tmp/telchar-redeployment.log")
+        gateway.succeed("docker logs telchar-daemon > /tmp/telchar-redeployment.log 2>&1 && grep -q 'previously_applied_count=${toString currentSchemaVersion} applied_this_run_count=0 resulting_schema_version=${toString currentSchemaVersion}' /tmp/telchar-redeployment.log")
         gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc 'select count(*) from shared_build_attempts') -eq 9")
-        gateway.succeed("docker stop --time 10 telchar-daemon >/dev/null && docker rm telchar-daemon >/dev/null && sudo -u postgres psql -d telchar -c \"insert into telchar_schema_migrations (version, name, checksum) values (17, 'unsupported-future', decode(repeat('00', 32), 'hex'))\" >/dev/null")
+        gateway.succeed("docker stop --time 10 telchar-daemon >/dev/null && docker rm telchar-daemon >/dev/null && sudo -u postgres psql -d telchar -c \"insert into telchar_schema_migrations (version, name, checksum) values (${toString futureSchemaVersion}, 'unsupported-future', decode(repeat('00', 32), 'hex'))\" >/dev/null")
         gateway.succeed("docker run -d --name telchar-unsupported --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket telchar:2026.8.0 daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
         gateway.wait_until_succeeds("docker inspect -f '{{.State.Running}}' telchar-unsupported | grep -qx false", timeout=30)
         gateway.succeed("test ! -S /run/telchar-oci/daemon.sock && test \"$(docker inspect -f '{{.State.ExitCode}}' telchar-unsupported)\" -eq 1 && docker logs telchar-unsupported > /tmp/telchar-unsupported.log 2>&1 && grep -q database.migration.failed /tmp/telchar-unsupported.log")
@@ -251,7 +268,7 @@
         gateway.wait_until_succeeds("test $(sudo -u postgres psql -d telchar -Atc \"select count(*) from singleton_ownership where owner_kind = 'daemon' and lease_expires_at > clock_timestamp()\") -eq 0", timeout=30)
         gateway.succeed("docker run -d --name telchar-daemon --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket telchar:2026.8.0 daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
         gateway.wait_until_succeeds("test -S /run/telchar-oci/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true", timeout=30)
-        gateway.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx 16 && test $(sudo -u postgres psql -d telchar -Atc 'select count(*) from shared_build_attempts') -eq 9")
+        gateway.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx ${toString currentSchemaVersion} && test $(sudo -u postgres psql -d telchar -Atc 'select count(*) from shared_build_attempts') -eq 9")
         client.succeed("nix-store --delete '" + output_path + "'")
         output_path = client.succeed(command).strip()
         gateway.succeed("test $(sudo -u postgres psql -d telchar -Atc 'select count(*) from shared_build_attempts') -eq 9")
@@ -307,7 +324,7 @@
       runtime.succeed("cat > /etc/telchar-container/telchar.toml <<'EOF'\nrunning_disconnect_policy = \"detach-and-finish\"\n\n[backends.local]\nname = \"local\"\nsystem = \"${system}\"\nmaximum_concurrent_builds = 1\nEOF\nchmod 0444 /etc/telchar-container/telchar.toml\nchown -R 0:0 /etc/telchar-container /run/telchar-container /var/lib/telchar-container")
       runtime.succeed("docker run -d --name telchar-runtime --network host --user 0:0 -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_TEST_STORE_RETENTION=1 -e TELCHAR_TEST_BUILD_HELPER=/bin/true -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-container:/etc/telchar:ro -v /run/telchar-container:/run/telchar -v /var/lib/telchar-container:/var/lib/telchar telchar:2026.8.0")
       runtime.wait_until_succeeds("test -S /run/telchar-container/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-runtime | grep -qx true", timeout=30)
-      runtime.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx 16")
+      runtime.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx ${toString currentSchemaVersion}")
       runtime.succeed("docker stop --time 10 telchar-runtime")
       runtime.succeed("test \"$(docker inspect -f '{{.State.ExitCode}}' telchar-runtime)\" -eq 0")
     '';

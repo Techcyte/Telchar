@@ -1,4 +1,4 @@
-//! Tests build derivation contract contracts and failure boundaries, including decodes gate 3 build derivation.
+//! Tests BuildDerivation request decoding and failure boundaries.
 
 use std::io;
 use std::time::Duration;
@@ -9,8 +9,8 @@ use nix_worker_protocol::{
 };
 
 #[test]
-fn decodes_gate_3_build_derivation() {
-    let wire = gate_3_request("x86_64-linux", 0);
+fn decodes_build_derivation_request() {
+    let wire = build_derivation_request("x86_64-linux", 0);
     let mut reader = reader(&wire);
 
     assert_eq!(
@@ -19,17 +19,21 @@ fn decodes_gate_3_build_derivation() {
     );
     let request = reader
         .complete_build_derivation()
-        .expect("Gate 3 derivation decodes");
+        .expect("BuildDerivation request decodes");
 
     assert!(
         request
             .drv_path()
-            .ends_with(b"-telchar-gate-3-contract.drv")
+            .ends_with(b"-telchar-build-derivation-contract.drv")
     );
     assert_eq!(request.outputs().len(), 1);
     let output = &request.outputs()[0];
     assert_eq!(output.name(), b"out");
-    assert!(output.path().ends_with(b"-telchar-gate-3-contract"));
+    assert!(
+        output
+            .path()
+            .ends_with(b"-telchar-build-derivation-contract")
+    );
     assert_eq!(output.hash_algorithm(), b"");
     assert_eq!(output.hash(), b"");
     assert!(request.input_sources().is_empty());
@@ -133,9 +137,9 @@ fn rejects_malformed_paths_unsupported_output_forms_and_build_modes() {
             b"text:sha256",
             b"0000000000000000000000000000000000000000000000000000000000000000",
         ),
-        gate_3_request("x86_64-linux", 1),
-        gate_3_request("x86_64-linux", 2),
-        gate_3_request("x86_64-linux", 3),
+        build_derivation_request("x86_64-linux", 1),
+        build_derivation_request("x86_64-linux", 2),
+        build_derivation_request("x86_64-linux", 3),
     ] {
         let mut reader = reader(&wire);
         assert_eq!(
@@ -160,7 +164,7 @@ fn rejects_oversized_strings_truncation_and_nonzero_padding() {
     write_worker_integer(&mut oversized_wire, 0);
     assert_invalid(oversized_wire);
 
-    let mut truncated = gate_3_request("x86_64-linux", 0);
+    let mut truncated = build_derivation_request("x86_64-linux", 0);
     truncated.pop();
     assert_invalid(truncated);
 
@@ -257,7 +261,7 @@ fn request_with_output(name: &[u8], path: &[u8], algorithm: &[u8], hash: &[u8]) 
     wire
 }
 
-fn gate_3_request(system: &str, mode: u64) -> Vec<u8> {
+fn build_derivation_request(system: &str, mode: u64) -> Vec<u8> {
     let mut wire = request_prefix(drv_path());
     write_worker_integer(&mut wire, 1);
     append_output(&mut wire, b"out", output_path(), b"", b"");
@@ -268,7 +272,7 @@ fn gate_3_request(system: &str, mode: u64) -> Vec<u8> {
         &[b"-c", b"printf telchar-remote-build > $out"],
         &[
             (b"builder", b"/bin/sh"),
-            (b"name", b"telchar-gate-3-contract"),
+            (b"name", b"telchar-build-derivation-contract"),
             (b"out", output_path()),
             (b"system", system.as_bytes()),
         ],
@@ -327,11 +331,11 @@ fn assert_invalid(wire: Vec<u8>) {
 }
 
 fn drv_path() -> &'static [u8] {
-    b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+    b"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
 }
 
 fn output_path() -> &'static [u8] {
-    b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"
+    b"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
 }
 
 fn reader(wire: &[u8]) -> WorkerReader<&[u8]> {

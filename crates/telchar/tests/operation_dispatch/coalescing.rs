@@ -17,7 +17,7 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             invocation_count.display(),
             started.display(),
             complete.display(),
@@ -37,14 +37,14 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     let mut follower_output = follower.stdout.take().expect("follower output");
     complete_handshake(&mut follower_input, &mut follower_output);
 
-    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut leader_input, "x86_64-linux", 0);
     leader_input.flush().expect("leader request flushes");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !started.exists() {
         assert!(Instant::now() < deadline, "leader helper did not start");
         thread::sleep(Duration::from_millis(5));
     }
-    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut follower_input, "x86_64-linux", 0);
     follower_input.flush().expect("follower request flushes");
 
     assert_eq!(
@@ -91,7 +91,7 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     assert!(leader_status.success());
     let shared_build = telchar::persistence::read_shared_build(
         fixture.database.url(),
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
     )
     .expect("shared build reads")
     .expect("shared build exists");
@@ -101,7 +101,7 @@ fn concurrent_identical_frontends_share_one_build_execution() {
     );
     let attempt = telchar::persistence::read_shared_build_attempt(
         fixture.database.url(),
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
     )
     .expect("shared build attempt reads")
     .expect("shared build attempt exists");
@@ -140,7 +140,7 @@ fn disconnected_follower_does_not_cancel_shared_build() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             invocation_count.display(),
             started.display(),
             complete.display(),
@@ -161,14 +161,14 @@ fn disconnected_follower_does_not_cancel_shared_build() {
     let mut follower_output = follower.stdout.take().expect("follower output");
     complete_handshake(&mut follower_input, &mut follower_output);
 
-    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut leader_input, "x86_64-linux", 0);
     leader_input.flush().expect("leader request flushes");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !started.exists() {
         assert!(Instant::now() < deadline, "leader helper did not start");
         thread::sleep(Duration::from_millis(5));
     }
-    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut follower_input, "x86_64-linux", 0);
     follower_input.flush().expect("follower request flushes");
     assert_eq!(
         read_integer(&mut follower_output),
@@ -211,7 +211,7 @@ fn disconnected_leader_does_not_cancel_shared_build() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf x >> '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             invocation_count.display(),
             started.display(),
             complete.display(),
@@ -232,14 +232,14 @@ fn disconnected_leader_does_not_cancel_shared_build() {
     let mut follower_output = follower.stdout.take().expect("follower output");
     complete_handshake(&mut follower_input, &mut follower_output);
 
-    write_gate_3_build_derivation(&mut leader_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut leader_input, "x86_64-linux", 0);
     leader_input.flush().expect("leader request flushes");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !started.exists() {
         assert!(Instant::now() < deadline, "leader helper did not start");
         thread::sleep(Duration::from_millis(5));
     }
-    write_gate_3_build_derivation(&mut follower_input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut follower_input, "x86_64-linux", 0);
     follower_input.flush().expect("follower request flushes");
     assert_eq!(
         read_integer(&mut follower_output),

@@ -27,7 +27,7 @@ fn valid_build_derivation_is_consumed_before_execution_unavailable_error() {
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -79,7 +79,7 @@ fn mismatched_build_derivation_system_is_rejected_before_execution() {
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "aarch64-linux", 0);
+    write_build_derivation_request(&mut input, "aarch64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);

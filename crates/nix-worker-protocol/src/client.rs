@@ -1,5 +1,7 @@
 use super::*;
 
+const BUILD_LOG_LINE_RESULT_TYPE: u64 = 101;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerTrust {
     Trusted,
@@ -699,8 +701,15 @@ fn read_build_operation_frames(
             }
             STDERR_RESULT => {
                 read_worker_integer_from(input)?;
-                read_worker_integer_from(input)?;
-                discard_activity_fields(input)?;
+                let result_type = read_worker_integer_from(input)?;
+                let build_log_line =
+                    read_activity_fields(input, result_type == BUILD_LOG_LINE_RESULT_TYPE)?;
+                if let Some(mut message) = build_log_line {
+                    message.push(b'\n');
+                    logs(&message).map_err(|_| {
+                        io::Error::other("Nix daemon BuildDerivation log sink failed")
+                    })?;
+                }
             }
             STDERR_ERROR => {
                 let diagnostic = if version >= WorkerVersion::new(1, 26) {
@@ -1062,21 +1071,35 @@ fn read_operation_frames(input: &mut impl Read, version: WorkerVersion) -> io::R
 }
 
 fn discard_activity_fields(input: &mut impl Read) -> io::Result<()> {
+    read_activity_fields(input, false).map(|_| ())
+}
+
+fn read_activity_fields(
+    input: &mut impl Read,
+    capture_first_string: bool,
+) -> io::Result<Option<Vec<u8>>> {
     let count =
         usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
     if count > MAXIMUM_STRUCTURED_FRAME_FIELDS {
         return Err(protocol_client_error());
     }
-    for _ in 0..count {
+    let mut captured = None;
+    for index in 0..count {
         match read_worker_integer_from(input)? {
             0 => {
                 read_worker_integer_from(input)?;
+            }
+            1 if capture_first_string && index == 0 => {
+                captured = Some(read_worker_byte_string_from(
+                    input,
+                    MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES,
+                )?);
             }
             1 => discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)?,
             _ => return Err(protocol_client_error()),
         }
     }
-    Ok(())
+    Ok(captured)
 }
 
 fn read_worker_error_message(input: &mut impl Read, version: WorkerVersion) -> io::Result<Vec<u8>> {
@@ -1209,7 +1232,38 @@ fn validate_store_path_in_directory(path: &[u8], directory: &[u8]) -> io::Result
 
 #[cfg(test)]
 mod tests {
-    use super::validate_derived_path;
+    use super::{
+        BUILD_LOG_LINE_RESULT_TYPE, LATEST_WORKER_VERSION, STDERR_LAST, STDERR_RESULT,
+        read_build_operation_frames, validate_derived_path, write_worker_byte_string_to,
+        write_worker_integer_to,
+    };
+
+    #[test]
+    fn build_operation_forwards_structured_build_log_lines() {
+        let mut response = Vec::new();
+        write_worker_integer_to(&mut response, STDERR_RESULT).expect("result marker writes");
+        write_worker_integer_to(&mut response, 1).expect("activity ID writes");
+        write_worker_integer_to(&mut response, BUILD_LOG_LINE_RESULT_TYPE)
+            .expect("build log result type writes");
+        write_worker_integer_to(&mut response, 1).expect("field count writes");
+        write_worker_integer_to(&mut response, 1).expect("string field type writes");
+        write_worker_byte_string_to(&mut response, b"static-ssh-build-log")
+            .expect("build log field writes");
+        write_worker_integer_to(&mut response, STDERR_LAST).expect("last marker writes");
+        let mut logs = Vec::new();
+
+        read_build_operation_frames(
+            &mut response.as_slice(),
+            LATEST_WORKER_VERSION,
+            &mut |chunk| {
+                logs.extend_from_slice(chunk);
+                Ok(())
+            },
+        )
+        .expect("build operation frames read");
+
+        assert_eq!(logs, b"static-ssh-build-log\n");
+    }
 
     #[test]
     fn derived_path_accepts_all_and_multiple_output_selectors() {

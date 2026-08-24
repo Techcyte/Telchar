@@ -9,7 +9,7 @@ fn store_lease_persists_across_restart() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "lease-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -21,7 +21,7 @@ fn store_lease_persists_across_restart() {
         "lease-1",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "lease-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         telchar::persistence::StoreLeasePurpose::Derivation,
     )
     .expect("lease persists");
@@ -41,7 +41,7 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "release-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -52,7 +52,7 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         "release-lease",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "release-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         telchar::persistence::StoreLeasePurpose::Output,
     )
     .expect("lease persists");
@@ -162,7 +162,7 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "failure-owner",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -248,7 +248,7 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "telemetry-owner",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",

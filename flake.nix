@@ -15,7 +15,10 @@
     }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "nomad";
+      };
       craneLib = crane.mkLib pkgs;
       source = pkgs.lib.cleanSourceWith {
         src = ./.;

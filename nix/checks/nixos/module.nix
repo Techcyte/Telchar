@@ -99,7 +99,7 @@
         otlp_collector.wait_until_succeeds("test -s /var/lib/telchar-otlp/records.json")
       '';
     };
-  nixos-gate-2 =
+  nixos-restricted-ssh-ingress =
     let
       harness = import ../../../tests/nixos/lib.nix {
         inherit pkgs;
@@ -107,7 +107,7 @@
       };
     in
     harness.mkTest {
-      name = "telchar-nixos-gate-2";
+      name = "telchar-nixos-restricted-ssh-ingress";
       restrictedIngress = true;
       includeCollector = true;
       testScript = ''
@@ -124,9 +124,9 @@
         stock_client.succeed("HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout 30 nix --extra-experimental-features nix-command --store ssh-ng://telchar-ingress@gateway store info > /tmp/nix-store-info 2>&1")
         stock_client.succeed("grep -q 'Version: telchar' /tmp/nix-store-info || { cat /tmp/nix-store-info >&2; exit 1; }")
         stock_client.succeed("timeout 10 ssh " + ssh_options + " arbitrary-command >/dev/null 2>&1 || true")
-        gateway.succeed("grep -q '^original_command=arbitrary-command$' /run/telchar/forced-command-evidence")
+        gateway.succeed("grep -q '^original_command=arbitrary-command$' /tmp/telchar-forced-command-evidence")
         stock_client.succeed("TELCHAR_AUTHENTICATED_KEY=spoofed timeout 10 ssh -o SendEnv=TELCHAR_AUTHENTICATED_KEY " + ssh_options + " ignored >/dev/null 2>&1 || true")
-        gateway.succeed("grep -q '^client_supplied_key=$' /run/telchar/forced-command-evidence && ! grep -q '^authenticated_key=spoofed$' /run/telchar/forced-command-evidence")
+        gateway.succeed("grep -q '^client_supplied_key=$' /tmp/telchar-forced-command-evidence && ! grep -q '^authenticated_key=spoofed$' /tmp/telchar-forced-command-evidence")
         stock_client.succeed("test $(timeout -s KILL 5 ssh -tt " + ssh_options + " true >/tmp/pty.out 2>&1; echo $?) -ne 0")
         stock_client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:22346:127.0.0.1:22 -N " + ssh_options + " >/tmp/remote-forward.out 2>&1; echo $?) -ne 0")
         stock_client.succeed("test $(timeout -s KILL 5 ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:22345:127.0.0.1:22 -N " + ssh_options + " >/tmp/local-forward.out 2>&1; echo $?) -ne 0")

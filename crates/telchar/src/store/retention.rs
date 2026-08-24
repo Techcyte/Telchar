@@ -139,6 +139,7 @@ pub(crate) fn unavailable_backend() -> Box<dyn StoreRetentionBackend> {
     Box::new(UnavailableStoreRetentionBackend)
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn filesystem_backend(
     root_directory: impl Into<PathBuf>,
 ) -> io::Result<Box<dyn StoreRetentionBackend>> {
@@ -174,10 +175,12 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreRetentionBackend>> 
     }
 }
 
+#[cfg(debug_assertions)]
 struct FilesystemStoreRetentionBackend {
     root_directory: PathBuf,
 }
 
+#[cfg(debug_assertions)]
 impl FilesystemStoreRetentionBackend {
     fn new(root_directory: impl Into<PathBuf>) -> io::Result<Self> {
         Ok(Self {
@@ -186,6 +189,7 @@ impl FilesystemStoreRetentionBackend {
     }
 }
 
+#[cfg(debug_assertions)]
 impl StoreRetentionBackend for FilesystemStoreRetentionBackend {
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         validate_entries(entries, &self.root_directory)?;
@@ -407,9 +411,8 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
         return Ok(());
     }
     let mut released = released.to_vec();
-    validate_released_entries(&released, root_directory).map_err(|error| {
-        log_retention_failure("release-validation", &error);
-        error
+    validate_released_entries(&released, root_directory).inspect_err(|error| {
+        log_retention_failure("release-validation", error);
     })?;
     released.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
     for entry in released {

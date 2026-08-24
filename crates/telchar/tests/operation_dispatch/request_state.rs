@@ -16,7 +16,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\nrequest=$(mktemp '{}'/request-XXXXXX)\ncat > \"$request\"\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\nrequest=$(mktemp '{}'/request-XXXXXX)\ncat > \"$request\"\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             request_directory.display()
         ),
     )
@@ -33,7 +33,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
     complete_handshake(&mut input, &mut output);
 
     for _ in 0..2 {
-        write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+        write_build_derivation_request(&mut input, "x86_64-linux", 0);
         input.flush().expect("BuildDerivation request flushes");
         assert_eq!(read_integer(&mut output), STDERR_LAST);
         assert_eq!(read_integer(&mut output), 0, "Built status");
@@ -138,7 +138,7 @@ fn derivation_lease_persistence_failure_retains_request_before_attachment_or_hel
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -261,7 +261,7 @@ fn build_request_persistence_failure_rejects_before_helper_or_log_frame() {
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -336,7 +336,7 @@ fn request_attachment_failure_releases_roots_before_helper() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);

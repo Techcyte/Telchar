@@ -18,7 +18,7 @@ fn saturated_subject_waits_while_another_subject_builds() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\nrequest=$(cat)\ncase \"$request\" in\n  *00000000000000000000000000000000-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *) exit 1 ;;\nesac\nprintf started > \"$started\"\nwhile [ ! -e \"$complete\" ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\nrequest=$(cat)\ncase \"$request\" in\n  *00000000000000000000000000000000-telchar-build-derivation-contract.drv*) started='{}'; complete='{}' ;;\n  *bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv*) started='{}'; complete='{}' ;;\n  *) exit 1 ;;\nesac\nprintf started > \"$started\"\nwhile [ ! -e \"$complete\" ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             alice_started.display(),
             alice_complete.display(),
             bob_started.display(),
@@ -33,7 +33,7 @@ fn saturated_subject_waits_while_another_subject_builds() {
         1,
     );
     let retained_derivation_path =
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv";
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
     for index in 0..4 {
         let derivation_path = format!("/nix/store/{index:032x}-alice-active-{index}.drv");
         telchar::persistence::claim_shared_build(
@@ -44,7 +44,7 @@ fn saturated_subject_waits_while_another_subject_builds() {
             telchar::backend::BackendKind::Local,
             telchar::backend::BackendKind::Local.capabilities(),
             None,
-            &["/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"],
+            &["/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"],
         )
         .expect("active Alice build claims");
         telchar::persistence::enqueue_shared_build(
@@ -90,7 +90,7 @@ fn saturated_subject_waits_while_another_subject_builds() {
 
     write_build_derivation(
         &mut bob_input,
-        b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv",
+        b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         0,
     );
@@ -103,7 +103,7 @@ fn saturated_subject_waits_while_another_subject_builds() {
     assert_eq!(
         shared_build_quota_subject(
             &fixture.database,
-            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv",
         ),
         "ssh-pubkey:SHA256:bob"
     );
@@ -148,7 +148,7 @@ fn disconnected_queued_owner_retains_allocation_and_executes_after_capacity_rele
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             started.display(),
             complete.display(),
         ),
@@ -160,7 +160,8 @@ fn disconnected_queued_owner_retains_allocation_and_executes_after_capacity_rele
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
         1,
     );
-    let derivation_path = "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv";
+    let derivation_path =
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
     for index in 0..4 {
         let active_path = format!("/nix/store/{index:032x}-owner-active-{index}.drv");
         telchar::persistence::claim_shared_build(
@@ -171,7 +172,7 @@ fn disconnected_queued_owner_retains_allocation_and_executes_after_capacity_rele
             telchar::backend::BackendKind::Local,
             telchar::backend::BackendKind::Local.capabilities(),
             None,
-            &["/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"],
+            &["/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"],
         )
         .expect("active owner build claims");
         telchar::persistence::enqueue_shared_build(
@@ -188,7 +189,7 @@ fn disconnected_queued_owner_retains_allocation_and_executes_after_capacity_rele
     let mut input = fixture.frontend.stdin.take().expect("owner input");
     let mut output = fixture.frontend.stdout.take().expect("owner output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("owner request flushes");
     wait_for_path_state(
         fixture.database.url(),
@@ -264,7 +265,7 @@ fn backend_permit_wait_is_separate_from_subject_admission() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\nrequest=$(cat)\ncase \"$request\" in\n  *00000000000000000000000000000000-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv*) started='{}'; complete='{}' ;;\n  *) exit 1 ;;\nesac\nprintf started > \"$started\"\nwhile [ ! -e \"$complete\" ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\nrequest=$(cat)\ncase \"$request\" in\n  *00000000000000000000000000000000-telchar-build-derivation-contract.drv*) started='{}'; complete='{}' ;;\n  *bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv*) started='{}'; complete='{}' ;;\n  *) exit 1 ;;\nesac\nprintf started > \"$started\"\nwhile [ ! -e \"$complete\" ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             alice_started.display(),
             alice_complete.display(),
             bob_started.display(),
@@ -278,8 +279,10 @@ fn backend_permit_wait_is_separate_from_subject_admission() {
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
         1,
     );
-    let alice_path = "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv";
-    let bob_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv";
+    let alice_path =
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
+    let bob_path =
+        "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv";
     let mut alice_input = fixture.frontend.stdin.take().expect("Alice input");
     let mut alice_output = fixture.frontend.stdout.take().expect("Alice output");
     complete_handshake(&mut alice_input, &mut alice_output);

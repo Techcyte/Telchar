@@ -13,7 +13,7 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     let helper = root.join("build-helper");
     fs::write(
         &helper,
-        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}\\n'\n",
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
@@ -33,7 +33,7 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -73,7 +73,7 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     let shared_build_state: String = database
         .query_one(
             "SELECT state FROM shared_builds WHERE derivation_path = $1",
-            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+            &[&"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"],
         )
         .expect("shared build state reads")
         .get(0);
@@ -85,7 +85,9 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     );
     assert!(!stderr.contains(&request_id), "{stderr}");
     assert!(
-        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        !stderr.contains(
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        ),
         "{stderr}"
     );
     fs::remove_dir_all(root).expect("fixture cleans");
@@ -102,7 +104,7 @@ fn detach_failure_does_not_send_successful_build_result() {
     let helper = root.join("build-helper");
     fs::write(
         &helper,
-        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}\\n'\n",
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
@@ -122,7 +124,7 @@ fn detach_failure_does_not_send_successful_build_result() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
     drop(input);
 
@@ -181,7 +183,7 @@ fn root_release_failure_reports_retention_error_after_durable_release() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             started.display(),
             complete.display(),
         ),
@@ -197,7 +199,7 @@ fn root_release_failure_reports_retention_error_after_durable_release() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);

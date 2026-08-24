@@ -18,7 +18,7 @@ nix build --no-link .#checks.x86_64-linux.oci-images
 scripts/check-oci-images.sh
 nix build --no-link .#checks.x86_64-linux.nixos-oci-runtime
 nix build --no-link .#checks.x86_64-linux.nixos-module
-nix build --no-link .#checks.x86_64-linux.nixos-gate-3-contract
+nix build --no-link .#checks.x86_64-linux.nixos-remote-build-contract
 nix build --no-link .#checks.x86_64-linux.nixos-lix-local
 nix build --no-link .#checks.x86_64-linux.nixos-fixed-output-local
 nix build --no-link .#checks.x86_64-linux.nixos-oci-gateway

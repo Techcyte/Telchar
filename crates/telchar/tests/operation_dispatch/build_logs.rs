@@ -15,7 +15,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf 'build-log-line\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf 'build-log-line\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             request_path.display()
         ),
     )
@@ -34,7 +34,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
@@ -67,7 +67,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
     assert_eq!(persisted.request_id, request_id);
     assert_eq!(
         persisted.derivation_path,
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
     );
     assert_eq!(persisted.system, "x86_64-linux");
     let stderr = fixture.finish();
