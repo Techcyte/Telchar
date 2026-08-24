@@ -111,12 +111,36 @@ pub struct StaticSshBackendConfig {
     pub(super) unavailable_check_interval: Duration,
     pub(super) check_timeout: Duration,
     pub(super) destination: String,
+    pub(super) port: u16,
     pub(super) identity_file: PathBuf,
     pub(super) known_hosts_file: PathBuf,
     pub(super) ssh_program: PathBuf,
 }
 
 impl StaticSshBackendConfig {
+    pub(crate) fn discovered(
+        target: BackendTarget,
+        maximum_concurrent_builds: usize,
+        destination: String,
+        port: u16,
+        identity_file: PathBuf,
+        known_hosts_file: PathBuf,
+        ssh_program: PathBuf,
+    ) -> Self {
+        Self {
+            target,
+            maximum_concurrent_builds,
+            ready_check_interval: Duration::from_secs(300),
+            unavailable_check_interval: Duration::from_secs(60),
+            check_timeout: Duration::from_secs(10),
+            destination,
+            port,
+            identity_file,
+            known_hosts_file,
+            ssh_program,
+        }
+    }
+
     pub fn target(&self) -> &BackendTarget {
         &self.target
     }
@@ -141,6 +165,10 @@ impl StaticSshBackendConfig {
         &self.destination
     }
 
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     pub fn identity_file(&self) -> &Path {
         &self.identity_file
     }
@@ -149,6 +177,81 @@ impl StaticSshBackendConfig {
         &self.known_hosts_file
     }
 
+    pub fn ssh_program(&self) -> &Path {
+        &self.ssh_program
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticSshConsulConfig {
+    pub(super) name: String,
+    pub(super) system: String,
+    pub(super) supported_features: Vec<String>,
+    pub(super) maximum_concurrent_builds_per_instance: usize,
+    pub(super) endpoint: String,
+    pub(super) service: String,
+    pub(super) datacenter: Option<String>,
+    pub(super) required_tags: Vec<String>,
+    pub(super) passing_only: bool,
+    pub(super) refresh_interval: Duration,
+    pub(super) request_timeout: Duration,
+    pub(super) token_file: Option<PathBuf>,
+    pub(super) ca_certificate_file: Option<PathBuf>,
+    pub(super) ssh_user: String,
+    pub(super) identity_file: PathBuf,
+    pub(super) known_hosts_file: PathBuf,
+    pub(super) ssh_program: PathBuf,
+}
+
+impl StaticSshConsulConfig {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn system(&self) -> &str {
+        &self.system
+    }
+    pub fn supported_features(&self) -> &[String] {
+        &self.supported_features
+    }
+    pub fn maximum_concurrent_builds_per_instance(&self) -> usize {
+        self.maximum_concurrent_builds_per_instance
+    }
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+    pub fn datacenter(&self) -> Option<&str> {
+        self.datacenter.as_deref()
+    }
+    pub fn required_tags(&self) -> &[String] {
+        &self.required_tags
+    }
+    pub fn passing_only(&self) -> bool {
+        self.passing_only
+    }
+    pub fn refresh_interval(&self) -> Duration {
+        self.refresh_interval
+    }
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+    pub fn token_file(&self) -> Option<&Path> {
+        self.token_file.as_deref()
+    }
+    pub fn ca_certificate_file(&self) -> Option<&Path> {
+        self.ca_certificate_file.as_deref()
+    }
+    pub fn ssh_user(&self) -> &str {
+        &self.ssh_user
+    }
+    pub fn identity_file(&self) -> &Path {
+        &self.identity_file
+    }
+    pub fn known_hosts_file(&self) -> &Path {
+        &self.known_hosts_file
+    }
     pub fn ssh_program(&self) -> &Path {
         &self.ssh_program
     }
