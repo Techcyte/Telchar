@@ -107,7 +107,15 @@ fn pinned_nix_reports_framed_error_after_set_options() {
         !stderr.contains("unexpected end-of-file"),
         "client received EOF instead of worker error: {stderr}"
     );
-    fixture.finish();
+    let daemon_stderr = fixture.finish();
+    let session_started = daemon_stderr
+        .lines()
+        .find(|line| line.contains("event=\"ipc.daemon.session_started\""))
+        .unwrap_or_else(|| panic!("daemon session event missing: {daemon_stderr}"));
+    assert!(
+        session_started.contains("trace_id=") && !session_started.contains("trace_id=none"),
+        "daemon session has no trace ID: {session_started}"
+    );
 }
 
 struct Fixture {
@@ -180,7 +188,7 @@ impl Fixture {
         command
     }
 
-    fn finish(mut self) {
+    fn finish(mut self) -> String {
         self.daemon.kill().expect("daemon stops");
         let output = self.daemon.wait_with_output().expect("daemon exits");
         let _ = fs::remove_dir_all(self.root);
@@ -188,6 +196,7 @@ impl Fixture {
             output.status.code().is_none(),
             "daemon exited before fixture cleanup: {output:?}"
         );
+        String::from_utf8(output.stderr).expect("daemon stderr is UTF-8")
     }
 }
 

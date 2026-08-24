@@ -8,7 +8,7 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::WithExportConfig as _;
+use opentelemetry_otlp::{WithExportConfig as _, WithHttpConfig as _};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
@@ -32,6 +32,13 @@ const EXPORT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUE_SIZE: usize = 256;
 const MAX_EXPORT_BATCH_SIZE: usize = 64;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn http_client() -> Result<otlp_http_client::blocking::Client, otlp_http_client::Error> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    otlp_http_client::blocking::Client::builder()
+        .timeout(EXPORT_TIMEOUT)
+        .build()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OtlpTransport {
@@ -154,6 +161,9 @@ impl Telemetry {
             .with_attributes([KeyValue::new("service.version", env!("CARGO_PKG_VERSION"))])
             .build();
 
+        let trace_http_client = (transport == OtlpTransport::HttpProtobuf)
+            .then(http_client)
+            .transpose()?;
         let tracer_provider = runtime.block_on(async {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::SpanExporter::builder()
@@ -163,6 +173,9 @@ impl Telemetry {
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
                     .with_http()
+                    .with_http_client(
+                        trace_http_client.expect("HTTP client exists for HTTP transport"),
+                    )
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
                     .with_endpoint(transport.endpoint(&endpoint, "traces"))
                     .with_timeout(EXPORT_TIMEOUT)
@@ -185,6 +198,9 @@ impl Telemetry {
                     .build(),
             )
         })?;
+        let metric_http_client = (transport == OtlpTransport::HttpProtobuf)
+            .then(http_client)
+            .transpose()?;
         let meter_provider = runtime.block_on(async {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::MetricExporter::builder()
@@ -194,6 +210,9 @@ impl Telemetry {
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
                     .with_http()
+                    .with_http_client(
+                        metric_http_client.expect("HTTP client exists for HTTP transport"),
+                    )
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
                     .with_endpoint(transport.endpoint(&endpoint, "metrics"))
                     .with_timeout(EXPORT_TIMEOUT)
@@ -210,6 +229,9 @@ impl Telemetry {
                     .build(),
             )
         })?;
+        let log_http_client = (transport == OtlpTransport::HttpProtobuf)
+            .then(http_client)
+            .transpose()?;
         let logger_provider = runtime.block_on(async {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::LogExporter::builder()
@@ -219,6 +241,9 @@ impl Telemetry {
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::LogExporter::builder()
                     .with_http()
+                    .with_http_client(
+                        log_http_client.expect("HTTP client exists for HTTP transport"),
+                    )
                     .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
                     .with_endpoint(transport.endpoint(&endpoint, "logs"))
                     .with_timeout(EXPORT_TIMEOUT)
@@ -767,7 +792,9 @@ mod tests {
 
     #[test]
     fn exports_set_options_event_to_otlp() {
-        let _guard = telemetry_tests().lock().expect("telemetry test lock");
+        let _guard = telemetry_tests()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let collector = start_collector();
         let current_executable = std::env::current_exe().expect("current test executable");
         let test_directory = current_executable
@@ -923,7 +950,9 @@ mod tests {
 
     #[test]
     fn exports_otlp_signals_before_application_work() {
-        let _guard = telemetry_tests().lock().expect("telemetry test lock");
+        let _guard = telemetry_tests()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let collector = start_collector();
         let output = run_smoke(collector.endpoint(), "grpc");
         let stderr = assert_local_smoke_output(&output);
@@ -932,7 +961,9 @@ mod tests {
 
     #[test]
     fn exports_otlp_signals_over_http_protobuf() {
-        let _guard = telemetry_tests().lock().expect("telemetry test lock");
+        let _guard = telemetry_tests()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let collector = start_http_collector();
         let output = run_smoke(collector.endpoint(), "http/protobuf");
         assert_local_smoke_output(&output);

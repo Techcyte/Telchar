@@ -57,6 +57,11 @@ reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
+otlp-http-client = { package = "reqwest", version = "0.13", default-features = false, features = [
+  "blocking",
+  "rustls-no-provider",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tungstenite = { version = "0.28", default-features = false, features = [
   "handshake",
   "rustls-tls-webpki-roots",
