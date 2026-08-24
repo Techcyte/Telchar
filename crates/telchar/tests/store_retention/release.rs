@@ -3,6 +3,25 @@
 use super::*;
 
 #[test]
+fn retention_backend_uses_full_lifecycle_timeout() {
+    let fixture = NixFixture::create().expect("fixture creates");
+    let daemon = fixture
+        .start_daemon(TrustMode::Trusted)
+        .expect("daemon starts");
+    let root = fixture.root().join("retention-timeout-roots");
+    fs::create_dir(&root).expect("root directory creates");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("root permissions set");
+    let backend = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root,
+    )
+    .expect("backend configures");
+
+    assert_eq!(backend.operation_timeout(), Duration::from_secs(30 * 60));
+}
+
+#[test]
 fn empty_retention_set_does_not_connect_to_daemon() {
     let root = std::env::temp_dir().join(format!("telchar-retention-empty-{}", std::process::id()));
     fs::create_dir_all(&root).expect("fixture root creates");
