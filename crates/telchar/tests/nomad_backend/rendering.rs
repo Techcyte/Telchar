@@ -19,6 +19,7 @@ supported_features = ["big-parallel", "telchar-ci", "telchar-memory"]
 maximum_concurrent_builds = 4
 endpoint = "http://nomad.example:4646"
 namespace = "telchar"
+node_pool = "arm-builders"
 driver = "raw_exec"
 job_name_scope = "telchar-prod"
 poll_interval_seconds = 2
@@ -146,6 +147,7 @@ args = ["--stdio"]
     );
     assert_eq!(job["Job"]["ID"], first);
     assert_eq!(job["Job"]["Namespace"], "telchar");
+    assert_eq!(job["Job"]["NodePool"], "arm-builders");
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Driver"],
         "raw_exec"
