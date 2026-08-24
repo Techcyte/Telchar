@@ -147,7 +147,7 @@ fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
 }
 
 #[test]
-fn build_derivation_preserves_sanitized_daemon_rejection() {
+fn build_derivation_preserves_bounded_daemon_diagnostic() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
     let server = thread::spawn(move || {
@@ -179,10 +179,10 @@ fn build_derivation_preserves_sanitized_daemon_rejection() {
         }
         assert_eq!(read_integer(&mut stream), 0);
         integer(&mut stream, STDERR_ERROR);
-        byte_string(&mut stream, b"sensitive-type");
+        byte_string(&mut stream, b"Error");
         integer(&mut stream, 1);
-        byte_string(&mut stream, b"sensitive-name");
-        byte_string(&mut stream, b"sensitive-message");
+        byte_string(&mut stream, b"daemon");
+        byte_string(&mut stream, b"builder failed while compiling telchar");
         integer(&mut stream, 0);
         integer(&mut stream, 0);
         stream.flush().expect("operation error flushes");
@@ -211,9 +211,54 @@ fn build_derivation_preserves_sanitized_daemon_rejection() {
 
     assert_eq!(
         error.to_string(),
-        "gateway Nix daemon BuildDerivation was rejected"
+        "gateway Nix daemon BuildDerivation was rejected: builder failed while compiling telchar"
     );
-    assert!(!error.to_string().contains("sensitive"));
+    server.join().expect("server exits");
+}
+
+#[test]
+fn build_derivation_preserves_bounded_protocol_failure() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 36);
+        stream
+            .shutdown(std::net::Shutdown::Both)
+            .expect("stream closes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+    let output = nix_worker_protocol::BuildDerivationOutputRequest {
+        name: b"out",
+        path: STORE_PATH,
+        hash_algorithm: b"",
+        hash: b"",
+    };
+    let request = nix_worker_protocol::BuildDerivationClientRequest {
+        drv_path: b"/nix/store/11111111111111111111111111111111-build.drv",
+        outputs: &[output],
+        input_sources: &[],
+        platform: b"x86_64-linux",
+        builder: b"/bin/sh",
+        arguments: &[],
+        environment: &[],
+    };
+
+    let error = connection
+        .build_derivation(&request, &mut |_| Ok(()))
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .starts_with("gateway Nix daemon BuildDerivation operation failed: ")
+    );
+    assert_ne!(
+        error.to_string(),
+        "gateway Nix daemon BuildDerivation operation failed"
+    );
     server.join().expect("server exits");
 }
 
