@@ -3,9 +3,13 @@
   pkgs,
   craneLib,
   source,
+  uid ? 995,
+  gid ? uid,
 }:
 let
   version = "2026.8.0";
+  uidString = toString uid;
+  gidString = toString gid;
 
   nix-worker-protocol = craneLib.buildPackage {
     src = source;
@@ -38,15 +42,18 @@ let
     builtins.readFile ../deploy/ssh/telchar-ssh-forced-command.sh
   );
   sshIngressEtc = pkgs.runCommand "telchar-ssh-ingress-etc" { } ''
-        mkdir -p "$out/etc/ssh" "$out/var/empty"
+        mkdir -p "$out/etc/ssh" "$out/var/empty" "$out/tmp"
+        chmod 1777 "$out/tmp"
         cp ${../deploy/ssh/sshd_config} "$out/etc/ssh/sshd_config"
         cat > "$out/etc/passwd" <<'EOF'
     root:x:0:0:root:/root:/bin/bash
-    telchar:x:995:995:Telchar SSH ingress:/var/empty:/bin/false
+    sshd:x:994:994:OpenSSH privilege separation:/var/empty:/bin/false
+    telchar:x:${uidString}:${gidString}:Telchar SSH ingress:/var/empty:/bin/bash
     EOF
         cat > "$out/etc/group" <<'EOF'
     root:x:0:
-    telchar:x:995:
+    sshd:x:994:
+    telchar:x:${gidString}:
     EOF
   '';
 
@@ -54,11 +61,11 @@ let
     mkdir -p "$out/etc"
     cat > "$out/etc/passwd" <<'EOF'
     root:x:0:0:root:/root:/bin/bash
-    telchar:x:995:995:Telchar gateway:/var/lib/telchar:/bin/false
+    telchar:x:${uidString}:${gidString}:Telchar gateway:/var/lib/telchar:/bin/false
     EOF
     cat > "$out/etc/group" <<'EOF'
     root:x:0:
-    telchar:x:995:
+    telchar:x:${gidString}:
     EOF
   '';
 
@@ -84,11 +91,11 @@ let
     mkdir -p "$out/etc/nix"
     cat > "$out/etc/passwd" <<'EOF'
     root:x:0:0:root:/root:/bin/bash
-    telchar:x:995:995:Telchar Nix daemon:/var/lib/telchar:/bin/false
+    telchar:x:${uidString}:${gidString}:Telchar Nix daemon:/var/lib/telchar:/bin/false
     EOF
     cat > "$out/etc/group" <<'EOF'
     root:x:0:
-    telchar:x:995:
+    telchar:x:${gidString}:
     EOF
     cat > "$out/etc/nix/nix.conf" <<'EOF'
     build-users-group =
@@ -119,9 +126,9 @@ let
         "--socket"
         "/run/telchar/daemon.sock"
         "--frontend-uid"
-        "995"
+        uidString
       ];
-      User = "995:995";
+      User = "${uidString}:${gidString}";
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar";
@@ -134,14 +141,14 @@ let
         "--socket"
         "/run/telchar/daemon.sock"
         "--frontend-uid"
-        "995"
+        uidString
       ];
       Env = [
         "HOME=/var/lib/telchar"
         "PATH=/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       ];
-      User = "995:995";
+      User = "${uidString}:${gidString}";
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar";
@@ -154,7 +161,7 @@ let
     tag = version;
     fakeRootCommands = ''
       mkdir -p ./bootstrap ./bin ./etc/nix ./nix/var/log/nix/drvs ./tmp ./var/lib/telchar
-      chown -R 995:995 ./nix/var/log ./var/lib/telchar
+      chown -R ${uidString}:${gidString} ./nix/var/log ./var/lib/telchar
       cp ${pkgs.pkgsStatic.busybox}/bin/busybox ./bootstrap/busybox
       cp ${nixDaemonBootstrap}/store.tar ./bootstrap/store.tar
       cp ${nixDaemonBootstrap}/registration ./bootstrap/registration
@@ -173,7 +180,7 @@ let
         "PATH=/bin"
         "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       ];
-      User = "995:995";
+      User = "${uidString}:${gidString}";
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar Nix daemon";
@@ -187,7 +194,7 @@ let
         "PATH=/bin"
         "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       ];
-      User = "995:995";
+      User = "${uidString}:${gidString}";
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
         "org.opencontainers.image.title" = "Telchar Nix daemon";
@@ -202,6 +209,8 @@ let
       rm -rf ./etc/ssh ./var/empty
       cp -R ${sshIngressEtc}/etc/. ./etc/
       cp -R ${sshIngressEtc}/var/. ./var/
+      cp -R ${sshIngressEtc}/tmp ./tmp
+      chmod 1777 ./tmp
     '';
     contents = [
       telchar
@@ -209,6 +218,7 @@ let
       sshIngressForcedCommand
       pkgs.bash
       pkgs.coreutils
+      pkgs.gawk
       pkgs.openssh
     ];
     passthru.imageConfig = {

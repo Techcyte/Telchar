@@ -2,132 +2,181 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-entrypoint="$repository_root/deploy/ssh/telchar-ssh-ingress.sh"
-forced_command="$repository_root/deploy/ssh/telchar-ssh-forced-command.sh"
+image_archive="${TELCHAR_SSH_INGRESS_IMAGE_ARCHIVE:-}"
+image="${TELCHAR_SSH_INGRESS_IMAGE:-telchar-ssh-ingress:2026.8.0}"
+container_name="telchar-ssh-ingress-test-$$"
+temporary_directory="$(mktemp -d "$repository_root/.ssh-ingress-test.XXXXXX")"
 
-grep -q 'TELCHAR_SSH_HOST_IDENTITY_MODE' "$entrypoint"
-grep -q 'TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE' "$entrypoint"
-grep -q 'TELCHAR_SSH_AUTHORIZED_KEYS_FILE' "$entrypoint"
+cleanup() {
+  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  if [[ -n "${image:-}" && -d "$temporary_directory" ]]; then
+    docker run --rm --entrypoint /bin/chown -v "$temporary_directory:/test-cleanup" "$image" \
+      -R "$(id -u):$(id -g)" /test-cleanup >/dev/null 2>&1 || true
+  fi
+  rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
 
-temporary_directory="$(mktemp -d)"
-trap 'rm -rf "$temporary_directory"' EXIT
-
-bin_directory="$temporary_directory/bin"
-mkdir -p "$bin_directory"
-
-cat >"$bin_directory/sshd" <<'EOF'
-#!/usr/bin/env bash
-printf 'sshd %s\n' "$*" >>"$TEST_LOG"
-if [[ " $* " == *" -D "* ]]; then
-  trap 'printf "hup\n" >>"$TEST_LOG"' HUP
-  trap 'exit 0' TERM INT
-  while true; do /bin/sleep 1; done
+if [[ -z "$image_archive" ]]; then
+  image_archive="$(
+    cd "$repository_root"
+    NIXPKGS_ALLOW_UNFREE=1 nix build --impure --no-link --print-out-paths .#telchar-ssh-ingress-oci
+  )"
 fi
-EOF
-chmod +x "$bin_directory/sshd"
 
-cat >"$bin_directory/sleep" <<'EOF'
-#!/usr/bin/env bash
-/bin/sleep 0.05
-EOF
-chmod +x "$bin_directory/sleep"
+docker load <"$image_archive" >/dev/null
 
-wait_for_log() {
-  local pattern="$1"
-  local log_file="$2"
-  for _ in $(seq 1 100); do
-    grep -q -- "$pattern" "$log_file" 2>/dev/null && return
-    /bin/sleep 0.01
-  done
-  printf 'missing log pattern: %s\n' "$pattern" >&2
+credentials="$temporary_directory/credentials"
+mkdir -p "$credentials" "$temporary_directory/run"
+ssh-keygen -q -t ed25519 -N '' -f "$credentials/host-ca"
+ssh-keygen -q -t ed25519 -N '' -f "$credentials/client-ca"
+ssh-keygen -q -t ed25519 -N '' -f "$credentials/host"
+ssh-keygen -q -t ed25519 -N '' -f "$credentials/client"
+ssh-keygen -q -s "$credentials/host-ca" -I host-initial -h -n telchar.service.consul -V +1h "$credentials/host.pub"
+ssh-keygen -q -s "$credentials/client-ca" -I client -n nix-builder -V +1h "$credentials/client.pub"
+chmod 0600 "$credentials/host"
+chmod 0644 "$credentials/host-cert.pub" "$credentials/client-ca.pub"
+
+cat >"$temporary_directory/sshd_config" <<'EOF'
+Port 2222
+ListenAddress 0.0.0.0
+PidFile /tmp/sshd.pid
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+StrictModes yes
+ExposeAuthInfo yes
+UsePAM no
+AllowUsers telchar
+ForceCommand /bin/sh -c 'env; cat "$SSH_USER_AUTH"'
+DisableForwarding yes
+PermitTTY no
+UseDNS no
+LogLevel VERBOSE
+EOF
+
+docker run -d --name "$container_name" \
+  -p 127.0.0.1::2222 \
+  -e TELCHAR_SSH_HOST_IDENTITY_MODE=certificate \
+  -e TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=certificate \
+  -e TELCHAR_SSH_HOST_KEY_FILE=/credentials/host \
+  -e TELCHAR_SSH_HOST_CERTIFICATE_FILE=/credentials/host-cert.pub \
+  -e TELCHAR_SSH_CLIENT_CA_FILE=/credentials/client-ca.pub \
+  -e TELCHAR_SSH_AUTHORIZED_PRINCIPAL=nix-builder \
+  -e TELCHAR_SSH_CREDENTIAL_POLL_SECONDS=1 \
+  -e TELCHAR_SSHD_CONFIG=/test/sshd_config \
+  -e TELCHAR_IPC_SOCKET=/test/daemon.sock \
+  -v "$credentials:/credentials" \
+  -v "$temporary_directory/sshd_config:/test/sshd_config:ro" \
+  "$image" >/dev/null
+
+fail() {
+  docker inspect -f 'container running={{.State.Running}} exit={{.State.ExitCode}}' "$container_name" >&2
+  docker logs "$container_name" >&2
   exit 1
 }
 
-run_mode() {
-  local host_mode="$1"
-  local client_mode="$2"
-  local changed_file="$3"
-  local case_directory="$temporary_directory/$host_mode-$client_mode"
-  local credential_directory="$case_directory/credentials"
-  local log_file="$case_directory/commands.log"
-  mkdir -p "$credential_directory"
-
-  local host_key="$credential_directory/host-key"
-  local host_certificate="$credential_directory/host-certificate"
-  local client_ca="$credential_directory/client-ca"
-  local authorized_keys="$credential_directory/authorized-keys"
-  printf 'key-a\n' >"$host_key"
-  printf 'certificate-a\n' >"$host_certificate"
-  printf 'ca-a\n' >"$client_ca"
-  printf 'authorized-key-a\n' >"$authorized_keys"
-  printf 'test configuration\n' >"$case_directory/sshd_config"
-
-  TEST_LOG="$log_file" \
-  PATH="$bin_directory:/bin:/usr/bin" \
-  TELCHAR_SSH_HOST_IDENTITY_MODE="$host_mode" \
-  TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE="$client_mode" \
-  TELCHAR_SSH_HOST_KEY_FILE="$host_key" \
-  TELCHAR_SSH_HOST_CERTIFICATE_FILE="$host_certificate" \
-  TELCHAR_SSH_CLIENT_CA_FILE="$client_ca" \
-  TELCHAR_SSH_AUTHORIZED_KEYS_FILE="$authorized_keys" \
-  TELCHAR_SSH_CREDENTIAL_POLL_SECONDS=1 \
-  TELCHAR_SSHD_CONFIG="$case_directory/sshd_config" \
-    bash "$entrypoint" &
-  local entrypoint_pid=$!
-  trap 'kill -TERM "$entrypoint_pid" 2>/dev/null || true; wait "$entrypoint_pid" 2>/dev/null || true' RETURN
-
-  wait_for_log 'sshd -D' "$log_file"
-  grep -q -- "-o HostKey=$host_key" "$log_file"
-  if [[ "$host_mode" == certificate ]]; then
-    grep -q -- "-o HostCertificate=$host_certificate" "$log_file"
-  else
-    grep -q -- '-o HostCertificate=none' "$log_file"
-  fi
-  if [[ "$client_mode" == certificate ]]; then
-    grep -q -- "-o TrustedUserCAKeys=$client_ca" "$log_file"
-    grep -q -- '-o AuthorizedKeysFile=none' "$log_file"
-  else
-    grep -q -- "-o AuthorizedKeysFile=$authorized_keys" "$log_file"
-    grep -q -- '-o TrustedUserCAKeys=none' "$log_file"
-  fi
-
-  /bin/sleep 0.15
-  if grep -q '^hup$' "$log_file"; then
-    echo "unchanged credentials triggered a reload" >&2
+for _ in $(seq 1 50); do
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container_name")" == true ]] || {
+    docker logs "$container_name" >&2
     exit 1
-  fi
-  printf 'changed\n' >>"$credential_directory/$changed_file"
-  wait_for_log '^hup$' "$log_file"
-  [[ "$(grep -c '^hup$' "$log_file")" -eq 1 ]]
+  }
+  port="$(docker port "$container_name" 2222/tcp | awk -F: 'NR == 1 { print $NF }')"
+  [[ -n "$port" ]] && break
+  sleep 0.1
+done
 
-  kill -TERM "$entrypoint_pid"
-  wait "$entrypoint_pid"
-  trap - RETURN
-}
-
-run_mode key authorized-keys authorized-keys
-run_mode certificate certificate host-certificate
-
+known_hosts="$temporary_directory/known_hosts"
+printf '@cert-authority telchar.service.consul %s\n' "$(cat "$credentials/host-ca.pub")" >"$known_hosts"
+ssh_options=(
+  -F /dev/null
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o HostKeyAlias=telchar.service.consul
+  -o IdentitiesOnly=yes
+  -o "IdentityFile=$credentials/client"
+  -o "CertificateFile=$credentials/client-cert.pub"
+  -o "UserKnownHostsFile=$known_hosts"
+  -o LogLevel=ERROR
+  -o RequestTTY=no
+  -p "$port"
+)
 set +e
-invalid_output="$({
-  TEST_LOG="$temporary_directory/invalid.log" \
-  PATH="$bin_directory:/bin:/usr/bin" \
-  TELCHAR_SSH_HOST_IDENTITY_MODE=invalid \
-  TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=authorized-keys \
-  TELCHAR_SSHD_CONFIG="$temporary_directory/missing" \
-    bash "$entrypoint"
-} 2>&1)"
-invalid_status=$?
+session_environment="$(ssh "${ssh_options[@]}" telchar@127.0.0.1 </dev/null)"
+ssh_status=$?
 set -e
-[[ "$invalid_status" -ne 0 ]]
-grep -q 'TELCHAR_SSH_HOST_IDENTITY_MODE must be key or certificate' <<<"$invalid_output"
+[[ "$ssh_status" -eq 0 ]] || fail
+grep -qx 'TELCHAR_IPC_SOCKET=/test/daemon.sock' <<<"$session_environment" || fail
+grep -q '^publickey ssh-ed25519-cert-v01@openssh.com ' <<<"$session_environment" || fail
 
-grep -q 'ssh-keygen -lf -' "$forced_command"
-grep -q 'ssh-keygen -L -f' "$forced_command"
+sleep 2
+idle_logs="$(docker logs "$container_name" 2>&1)"
+if grep -q 'Received SIGHUP; restarting.' <<<"$idle_logs"; then
+  fail
+fi
+ssh-keygen -q -s "$credentials/host-ca" -I host-rotated -h -n telchar.service.consul -V +2h "$credentials/host.pub"
+reloaded=false
+for _ in $(seq 1 50); do
+  current_logs="$(docker logs "$container_name" 2>&1)"
+  if grep -q 'Received SIGHUP; restarting.' <<<"$current_logs"; then
+    reloaded=true
+    break
+  fi
+  sleep 0.1
+done
+[[ "$reloaded" == true ]] || fail
+ssh "${ssh_options[@]}" telchar@127.0.0.1 </dev/null >/dev/null || fail
+[[ "$(docker inspect -f '{{.State.Running}}' "$container_name")" == true ]] || fail
 
-if grep -Eqi 'vault|curl|TELCHAR_SSH_HOST_SIGN_PATH|TELCHAR_SSH_HOST_PRINCIPALS' "$entrypoint"; then
-  printf 'SSH ingress entrypoint contains credential-provider-specific behavior\n' >&2
-  exit 1
+docker rm -f "$container_name" >/dev/null
+container_name="telchar-ssh-ingress-static-test-$$"
+printf '%s\n' "$(cat "$credentials/client.pub")" >"$credentials/authorized_keys"
+chmod 0600 "$credentials/authorized_keys"
+docker run --rm --entrypoint /bin/chown -v "$credentials:/credentials" "$image" \
+  995:995 /credentials /credentials/authorized_keys
+docker run -d --name "$container_name" \
+  -p 127.0.0.1::2222 \
+  -e TELCHAR_SSH_HOST_IDENTITY_MODE=key \
+  -e TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=authorized-keys \
+  -e TELCHAR_SSH_HOST_KEY_FILE=/credentials/host \
+  -e TELCHAR_SSH_AUTHORIZED_KEYS_FILE=/credentials/authorized_keys \
+  -e TELCHAR_SSH_CREDENTIAL_POLL_SECONDS=1 \
+  -e TELCHAR_SSHD_CONFIG=/test/sshd_config \
+  -e TELCHAR_IPC_SOCKET=/test/daemon.sock \
+  -v "$credentials:/credentials" \
+  -v "$temporary_directory/sshd_config:/test/sshd_config:ro" \
+  "$image" >/dev/null
+
+for _ in $(seq 1 50); do
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container_name")" == true ]] || fail
+  port="$(docker port "$container_name" 2222/tcp | awk -F: 'NR == 1 { print $NF }')"
+  [[ -n "$port" ]] && break
+  sleep 0.1
+done
+printf 'telchar-static %s\n' "$(cat "$credentials/host.pub")" >"$known_hosts"
+static_ssh_options=(
+  -F /dev/null
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o HostKeyAlias=telchar-static
+  -o IdentitiesOnly=yes
+  -o "IdentityFile=$credentials/client"
+  -o "UserKnownHostsFile=$known_hosts"
+  -o LogLevel=ERROR
+  -o RequestTTY=no
+  -p "$port"
+)
+set +e
+static_session_environment="$(ssh "${static_ssh_options[@]}" telchar@127.0.0.1 </dev/null)"
+static_ssh_status=$?
+set -e
+[[ "$static_ssh_status" -eq 0 ]] || fail
+grep -qx 'TELCHAR_IPC_SOCKET=/test/daemon.sock' <<<"$static_session_environment" || fail
+grep -q '^publickey ssh-ed25519 ' <<<"$static_session_environment" || fail
+if grep -q -- '-cert-v01@openssh.com' <<<"$static_session_environment"; then
+  fail
 fi
 
-printf 'PASS: SSH ingress supports explicit host and client authentication modes.\n'
+printf 'PASS: SSH ingress authenticates in certificate and static-key modes and reloads once after certificate rotation.\n'
