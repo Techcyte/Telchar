@@ -182,8 +182,42 @@ pub fn enqueue_shared_build(
              RETURNING derivation_path, quota_subject, queue_position, queued_at",
             &[&derivation_path, &quota_subject],
         )
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
-        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let row = match row {
+        Some(row) => row,
+        None => {
+            let state = transaction
+                .query_opt(
+                    "SELECT state, quota_subject IS NOT NULL
+                     FROM shared_builds WHERE derivation_path = $1",
+                    &[&derivation_path],
+                )
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+            match state {
+                Some(state) => {
+                    let durable_state: String = state
+                        .try_get(0)
+                        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+                    let quota_subject_set: bool = state
+                        .try_get(1)
+                        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+                    tracing::warn!(
+                        event = "database.shared_build.enqueue_invalid_state",
+                        durable_state,
+                        quota_subject_set,
+                        "shared build enqueue rejected durable state"
+                    );
+                }
+                None => tracing::warn!(
+                    event = "database.shared_build.enqueue_invalid_state",
+                    durable_state = "missing",
+                    quota_subject_set = false,
+                    "shared build enqueue rejected durable state"
+                ),
+            }
+            return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+        }
+    };
     let entry = decode_shared_build_queue_entry(&row).map_err(SharedBuildError)?;
     transaction
         .commit()
@@ -518,6 +552,9 @@ fn claim_shared_build_inner(
                  backend_execution_id = EXCLUDED.backend_execution_id,
                  expected_outputs = EXCLUDED.expected_outputs,
                  build_request = EXCLUDED.build_request,
+                 quota_subject = NULL,
+                 queue_position = NULL,
+                 queued_at = NULL,
                  result_metadata = NULL,
                  failure_classification = NULL,
                  created_at = transaction_timestamp(),

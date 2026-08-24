@@ -140,6 +140,40 @@ fn subject_rotation_survives_scheduler_restart() {
 }
 
 #[test]
+fn concurrent_waiters_for_one_subject_are_admitted() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let builds = [
+        "/nix/store/66666666666666666666666666666666-first.drv",
+        "/nix/store/77777777777777777777777777777777-second.drv",
+        "/nix/store/88888888888888888888888888888888-third.drv",
+    ];
+    for (index, build) in builds.iter().enumerate() {
+        claim(&fixture, build, index as u8 + 6);
+        telchar::persistence::enqueue_shared_build(fixture.url(), build, "alice", 8)
+            .expect("build enqueues");
+    }
+
+    let scheduler = Arc::new(
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(fixture.url(), |_| {
+            SchedulingLimits::new(8, 8).expect("limits are valid")
+        })
+        .expect("scheduler creates"),
+    );
+    let waiters = builds.map(|build| {
+        let scheduler = Arc::clone(&scheduler);
+        thread::spawn(move || scheduler.wait_for_admission(build))
+    });
+
+    for waiter in waiters {
+        waiter
+            .join()
+            .expect("waiter does not panic")
+            .expect("build is admitted");
+    }
+}
+
+#[test]
 fn saturated_subject_does_not_block_another_subject() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
