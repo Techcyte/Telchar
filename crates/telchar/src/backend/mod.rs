@@ -105,6 +105,7 @@ pub struct BackendTarget {
     kind: BackendKind,
     system: String,
     features: Vec<String>,
+    mandatory_features: Vec<String>,
 }
 
 impl BackendTarget {
@@ -140,7 +141,32 @@ impl BackendTarget {
             kind,
             system: system.to_owned(),
             features: normalized,
+            mandatory_features: Vec::new(),
         })
+    }
+
+    pub fn with_mandatory_features<I, S>(mut self, features: I) -> io::Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for feature in features {
+            let feature = feature.as_ref();
+            if self.mandatory_features.len() >= MAXIMUM_FEATURES
+                || !self.features.iter().any(|supported| supported == feature)
+                || self
+                    .mandatory_features
+                    .iter()
+                    .any(|existing| existing == feature)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "backend target is invalid",
+                ));
+            }
+            self.mandatory_features.push(feature.to_owned());
+        }
+        Ok(self)
     }
 
     pub fn name(&self) -> &str {
@@ -163,11 +189,20 @@ impl BackendTarget {
         &self.features
     }
 
+    pub fn mandatory_features(&self) -> &[String] {
+        &self.mandatory_features
+    }
+
     pub(crate) fn supports(&self, system: &str, required_features: &[&str]) -> bool {
         self.system == system
             && required_features
                 .iter()
                 .all(|required| self.features.iter().any(|feature| feature == required))
+            && self.mandatory_features.iter().all(|mandatory| {
+                required_features
+                    .iter()
+                    .any(|required| required == mandatory)
+            })
     }
 }
 

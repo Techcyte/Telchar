@@ -78,15 +78,23 @@ Telchar immediately checks every configured static SSH backend during startup by
 Ready hosts are checked every five minutes by default. Unavailable hosts are checked every minute so machines returning to the network become eligible quickly:
 
 ```toml
-[[backends.static_ssh]]
+[[backends.ssh]]
 ready_check_interval_seconds = 300
 unavailable_check_interval_seconds = 60
 check_timeout_seconds = 10
+identity_file = "/run/secrets/telchar-builder-key"
+known_hosts_file = "/etc/telchar/ssh-known-hosts"
+
+[backends.ssh.fixed-builders]
+source = "static"
+
+[backends.ssh.fixed-builders.builder-1]
+address = "builder-1.example"
 ```
 
 All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged.
 
-Send `SIGHUP` to the daemon after atomically replacing its configuration file to add static SSH backends or after replacing the contents of an unchanged Nomad `token_file`. Reload parses and validates the complete file, rereads Nomad credential files while assembling replacement clients, immediately probes the resulting static SSH inventory, and publishes one immutable backend generation for subsequently accepted sessions. Existing sessions and in-flight builds retain their previous generation.
+Send `SIGHUP` to the daemon after atomically replacing its configuration file to add static SSH leaves or after replacing the contents of an unchanged Nomad `token_file`. Reload parses and validates the complete file, rereads Nomad credential files while assembling replacement clients, immediately probes the resulting static SSH inventory, and publishes one immutable backend generation for subsequently accepted sessions. Existing sessions and in-flight builds retain their previous generation.
 
 Nomad token rotation changes only the protected file contents, not the configured path or backend definition. A Nomad template may render a short-lived Vault-issued token to that path with `change_mode = "signal"` and `change_signal = "SIGHUP"`. Invalid or unreadable replacement credentials reject the reload and leave the active generation serving work.
 

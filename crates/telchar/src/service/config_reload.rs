@@ -22,13 +22,15 @@ pub struct BackendReload {
 impl BackendReload {
     pub fn prepare(
         current: &ServiceConfig,
+        discovered: &[crate::service::config::StaticSshBackendConfig],
         gateway_store: Option<GatewayStoreEndpoint>,
         local_build_helper: Option<PathBuf>,
         health_interval: Duration,
     ) -> io::Result<Self> {
-        Self::prepare_config(
+        Self::prepare_config_with_inventory(
             current,
             ServiceConfig::load()?,
+            discovered,
             gateway_store,
             local_build_helper,
             health_interval,
@@ -42,17 +44,35 @@ impl BackendReload {
         local_build_helper: Option<PathBuf>,
         health_interval: Duration,
     ) -> io::Result<Self> {
+        Self::prepare_config_with_inventory(
+            current,
+            config,
+            &[],
+            gateway_store,
+            local_build_helper,
+            health_interval,
+        )
+    }
+
+    pub fn prepare_config_with_inventory(
+        current: &ServiceConfig,
+        config: ServiceConfig,
+        discovered: &[crate::service::config::StaticSshBackendConfig],
+        gateway_store: Option<GatewayStoreEndpoint>,
+        local_build_helper: Option<PathBuf>,
+        health_interval: Duration,
+    ) -> io::Result<Self> {
         let changes = current.validate_static_ssh_reload(&config)?;
-        let health =
-            crate::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
-        let desired_static_ssh = config
-            .static_ssh_backends()
+        let inventory = crate::service::static_ssh_consul::merge_inventory(&config, discovered)?;
+        let health = crate::backend::static_ssh::StaticSshHealth::probe_all(&inventory);
+        let desired_static_ssh = inventory
             .iter()
             .map(|backend| backend.target().name().to_owned())
             .collect::<BTreeSet<_>>();
         let schedulable_static_ssh = Arc::new(RwLock::new(desired_static_ssh.clone()));
-        let backends = ConfiguredBackends::with_health_and_scheduling(
+        let backends = ConfiguredBackends::with_static_ssh_inventory_and_health(
             &config,
+            inventory,
             gateway_store,
             local_build_helper,
             health.clone(),
@@ -66,6 +86,14 @@ impl BackendReload {
             changes,
             desired_static_ssh,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn target_names(&self) -> Vec<String> {
+        self.backends
+            .targets()
+            .map(|target| target.name().to_owned())
+            .collect()
     }
 
     pub fn apply(
