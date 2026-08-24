@@ -509,7 +509,11 @@ fn validate_released_entries(
     released: &[ReleasedRetentionEntry],
     root_directory: &Path,
 ) -> io::Result<()> {
-    if released.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 2 {
+    if released.len()
+        > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
+            + nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
+            + 1
+    {
         return Err(retention_error());
     }
     let mut lease_ids = std::collections::HashSet::new();

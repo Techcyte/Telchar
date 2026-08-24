@@ -178,7 +178,9 @@ fn release_accepts_maximum_request_root_count() {
     fs::create_dir(&root_directory).expect("root directory creates");
     fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
         .expect("root directory permissions set");
-    let entries = (0..nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 2)
+    let entries = (0..nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
+        + nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
+        + 1)
         .map(|index| {
             let lease_id = format!("maximum-release-{index}");
             let store_path = format!("/nix/store/{:032}-maximum-release-{index}", index);
