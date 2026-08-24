@@ -5,6 +5,7 @@ use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -608,8 +609,15 @@ fn fixture_suffixes_differ_when_clock_values_match() {
 }
 
 fn unique_suffix() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time after Unix epoch")
-        .as_nanos()
+    fixture_suffix(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos(),
+    )
+}
+
+fn fixture_suffix(clock_nanoseconds: u128) -> u128 {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    clock_nanoseconds.wrapping_add(u128::from(SEQUENCE.fetch_add(1, Ordering::Relaxed)))
 }
