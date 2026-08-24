@@ -285,18 +285,30 @@ impl NixStoreRetentionBackend {
 
     fn retain_entries(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         validate_entries(entries, &self.root_directory)?;
-        let stream = UnixStream::connect(&self.socket_path).map_err(|_| retention_error())?;
+        let stream = UnixStream::connect(&self.socket_path).map_err(|error| {
+            log_retention_failure("connect", &error);
+            retention_error()
+        })?;
         stream
             .set_read_timeout(Some(OPERATION_TIMEOUT))
-            .map_err(|_| retention_error())?;
+            .map_err(|error| {
+                log_retention_failure("read-timeout", &error);
+                retention_error()
+            })?;
         stream
             .set_write_timeout(Some(OPERATION_TIMEOUT))
-            .map_err(|_| retention_error())?;
+            .map_err(|error| {
+                log_retention_failure("write-timeout", &error);
+                retention_error()
+            })?;
         let mut client = nix_worker_protocol::WorkerClient::connect_with_store_directory(
             stream,
             &self.store_directory,
         )
-        .map_err(|_| retention_error())?;
+        .map_err(|error| {
+            log_retention_failure("handshake", &error);
+            retention_error()
+        })?;
         let mut retained = Vec::with_capacity(entries.len());
         for entry in entries {
             client
@@ -314,7 +326,8 @@ impl NixStoreRetentionBackend {
             let root_path = self.root_directory.join(&entry.lease_id);
             let created = match create_root(&root_path, &entry.store_path) {
                 Ok(created) => created,
-                Err(_) => {
+                Err(error) => {
+                    log_retention_failure("create-root", &error);
                     let _ = self.rollback(&retained);
                     return Err(retention_error());
                 }
@@ -501,6 +514,15 @@ fn valid_store_path(path: &str) -> bool {
         && bytes[33..].iter().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
         })
+}
+
+fn log_retention_failure(operation: &'static str, error: &io::Error) {
+    tracing::error!(
+        event = "gateway.store_retention.failed",
+        operation,
+        diagnostic = %error,
+        "gateway store retention failed"
+    );
 }
 
 fn retention_error() -> io::Error {
