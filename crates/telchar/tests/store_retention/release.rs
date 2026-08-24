@@ -170,6 +170,40 @@ fn release_accepts_distinct_leases_for_the_same_store_path() {
 }
 
 #[test]
+fn release_accepts_maximum_request_root_count() {
+    let root_directory = std::env::temp_dir().join(format!(
+        "telchar-retention-maximum-release-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    let entries = (0..nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 2)
+        .map(|index| {
+            let lease_id = format!("maximum-release-{index}");
+            let store_path = format!("/nix/store/{:032}-maximum-release-{index}", index);
+            std::os::unix::fs::symlink(&store_path, root_directory.join(&lease_id))
+                .expect("root creates");
+            ReleasedRetentionEntry::new(lease_id, store_path)
+        })
+        .collect::<Vec<_>>();
+    let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
+        .expect("retention backend configures");
+
+    backend
+        .release(&entries)
+        .expect("maximum request roots release");
+
+    assert!(
+        fs::read_dir(&root_directory)
+            .expect("root directory reads")
+            .next()
+            .is_none()
+    );
+    fs::remove_dir_all(root_directory).expect("root directory cleans");
+}
+
+#[test]
 fn release_rejects_invalid_or_duplicate_entries_without_mutation() {
     let root_directory = std::env::temp_dir().join(format!(
         "telchar-retention-invalid-release-{}",

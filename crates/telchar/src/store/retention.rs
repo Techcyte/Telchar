@@ -407,7 +407,10 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
         return Ok(());
     }
     let mut released = released.to_vec();
-    validate_released_entries(&released, root_directory)?;
+    validate_released_entries(&released, root_directory).map_err(|error| {
+        log_retention_failure("release-validation", &error);
+        error
+    })?;
     released.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
     for entry in released {
         let root_path = root_directory.join(&entry.lease_id);
@@ -506,7 +509,7 @@ fn validate_released_entries(
     released: &[ReleasedRetentionEntry],
     root_directory: &Path,
 ) -> io::Result<()> {
-    if released.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 1 {
+    if released.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES + 2 {
         return Err(retention_error());
     }
     let mut lease_ids = std::collections::HashSet::new();
