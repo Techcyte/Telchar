@@ -690,11 +690,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         "failed",
                                         Some(execution_error_reason(&error)),
                                     );
+                                    let timeout_phase = execution_timeout_phase(&error);
                                     let _ = crate::persistence::complete_shared_build_failure(
                                         database_url,
                                         derivation_path,
                                         "backend-failure",
-                                        &serde_json::json!({"reason": execution_error_reason(&error)}),
+                                        &serde_json::json!({
+                                            "reason": execution_error_reason(&error),
+                                            "timeout_phase": timeout_phase,
+                                        }),
                                         output_retention.duration(),
                                     );
                                     let failure = if error.kind() == io::ErrorKind::Unsupported {
@@ -798,6 +802,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 "worker.build_derivation.failed"
                             },
                             reason = execution_error_reason(&error),
+                            timeout_phase = execution_timeout_phase(&error),
                             "BuildDerivation execution failed"
                         );
                         if let Err(release_error) = release_attached_request_leases(
@@ -1984,6 +1989,49 @@ fn execution_error_reason(error: &io::Error) -> &'static str {
         io::ErrorKind::NotFound => "not-found",
         io::ErrorKind::PermissionDenied => "permission-denied",
         _ => "execution-failure",
+    }
+}
+
+fn execution_timeout_phase(error: &io::Error) -> Option<&'static str> {
+    if error.kind() != io::ErrorKind::TimedOut {
+        return None;
+    }
+    match error.to_string().as_str() {
+        "backend permit wait timed out" => Some("backend-capacity"),
+        "Nomad job execution timed out" => Some("nomad-execution"),
+        "Nomad transfer setup timed out" => Some("transfer-setup"),
+        "Nomad output collection timed out" => Some("output-collection"),
+        "shared BuildDerivation follower wait timed out" => Some("shared-build-follower"),
+        _ => Some("unknown"),
+    }
+}
+
+#[cfg(test)]
+mod timeout_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_backend_capacity_timeout() {
+        let error = io::Error::new(io::ErrorKind::TimedOut, "backend permit wait timed out");
+
+        assert_eq!(execution_timeout_phase(&error), Some("backend-capacity"));
+    }
+
+    #[test]
+    fn classifies_nomad_and_transfer_timeouts() {
+        for (message, phase) in [
+            ("Nomad job execution timed out", "nomad-execution"),
+            ("Nomad transfer setup timed out", "transfer-setup"),
+            ("Nomad output collection timed out", "output-collection"),
+            (
+                "shared BuildDerivation follower wait timed out",
+                "shared-build-follower",
+            ),
+        ] {
+            let error = io::Error::new(io::ErrorKind::TimedOut, message);
+
+            assert_eq!(execution_timeout_phase(&error), Some(phase));
+        }
     }
 }
 
