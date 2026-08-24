@@ -143,6 +143,7 @@ pub(super) struct RawNomadBackendConfig {
     pub(super) maximum_concurrent_builds: usize,
     pub(super) endpoint: String,
     pub(super) namespace: String,
+    pub(super) node_pool: Option<String>,
     pub(super) token_file: Option<PathBuf>,
     pub(super) ca_certificate_file: Option<PathBuf>,
     pub(super) client_certificate_file: Option<PathBuf>,

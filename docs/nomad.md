@@ -104,7 +104,15 @@ shutdown_drain_timeout_seconds = 30
 maximum_jwks_bytes = 1048576
 ```
 
-A Nomad target controls its own endpoint, namespace, credentials, capacity, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
+A Nomad target controls its own endpoint, namespace, node pool, credentials, capacity, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Set `node_pool` on `[[backends.nomad]]` to submit jobs to a specific Nomad node pool; when omitted, it defaults to Nomad's `default` pool.
+
+```toml
+[[backends.nomad]]
+namespace = "telchar"
+node_pool = "builders"
+```
+
+Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
 
 ```toml
 [[backends.nomad.constraints]]
