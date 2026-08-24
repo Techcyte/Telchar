@@ -71,6 +71,22 @@
             sshIngressImage = self.packages.${system}.telchar-ssh-ingress-oci;
             nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           };
+          oci-custom-identity =
+            let
+              customPackages = import ./nix/packages.nix {
+                inherit pkgs craneLib source;
+                uid = 1234;
+                gid = 1235;
+              };
+            in
+            import ./nix/tests/oci-identity.nix {
+              inherit pkgs;
+              uid = 1234;
+              gid = 1235;
+              telcharImage = customPackages.telchar-oci;
+              nixDaemonImage = customPackages.telchar-nix-daemon-oci;
+              sshIngressImage = customPackages.telchar-ssh-ingress-oci;
+            };
         };
 
       devShells.${system}.default = pkgs.mkShell {

@@ -90,6 +90,20 @@ Cache credentials and trust policy stay outside client requests and outside gene
 
 ## Configuration shape
 
+The callback listener is configured under `[backends.nomad_callback]`, not a top-level `[nomad_callback]` table. It is shared by all configured Nomad backends and is required whenever at least one `[[backends.nomad]]` target exists:
+
+```toml
+[backends.nomad_callback]
+bind = "0.0.0.0:7443"
+public_url = "wss://telchar.example.invalid/callback"
+maximum_connections = 64
+maximum_header_bytes = 16384
+maximum_body_bytes = 65536
+authentication_request_timeout_seconds = 10
+shutdown_drain_timeout_seconds = 30
+maximum_jwks_bytes = 1048576
+```
+
 A Nomad target controls its own endpoint, namespace, credentials, capacity, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
 
 ```toml

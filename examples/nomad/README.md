@@ -168,7 +168,7 @@ TELCHAR_SSH_HOST_KEY_FILE=/alloc/data/ssh/ssh_host_ed25519_key
 TELCHAR_SSH_AUTHORIZED_KEYS_FILE=/alloc/data/ssh/authorized_keys
 ```
 
-Certificate mode uses a host key, host certificate, and trusted client CA:
+Certificate mode uses a host key, host certificate, trusted client CA, and explicit principal authorization:
 
 ```text
 TELCHAR_SSH_HOST_IDENTITY_MODE=certificate
@@ -176,11 +176,18 @@ TELCHAR_SSH_CLIENT_AUTHENTICATION_MODE=certificate
 TELCHAR_SSH_HOST_KEY_FILE=/alloc/data/ssh/ssh_host_ed25519_key
 TELCHAR_SSH_HOST_CERTIFICATE_FILE=/alloc/data/ssh/ssh_host_ed25519_key-cert.pub
 TELCHAR_SSH_CLIENT_CA_FILE=/alloc/data/ssh/client-ca.pub
+TELCHAR_SSH_AUTHORIZED_PRINCIPAL=nix-builder
 ```
+
+Set exactly one of `TELCHAR_SSH_AUTHORIZED_PRINCIPAL` or `TELCHAR_SSH_AUTHORIZED_PRINCIPALS_FILE`. The principal authorizes a certificate identity for the packaged `telchar` account; it does not rename the Unix account and is not an `authorized_keys` entry. The file form must satisfy OpenSSH `StrictModes` ownership and permissions.
+
+`TELCHAR_SSH_IDENTITY_DIRECTORY` changes default credential paths. Individual `*_FILE` settings override those defaults. `TELCHAR_SSH_CREDENTIAL_POLL_SECONDS` controls polling; ingress hashes every required credential and reloads only after content changes. Credential providers must replace related files atomically enough that `sshd -t` observes a coherent set.
 
 Vault is one optional way to populate and rotate certificate-mode files. Run Vault integration in a separate sidecar that writes credentials atomically into a shared volume. The ingress watches those files and reloads OpenSSH when they change. A Vault Agent, Nomad template task, Smallstep client, Kubernetes sidecar, systemd credential service, or operator script can provide the same file contract.
 
-The jobspec contains a commented sidecar sketch based on a production deployment. The ingress process starts as root so `sshd` can perform normal privilege separation; authenticated sessions run as packaged UID `995`, which must match the gateway's `--frontend-uid`.
+The jobspec contains a commented sidecar sketch based on a production deployment. The ingress process starts as root so `sshd` can perform normal privilege separation; authenticated sessions use the packaged `telchar` identity. Official images default to UID/GID `995:995`; `nix/packages.nix` accepts `uid` and `gid` when building all three identity-sharing images. The selected UID must match the gateway's `--frontend-uid`, task users, mounted-directory ownership, and credential ownership.
+
+Static host-key persistence, authorized-key provisioning, CA policy, certificate issuance, rotation timing, file ownership, and backup policy are operator responsibilities. Certificate-mode private host keys may instead be allocation-local and ephemeral when the operator accepts identity continuity through the host CA.
 
 ### Operator-managed OpenSSH
 
