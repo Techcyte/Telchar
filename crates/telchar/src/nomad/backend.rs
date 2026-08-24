@@ -63,12 +63,16 @@ struct JobResponse {
     namespace: String,
     #[serde(rename = "Type")]
     job_type: String,
+    #[serde(rename = "Version", default)]
+    version: u64,
     #[serde(rename = "Meta")]
     meta: std::collections::HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
 struct AllocationResponse {
+    #[serde(rename = "JobVersion", default)]
+    job_version: u64,
     #[serde(rename = "ClientStatus")]
     client_status: String,
 }
@@ -276,14 +280,18 @@ impl NomadClient {
                 .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
             "Nomad job monitoring failed",
         )?;
-        let state = if allocations.is_empty() {
+        let current_allocations = allocations
+            .iter()
+            .filter(|allocation| allocation.job_version == job.version)
+            .collect::<Vec<_>>();
+        let state = if current_allocations.is_empty() {
             NomadExecutionState::Pending
-        } else if allocations
+        } else if current_allocations
             .iter()
             .any(|allocation| allocation.client_status == "failed")
         {
             NomadExecutionState::Failed
-        } else if allocations
+        } else if current_allocations
             .iter()
             .all(|allocation| allocation.client_status == "complete")
         {
