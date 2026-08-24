@@ -704,15 +704,12 @@ fn run_daemon() -> io::Result<()> {
         let gateway_store = gateway_store.clone();
         std::thread::spawn(move || {
             let _permit = permit;
+            let mut accepted_session_id = None;
             let result = connection
                 .receive_envelope(envelope_timeout)
                 .and_then(|connection| {
                     let session_id = connection.envelope().session_id.clone();
-                    let session = tracing::info_span!(
-                        "ipc.daemon.accepted_session",
-                        session_id = %session_id
-                    );
-                    let _entered = session.enter();
+                    accepted_session_id = Some(session_id.clone());
                     serve_accepted_connection(
                         connection,
                         &database_url,
@@ -734,6 +731,7 @@ fn run_daemon() -> io::Result<()> {
             if let Err(error) = result {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
+                    session_id = accepted_session_id.as_deref().unwrap_or("unavailable"),
                     reason = error_reason(&error),
                     diagnostic = %error,
                     "frontend session failed"
