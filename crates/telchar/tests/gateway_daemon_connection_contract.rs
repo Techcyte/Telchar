@@ -147,6 +147,32 @@ fn read_byte_string(input: &mut impl Read) -> Vec<u8> {
 }
 
 #[test]
+fn build_connection_uses_full_execution_timeout() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+    });
+
+    let connection = GatewayStoreConnection::connect_for_build(&fixture.endpoint())
+        .expect("build connection establishes");
+
+    let stream = connection
+        .shutdown_handle()
+        .expect("shutdown handle clones");
+    assert_eq!(
+        stream.read_timeout().expect("read timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    assert_eq!(
+        stream.write_timeout().expect("write timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    server.join().expect("server exits");
+}
+
+#[test]
 fn build_derivation_preserves_bounded_daemon_diagnostic() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");

@@ -3,7 +3,6 @@
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
@@ -101,7 +100,7 @@ impl WorkerSession {
         self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
-        let mut store = GatewayStoreConnection::connect(&endpoint)
+        let mut store = GatewayStoreConnection::connect_for_build(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
         let specification = self.manifest.build.clone();
         let derivation_path = self.manifest.derivation_path.clone();

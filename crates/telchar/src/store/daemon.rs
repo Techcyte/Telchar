@@ -71,6 +71,10 @@ impl GatewayStoreConnection {
         Self::connect_with_timeout(endpoint, OPERATION_TIMEOUT)
     }
 
+    pub fn connect_for_build(endpoint: &GatewayStoreEndpoint) -> io::Result<Self> {
+        Self::connect_with_timeout(endpoint, BUILD_OPERATION_TIMEOUT)
+    }
+
     #[doc(hidden)]
     pub fn connect_with_timeout(
         endpoint: &GatewayStoreEndpoint,
