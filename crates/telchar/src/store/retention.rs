@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionEntry {
@@ -276,6 +276,11 @@ impl NixStoreRetentionBackend {
             store_directory,
             root_directory,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn operation_timeout(&self) -> Duration {
+        OPERATION_TIMEOUT
     }
 
     fn retain_entries(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
