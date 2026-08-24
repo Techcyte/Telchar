@@ -39,20 +39,23 @@ fn arbitrary_ssh_command_is_replaced_by_forced_command() {
 #[test]
 fn ssh_tcp_forwarding_modes_are_rejected() {
     let fixture = Fixture::start();
-    let local_port = unused_tcp_port();
-    let remote_port = unused_tcp_port();
-    let dynamic_port = unused_tcp_port();
+    let (local_port_reservation, local_port) = reserve_tcp_port();
+    let (remote_port_reservation, remote_port) = reserve_tcp_port();
+    let (dynamic_port_reservation, dynamic_port) = reserve_tcp_port();
     let local_forward = format!("127.0.0.1:{local_port}:127.0.0.1:22");
     let remote_forward = format!("127.0.0.1:{remote_port}:127.0.0.1:22");
     let dynamic_listener = format!("127.0.0.1:{dynamic_port}");
 
-    let mut local = fixture
-        .ssh_command()
-        .args(["-o", "ExitOnForwardFailure=yes", "-L", &local_forward, "-N"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("local forwarding starts");
+    drop(local_port_reservation);
+    let mut local = ChildGuard::new(
+        fixture
+            .ssh_command()
+            .args(["-o", "ExitOnForwardFailure=yes", "-L", &local_forward, "-N"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("local forwarding starts"),
+    );
     thread::sleep(Duration::from_millis(200));
     let mut local_connection = TcpStream::connect(("127.0.0.1", local_port))
         .expect("local forwarding listener should exist before channel denial");
@@ -63,25 +66,31 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
         .expect("local forwarding probe writes");
     let mut local_response = [0_u8; 1];
     assert!(
-        std::io::Read::read(&mut local_connection, &mut local_response).is_err(),
+        forwarding_was_denied(std::io::Read::read(
+            &mut local_connection,
+            &mut local_response,
+        )),
         "local forwarding unexpectedly carried data"
     );
     local.kill().expect("local forwarding stops");
     local.wait().expect("local forwarding waits");
 
-    let mut remote = fixture
-        .ssh_command()
-        .args([
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-R",
-            &remote_forward,
-            "-N",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("remote forwarding starts");
+    drop(remote_port_reservation);
+    let mut remote = ChildGuard::new(
+        fixture
+            .ssh_command()
+            .args([
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-R",
+                &remote_forward,
+                "-N",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("remote forwarding starts"),
+    );
     thread::sleep(Duration::from_millis(300));
     if remote
         .try_wait()
@@ -96,19 +105,22 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
         "remote forwarding unexpectedly succeeded"
     );
 
-    let mut dynamic = fixture
-        .ssh_command()
-        .args([
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-D",
-            &dynamic_listener,
-            "-N",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("dynamic forwarding starts");
+    drop(dynamic_port_reservation);
+    let mut dynamic = ChildGuard::new(
+        fixture
+            .ssh_command()
+            .args([
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-D",
+                &dynamic_listener,
+                "-N",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("dynamic forwarding starts"),
+    );
     thread::sleep(Duration::from_millis(200));
     let mut dynamic_connection = TcpStream::connect(("127.0.0.1", dynamic_port))
         .expect("dynamic forwarding listener should exist before channel denial");
@@ -304,6 +316,35 @@ fn pinned_nix_completes_handshake_through_real_openssh_and_daemon() {
         String::from_utf8_lossy(&output.stderr)
     );
     fixture.finish();
+}
+
+struct ChildGuard(Child);
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self(child)
+    }
+}
+
+impl std::ops::Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 struct Fixture {
@@ -595,21 +636,41 @@ fn wait_for_path(path: &Path, child: &mut Child) {
     }
 }
 
-fn unused_tcp_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("ephemeral TCP listener binds")
-        .local_addr()
-        .expect("ephemeral TCP listener has address")
-        .port()
+fn forwarding_was_denied(result: std::io::Result<usize>) -> bool {
+    result.is_err() || result.is_ok_and(|count| count == 0)
 }
 
-fn forwarding_was_denied(read: std::io::Result<usize>) -> bool {
-    read.is_err() || read == Ok(0)
+fn reserve_tcp_port() -> (std::net::TcpListener, u16) {
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral TCP listener binds");
+    let port = listener
+        .local_addr()
+        .expect("ephemeral TCP listener has address")
+        .port();
+    (listener, port)
 }
 
 #[test]
 fn fixture_suffixes_differ_when_clock_values_match() {
     assert_ne!(fixture_suffix(1), fixture_suffix(1));
+}
+
+#[test]
+fn reserved_port_remains_unavailable_until_released() {
+    let (listener, port) = reserve_tcp_port();
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+    drop(listener);
+}
+
+#[test]
+fn child_guard_reaps_process_on_drop() {
+    let child = Command::new("sh")
+        .args(["-c", "sleep 30"])
+        .spawn()
+        .expect("child starts");
+    let id = child.id();
+    drop(ChildGuard::new(child));
+    assert!(!std::path::Path::new(&format!("/proc/{id}")).exists());
 }
 
 #[test]
