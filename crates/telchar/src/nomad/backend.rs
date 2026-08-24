@@ -757,6 +757,7 @@ fn render_job_at<S: AsRef<str>>(
             "Name": deterministic_job_name(config, shared_build_key),
             "Type": "batch",
             "Namespace": config.namespace(),
+            "NodePool": config.node_pool(),
             "Datacenters": ["*"],
             "Priority": profile.priority().default(),
             "Constraints": constraints,

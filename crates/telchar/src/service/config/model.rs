@@ -530,6 +530,7 @@ pub struct NomadBackendConfig {
     pub(super) maximum_concurrent_builds: usize,
     pub(super) endpoint: String,
     pub(super) namespace: String,
+    pub(super) node_pool: String,
     pub(super) token_file: Option<PathBuf>,
     pub(super) ca_certificate_file: Option<PathBuf>,
     pub(super) client_certificate_file: Option<PathBuf>,
@@ -566,6 +567,10 @@ impl NomadBackendConfig {
 
     pub fn namespace(&self) -> &str {
         &self.namespace
+    }
+
+    pub fn node_pool(&self) -> &str {
+        &self.node_pool
     }
 
     pub fn token_file(&self) -> Option<&Path> {

@@ -205,6 +205,10 @@ pub(super) fn validate_nomad_backends(
             return Err(invalid("Nomad endpoint is invalid"));
         }
         let namespace = validate_subject(backend.namespace, "Nomad namespace is invalid")?;
+        let node_pool = validate_subject(
+            backend.node_pool.unwrap_or_else(|| "default".to_owned()),
+            "Nomad node pool is invalid",
+        )?;
         let driver = validate_subject(backend.driver, "Nomad task driver is invalid")?;
         let job_name_scope =
             validate_subject(backend.job_name_scope, "Nomad job-name scope is invalid")?;
@@ -286,6 +290,7 @@ pub(super) fn validate_nomad_backends(
             maximum_concurrent_builds: backend.maximum_concurrent_builds,
             endpoint: backend.endpoint,
             namespace,
+            node_pool,
             token_file,
             ca_certificate_file,
             client_certificate_file,
