@@ -195,6 +195,13 @@ impl ServiceConfig {
         &self.static_ssh_consul
     }
 
+    pub(crate) fn replace_static_ssh_backends(
+        &mut self,
+        static_ssh_backends: Vec<StaticSshBackendConfig>,
+    ) {
+        self.static_ssh_backends = static_ssh_backends;
+    }
+
     pub fn nomad_backends(&self) -> &[NomadBackendConfig] {
         &self.nomad_backends
     }
@@ -218,6 +225,7 @@ impl ServiceConfig {
             || self.subject_scheduling_limits != replacement.subject_scheduling_limits
             || self.backend_permit_wait != replacement.backend_permit_wait
             || self.local_backend != replacement.local_backend
+            || self.static_ssh_consul != replacement.static_ssh_consul
             || self.nomad_backends != replacement.nomad_backends
         {
             return Err(invalid("configuration reload changes immutable settings"));
