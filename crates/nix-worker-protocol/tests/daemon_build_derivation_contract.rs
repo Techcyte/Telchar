@@ -394,14 +394,14 @@ fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
 }
 
 #[test]
-fn daemon_rejection_is_redacted_and_identifies_build_phase() {
+fn daemon_rejection_preserves_bounded_build_diagnostic() {
     let mut input = Vec::new();
     handshake(&mut input, 1);
     integer(&mut input, STDERR_ERROR);
-    string(&mut input, b"sensitive-type");
+    string(&mut input, b"Error");
     integer(&mut input, 1);
-    string(&mut input, b"sensitive-name");
-    string(&mut input, b"sensitive-message");
+    string(&mut input, b"daemon");
+    string(&mut input, b"builder failed while compiling telchar");
     integer(&mut input, 0);
     integer(&mut input, 0);
     let outputs = [BuildDerivationOutputRequest {
@@ -416,8 +416,10 @@ fn daemon_rejection_is_redacted_and_identifies_build_phase() {
         .build_derivation(&request(&outputs), &mut |_| Ok(()))
         .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon BuildDerivation was rejected");
-    assert!(!error.to_string().contains("sensitive"));
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon BuildDerivation was rejected: builder failed while compiling telchar"
+    );
 }
 
 #[test]

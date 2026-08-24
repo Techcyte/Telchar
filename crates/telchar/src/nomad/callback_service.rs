@@ -465,18 +465,27 @@ pub fn serve_connection(
             return Err(error);
         }
     };
-    tracing::debug!(
-        event = "nomad.callback.output_collection.completed",
-        backend = authentication.backend,
-        job_id = authentication.job_id,
-        allocation_id = authentication.allocation_id,
-        result = match &outcome {
-            BuildCollectionOutcome::Built => "succeeded",
-            BuildCollectionOutcome::Failed { .. } => "failed",
-        },
-        expected_output_count = build_request.expected_outputs().len(),
-        "Nomad callback output collection completed"
-    );
+    match &outcome {
+        BuildCollectionOutcome::Built => tracing::debug!(
+            event = "nomad.callback.output_collection.completed",
+            backend = authentication.backend,
+            job_id = authentication.job_id,
+            allocation_id = authentication.allocation_id,
+            result = "succeeded",
+            expected_output_count = build_request.expected_outputs().len(),
+            "Nomad callback output collection completed"
+        ),
+        BuildCollectionOutcome::Failed { diagnostic } => tracing::warn!(
+            event = "nomad.callback.output_collection.completed",
+            backend = authentication.backend,
+            job_id = authentication.job_id,
+            allocation_id = authentication.allocation_id,
+            result = "failed",
+            expected_output_count = build_request.expected_outputs().len(),
+            diagnostic = diagnostic.as_deref().unwrap_or("unavailable"),
+            "Nomad callback output collection completed"
+        ),
+    }
     if let BuildCollectionOutcome::Failed { diagnostic } = outcome {
         crate::persistence::complete_shared_build_failure(
             database_url,
