@@ -380,13 +380,24 @@ impl StoreRetentionBackend for NixStoreRetentionBackend {
 
 fn rollback_paths(root_directory: &Path, retained: &[RetainedPath]) -> io::Result<()> {
     for path in retained.iter().filter(|path| path.created).rev() {
-        if path.root_path.parent() != Some(root_directory)
-            || fs::read_link(&path.root_path).map_err(|_| retention_error())?
-                != Path::new(&path.store_path)
-        {
-            return Err(retention_error());
+        if path.root_path.parent() != Some(root_directory) {
+            let error = retention_error();
+            log_retention_failure("rollback-parent", &error);
+            return Err(error);
         }
-        fs::remove_file(&path.root_path).map_err(|_| retention_error())?;
+        let linked = fs::read_link(&path.root_path).map_err(|error| {
+            log_retention_failure("rollback-read-root", &error);
+            retention_error()
+        })?;
+        if linked != Path::new(&path.store_path) {
+            let error = retention_error();
+            log_retention_failure("rollback-conflict", &error);
+            return Err(error);
+        }
+        fs::remove_file(&path.root_path).map_err(|error| {
+            log_retention_failure("rollback-remove-root", &error);
+            retention_error()
+        })?;
     }
     Ok(())
 }
@@ -401,16 +412,31 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
     for entry in released {
         let root_path = root_directory.join(&entry.lease_id);
         match fs::symlink_metadata(&root_path) {
-            Ok(metadata)
-                if metadata.file_type().is_symlink()
-                    && fs::read_link(&root_path).map_err(|_| retention_error())?
-                        == Path::new(&entry.store_path) =>
-            {
-                fs::remove_file(&root_path).map_err(|_| retention_error())?;
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let linked = fs::read_link(&root_path).map_err(|error| {
+                    log_retention_failure("release-read-root", &error);
+                    retention_error()
+                })?;
+                if linked != Path::new(&entry.store_path) {
+                    let error = retention_error();
+                    log_retention_failure("release-conflict", &error);
+                    return Err(error);
+                }
+                fs::remove_file(&root_path).map_err(|error| {
+                    log_retention_failure("release-remove-root", &error);
+                    retention_error()
+                })?;
             }
-            Ok(_) => return Err(retention_error()),
+            Ok(_) => {
+                let error = retention_error();
+                log_retention_failure("release-conflict", &error);
+                return Err(error);
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => return Err(retention_error()),
+            Err(error) => {
+                log_retention_failure("release-read-root", &error);
+                return Err(retention_error());
+            }
         }
     }
     Ok(())
