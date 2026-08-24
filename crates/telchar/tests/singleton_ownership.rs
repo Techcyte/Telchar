@@ -151,6 +151,34 @@ fn renewal_extends_lease_only_for_current_owner() {
 }
 
 #[test]
+fn ownership_remains_authoritative_during_long_startup_work() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_millis(500),
+    )
+    .expect("daemon acquires ownership");
+
+    owner
+        .maintain_during(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_millis(900));
+            assert_eq!(
+                telchar::service::singleton_ownership::SingletonOwnership::acquire(
+                    fixture.url(),
+                    Duration::from_millis(500),
+                )
+                .expect_err("startup owner remains authoritative")
+                .failure(),
+                telchar::service::singleton_ownership::SingletonOwnershipFailure::Contended
+            );
+        })
+        .expect("ownership renewal remains active");
+
+    owner.verify().expect("startup owner remains current");
+}
+
+#[test]
 fn ownership_renews_after_database_restart() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");

@@ -100,6 +100,7 @@ impl StoreLeasePurpose {
 pub enum StoreLeaseState {
     Active,
     Released,
+    Reconciled,
 }
 
 impl StoreLeaseState {
@@ -107,6 +108,7 @@ impl StoreLeaseState {
         match value {
             "active" => Some(Self::Active),
             "released" => Some(Self::Released),
+            "reconciled" => Some(Self::Reconciled),
             _ => None,
         }
     }
@@ -883,7 +885,7 @@ fn release_store_lease_inner(
         None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
         Some(row) => match decode_store_lease(&row).map_err(StoreLeaseError)?.state {
             StoreLeaseState::Active => {}
-            StoreLeaseState::Released => {
+            StoreLeaseState::Released | StoreLeaseState::Reconciled => {
                 return Err(StoreLeaseError(StoreLeaseFailure::InvalidState));
             }
         },
@@ -995,13 +997,43 @@ fn release_expired_request_output_leases_inner(
     Ok(released)
 }
 
+pub fn reconcile_store_leases(
+    database_url: &str,
+    lease_ids: &[String],
+) -> Result<(), StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(reconcile_store_leases));
+    if database_url.trim().is_empty() || lease_ids.is_empty() {
+        return if lease_ids.is_empty() {
+            Ok(())
+        } else {
+            Err(StoreLeaseError(StoreLeaseFailure::Configuration))
+        };
+    }
+    for lease_id in lease_ids {
+        validate_store_lease_id(lease_id)?;
+    }
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let updated = client
+        .execute(
+            "UPDATE store_leases SET state = 'reconciled', reconciled_at = transaction_timestamp() WHERE lease_id = ANY($1) AND state = 'released'",
+            &[&lease_ids],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    if updated != lease_ids.len() as u64 {
+        return Err(StoreLeaseError(StoreLeaseFailure::Query));
+    }
+    Ok(())
+}
+
 pub fn read_released_request_leases_page(
     database_url: &str,
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
-    let _database_operation =
-        telemetry::DatabaseOperation::start(stringify!(read_released_request_leases_page));
+    let mut database_operation =
+        telemetry::DatabaseOperation::silent(stringify!(read_released_request_leases_page));
     if database_url.trim().is_empty() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
@@ -1016,10 +1048,13 @@ pub fn read_released_request_leases_page(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let rows = client
         .query(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size FROM store_leases WHERE owner_kind = 'request' AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE owner_kind = 'request' AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
             &[&after_lease_id, &(maximum_rows as i64)],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    if !rows.is_empty() {
+        database_operation.emit();
+    }
     rows.iter()
         .map(|row| {
             let lease = decode_store_lease(row).map_err(StoreLeaseError)?;
@@ -1055,7 +1090,7 @@ fn read_store_lease_inner(
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let lease = client
         .query_opt(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size FROM store_leases WHERE lease_id = $1",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE lease_id = $1",
             &[&lease_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
@@ -1123,16 +1158,33 @@ fn decode_store_lease(row: &Row) -> Result<StoreLeaseRecord, StoreLeaseFailure> 
     } else {
         None
     };
+    let reconciled_at = if row.len() > 10 {
+        row.try_get::<_, Option<SystemTime>>(10)
+            .map_err(|_| StoreLeaseFailure::Query)?
+    } else {
+        None
+    };
     validate_store_lease_inputs("validated", &lease_id, &owner_id, &store_path)
         .map_err(|_| StoreLeaseFailure::Query)?;
     let owner_kind = StoreLeaseOwnerKind::parse(&owner_kind).ok_or(StoreLeaseFailure::Query)?;
     let purpose = StoreLeasePurpose::parse(&purpose).ok_or(StoreLeaseFailure::Query)?;
     let state = match StoreLeaseState::parse(&state) {
-        Some(StoreLeaseState::Active) if released_at.is_none() => StoreLeaseState::Active,
+        Some(StoreLeaseState::Active) if released_at.is_none() && reconciled_at.is_none() => {
+            StoreLeaseState::Active
+        }
         Some(StoreLeaseState::Released)
-            if released_at.is_some_and(|released_at| released_at >= created_at) =>
+            if released_at.is_some_and(|released_at| released_at >= created_at)
+                && reconciled_at.is_none() =>
         {
             StoreLeaseState::Released
+        }
+        Some(StoreLeaseState::Reconciled)
+            if released_at.is_some_and(|released_at| released_at >= created_at)
+                && reconciled_at.is_some_and(|reconciled_at| {
+                    released_at.is_some_and(|released_at| reconciled_at >= released_at)
+                }) =>
+        {
+            StoreLeaseState::Reconciled
         }
         _ => return Err(StoreLeaseFailure::Query),
     };
