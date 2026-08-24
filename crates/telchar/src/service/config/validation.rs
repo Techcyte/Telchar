@@ -123,66 +123,207 @@ pub(super) fn validate_local_backend(raw: RawLocalBackendConfig) -> io::Result<L
     })
 }
 
-pub(super) fn validate_static_ssh_backends(
-    raw: Vec<RawStaticSshBackendConfig>,
-) -> io::Result<Vec<StaticSshBackendConfig>> {
-    if raw.len() > MAXIMUM_STATIC_SSH_BACKENDS {
-        return Err(invalid("static SSH backend count exceeds limit"));
+pub(super) fn validate_ssh_backends(
+    raw: Vec<RawSshConfig>,
+) -> io::Result<(Vec<StaticSshBackendConfig>, Vec<StaticSshConsulConfig>)> {
+    let mut static_backends = Vec::new();
+    let mut consul_sources = Vec::new();
+    for group in raw {
+        for (pool_name, pool) in group.backends {
+            let name = validate_subject(pool_name, "SSH backend name is invalid")?;
+            let system = pool
+                .system
+                .clone()
+                .or_else(|| group.system.clone())
+                .unwrap_or_else(|| "x86_64-linux".to_owned());
+            let features = pool
+                .supported_features
+                .clone()
+                .or_else(|| group.supported_features.clone())
+                .unwrap_or_default();
+            let capacity = pool
+                .maximum_concurrent_builds
+                .or(group.maximum_concurrent_builds)
+                .unwrap_or(1);
+            let ssh_user = pool
+                .ssh_user
+                .clone()
+                .or_else(|| group.ssh_user.clone())
+                .unwrap_or_else(|| "telchar".to_owned());
+            let identity_file = pool
+                .identity_file
+                .clone()
+                .or_else(|| group.identity_file.clone())
+                .ok_or_else(|| invalid("SSH identity file is required"))?;
+            let known_hosts_file = pool
+                .known_hosts_file
+                .clone()
+                .or_else(|| group.known_hosts_file.clone())
+                .ok_or_else(|| invalid("SSH known-hosts file is required"))?;
+            let ssh_program = pool
+                .ssh_program
+                .clone()
+                .or_else(|| group.ssh_program.clone())
+                .unwrap_or_else(|| {
+                    PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM))
+                });
+            match pool.source.as_str() {
+                "static" => {
+                    if pool.hosts.is_empty() || pool.endpoint.is_some() || pool.service.is_some() {
+                        return Err(invalid("static SSH backend inventory is invalid"));
+                    }
+                    for (host_name, host) in pool.hosts {
+                        let backend_name = format!("{name}.{host_name}");
+                        let host_system = host.system.unwrap_or_else(|| system.clone());
+                        let host_features =
+                            host.supported_features.unwrap_or_else(|| features.clone());
+                        let host_capacity = host.maximum_concurrent_builds.unwrap_or(capacity);
+                        let host_user = host.ssh_user.unwrap_or_else(|| ssh_user.clone());
+                        let host_identity =
+                            host.identity_file.unwrap_or_else(|| identity_file.clone());
+                        let host_known_hosts = host
+                            .known_hosts_file
+                            .unwrap_or_else(|| known_hosts_file.clone());
+                        let host_program = host.ssh_program.unwrap_or_else(|| ssh_program.clone());
+                        let ready = host
+                            .ready_check_interval_seconds
+                            .or(pool.ready_check_interval_seconds)
+                            .or(group.ready_check_interval_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_READY_CHECK_INTERVAL_SECONDS);
+                        let unavailable = host
+                            .unavailable_check_interval_seconds
+                            .or(pool.unavailable_check_interval_seconds)
+                            .or(group.unavailable_check_interval_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS);
+                        let timeout = host
+                            .check_timeout_seconds
+                            .or(pool.check_timeout_seconds)
+                            .or(group.check_timeout_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS);
+                        validate_ssh_leaf(
+                            host_capacity,
+                            ready,
+                            unavailable,
+                            timeout,
+                            &host_identity,
+                            &host_known_hosts,
+                            &host_program,
+                        )?;
+                        let destination = format!("{host_user}@{}", host.address);
+                        if !valid_ssh_destination(&destination) || host.port == Some(0) {
+                            return Err(invalid("static SSH destination is invalid"));
+                        }
+                        static_backends.push(StaticSshBackendConfig {
+                            target: BackendTarget::new(
+                                &backend_name,
+                                BackendKind::StaticSsh,
+                                &host_system,
+                                &host_features,
+                            )?,
+                            maximum_concurrent_builds: host_capacity,
+                            ready_check_interval: Duration::from_secs(ready),
+                            unavailable_check_interval: Duration::from_secs(unavailable),
+                            check_timeout: Duration::from_secs(timeout),
+                            destination,
+                            port: host.port.unwrap_or(22),
+                            identity_file: host_identity,
+                            known_hosts_file: host_known_hosts,
+                            ssh_program: host_program,
+                        });
+                    }
+                }
+                "consul" => {
+                    if !pool.hosts.is_empty() {
+                        return Err(invalid("Consul SSH backend cannot contain static hosts"));
+                    }
+                    let endpoint = pool
+                        .endpoint
+                        .ok_or_else(|| invalid("Consul SSH endpoint is required"))?;
+                    let service = pool
+                        .service
+                        .ok_or_else(|| invalid("Consul SSH service is required"))?;
+                    let required_tags = pool.required_tags.unwrap_or_default();
+                    let refresh = pool.refresh_interval_seconds.unwrap_or(15);
+                    let request_timeout = pool.request_timeout_seconds.unwrap_or(5);
+                    validate_ssh_leaf(
+                        capacity,
+                        pool.ready_check_interval_seconds
+                            .or(group.ready_check_interval_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_READY_CHECK_INTERVAL_SECONDS),
+                        pool.unavailable_check_interval_seconds
+                            .or(group.unavailable_check_interval_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS),
+                        pool.check_timeout_seconds
+                            .or(group.check_timeout_seconds)
+                            .unwrap_or(DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS),
+                        &identity_file,
+                        &known_hosts_file,
+                        &ssh_program,
+                    )?;
+                    if !valid_endpoint(&endpoint, &["http://", "https://"])
+                        || required_tags.len() > MAXIMUM_STATIC_SSH_CONSUL_TAGS
+                        || refresh == 0
+                        || refresh > MAXIMUM_STATIC_SSH_CONSUL_REFRESH_SECONDS
+                        || request_timeout == 0
+                        || request_timeout > MAXIMUM_STATIC_SSH_CONSUL_REQUEST_TIMEOUT_SECONDS
+                        || request_timeout > refresh
+                    {
+                        return Err(invalid("Consul SSH backend is invalid"));
+                    }
+                    consul_sources.push(StaticSshConsulConfig {
+                        name,
+                        system,
+                        supported_features: features,
+                        maximum_concurrent_builds_per_instance: capacity,
+                        endpoint,
+                        service: validate_subject(service, "Consul SSH service is invalid")?,
+                        datacenter: pool.datacenter,
+                        required_tags,
+                        passing_only: pool.passing_only.unwrap_or(true),
+                        refresh_interval: Duration::from_secs(refresh),
+                        request_timeout: Duration::from_secs(request_timeout),
+                        token_file: pool.token_file,
+                        ca_certificate_file: pool.ca_certificate_file,
+                        ssh_user,
+                        identity_file,
+                        known_hosts_file,
+                        ssh_program,
+                    });
+                }
+                _ => return Err(invalid("SSH backend source is invalid")),
+            }
+        }
     }
-    let mut backends = Vec::with_capacity(raw.len());
-    for backend in raw {
-        if backends
-            .iter()
-            .any(|existing: &StaticSshBackendConfig| existing.target.name() == backend.name)
-        {
-            return Err(invalid("static SSH backend name is ambiguous"));
-        }
-        validate_backend_capacity(backend.maximum_concurrent_builds)?;
-        let ready_check_interval_seconds = backend
-            .ready_check_interval_seconds
-            .unwrap_or(DEFAULT_STATIC_SSH_READY_CHECK_INTERVAL_SECONDS);
-        let unavailable_check_interval_seconds = backend
-            .unavailable_check_interval_seconds
-            .unwrap_or(DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS);
-        let check_timeout_seconds = backend
-            .check_timeout_seconds
-            .unwrap_or(DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS);
-        if ready_check_interval_seconds == 0
-            || ready_check_interval_seconds > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
-            || unavailable_check_interval_seconds == 0
-            || unavailable_check_interval_seconds > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
-            || check_timeout_seconds == 0
-            || check_timeout_seconds > MAXIMUM_STATIC_SSH_CHECK_TIMEOUT_SECONDS
-        {
-            return Err(invalid("static SSH health timing bounds are invalid"));
-        }
-        if !valid_ssh_destination(&backend.destination) {
-            return Err(invalid("static SSH destination is invalid"));
-        }
-        validate_identity_file(&backend.identity_file)?;
-        validate_known_hosts_file(&backend.known_hosts_file)?;
-        let ssh_program = backend
-            .ssh_program
-            .unwrap_or_else(|| PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM)));
-        validate_executable_file(&ssh_program, "static SSH program is invalid")?;
-        backends.push(StaticSshBackendConfig {
-            target: BackendTarget::new(
-                &backend.name,
-                BackendKind::StaticSsh,
-                &backend.system,
-                &backend.supported_features,
-            )?,
-            maximum_concurrent_builds: backend.maximum_concurrent_builds,
-            ready_check_interval: Duration::from_secs(ready_check_interval_seconds),
-            unavailable_check_interval: Duration::from_secs(unavailable_check_interval_seconds),
-            check_timeout: Duration::from_secs(check_timeout_seconds),
-            destination: backend.destination,
-            identity_file: backend.identity_file,
-            known_hosts_file: backend.known_hosts_file,
-            ssh_program,
-        });
+    if static_backends.len() > MAXIMUM_STATIC_SSH_BACKENDS
+        || consul_sources.len() > MAXIMUM_STATIC_SSH_CONSUL_SOURCES
+    {
+        return Err(invalid("SSH backend count exceeds limit"));
     }
-    Ok(backends)
+    Ok((static_backends, consul_sources))
+}
+
+fn validate_ssh_leaf(
+    capacity: usize,
+    ready: u64,
+    unavailable: u64,
+    timeout: u64,
+    identity_file: &Path,
+    known_hosts_file: &Path,
+    ssh_program: &Path,
+) -> io::Result<()> {
+    validate_backend_capacity(capacity)?;
+    if ready == 0
+        || ready > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
+        || unavailable == 0
+        || unavailable > MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS
+        || timeout == 0
+        || timeout > MAXIMUM_STATIC_SSH_CHECK_TIMEOUT_SECONDS
+    {
+        return Err(invalid("SSH health timing bounds are invalid"));
+    }
+    validate_identity_file(identity_file)?;
+    validate_known_hosts_file(known_hosts_file)?;
+    validate_executable_file(ssh_program, "SSH program is invalid")
 }
 
 pub(super) fn validate_nomad_backends(
@@ -201,10 +342,17 @@ pub(super) fn validate_nomad_backends(
             return Err(invalid("Nomad backend name is ambiguous"));
         }
         validate_backend_capacity(backend.maximum_concurrent_builds)?;
+        if backend.max_retries > MAXIMUM_NOMAD_RETRIES {
+            return Err(invalid("Nomad retry count exceeds limit"));
+        }
         if !valid_nomad_endpoint(&backend.endpoint) {
             return Err(invalid("Nomad endpoint is invalid"));
         }
         let namespace = validate_subject(backend.namespace, "Nomad namespace is invalid")?;
+        let node_pool = validate_subject(
+            backend.node_pool.unwrap_or_else(|| "default".to_owned()),
+            "Nomad node pool is invalid",
+        )?;
         let driver = validate_subject(backend.driver, "Nomad task driver is invalid")?;
         let job_name_scope =
             validate_subject(backend.job_name_scope, "Nomad job-name scope is invalid")?;
@@ -284,8 +432,10 @@ pub(super) fn validate_nomad_backends(
                 &backend.supported_features,
             )?,
             maximum_concurrent_builds: backend.maximum_concurrent_builds,
+            max_retries: backend.max_retries,
             endpoint: backend.endpoint,
             namespace,
+            node_pool,
             token_file,
             ca_certificate_file,
             client_certificate_file,

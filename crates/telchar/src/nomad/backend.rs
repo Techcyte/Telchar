@@ -18,6 +18,8 @@ use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
 use crate::service::config::{NomadBackendConfig, NomadConstraint, NomadTransferAuthentication};
 
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
+const NOMAD_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+const NOMAD_RETRY_MAXIMUM_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct NomadClient {
     config: NomadBackendConfig,
@@ -322,12 +324,6 @@ impl NomadClient {
         live_log_queue_bytes: usize,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
-        let submission_started = Instant::now();
-        tracing::debug!(
-            event = "nomad.execution.submission_started",
-            backend_name = self.config.target().name(),
-            "Nomad execution submission started"
-        );
         let profile = self
             .config
             .select_resource_profile(execution.build().required_system_features())
@@ -337,117 +333,65 @@ impl NomadClient {
                     "Nomad resource profile selection is ambiguous",
                 )
             })?;
-        let submission = match self.submit_for_features(
-            shared_build_key,
-            execution.build().required_system_features(),
-        ) {
-            Ok(submission) => {
-                crate::service::metrics::nomad_submission_finished(
-                    self.config.target().name(),
-                    profile.name(),
-                    profile.priority().default(),
-                    submission_started.elapsed(),
-                    "succeeded",
-                );
-                tracing::debug!(
-                    event = "nomad.execution.submitted",
-                    backend_name = self.config.target().name(),
-                    duration_ms = submission_started.elapsed().as_millis(),
-                    "Nomad execution submitted"
-                );
-                submission
-            }
-            Err(error) => {
-                crate::service::metrics::nomad_submission_finished(
-                    self.config.target().name(),
-                    profile.name(),
-                    profile.priority().default(),
-                    submission_started.elapsed(),
-                    "failed",
-                );
-                return Err(error);
+        let started = Instant::now();
+        let deadline = started.checked_add(execution.timeout()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::TimedOut, "Nomad job execution timed out")
+        })?;
+        let shared_build_key_text = std::str::from_utf8(shared_build_key)
+            .map_err(|_| io::Error::other("Nomad shared build key is invalid"))?;
+        let derivation_path = std::str::from_utf8(execution.build().derivation_path())
+            .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
+        let mut live_logs = shared_builds
+            .subscribe_logs(shared_build_key_text, live_log_queue_bytes)
+            .ok_or_else(|| io::Error::other("Nomad shared build live logs are unavailable"))?;
+        let mut attempt_ordinal = 1_usize;
+        let result = loop {
+            let result = self.execute_attempt(
+                database_url,
+                execution,
+                shared_build_key,
+                attempt_ordinal,
+                deadline,
+                &profile,
+                logs,
+                &mut live_logs,
+                cancelled,
+            );
+            match result {
+                Ok(result) => break Ok(result),
+                Err(NomadAttemptFailure::Terminal(error)) => break Err(error),
+                Err(NomadAttemptFailure::Retryable(error))
+                    if attempt_ordinal <= self.config.max_retries() =>
+                {
+                    let next_ordinal = attempt_ordinal + 1;
+                    let current_execution_id = deterministic_job_name_for_attempt(
+                        &self.config,
+                        shared_build_key,
+                        attempt_ordinal,
+                    )?;
+                    let next_execution_id = deterministic_job_name_for_attempt(
+                        &self.config,
+                        shared_build_key,
+                        next_ordinal,
+                    )?;
+                    crate::persistence::retry_shared_build(
+                        database_url,
+                        derivation_path,
+                        &current_execution_id,
+                        &next_execution_id,
+                        "nomad-infrastructure-lost",
+                        &serde_json::json!({"reason": error.to_string()}),
+                    )
+                    .map_err(|_| io::Error::other("Nomad shared build retry failed"))?;
+                    wait_for_retry(retry_delay(attempt_ordinal), deadline, cancelled)?;
+                    attempt_ordinal = next_ordinal;
+                }
+                Err(NomadAttemptFailure::Retryable(error)) => break Err(error),
             }
         };
-        crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
-        let started = Instant::now();
-        let shared_build_key = std::str::from_utf8(shared_build_key)
-            .map_err(|_| io::Error::other("Nomad shared build key is invalid"))?;
-        let mut live_logs = shared_builds
-            .subscribe_logs(shared_build_key, live_log_queue_bytes)
-            .ok_or_else(|| io::Error::other("Nomad shared build live logs are unavailable"))?;
-        let result = (|| {
-            let mut placement_recorded = false;
-            loop {
-                for chunk in live_logs.drain() {
-                    logs(&chunk)?;
-                }
-                if cancelled()? {
-                    self.stop(submission.job_id())?;
-                    break Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "Nomad job execution cancelled",
-                    ));
-                }
-                match self.status(submission.job_id())? {
-                    NomadExecutionState::Pending => {}
-                    NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
-                        if !placement_recorded {
-                            crate::service::metrics::nomad_placed(
-                                self.config.target().name(),
-                                started.elapsed(),
-                            );
-                            tracing::debug!(
-                                event = "nomad.execution.placed",
-                                backend_name = self.config.target().name(),
-                                duration_ms = started.elapsed().as_millis(),
-                                "Nomad execution placed"
-                            );
-                            placement_recorded = true;
-                        }
-                    }
-                    NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                        break Err(io::Error::other("Nomad job execution failed"));
-                    }
-                }
-                let derivation_path = std::str::from_utf8(execution.build().derivation_path())
-                    .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
-                let build = crate::persistence::read_shared_build(database_url, derivation_path)
-                    .map_err(|_| io::Error::other("Nomad shared build state is unavailable"))?
-                    .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
-                match build.state {
-                    crate::persistence::SharedBuildState::Succeeded => {
-                        break BuildResult::new(
-                            BuildStatus::Built,
-                            execution.build().expected_outputs().to_vec(),
-                            OutputTrust::TrustedExecutor,
-                        );
-                    }
-                    crate::persistence::SharedBuildState::Failed => {
-                        break Err(io::Error::other("Nomad build transfer failed"));
-                    }
-                    crate::persistence::SharedBuildState::Claimed
-                    | crate::persistence::SharedBuildState::Running
-                    | crate::persistence::SharedBuildState::Collecting => {}
-                }
-                if started.elapsed() >= execution.timeout() {
-                    self.stop(submission.job_id())?;
-                    break Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Nomad job execution timed out",
-                    ));
-                }
-                for chunk in live_logs.wait_and_drain(self.config.poll_interval()) {
-                    logs(&chunk)?;
-                }
-            }
-        })();
-        let result = result.and_then(|result| {
-            for chunk in live_logs.drain() {
-                logs(&chunk)?;
-            }
-            Ok(result)
-        });
-        crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
+        for chunk in live_logs.drain() {
+            logs(&chunk)?;
+        }
         let result_name = if result.is_ok() {
             "succeeded"
         } else {
@@ -465,6 +409,135 @@ impl NomadClient {
             duration_ms = started.elapsed().as_millis(),
             "Nomad execution completed"
         );
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_attempt(
+        &self,
+        database_url: &str,
+        execution: &BuildExecution<'_>,
+        shared_build_key: &[u8],
+        attempt_ordinal: usize,
+        deadline: Instant,
+        profile: &crate::service::config::SelectedNomadResourceProfile<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        live_logs: &mut crate::shared_build::SharedBuildLogReceiver,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> Result<BuildResult, NomadAttemptFailure> {
+        if Instant::now() >= deadline {
+            return Err(NomadAttemptFailure::Terminal(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Nomad job execution timed out",
+            )));
+        }
+        let submission_started = Instant::now();
+        let submission = self
+            .submit_for_features_at_attempt(
+                shared_build_key,
+                execution.build().required_system_features(),
+                attempt_ordinal,
+            )
+            .map_err(NomadAttemptFailure::Retryable);
+        crate::service::metrics::nomad_submission_finished(
+            self.config.target().name(),
+            profile.name(),
+            profile.priority().default(),
+            submission_started.elapsed(),
+            if submission.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+        );
+        let submission = submission?;
+        crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
+        let attempt_started = Instant::now();
+        let result = (|| {
+            let mut placement_recorded = false;
+            loop {
+                for chunk in live_logs.drain() {
+                    logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
+                }
+                if cancelled().map_err(NomadAttemptFailure::Terminal)? {
+                    self.stop(submission.job_id())
+                        .map_err(NomadAttemptFailure::Terminal)?;
+                    return Err(NomadAttemptFailure::Terminal(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Nomad job execution cancelled",
+                    )));
+                }
+                if Instant::now() >= deadline {
+                    self.stop(submission.job_id())
+                        .map_err(NomadAttemptFailure::Terminal)?;
+                    return Err(NomadAttemptFailure::Terminal(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Nomad job execution timed out",
+                    )));
+                }
+                let build = crate::persistence::read_shared_build(
+                    database_url,
+                    std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
+                        NomadAttemptFailure::Terminal(io::Error::other(
+                            "Nomad derivation path is invalid",
+                        ))
+                    })?,
+                )
+                .map_err(|_| {
+                    NomadAttemptFailure::Terminal(io::Error::other(
+                        "Nomad shared build state is unavailable",
+                    ))
+                })?
+                .ok_or_else(|| {
+                    NomadAttemptFailure::Terminal(io::Error::other(
+                        "Nomad shared build is unavailable",
+                    ))
+                })?;
+                match build.state {
+                    crate::persistence::SharedBuildState::Succeeded => {
+                        return BuildResult::new(
+                            BuildStatus::Built,
+                            execution.build().expected_outputs().to_vec(),
+                            OutputTrust::TrustedExecutor,
+                        )
+                        .map_err(NomadAttemptFailure::Terminal);
+                    }
+                    crate::persistence::SharedBuildState::Failed => {
+                        return Err(NomadAttemptFailure::Terminal(io::Error::other(
+                            "Nomad build transfer failed",
+                        )));
+                    }
+                    crate::persistence::SharedBuildState::Claimed
+                    | crate::persistence::SharedBuildState::Running
+                    | crate::persistence::SharedBuildState::Collecting => {}
+                }
+                match self
+                    .status(submission.job_id())
+                    .map_err(NomadAttemptFailure::Retryable)?
+                {
+                    NomadExecutionState::Pending => {}
+                    NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
+                        if !placement_recorded {
+                            crate::service::metrics::nomad_placed(
+                                self.config.target().name(),
+                                attempt_started.elapsed(),
+                            );
+                            placement_recorded = true;
+                        }
+                    }
+                    NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                        return Err(NomadAttemptFailure::Retryable(io::Error::other(
+                            "Nomad job execution failed",
+                        )));
+                    }
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                for chunk in live_logs.wait_and_drain(self.config.poll_interval().min(remaining)) {
+                    logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
+                }
+            }
+        })();
+        crate::service::metrics::nomad_pending_changed(self.config.target().name(), -1);
         result
     }
 
@@ -500,13 +573,30 @@ impl NomadClient {
     }
 
     pub fn submit(&self, shared_build_key: &[u8]) -> io::Result<NomadSubmission> {
-        self.submit_for_features(shared_build_key, &[] as &[&str])
+        self.submit_for_attempt(shared_build_key, 1)
+    }
+
+    pub fn submit_for_attempt(
+        &self,
+        shared_build_key: &[u8],
+        attempt_ordinal: usize,
+    ) -> io::Result<NomadSubmission> {
+        self.submit_for_features_at_attempt(shared_build_key, &[] as &[&str], attempt_ordinal)
     }
 
     pub fn submit_for_features<S: AsRef<str>>(
         &self,
         shared_build_key: &[u8],
         required_features: &[S],
+    ) -> io::Result<NomadSubmission> {
+        self.submit_for_features_at_attempt(shared_build_key, required_features, 1)
+    }
+
+    pub fn submit_for_features_at_attempt<S: AsRef<str>>(
+        &self,
+        shared_build_key: &[u8],
+        required_features: &[S],
+        attempt_ordinal: usize,
     ) -> io::Result<NomadSubmission> {
         let started = Instant::now();
         tracing::trace!(
@@ -515,15 +605,17 @@ impl NomadClient {
             backend_name = self.config.target().name(),
             "Nomad API request started"
         );
-        let job_id = deterministic_job_name(&self.config, shared_build_key);
+        let job_id =
+            deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)?;
         let response = self
             .client
             .post(format!("{}/v1/jobs", self.config.endpoint()))
             .query(&[("namespace", self.config.namespace())])
-            .json(&render_job_for_features(
+            .json(&render_job_for_features_at_attempt(
                 &self.config,
                 shared_build_key,
                 required_features,
+                attempt_ordinal,
             )?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
@@ -545,6 +637,55 @@ impl NomadClient {
             evaluation_id: parsed.eval_id,
         })
     }
+}
+
+enum NomadAttemptFailure {
+    Retryable(io::Error),
+    Terminal(io::Error),
+}
+
+fn retry_delay(attempt_ordinal: usize) -> std::time::Duration {
+    let exponent = u32::try_from(attempt_ordinal.saturating_sub(1).min(16)).unwrap_or(16);
+    let base = NOMAD_RETRY_INITIAL_DELAY
+        .checked_mul(2_u32.saturating_pow(exponent))
+        .unwrap_or(NOMAD_RETRY_MAXIMUM_DELAY)
+        .min(NOMAD_RETRY_MAXIMUM_DELAY);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
+    let jitter_millis = u64::from(nanos % 100);
+    base.saturating_add(std::time::Duration::from_millis(jitter_millis))
+        .min(NOMAD_RETRY_MAXIMUM_DELAY)
+}
+
+fn wait_for_retry(
+    delay: std::time::Duration,
+    deadline: Instant,
+    cancelled: &mut dyn FnMut() -> io::Result<bool>,
+) -> io::Result<()> {
+    let wake = Instant::now()
+        .checked_add(delay)
+        .unwrap_or(deadline)
+        .min(deadline);
+    while Instant::now() < wake {
+        if cancelled()? {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Nomad job execution cancelled",
+            ));
+        }
+        std::thread::sleep(
+            std::time::Duration::from_millis(25)
+                .min(wake.saturating_duration_since(Instant::now())),
+        );
+    }
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Nomad job execution timed out",
+        ));
+    }
+    Ok(())
 }
 
 fn valid_nomad_identity(value: &str) -> bool {
@@ -585,12 +726,30 @@ fn bounded_json<T: serde::de::DeserializeOwned>(
 }
 
 pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u8]) -> String {
+    deterministic_job_name_for_attempt(config, shared_build_key, 1)
+        .expect("initial Nomad attempt ordinal is valid")
+}
+
+pub fn deterministic_job_name_for_attempt(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    attempt_ordinal: usize,
+) -> io::Result<String> {
+    if attempt_ordinal == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Nomad attempt ordinal is invalid",
+        ));
+    }
     let digest = Sha256::digest(shared_build_key);
     let suffix = digest[..16]
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    format!("{}-{suffix}", config.job_name_scope())
+    Ok(format!(
+        "{}-{suffix}-{attempt_ordinal}",
+        config.job_name_scope()
+    ))
 }
 
 pub fn render_job(config: &NomadBackendConfig, shared_build_key: &[u8]) -> io::Result<Value> {
@@ -602,10 +761,20 @@ pub fn render_job_for_features<S: AsRef<str>>(
     shared_build_key: &[u8],
     required_features: &[S],
 ) -> io::Result<Value> {
+    render_job_for_features_at_attempt(config, shared_build_key, required_features, 1)
+}
+
+pub fn render_job_for_features_at_attempt<S: AsRef<str>>(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    required_features: &[S],
+    attempt_ordinal: usize,
+) -> io::Result<Value> {
     render_job_at(
         config,
         shared_build_key,
         required_features,
+        attempt_ordinal,
         SystemTime::now(),
     )
 }
@@ -614,8 +783,10 @@ fn render_job_at<S: AsRef<str>>(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
     required_features: &[S],
+    attempt_ordinal: usize,
     issued_at: SystemTime,
 ) -> io::Result<Value> {
+    let job_id = deterministic_job_name_for_attempt(config, shared_build_key, attempt_ordinal)?;
     let profile = config
         .select_resource_profile(required_features)
         .map_err(|_| {
@@ -659,8 +830,7 @@ fn render_job_at<S: AsRef<str>>(
             task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");
             task["Env"]["TELCHAR_BACKEND"] = Value::from(config.target().name());
             task["Env"]["TELCHAR_NAMESPACE"] = Value::from(config.namespace());
-            task["Env"]["TELCHAR_JOB_ID"] =
-                Value::from(deterministic_job_name(config, shared_build_key));
+            task["Env"]["TELCHAR_JOB_ID"] = Value::from(job_id.clone());
             task["Env"]["TELCHAR_SHARED_BUILD_DIGEST"] =
                 Value::from(URL_SAFE_NO_PAD.encode(Sha256::digest(shared_build_key)));
             task["Env"]["TELCHAR_TASK"] = Value::from("build");
@@ -753,10 +923,11 @@ fn render_job_at<S: AsRef<str>>(
         .collect::<Vec<_>>();
     Ok(json!({
         "Job": {
-            "ID": deterministic_job_name(config, shared_build_key),
-            "Name": deterministic_job_name(config, shared_build_key),
+            "ID": job_id,
+            "Name": job_id,
             "Type": "batch",
             "Namespace": config.namespace(),
+            "NodePool": config.node_pool(),
             "Datacenters": ["*"],
             "Priority": profile.priority().default(),
             "Constraints": constraints,

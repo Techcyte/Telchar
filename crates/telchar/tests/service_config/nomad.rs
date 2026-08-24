@@ -146,6 +146,82 @@ fn rejects_invalid_nomad_callback_service_configuration() {
 }
 
 #[test]
+fn rejects_nomad_retry_count_above_limit() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("nomad-retry-limit");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[[backends.nomad]]
+name = "nomad-primary"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+max_retries = 101
+endpoint = "http://nomad.internal:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+transfer_endpoint = "ws://gateway.internal:17443/build-callback"
+
+[backends.nomad.driver_config]
+command = "/bin/true"
+
+[backends.nomad.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+
+[backends.nomad.transfer_authentication]
+mode = "workload-identity"
+issuer = "http://nomad.internal:4646"
+jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
+audience = "telchar"
+
+[backends.nomad.store]
+mode = "daemon"
+uri = "daemon"
+
+[backends.nomad.transfer_limits]
+maximum_manifest_paths = 100
+maximum_manifest_bytes = 1048576
+maximum_input_nar_bytes = 1048576
+maximum_total_input_bytes = 10485760
+maximum_output_nar_bytes = 1048576
+maximum_total_output_bytes = 10485760
+maximum_frame_metadata_bytes = 65536
+stream_buffer_bytes = 65536
+maximum_live_log_chunk_bytes = 16384
+live_log_queue_bytes = 1048576
+transfer_idle_timeout_seconds = 60
+setup_timeout_seconds = 60
+output_collection_timeout_seconds = 60
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 60
+clock_skew_seconds = 5
+nonce_retention_seconds = 120
+reconnect_timeout_seconds = 60
+maximum_diagnostic_bytes = 65536
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("excessive retry count rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn loads_fungible_nomad_backends_with_operator_controlled_drivers() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
@@ -168,8 +244,10 @@ name = "nomad-docker"
 system = "x86_64-linux"
 supported_features = ["docker"]
 maximum_concurrent_builds = 8
+max_retries = 3
 endpoint = "https://nomad-a.example:4646"
 namespace = "telchar-a"
+node_pool = "builders"
 token_file = "{}"
 ca_certificate_file = "{}"
 driver = "docker"
@@ -297,6 +375,7 @@ args = ["--stdio"]
     assert_eq!(backends[0].target().kind(), BackendKind::Nomad);
     assert_eq!(backends[0].endpoint(), "https://nomad-a.example:4646");
     assert_eq!(backends[0].namespace(), "telchar-a");
+    assert_eq!(backends[0].node_pool(), "builders");
     assert_eq!(backends[0].token_file(), Some(token_file.as_path()));
     assert_eq!(
         backends[0].ca_certificate_file(),
@@ -304,6 +383,7 @@ args = ["--stdio"]
     );
     assert_eq!(backends[0].driver(), "docker");
     assert_eq!(backends[0].job_name_scope(), "prod-a");
+    assert_eq!(backends[0].max_retries(), 3);
     assert_eq!(backends[0].poll_interval().as_secs(), 2);
     assert_eq!(backends[0].runtime_limit().as_secs(), 3600);
     assert_eq!(backends[0].resources().cpu_mhz(), 2000);
@@ -325,6 +405,8 @@ args = ["--stdio"]
     );
     assert_eq!(backends[0].driver_config()["privileged"], false);
     assert_eq!(backends[1].target().name(), "nomad-raw");
+    assert_eq!(backends[1].node_pool(), "default");
+    assert_eq!(backends[1].max_retries(), 0);
     assert_eq!(backends[1].driver(), "raw_exec");
     assert_eq!(
         backends[1].driver_config()["command"],

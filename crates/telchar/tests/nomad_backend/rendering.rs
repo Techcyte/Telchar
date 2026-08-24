@@ -19,6 +19,7 @@ supported_features = ["big-parallel", "telchar-ci", "telchar-memory"]
 maximum_concurrent_builds = 4
 endpoint = "http://nomad.example:4646"
 namespace = "telchar"
+node_pool = "arm-builders"
 driver = "raw_exec"
 job_name_scope = "telchar-prod"
 poll_interval_seconds = 2
@@ -135,8 +136,17 @@ args = ["--stdio"]
     let first = deterministic_job_name(backend, b"shared-build-key");
     let second = deterministic_job_name(backend, b"shared-build-key");
     let other = deterministic_job_name(backend, b"other-build-key");
+    let retry = telchar::nomad::backend::deterministic_job_name_for_attempt(
+        backend,
+        b"shared-build-key",
+        2,
+    )
+    .expect("retry identity derives");
     assert_eq!(first, second);
     assert_ne!(first, other);
+    assert_ne!(first, retry);
+    assert!(first.ends_with("-1"));
+    assert!(retry.ends_with("-2"));
     assert!(first.starts_with("telchar-prod-"));
 
     let job = render_job(backend, b"shared-build-key").expect("job renders");
@@ -146,6 +156,7 @@ args = ["--stdio"]
     );
     assert_eq!(job["Job"]["ID"], first);
     assert_eq!(job["Job"]["Namespace"], "telchar");
+    assert_eq!(job["Job"]["NodePool"], "arm-builders");
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Driver"],
         "raw_exec"

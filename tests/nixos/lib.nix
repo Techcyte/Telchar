@@ -120,9 +120,13 @@ let
         after = [
           "network-online.target"
           "postgresql.service"
+          "postgresql-setup.service"
         ];
         wants = [ "network-online.target" ];
-        requires = [ "postgresql.service" ];
+        requires = [
+          "postgresql.service"
+          "postgresql-setup.service"
+        ];
         environment = {
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
           TELCHAR_DATABASE_URL = "postgresql://telchar-ingress@/telchar-ingress?host=/run/postgresql";
@@ -294,13 +298,18 @@ let
         "d /var/lib/telchar-static-ssh 0700 telchar-ingress telchar -"
       ];
       environment.etc."telchar/telchar.toml".text = ''
-        [[backends.static_ssh]]
-        name = "builder"
+        [[backends.ssh]]
         system = "${pkgs.stdenv.hostPlatform.system}"
         maximum_concurrent_builds = 1
-        destination = "telchar-builder@builder"
+        ssh_user = "telchar-builder"
         identity_file = "/var/lib/telchar-static-ssh/identity"
         known_hosts_file = "/var/lib/telchar-static-ssh/known-hosts"
+
+        [backends.ssh.builders]
+        source = "static"
+
+        [backends.ssh.builders.builder]
+        address = "builder"
       '';
     };
 
@@ -511,23 +520,23 @@ rec {
               "d /var/lib/telchar-static-ssh 0700 telchar-ingress telchar -"
             ];
             environment.etc."telchar/telchar.toml".text = ''
-              [[backends.static_ssh]]
-              name = "primary"
+              [[backends.ssh]]
               system = "${pkgs.stdenv.hostPlatform.system}"
-              supported_features = ["primary"]
               maximum_concurrent_builds = 1
-              destination = "telchar-builder@builder-primary"
+              ssh_user = "telchar-builder"
               identity_file = "/var/lib/telchar-static-ssh/identity"
               known_hosts_file = "/var/lib/telchar-static-ssh/known-hosts"
 
-              [[backends.static_ssh]]
-              name = "secondary"
-              system = "${pkgs.stdenv.hostPlatform.system}"
+              [backends.ssh.builders]
+              source = "static"
+
+              [backends.ssh.builders.primary]
+              address = "builder-primary"
+              supported_features = ["primary"]
+
+              [backends.ssh.builders.secondary]
+              address = "builder-secondary"
               supported_features = ["secondary"]
-              maximum_concurrent_builds = 1
-              destination = "telchar-builder@builder-secondary"
-              identity_file = "/var/lib/telchar-static-ssh/identity"
-              known_hosts_file = "/var/lib/telchar-static-ssh/known-hosts"
             '';
           };
         builder-primary = staticSshBuilderModule {

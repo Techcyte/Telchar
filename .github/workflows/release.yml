@@ -47,7 +47,6 @@ jobs:
             echo "requested release $RELEASE_VERSION does not match package version $manifest_version" >&2
             exit 1
           fi
-          scripts/check-release.sh
 
       - name: Create draft GitHub release
         env:

@@ -268,6 +268,55 @@ fn adoptable_execution_resumes_only_with_matching_persisted_capabilities() {
 }
 
 #[test]
+fn recovery_adopts_the_rotated_nomad_retry_identity() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    claim(
+        &fixture,
+        "nomad",
+        BackendKind::Nomad,
+        Some("telchar-recovery-job-1"),
+    );
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION)
+        .expect("shared build starts");
+    telchar::persistence::retry_shared_build(
+        fixture.url(),
+        DERIVATION,
+        "telchar-recovery-job-1",
+        "telchar-recovery-job-2",
+        "nomad-infrastructure-lost",
+        &serde_json::json!({"reason": "allocation-missing"}),
+    )
+    .expect("shared build retries");
+    let mut outputs = OutputStore::default();
+    let mut backends = Backends {
+        capabilities: BTreeMap::from([(
+            "nomad".to_owned(),
+            (BackendKind::Nomad, BackendKind::Nomad.capabilities()),
+        )]),
+        ..Backends::default()
+    };
+
+    let outcome = reconcile_active_shared_builds(
+        fixture.url(),
+        Duration::from_secs(3_600),
+        &mut outputs,
+        &mut backends,
+    )
+    .expect("reconciliation succeeds");
+
+    assert_eq!(outcome.monitoring, 1);
+    assert_eq!(backends.adopted, ["telchar-recovery-job-2"]);
+    assert_eq!(
+        telchar::persistence::read_shared_build_attempt(fixture.url(), DERIVATION)
+            .expect("attempt reads")
+            .expect("attempt exists")
+            .ordinal,
+        2
+    );
+}
+
+#[test]
 fn adopted_execution_can_be_reconciled_to_terminal_state() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

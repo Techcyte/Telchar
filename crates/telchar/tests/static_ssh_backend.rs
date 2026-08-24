@@ -63,7 +63,7 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nssh_user = \"telchar-builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()
@@ -115,7 +115,7 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nssh_user = \"telchar-builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()
@@ -227,7 +227,7 @@ impl BlockingTransportFixture {
         fs::write(
             &config_path,
             format!(
-                "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+                "[[backends.ssh]]\nssh_user = \"telchar-builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\n",
                 identity.display(),
                 known_hosts.display(),
                 ssh.display()
@@ -345,7 +345,7 @@ impl RecoveryTransportFixture {
         fs::write(
             &config_path,
             format!(
-                "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+                "[[backends.ssh]]\nssh_user = \"telchar-builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\n",
                 identity.display(),
                 known_hosts.display(),
                 ssh.display()
@@ -406,7 +406,7 @@ fn startup_probe_records_nix_readiness_without_rejecting_degraded_startup() {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"telchar-builder@builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nssh_user = \"telchar-builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()
@@ -416,12 +416,15 @@ fn startup_probe_records_nix_readiness_without_rejecting_degraded_startup() {
     let config = load_config(&config_path, std::convert::identity);
 
     let health = StaticSshHealth::probe_all(config.static_ssh_backends());
-    assert_eq!(health.state("builder"), Some(StaticSshHealthState::Ready));
+    assert_eq!(
+        health.state("pool.builder"),
+        Some(StaticSshHealthState::Ready)
+    );
 
     fs::write(&ssh, "#!/bin/sh\nexit 1\n").expect("failing SSH program writes");
     let health = StaticSshHealth::probe_all(config.static_ssh_backends());
     assert_eq!(
-        health.state("builder"),
+        health.state("pool.builder"),
         Some(StaticSshHealthState::Unavailable)
     );
 

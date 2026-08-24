@@ -692,6 +692,8 @@ fn ssh_command(config: &StaticSshBackendConfig) -> std::process::Command {
         ))
         .arg("-i")
         .arg(config.identity_file())
+        .arg("-p")
+        .arg(config.port().to_string())
         .arg(config.destination())
         .arg("nix-daemon --stdio")
         .stdin(Stdio::piped())
