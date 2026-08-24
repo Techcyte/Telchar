@@ -19,7 +19,7 @@ fn request_attachment_persists_exact_pair_across_restart() {
     let request = telchar::persistence::create_build_request(
         fixture.url(),
         "attachment-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -109,7 +109,7 @@ fn request_attachment_rejects_invalid_references_and_duplicate_without_mutation(
     telchar::persistence::create_build_request(
         fixture.url(),
         "request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -272,7 +272,7 @@ fn request_attachment_detaches_once_without_mutating_references() {
     let request = telchar::persistence::create_build_request(
         fixture.url(),
         "detach-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -356,7 +356,7 @@ fn malformed_request_attachment_rows_fail_closed() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "malformed-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -410,7 +410,7 @@ fn attach_rejects_malformed_referenced_session() {
     telchar::persistence::create_build_request(
         fixture.url(),
         "invalid-reference-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -462,7 +462,7 @@ fn failed_request_attachment_statements_and_commits_do_not_persist_transitions()
     telchar::persistence::create_build_request(
         fixture.url(),
         "failure-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",

@@ -13,7 +13,7 @@ use telchar::build::BuildRequest;
 
 #[test]
 fn loads_classic_stored_derivation_into_build_request() {
-    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/bin/sh",["-c","printf value > \"$out\""],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/bin/sh",["-c","printf value > \"$out\""],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let request = BuildRequest::from_stored_derivation(
         drv_path(),
         derivation,
@@ -36,7 +36,7 @@ fn loads_classic_stored_derivation_into_build_request() {
 
 #[test]
 fn rejects_extended_input_derivation_tuples() {
-    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"],"unknown-extension")],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"],"unknown-extension")],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let error = BuildRequest::from_stored_derivation(
         drv_path(),
         derivation,
@@ -53,7 +53,7 @@ fn rejects_extended_input_derivation_tuples() {
 
 #[test]
 fn stored_derivation_inputs_include_direct_builder_dependencies() {
-    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/nix/store/44444444444444444444444444444444-bash/bin/bash",[],[("builder","/nix/store/44444444444444444444444444444444-bash/bin/bash"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],["/nix/store/22222222222222222222222222222222-input"],"x86_64-linux","/nix/store/44444444444444444444444444444444-bash/bin/bash",[],[("builder","/nix/store/44444444444444444444444444444444-bash/bin/bash"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let request = BuildRequest::from_stored_derivation(
         drv_path(),
         derivation,
@@ -98,7 +98,7 @@ fn loads_registered_derivation_through_store_export() {
         }
     }
 
-    let contents = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let contents = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let nar = regular_nar(contents);
     let mut backend = Backend {
         metadata: RegisteredPathInfo {
@@ -171,7 +171,7 @@ fn loads_selected_input_derivation_outputs() {
     let dependency_path =
         PathBuf::from("/nix/store/33333333333333333333333333333333-dependency.drv");
     let dependency_output = b"/nix/store/55555555555555555555555555555555-dependency";
-    let root = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let root = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let dependency = br#"Derive([("out","/nix/store/55555555555555555555555555555555-dependency","","")],[],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","dependency"),("out","/nix/store/55555555555555555555555555555555-dependency"),("system","x86_64-linux")])"#;
     let root_path = PathBuf::from(std::str::from_utf8(drv_path()).unwrap());
     let mut backend = Backend {
@@ -239,7 +239,7 @@ fn classifies_dependency_realization_failure_without_backend_payload() {
     }
 
     let root_path = PathBuf::from(std::str::from_utf8(drv_path()).unwrap());
-    let root = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-gate-3-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),("system","x86_64-linux")])"#;
+    let root = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let mut backend = Backend {
         nars: BTreeMap::from([(root_path.clone(), regular_nar(root))]),
     };
@@ -338,17 +338,17 @@ fn rejects_features_that_exist_only_as_a_cross_backend_union() {
 }
 
 #[test]
-fn normalizes_gate_3_request_without_backend_objects() {
-    let worker = decode_gate_3_request("x86_64-linux", 0);
+fn normalizes_build_derivation_request_without_backend_objects() {
+    let worker = decode_build_derivation_request("x86_64-linux", 0);
     let backends = backends("x86_64-linux", &[]);
 
-    let request =
-        BuildRequest::from_worker_request(&worker, &backends).expect("Gate 3 request is admitted");
+    let request = BuildRequest::from_worker_request(&worker, &backends)
+        .expect("BuildDerivation request is admitted");
 
     assert!(
         request
             .derivation_path()
-            .ends_with(b"-telchar-gate-3-contract.drv")
+            .ends_with(b"-telchar-build-derivation-contract.drv")
     );
     assert_eq!(request.expected_outputs().len(), 1);
     assert_eq!(request.expected_outputs()[0].0, b"out");
@@ -426,12 +426,16 @@ fn preserves_fixed_output_authority_in_shared_build_identity() {
 #[test]
 fn equivalent_requests_have_the_same_shared_build_key() {
     let backends = backends("x86_64-linux", &[]);
-    let first =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
-            .expect("first request admits");
-    let second =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
-            .expect("second request admits");
+    let first = BuildRequest::from_worker_request(
+        &decode_build_derivation_request("x86_64-linux", 0),
+        &backends,
+    )
+    .expect("first request admits");
+    let second = BuildRequest::from_worker_request(
+        &decode_build_derivation_request("x86_64-linux", 0),
+        &backends,
+    )
+    .expect("second request admits");
 
     assert_eq!(first.shared_build_key(), second.shared_build_key());
     assert_eq!(first.shared_build_key().len(), drv_path().len() + 1 + 64);
@@ -440,9 +444,11 @@ fn equivalent_requests_have_the_same_shared_build_key() {
 #[test]
 fn admitted_semantic_difference_changes_shared_build_key() {
     let backends = backends("x86_64-linux", &[]);
-    let first =
-        BuildRequest::from_worker_request(&decode_gate_3_request("x86_64-linux", 0), &backends)
-            .expect("first request admits");
+    let first = BuildRequest::from_worker_request(
+        &decode_build_derivation_request("x86_64-linux", 0),
+        &backends,
+    )
+    .expect("first request admits");
     let second = BuildRequest::from_worker_request(
         &decode_request_with_command("printf different > $out"),
         &backends,
@@ -454,7 +460,7 @@ fn admitted_semantic_difference_changes_shared_build_key() {
 
 #[test]
 fn rejects_system_mismatch_before_execution() {
-    let worker = decode_gate_3_request("aarch64-linux", 0);
+    let worker = decode_build_derivation_request("aarch64-linux", 0);
     let backends = backends("x86_64-linux", &[]);
 
     let error = BuildRequest::from_worker_request(&worker, &backends)
@@ -519,7 +525,10 @@ fn rejects_non_normal_build_modes() {
     }
 }
 
-fn decode_gate_3_request(system: &str, mode: u64) -> nix_worker_protocol::BuildDerivationRequest {
+fn decode_build_derivation_request(
+    system: &str,
+    mode: u64,
+) -> nix_worker_protocol::BuildDerivationRequest {
     decode_request(system, output_path(), mode)
 }
 
@@ -623,7 +632,10 @@ fn build_request_wire_without_outputs() -> Vec<u8> {
     write_worker_integer(&mut wire, 3);
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
-        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (
+            b"name".as_slice(),
+            b"telchar-build-derivation-contract".as_slice(),
+        ),
         (b"system".as_slice(), b"x86_64-linux".as_slice()),
     ] {
         write_worker_byte_string(&mut wire, key);
@@ -720,7 +732,10 @@ fn build_request_wire_with_output_authority(
     write_worker_integer(&mut wire, 4 + u64::from(required_system_features.is_some()));
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
-        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (
+            b"name".as_slice(),
+            b"telchar-build-derivation-contract".as_slice(),
+        ),
         (b"out".as_slice(), environment_output),
         (b"system".as_slice(), system.as_bytes()),
     ] {
@@ -736,7 +751,7 @@ fn build_request_wire_with_output_authority(
 }
 
 fn drv_path() -> &'static [u8] {
-    b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+    b"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
 }
 
 fn regular_nar(contents: &[u8]) -> Vec<u8> {
@@ -756,5 +771,5 @@ fn regular_nar(contents: &[u8]) -> Vec<u8> {
 }
 
 fn output_path() -> &'static [u8] {
-    b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"
+    b"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
 }

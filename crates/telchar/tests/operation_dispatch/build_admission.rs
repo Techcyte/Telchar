@@ -94,7 +94,7 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -142,7 +142,7 @@ fn derivation_lease_precedes_helper_execution() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             request_path.display(),
             started.display(),
             complete.display(),
@@ -159,7 +159,7 @@ fn derivation_lease_precedes_helper_execution() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -175,7 +175,7 @@ fn derivation_lease_precedes_helper_execution() {
         .connect()
         .query_one(
             "SELECT state, quota_subject FROM shared_builds WHERE derivation_path = $1",
-            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+            &[&"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"],
         )
         .expect("running shared build reads");
     assert_eq!(shared_build.get::<_, String>(0), "running");
@@ -200,7 +200,7 @@ fn derivation_lease_precedes_helper_execution() {
     assert_eq!(lease.get::<_, String>(2), request_id);
     assert_eq!(
         lease.get::<_, String>(3),
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
     );
     assert_eq!(lease.get::<_, String>(4), "derivation");
     assert_eq!(lease.get::<_, String>(5), "active");
@@ -228,7 +228,7 @@ fn derivation_lease_precedes_helper_execution() {
         .connect()
         .query_one(
             "SELECT state FROM shared_builds WHERE derivation_path = $1",
-            &[&"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"],
+            &[&"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"],
         )
         .expect("completed shared build reads");
     assert_eq!(completed_shared_build.get::<_, String>(0), "succeeded");
@@ -255,7 +255,7 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             started.display(),
             complete.display(),
         ),

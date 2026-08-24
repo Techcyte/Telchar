@@ -32,7 +32,7 @@ fn detached_frontend_allows_failed_helper_to_finish_without_dead_transport_write
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -86,7 +86,7 @@ fn detached_frontend_suppresses_output_validation_failure() {
     fs::write(
         &build_helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             started.display(),
             complete.display()
         ),
@@ -111,7 +111,7 @@ fn detached_frontend_suppresses_output_validation_failure() {
     let nix = root.join("nix");
     fs::write(
         &nix,
-        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
     )
     .expect("Nix query helper writes");
     fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).expect("Nix helper executable");
@@ -134,7 +134,7 @@ fn detached_frontend_suppresses_output_validation_failure() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -209,7 +209,7 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '%s\\n' \"$$\" > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf 'detached-build-log\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '%s\\n' \"$$\" > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf 'detached-build-log\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             pid_path.display(),
             started.display(),
             complete.display()
@@ -226,7 +226,7 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -298,13 +298,15 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     let output_lease_id = output_leases[0].get::<_, String>(0);
     assert_eq!(
         output_leases[0].get::<_, String>(1),
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
     );
     assert_eq!(output_leases[0].get::<_, String>(2), "active");
     assert_eq!(
         fs::read_link(fixture.root.join("gc-roots").join(output_lease_id))
             .expect("output root reads"),
-        PathBuf::from("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract")
+        PathBuf::from(
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        )
     );
     assert_eq!(
         database
@@ -319,7 +321,7 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     );
     wait_for_path_state_for(
         fixture.database.url(),
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
         telchar::persistence::SharedBuildState::Succeeded,
         Duration::from_secs(2),
     );

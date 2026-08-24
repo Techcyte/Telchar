@@ -1,4 +1,4 @@
-# Defines gate-three contracts and durable restart reconciliation checks.
+# Defines remote build contracts and durable restart reconciliation checks.
 {
   pkgs,
   system,
@@ -6,7 +6,7 @@
   ...
 }:
 {
-  nixos-gate-3-contract =
+  nixos-remote-build-contract =
     let
       harness = import ../../../tests/nixos/lib.nix {
         inherit pkgs;
@@ -14,20 +14,20 @@
       };
       remoteOnlyDerivation = pkgs.writeText "telchar-remote-only-derivation.nix" ''
         let
-          source = builtins.toFile "telchar-gate-3-input" "telchar-source-input";
+          source = builtins.toFile "telchar-build-input" "telchar-source-input";
           builder = builtins.storePath "${pkgs.runtimeShell}";
         in
         derivation {
-          name = "telchar-gate-3-contract";
+          name = "telchar-build-derivation-contract";
           system = builtins.currentSystem;
           inherit builder;
-          args = [ "-c" "printf 'telchar-gate-3-build-log\\n' >&2; printf telchar-source-input > $out" ];
+          args = [ "-c" "printf 'telchar-build-log\\n' >&2; printf telchar-source-input > $out" ];
           inherit source;
         }
       '';
     in
-    harness.mkGate3Test {
-      name = "telchar-nixos-gate-3-contract";
+    harness.mkRestrictedIngressTest {
+      name = "telchar-nixos-remote-build-contract";
       testScript = ''
         start_all()
         otlp_collector.wait_for_open_port(4317)
@@ -67,11 +67,11 @@
         gateway.succeed("sudo -u postgres psql -d telchar-ingress -v ON_ERROR_STOP=1 -Atc \"SELECT store_path FROM store_leases WHERE owner_kind = 'request' AND purpose = 'input' AND state = 'released'\" > /tmp/telchar-input-leases")
         gateway.succeed("test \"$(wc -l < /tmp/telchar-input-leases)\" -eq 12")
         gateway.succeed("while IFS= read -r released_input; do test -e \"$released_input\"; done < /tmp/telchar-input-leases")
-        gateway.succeed("grep -Eq '/nix/store/[0-9a-df-np-sv-z]{32}-telchar-gate-3-input$' /tmp/telchar-input-leases")
+        gateway.succeed("grep -Eq '/nix/store/[0-9a-df-np-sv-z]{32}-telchar-build-input$' /tmp/telchar-input-leases")
         gateway.succeed("output_roots=$(find /var/lib/telchar-gc-roots -mindepth 1 -maxdepth 1 -type l -lname '" + output_path + "' -print); test \"$(printf '%s\\n' \"$output_roots\" | sed '/^$/d' | wc -l)\" -eq 2")
         gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.query_path_info.completed.*valid=true'")
         gateway.wait_until_succeeds("journalctl -u telchar-daemon.service --no-pager | grep -q 'worker.nar_from_path.completed'")
-        gateway.succeed("grep -q '^authenticated_key=SHA256:' /run/telchar/forced-command-evidence")
+        gateway.succeed("grep -q '^authenticated_key=SHA256:' /tmp/telchar-forced-command-evidence")
       '';
     };
   nixos-restart-reconciliation =

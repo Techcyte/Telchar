@@ -54,7 +54,7 @@
         }
       '';
     in
-    harness.mkLixGate3Test {
+    harness.mkLixRestrictedIngressTest {
       name = "telchar-nixos-lix-local";
       testScript = ''
         start_all()
@@ -125,7 +125,7 @@
         }
       '';
     in
-    harness.mkGate3Test {
+    harness.mkRestrictedIngressTest {
       name = "telchar-nixos-fixed-output-local";
       testScript = ''
         start_all()

@@ -19,7 +19,7 @@ fn create_and_read_build_request_persist_immutable_state() {
     let created = telchar::persistence::create_build_request(
         fixture.url(),
         "request-1",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "release-engineering",
         "build-farm",
@@ -33,7 +33,7 @@ fn create_and_read_build_request_persist_immutable_state() {
     assert_eq!(read.request_id, "request-1");
     assert_eq!(
         read.derivation_path,
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv"
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv"
     );
     assert_eq!(read.system, "x86_64-linux");
     assert_eq!(read.audit_subject, "release-engineering");
@@ -76,7 +76,7 @@ fn build_request_operation_rejects_unbounded_subjects_before_connection() {
 fn build_request_state_rejects_invalid_inputs_and_conflicts_without_mutation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
-    let path = "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv";
+    let path = "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv";
     let maximum_path = format!(
         "/{}",
         "x".repeat(nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES - 1)
@@ -169,7 +169,7 @@ fn build_request_state_survives_restart_and_malformed_rows_fail_closed() {
     let created = telchar::persistence::create_build_request(
         fixture.url(),
         "restart-request",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -212,7 +212,7 @@ fn failed_build_request_statement_and_commit_do_not_persist_rows() {
     let error = telchar::persistence::create_build_request(
         fixture.url(),
         "failed-statement",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",
@@ -239,7 +239,7 @@ fn failed_build_request_statement_and_commit_do_not_persist_rows() {
     let error = telchar::persistence::create_build_request(
         fixture.url(),
         "failed-commit",
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract.drv",
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
         "test-audit",
         "test-quota",

@@ -827,7 +827,7 @@ rec {
       };
     };
 
-  mkLixGate3Test =
+  mkLixRestrictedIngressTest =
     {
       name,
       testScript ? "",
@@ -841,7 +841,7 @@ rec {
       };
     };
 
-  mkGate3Test =
+  mkRestrictedIngressTest =
     {
       name,
       testScript ? "",

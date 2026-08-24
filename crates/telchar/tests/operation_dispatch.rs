@@ -181,7 +181,7 @@ impl FrontendFixture {
             let nix = root.join("nix");
             fs::write(
                 &nix,
-                "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+                "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-telchar-build-derivation-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
             )
             .expect("Nix query helper writes");
             fs::set_permissions(&nix, fs::Permissions::from_mode(0o700))
@@ -414,7 +414,7 @@ fn assert_active_derivation_lease(database: &PostgresFixture, request_id: &str) 
     assert_eq!(lease.get::<_, String>(1), request_id);
     assert_eq!(
         lease.get::<_, String>(2),
-        "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
     );
     assert_eq!(lease.get::<_, String>(3), "derivation");
     assert_eq!(lease.get::<_, String>(4), "active");
@@ -493,7 +493,7 @@ fn spawn_closure_daemon(
         assert_eq!(read_integer(&mut stream), 11);
         assert_eq!(
             read_string(&mut stream),
-            "/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv"
+            "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
         );
         write_integer(&mut stream, STDERR_LAST);
         write_integer(&mut stream, 1);
@@ -729,11 +729,12 @@ fn write_add_multiple_to_store_metadata(output: &mut impl Write, nar_size: u64) 
 
 fn write_input_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
     let source = b"/nix/store/22222222222222222222222222222222-telchar-input";
-    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
+    let store_output =
+        b"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract";
     write_integer(output, 36);
     write_string(
         output,
-        b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        b"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
     );
     write_integer(output, 1);
     write_string(output, b"out");
@@ -750,7 +751,10 @@ fn write_input_build_derivation(output: &mut impl Write, system: &str, mode: u64
     write_integer(output, 4);
     for (key, value) in [
         (b"builder".as_slice(), b"/bin/sh".as_slice()),
-        (b"name".as_slice(), b"telchar-gate-3-contract".as_slice()),
+        (
+            b"name".as_slice(),
+            b"telchar-build-derivation-contract".as_slice(),
+        ),
         (b"out".as_slice(), store_output.as_slice()),
         (b"system".as_slice(), system.as_bytes()),
     ] {
@@ -760,10 +764,10 @@ fn write_input_build_derivation(output: &mut impl Write, system: &str, mode: u64
     write_integer(output, mode);
 }
 
-fn write_gate_3_build_derivation(output: &mut impl Write, system: &str, mode: u64) {
+fn write_build_derivation_request(output: &mut impl Write, system: &str, mode: u64) {
     write_build_derivation(
         output,
-        b"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv",
+        b"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
         system,
         mode,
     );
@@ -775,7 +779,8 @@ fn write_build_derivation(
     system: &str,
     mode: u64,
 ) {
-    let store_output = b"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract";
+    let store_output =
+        b"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract";
     write_integer(output, 36);
     write_string(output, derivation_path);
     write_integer(output, 1);

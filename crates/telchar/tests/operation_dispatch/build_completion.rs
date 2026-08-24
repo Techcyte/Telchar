@@ -17,7 +17,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             request_path.display(),
             started.display(),
             complete.display(),
@@ -34,7 +34,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -114,14 +114,16 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let output_lease_id = output_leases[0].get::<_, String>(0);
     assert_eq!(
         output_leases[0].get::<_, String>(1),
-        "/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"
+        "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
     );
     assert_eq!(output_leases[0].get::<_, String>(2), "output");
     assert_eq!(output_leases[0].get::<_, String>(3), "active");
     assert_eq!(
         fs::read_link(fixture.root.join("gc-roots").join(output_lease_id))
             .expect("output root reads"),
-        PathBuf::from("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract")
+        PathBuf::from(
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        )
     );
     assert_eq!(
         database
@@ -168,7 +170,7 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -227,7 +229,9 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
     assert!(!stderr.contains(request_id), "{stderr}");
     assert!(!stderr.contains(&session_id), "{stderr}");
     assert!(
-        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        !stderr.contains(
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        ),
         "{stderr}"
     );
     fs::remove_dir_all(root).expect("fixture cleans");
@@ -244,7 +248,7 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
     let build_helper = root.join("build-helper");
     fs::write(
         &build_helper,
-        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\"]]}\\n'\n",
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}\\n'\n",
     )
     .expect("build helper writes");
     fs::set_permissions(&build_helper, fs::Permissions::from_mode(0o700))
@@ -266,7 +270,7 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
     let nix = root.join("nix");
     fs::write(
         &nix,
-        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-gate-3-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-gate-3-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
+        "#!/bin/sh\nset -eu\nprintf '{\"/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv\":{\"narHash\":\"sha256-bCvi8SoWhgXry6N4IobDjq8/XXh7eouySlQNImf/aOE=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null},\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\":{\"narHash\":\"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"narSize\":136,\"references\":[],\"deriver\":null,\"ca\":null}}\\n'\n",
     )
     .expect("Nix query helper writes");
     fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).expect("Nix helper executable");
@@ -289,7 +293,7 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
@@ -347,7 +351,9 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
         "{stderr}"
     );
     assert!(
-        !stderr.contains("/nix/store/11111111111111111111111111111111-telchar-gate-3-contract"),
+        !stderr.contains(
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        ),
         "{stderr}"
     );
     fs::remove_dir_all(root).expect("fixture cleans");

@@ -2006,6 +2006,17 @@ fn execution_timeout_phase(error: &io::Error) -> Option<&'static str> {
     }
 }
 
+fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result<()> {
+    tracing::error!(
+        event = "worker.operation.rejected",
+        rejection,
+        reason = message,
+        "worker operation rejected"
+    );
+    nix_worker_protocol::write_worker_error(output, message)?;
+    output.flush()
+}
+
 #[cfg(test)]
 mod timeout_diagnostic_tests {
     use super::*;
@@ -2033,15 +2044,4 @@ mod timeout_diagnostic_tests {
             assert_eq!(execution_timeout_phase(&error), Some(phase));
         }
     }
-}
-
-fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result<()> {
-    tracing::error!(
-        event = "worker.operation.rejected",
-        rejection,
-        reason = message,
-        "worker operation rejected"
-    );
-    nix_worker_protocol::write_worker_error(output, message)?;
-    output.flush()
 }

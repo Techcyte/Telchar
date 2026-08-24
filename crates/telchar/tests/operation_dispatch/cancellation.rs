@@ -30,7 +30,7 @@ fn disconnected_frontend_cancels_and_reaps_silent_build_helper() {
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
-    write_gate_3_build_derivation(&mut input, "x86_64-linux", 0);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !pid_path.exists() {
