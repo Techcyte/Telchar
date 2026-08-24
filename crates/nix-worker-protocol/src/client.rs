@@ -691,13 +691,20 @@ fn read_build_operation_frames(
                 discard_activity_fields(input)?;
             }
             STDERR_ERROR => {
-                if version >= WorkerVersion::new(1, 26) {
-                    discard_worker_error(input, version)?;
+                let diagnostic = if version >= WorkerVersion::new(1, 26) {
+                    read_worker_error_message(input, version)?
                 } else {
-                    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+                    let message = read_worker_byte_string_from(
+                        input,
+                        MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES,
+                    )?;
                     read_worker_integer_from(input)?;
-                }
-                return Err(io::Error::other("Nix daemon BuildDerivation was rejected"));
+                    message
+                };
+                let diagnostic = String::from_utf8_lossy(&diagnostic);
+                return Err(io::Error::other(format!(
+                    "Nix daemon BuildDerivation was rejected: {diagnostic}"
+                )));
             }
             STDERR_LAST => return Ok(()),
             _ => Err(io::Error::other(
@@ -1060,11 +1067,11 @@ fn discard_activity_fields(input: &mut impl Read) -> io::Result<()> {
     Ok(())
 }
 
-fn discard_worker_error(input: &mut impl Read, version: WorkerVersion) -> io::Result<()> {
+fn read_worker_error_message(input: &mut impl Read, version: WorkerVersion) -> io::Result<Vec<u8>> {
     discard_worker_byte_string(input, 256)?;
     read_worker_integer_from(input)?;
     discard_worker_byte_string(input, 256)?;
-    discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
+    let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     read_worker_integer_from(input)?;
     if version >= WorkerVersion::new(1, 26) {
         let trace_count = usize::try_from(read_worker_integer_from(input)?)
@@ -1077,7 +1084,11 @@ fn discard_worker_error(input: &mut impl Read, version: WorkerVersion) -> io::Re
             discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
         }
     }
-    Ok(())
+    Ok(message)
+}
+
+fn discard_worker_error(input: &mut impl Read, version: WorkerVersion) -> io::Result<()> {
+    read_worker_error_message(input, version).map(|_| ())
 }
 
 fn discard_worker_byte_string(input: &mut impl Read, maximum: usize) -> io::Result<()> {
