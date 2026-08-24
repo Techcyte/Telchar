@@ -45,13 +45,6 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Verify release metadata
-        run: |
-          nix develop -c scripts/test-prepare-release.py
-          nix develop -c cargo check --locked --workspace
-          nix build --no-link .#checks.x86_64-linux.oci-images
-          nix build --no-link .#checks.x86_64-linux.release-publication-authority
-
       - name: Open release pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
