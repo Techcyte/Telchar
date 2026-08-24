@@ -3,6 +3,114 @@
 use super::*;
 
 #[test]
+fn loads_multiple_named_ssh_pools_with_cascading_static_host_overrides() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("cascading-static-ssh");
+    let identity_file = root.join("builder-key");
+    let known_hosts_file = root.join("known-hosts");
+    let ssh_program = root.join("ssh");
+    fs::write(&identity_file, "private-key").expect("identity writes");
+    fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
+        .expect("identity permissions set");
+    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n")
+        .expect("known hosts writes");
+    fs::write(&ssh_program, "#!/bin/sh\nexit 1\n").expect("SSH program writes");
+    fs::set_permissions(&ssh_program, fs::Permissions::from_mode(0o755))
+        .expect("SSH program permissions set");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[[backends.ssh]]
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+ssh_user = "telchar"
+identity_file = "{}"
+known_hosts_file = "{}"
+ssh_program = "{}"
+
+[backends.ssh.consul]
+source = "static"
+supported_features = ["kvm"]
+
+[backends.ssh.consul.host_1]
+address = "builder-1.example"
+
+[backends.ssh.consul.host_2]
+address = "builder-2.example"
+port = 2222
+system = "aarch64-linux"
+maximum_concurrent_builds = 4
+
+[backends.ssh.other]
+source = "static"
+
+[backends.ssh.other.host]
+address = "builder-3.example"
+"#,
+            identity_file.display(),
+            known_hosts_file.display(),
+            ssh_program.display(),
+        ),
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    let backends = config.static_ssh_backends();
+    assert_eq!(backends.len(), 3);
+    assert_eq!(backends[0].target().name(), "consul.host_1");
+    assert_eq!(backends[0].target().system(), "x86_64-linux");
+    assert_eq!(backends[0].target().features(), ["kvm"]);
+    assert_eq!(backends[0].destination(), "telchar@builder-1.example");
+    assert_eq!(backends[0].maximum_concurrent_builds(), 1);
+    assert_eq!(backends[1].target().name(), "consul.host_2");
+    assert_eq!(backends[1].target().system(), "aarch64-linux");
+    assert_eq!(backends[1].port(), 2222);
+    assert_eq!(backends[1].maximum_concurrent_builds(), 4);
+    assert_eq!(backends[2].target().name(), "other.host");
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn rejects_ssh_pool_that_mixes_consul_source_with_static_hosts() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("mixed-ssh-source");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[[backends.ssh]]
+
+[backends.ssh.any_name]
+source = "consul"
+endpoint = "http://127.0.0.1:8500"
+service = "telchar-ssh-builder"
+
+[backends.ssh.any_name.host_1]
+address = "builder.example"
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("mixed inventory rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

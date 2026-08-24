@@ -101,9 +101,7 @@ pub(super) struct BackendConfig {
     pub(super) local: Option<RawLocalBackendConfig>,
     pub(super) nomad_callback: Option<RawNomadCallbackConfig>,
     #[serde(default)]
-    pub(super) static_ssh: Vec<RawStaticSshBackendConfig>,
-    #[serde(default)]
-    pub(super) static_ssh_consul: Vec<RawStaticSshConsulConfig>,
+    pub(super) ssh: Vec<RawSshConfig>,
     #[serde(default)]
     pub(super) nomad: Vec<RawNomadBackendConfig>,
 }
@@ -118,45 +116,62 @@ pub(super) struct RawLocalBackendConfig {
     pub(super) maximum_concurrent_builds: usize,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawStaticSshBackendConfig {
-    pub(super) name: String,
-    pub(super) system: String,
-    #[serde(default)]
-    pub(super) supported_features: Vec<String>,
-    pub(super) maximum_concurrent_builds: usize,
+#[derive(Default, Deserialize)]
+pub(super) struct RawSshConfig {
+    pub(super) system: Option<String>,
+    pub(super) supported_features: Option<Vec<String>>,
+    pub(super) maximum_concurrent_builds: Option<usize>,
     pub(super) ready_check_interval_seconds: Option<u64>,
     pub(super) unavailable_check_interval_seconds: Option<u64>,
     pub(super) check_timeout_seconds: Option<u64>,
-    pub(super) destination: String,
-    pub(super) identity_file: PathBuf,
-    pub(super) known_hosts_file: PathBuf,
+    pub(super) ssh_user: Option<String>,
+    pub(super) identity_file: Option<PathBuf>,
+    pub(super) known_hosts_file: Option<PathBuf>,
     pub(super) ssh_program: Option<PathBuf>,
+    #[serde(flatten)]
+    pub(super) backends: BTreeMap<String, RawSshBackendConfig>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RawSshBackendConfig {
+    pub(super) source: String,
+    pub(super) system: Option<String>,
+    pub(super) supported_features: Option<Vec<String>>,
+    pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) ready_check_interval_seconds: Option<u64>,
+    pub(super) unavailable_check_interval_seconds: Option<u64>,
+    pub(super) check_timeout_seconds: Option<u64>,
+    pub(super) ssh_user: Option<String>,
+    pub(super) identity_file: Option<PathBuf>,
+    pub(super) known_hosts_file: Option<PathBuf>,
+    pub(super) ssh_program: Option<PathBuf>,
+    pub(super) endpoint: Option<String>,
+    pub(super) service: Option<String>,
+    pub(super) datacenter: Option<String>,
+    pub(super) required_tags: Option<Vec<String>>,
+    pub(super) passing_only: Option<bool>,
+    pub(super) refresh_interval_seconds: Option<u64>,
+    pub(super) request_timeout_seconds: Option<u64>,
+    pub(super) token_file: Option<PathBuf>,
+    pub(super) ca_certificate_file: Option<PathBuf>,
+    #[serde(flatten)]
+    pub(super) hosts: BTreeMap<String, RawSshHostConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RawStaticSshConsulConfig {
-    pub(super) name: String,
-    pub(super) system: String,
-    #[serde(default)]
-    pub(super) supported_features: Vec<String>,
-    pub(super) maximum_concurrent_builds_per_instance: usize,
-    pub(super) endpoint: String,
-    pub(super) service: String,
-    pub(super) datacenter: Option<String>,
-    #[serde(default)]
-    pub(super) required_tags: Vec<String>,
-    #[serde(default = "default_true")]
-    pub(super) passing_only: bool,
-    pub(super) refresh_interval_seconds: u64,
-    pub(super) request_timeout_seconds: u64,
-    pub(super) token_file: Option<PathBuf>,
-    pub(super) ca_certificate_file: Option<PathBuf>,
-    pub(super) ssh_user: String,
-    pub(super) identity_file: PathBuf,
-    pub(super) known_hosts_file: PathBuf,
+pub(super) struct RawSshHostConfig {
+    pub(super) address: String,
+    pub(super) port: Option<u16>,
+    pub(super) system: Option<String>,
+    pub(super) supported_features: Option<Vec<String>>,
+    pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) ready_check_interval_seconds: Option<u64>,
+    pub(super) unavailable_check_interval_seconds: Option<u64>,
+    pub(super) check_timeout_seconds: Option<u64>,
+    pub(super) ssh_user: Option<String>,
+    pub(super) identity_file: Option<PathBuf>,
+    pub(super) known_hosts_file: Option<PathBuf>,
     pub(super) ssh_program: Option<PathBuf>,
 }
 
