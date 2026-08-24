@@ -27,33 +27,30 @@ fn discovery_config(
         &config_path,
         format!(
             r#"
-[[backends.static_ssh]]
-name = "manual-builder"
+[[backends.ssh]]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
-destination = "telchar@manual.example"
+ssh_user = "telchar"
 identity_file = "{}"
 known_hosts_file = "{}"
 ssh_program = "{}"
 
-[[backends.static_ssh_consul]]
-name = "spot"
-system = "x86_64-linux"
+[backends.ssh.manual]
+source = "static"
+
+[backends.ssh.manual.builder]
+address = "manual.example"
+
+[backends.ssh.spot]
+source = "consul"
 supported_features = ["ephemeral"]
-maximum_concurrent_builds_per_instance = 2
+maximum_concurrent_builds = 2
 endpoint = "{endpoint}"
 service = "builder"
 required_tags = ["ephemeral"]
 refresh_interval_seconds = 15
 request_timeout_seconds = 5
-ssh_user = "telchar"
-identity_file = "{}"
-known_hosts_file = "{}"
-ssh_program = "{}"
 "#,
-            identity.display(),
-            known_hosts.display(),
-            ssh.display(),
             identity.display(),
             known_hosts.display(),
             ssh.display(),
@@ -95,7 +92,7 @@ fn merges_discovered_members_with_manual_inventory_without_replacing_it() {
     assert!(
         merged
             .iter()
-            .any(|backend| backend.target().name() == "manual-builder")
+            .any(|backend| backend.target().name() == "manual.builder")
     );
     assert!(
         merged
@@ -125,7 +122,7 @@ fn publishes_merged_inventory_as_a_reloadable_backend_generation() {
         telchar::backend::static_ssh::StaticSshHealth::from_states(
             config.static_ssh_backends(),
             [(
-                "manual-builder",
+                "manual.builder",
                 telchar::backend::static_ssh::StaticSshHealthState::Ready,
             )],
         ),
@@ -147,7 +144,7 @@ fn publishes_merged_inventory_as_a_reloadable_backend_generation() {
     assert!(
         snapshot
             .targets()
-            .any(|target| target.name() == "manual-builder")
+            .any(|target| target.name() == "manual.builder")
     );
     assert!(
         snapshot
@@ -323,6 +320,38 @@ fn map_fixture_members(
         }]),
     )
     .expect("fixture members map")
+}
+
+#[test]
+fn service_metadata_overrides_only_approved_backend_properties() {
+    let root = tempfile::tempdir().expect("fixture creates");
+    let config = discovery_config(root.path(), "http://127.0.0.1:8500");
+    let response = serde_json::json!([{
+        "Node": {"Node": "node-a", "Address": "10.0.0.1", "Meta": {
+            "telchar_system": "ignored-node-system"
+        }},
+        "Service": {
+            "ID": "builder-a", "Service": "builder", "Tags": ["ephemeral"],
+            "Address": "10.0.1.1", "Port": 22,
+            "Meta": {
+                "telchar_system": "aarch64-linux",
+                "telchar_supported_features": "kvm,big-parallel",
+                "telchar_mandatory_features": "kvm",
+                "telchar_maximum_concurrent_builds": "4",
+                "telchar_ssh_user": "attacker"
+            }
+        },
+        "Checks": [{"Status": "passing"}]
+    }]);
+
+    let backends =
+        telchar::service::static_ssh_consul::map_members(&config, &response).expect("members map");
+
+    assert_eq!(backends[0].target().system(), "aarch64-linux");
+    assert_eq!(backends[0].target().features(), ["kvm", "big-parallel"]);
+    assert_eq!(backends[0].target().mandatory_features(), ["kvm"]);
+    assert_eq!(backends[0].maximum_concurrent_builds(), 4);
+    assert_eq!(backends[0].destination(), "telchar@10.0.1.1");
 }
 
 #[test]

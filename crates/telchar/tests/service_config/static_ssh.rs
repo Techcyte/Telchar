@@ -13,8 +13,7 @@ fn loads_multiple_named_ssh_pools_with_cascading_static_host_overrides() {
     fs::write(&identity_file, "private-key").expect("identity writes");
     fs::set_permissions(&identity_file, fs::Permissions::from_mode(0o600))
         .expect("identity permissions set");
-    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n")
-        .expect("known hosts writes");
+    fs::write(&known_hosts_file, "builder.example ssh-ed25519 AAAA\n").expect("known hosts writes");
     fs::write(&ssh_program, "#!/bin/sh\nexit 1\n").expect("SSH program writes");
     fs::set_permissions(&ssh_program, fs::Permissions::from_mode(0o755))
         .expect("SSH program permissions set");
@@ -130,17 +129,22 @@ fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
         &config_path,
         format!(
             r#"
-[[backends.static_ssh]]
-name = "darwin-builder"
+[[backends.ssh]]
 system = "aarch64-darwin"
 supported_features = ["apple-virt", "big-parallel"]
 maximum_concurrent_builds = 4
 ready_check_interval_seconds = 600
 unavailable_check_interval_seconds = 30
-destination = "telchar-builder@builder.example"
+ssh_user = "telchar-builder"
 identity_file = "{}"
 known_hosts_file = "{}"
 ssh_program = "{}"
+
+[backends.ssh.darwin]
+source = "static"
+
+[backends.ssh.darwin.builder]
+address = "builder.example"
 "#,
             identity_file.display(),
             known_hosts_file.display(),
@@ -156,7 +160,7 @@ ssh_program = "{}"
         .first()
         .expect("static SSH backend exists");
 
-    assert_eq!(backend.target().name(), "darwin-builder");
+    assert_eq!(backend.target().name(), "darwin.builder");
     assert_eq!(backend.target().kind(), BackendKind::StaticSsh);
     assert_eq!(backend.target().system(), "aarch64-darwin");
     assert_eq!(backend.target().features(), ["apple-virt", "big-parallel"]);
@@ -190,7 +194,7 @@ fn reload_accepts_static_ssh_inventory_additions_and_removals() {
     let config_path = root.join("telchar.toml");
     let backend = |name: &str, capacity: usize| {
         format!(
-            "[[backends.static_ssh]]\nname = \"{name}\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = {capacity}\ndestination = \"{name}\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nmaximum_concurrent_builds = {capacity}\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.{name}]\naddress = \"{name}\"\n",
             identity_file.display(),
             known_hosts_file.display(),
             ssh_program.display()
@@ -255,7 +259,7 @@ fn static_ssh_backend_defaults_health_check_intervals() {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"builder\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\ndestination = \"builder.example\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.builder]\naddress = \"builder.example\"\n",
             identity_file.display(),
             known_hosts_file.display(),
             ssh_program.display()
@@ -288,12 +292,15 @@ fn static_ssh_backend_rejects_unpinned_or_unsafe_credentials() {
         &config_path,
         format!(
             r#"
-[[backends.static_ssh]]
-name = "builder"
-system = "x86_64-linux"
-destination = "builder.example"
+[[backends.ssh]]
 identity_file = "{}"
 known_hosts_file = "relative-known-hosts"
+
+[backends.ssh.pool]
+source = "static"
+
+[backends.ssh.pool.builder]
+address = "builder.example"
 "#,
             identity_file.display()
         ),
@@ -326,12 +333,15 @@ fn static_ssh_backend_rejects_duplicate_names_and_missing_host_keys() {
     let config_path = root.join("telchar.toml");
     let backend = format!(
         r#"
-[[backends.static_ssh]]
-name = "builder"
-system = "x86_64-linux"
-destination = "builder.example"
+[[backends.ssh]]
 identity_file = "{}"
 known_hosts_file = "{}"
+
+[backends.ssh.pool]
+source = "static"
+
+[backends.ssh.pool.builder]
+address = "builder.example"
 "#,
         identity_file.display(),
         known_hosts_file.display()

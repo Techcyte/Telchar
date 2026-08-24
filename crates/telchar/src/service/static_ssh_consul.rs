@@ -1,6 +1,6 @@
 //! Maps validated Consul service membership into ordinary static SSH backend entries.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, RwLock};
 
@@ -40,6 +40,8 @@ struct HealthService {
     address: String,
     #[serde(rename = "Port")]
     port: u16,
+    #[serde(rename = "Meta", default)]
+    metadata: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -314,15 +316,37 @@ pub fn map_members(
         if !names.insert(name.clone()) {
             return Err(invalid("Consul SSH membership name is ambiguous"));
         }
+        let system = entry
+            .service
+            .metadata
+            .get("telchar_system")
+            .map(String::as_str)
+            .unwrap_or_else(|| config.system());
+        let supported_features = metadata_list(
+            &entry.service.metadata,
+            "telchar_supported_features",
+            config.supported_features(),
+        )?;
+        let mandatory_features =
+            metadata_list(&entry.service.metadata, "telchar_mandatory_features", &[])?;
+        let maximum_concurrent_builds = entry
+            .service
+            .metadata
+            .get("telchar_maximum_concurrent_builds")
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| (1..=65_536).contains(value))
+                    .ok_or_else(|| invalid("Consul SSH membership metadata is invalid"))
+            })
+            .transpose()?
+            .unwrap_or_else(|| config.maximum_concurrent_builds_per_instance());
         let destination = format!("{}@{address}", config.ssh_user());
         backends.push(StaticSshBackendConfig::discovered(
-            BackendTarget::new(
-                &name,
-                BackendKind::StaticSsh,
-                config.system(),
-                config.supported_features(),
-            )?,
-            config.maximum_concurrent_builds_per_instance(),
+            BackendTarget::new(&name, BackendKind::StaticSsh, system, &supported_features)?
+                .with_mandatory_features(&mandatory_features)?,
+            maximum_concurrent_builds,
             destination,
             entry.service.port,
             config.identity_file().to_owned(),
@@ -332,6 +356,28 @@ pub fn map_members(
     }
     backends.sort_by(|left, right| left.target().name().cmp(right.target().name()));
     Ok(backends)
+}
+
+fn metadata_list(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+    default: &[String],
+) -> io::Result<Vec<String>> {
+    let Some(value) = metadata.get(key) else {
+        return Ok(default.to_vec());
+    };
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if values.len() > 64
+        || values
+            .iter()
+            .any(|value| !valid_identity(value) || value.len() > 64)
+    {
+        return Err(invalid("Consul SSH membership metadata is invalid"));
+    }
+    Ok(values.into_iter().map(str::to_owned).collect())
 }
 
 fn valid_identity(value: &str) -> bool {

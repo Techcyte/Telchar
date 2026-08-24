@@ -415,8 +415,7 @@ impl ServiceConfig {
             return Err(invalid("backend permit wait is invalid"));
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
-        let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
-        let static_ssh_consul = validate_static_ssh_consul(backends.static_ssh_consul)?;
+        let (static_ssh_backends, static_ssh_consul) = validate_ssh_backends(backends.ssh)?;
         let nomad_callback = match (backends.nomad.is_empty(), backends.nomad_callback) {
             (true, None) => None,
             (true, Some(_)) => {

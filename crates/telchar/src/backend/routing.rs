@@ -76,7 +76,7 @@ impl ConfiguredBackends {
         static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
         schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     ) -> io::Result<Self> {
-        Self::with_inventory_and_health(
+        Self::with_static_ssh_inventory_and_health(
             config,
             config.static_ssh_backends().to_vec(),
             gateway_store,
@@ -99,7 +99,7 @@ impl ConfiguredBackends {
                 .map(|backend| backend.target().name().to_owned())
                 .collect(),
         ));
-        Self::with_inventory_and_health(
+        Self::with_static_ssh_inventory_and_health(
             config,
             static_ssh,
             gateway_store,
@@ -109,7 +109,7 @@ impl ConfiguredBackends {
         )
     }
 
-    fn with_inventory_and_health(
+    pub(crate) fn with_static_ssh_inventory_and_health(
         config: &ServiceConfig,
         static_ssh: Vec<StaticSshBackendConfig>,
         gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
