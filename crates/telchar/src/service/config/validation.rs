@@ -164,7 +164,9 @@ pub(super) fn validate_ssh_backends(
                 .ssh_program
                 .clone()
                 .or_else(|| group.ssh_program.clone())
-                .unwrap_or_else(|| PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM)));
+                .unwrap_or_else(|| {
+                    PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM))
+                });
             match pool.source.as_str() {
                 "static" => {
                     if pool.hosts.is_empty() || pool.endpoint.is_some() || pool.service.is_some() {
@@ -173,14 +175,12 @@ pub(super) fn validate_ssh_backends(
                     for (host_name, host) in pool.hosts {
                         let backend_name = format!("{name}.{host_name}");
                         let host_system = host.system.unwrap_or_else(|| system.clone());
-                        let host_features = host
-                            .supported_features
-                            .unwrap_or_else(|| features.clone());
+                        let host_features =
+                            host.supported_features.unwrap_or_else(|| features.clone());
                         let host_capacity = host.maximum_concurrent_builds.unwrap_or(capacity);
                         let host_user = host.ssh_user.unwrap_or_else(|| ssh_user.clone());
-                        let host_identity = host
-                            .identity_file
-                            .unwrap_or_else(|| identity_file.clone());
+                        let host_identity =
+                            host.identity_file.unwrap_or_else(|| identity_file.clone());
                         let host_known_hosts = host
                             .known_hosts_file
                             .unwrap_or_else(|| known_hosts_file.clone());

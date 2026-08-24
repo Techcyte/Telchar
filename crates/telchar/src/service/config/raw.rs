@@ -175,10 +175,6 @@ pub(super) struct RawSshHostConfig {
     pub(super) ssh_program: Option<PathBuf>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadBackendConfig {

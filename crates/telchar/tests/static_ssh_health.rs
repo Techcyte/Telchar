@@ -20,18 +20,21 @@ fn immediate_probe_classifies_ready_and_unavailable_hosts() {
     let health =
         StaticSshHealth::probe_all(&[ready.config, unavailable.config, unreachable.config]);
 
-    assert_eq!(health.state("ready"), Some(StaticSshHealthState::Ready));
     assert_eq!(
-        health.state("unavailable"),
+        health.state("pool.ready"),
+        Some(StaticSshHealthState::Ready)
+    );
+    assert_eq!(
+        health.state("pool.unavailable"),
         Some(StaticSshHealthState::Unavailable)
     );
     assert_eq!(
-        health.state("unreachable"),
+        health.state("pool.unreachable"),
         Some(StaticSshHealthState::Unavailable)
     );
-    assert!(health.is_ready("ready"));
-    assert!(!health.is_ready("unavailable"));
-    assert!(!health.is_ready("unreachable"));
+    assert!(health.is_ready("pool.ready"));
+    assert!(!health.is_ready("pool.unavailable"));
+    assert!(!health.is_ready("pool.unreachable"));
 }
 
 #[test]
@@ -41,7 +44,7 @@ fn periodic_checks_use_state_specific_intervals_and_restore_readiness() {
     let config = fixture.config.clone();
     let health = StaticSshHealth::from_states(
         std::slice::from_ref(&config),
-        [("builder", StaticSshHealthState::Unavailable)],
+        [("pool.builder", StaticSshHealthState::Unavailable)],
     );
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&calls);
@@ -66,7 +69,7 @@ fn periodic_checks_use_state_specific_intervals_and_restore_readiness() {
         health.check_due_with(&mut probe, started + Duration::from_secs(4)),
         1
     );
-    assert!(health.is_ready("builder"));
+    assert!(health.is_ready("pool.builder"));
     assert_eq!(
         health.check_due_with(&mut probe, started + Duration::from_secs(6)),
         0,
@@ -100,7 +103,7 @@ fn fixture(name: &str, script: &str) -> Fixture {
     fs::write(
         &config_path,
         format!(
-            "[[backends.static_ssh]]\nname = \"{name}\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\nready_check_interval_seconds = 300\nunavailable_check_interval_seconds = 1\ncheck_timeout_seconds = 1\ndestination = \"builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n",
+            "[[backends.ssh]]\nready_check_interval_seconds = 300\nunavailable_check_interval_seconds = 1\ncheck_timeout_seconds = 1\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.{name}]\naddress = \"builder\"\n",
             identity.display(),
             known_hosts.display(),
             ssh.display()

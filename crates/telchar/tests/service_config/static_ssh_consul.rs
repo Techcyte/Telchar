@@ -30,11 +30,17 @@ fn loads_optional_consul_static_ssh_discovery_without_static_inventory() {
         &config_path,
         format!(
             r#"
-[[backends.static_ssh_consul]]
-name = "spot-builders"
+[[backends.ssh]]
 system = "x86_64-linux"
 supported_features = ["ephemeral"]
-maximum_concurrent_builds_per_instance = 2
+maximum_concurrent_builds = 2
+ssh_user = "telchar"
+identity_file = "{}"
+known_hosts_file = "{}"
+ssh_program = "{}"
+
+[backends.ssh.spot-builders]
+source = "consul"
 endpoint = "https://consul.example:8501"
 service = "telchar-ssh-builder"
 datacenter = "dc1"
@@ -43,16 +49,12 @@ refresh_interval_seconds = 15
 request_timeout_seconds = 5
 token_file = "{}"
 ca_certificate_file = "{}"
-ssh_user = "telchar"
-identity_file = "{}"
-known_hosts_file = "{}"
-ssh_program = "{}"
 "#,
-            token_file.display(),
-            ca_file.display(),
             identity_file.display(),
             known_hosts_file.display(),
             ssh_program.display(),
+            token_file.display(),
+            ca_file.display(),
         ),
     )
     .expect("configuration writes");
