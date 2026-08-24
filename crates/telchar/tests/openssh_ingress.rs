@@ -602,6 +602,11 @@ fn unused_tcp_port() -> u16 {
         .port()
 }
 
+#[test]
+fn fixture_suffixes_differ_when_clock_values_match() {
+    assert_ne!(fixture_suffix(1), fixture_suffix(1));
+}
+
 fn unique_suffix() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
