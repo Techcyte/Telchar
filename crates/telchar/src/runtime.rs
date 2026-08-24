@@ -707,6 +707,12 @@ fn run_daemon() -> io::Result<()> {
             let result = connection
                 .receive_envelope(envelope_timeout)
                 .and_then(|connection| {
+                    let session_id = connection.envelope().session_id.clone();
+                    let session = tracing::info_span!(
+                        "ipc.daemon.accepted_session",
+                        session_id = %session_id
+                    );
+                    let _entered = session.enter();
                     serve_accepted_connection(
                         connection,
                         &database_url,
