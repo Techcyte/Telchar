@@ -69,6 +69,10 @@ const DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS: u64 = 60;
 const DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS: u64 = 10;
 const MAXIMUM_STATIC_SSH_CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 const MAXIMUM_STATIC_SSH_CHECK_TIMEOUT_SECONDS: u64 = 5 * 60;
+const MAXIMUM_STATIC_SSH_CONSUL_SOURCES: usize = 64;
+const MAXIMUM_STATIC_SSH_CONSUL_TAGS: usize = 64;
+const MAXIMUM_STATIC_SSH_CONSUL_REFRESH_SECONDS: u64 = 24 * 60 * 60;
+const MAXIMUM_STATIC_SSH_CONSUL_REQUEST_TIMEOUT_SECONDS: u64 = 5 * 60;
 const SYSTEM_SSH_PROGRAM: &str = "/usr/bin/ssh";
 const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROGRAM");
 
@@ -90,6 +94,7 @@ pub struct ServiceConfig {
     backend_permit_wait: Duration,
     local_backend: Option<LocalBackendConfig>,
     static_ssh_backends: Vec<StaticSshBackendConfig>,
+    static_ssh_consul: Vec<StaticSshConsulConfig>,
     nomad_backends: Vec<NomadBackendConfig>,
 }
 
@@ -184,6 +189,10 @@ impl ServiceConfig {
 
     pub fn static_ssh_backends(&self) -> &[StaticSshBackendConfig] {
         &self.static_ssh_backends
+    }
+
+    pub fn static_ssh_consul(&self) -> &[StaticSshConsulConfig] {
+        &self.static_ssh_consul
     }
 
     pub fn nomad_backends(&self) -> &[NomadBackendConfig] {
@@ -399,6 +408,7 @@ impl ServiceConfig {
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
         let static_ssh_backends = validate_static_ssh_backends(backends.static_ssh)?;
+        let static_ssh_consul = validate_static_ssh_consul(backends.static_ssh_consul)?;
         let nomad_callback = match (backends.nomad.is_empty(), backends.nomad_callback) {
             (true, None) => None,
             (true, Some(_)) => {
@@ -432,6 +442,7 @@ impl ServiceConfig {
             backend_permit_wait: Duration::from_secs(backend_permit_wait_seconds),
             local_backend,
             static_ssh_backends,
+            static_ssh_consul,
             nomad_backends,
         })
     }

@@ -177,12 +177,93 @@ pub(super) fn validate_static_ssh_backends(
             unavailable_check_interval: Duration::from_secs(unavailable_check_interval_seconds),
             check_timeout: Duration::from_secs(check_timeout_seconds),
             destination: backend.destination,
+            port: 22,
             identity_file: backend.identity_file,
             known_hosts_file: backend.known_hosts_file,
             ssh_program,
         });
     }
     Ok(backends)
+}
+
+pub(super) fn validate_static_ssh_consul(
+    raw: Vec<RawStaticSshConsulConfig>,
+) -> io::Result<Vec<StaticSshConsulConfig>> {
+    if raw.len() > MAXIMUM_STATIC_SSH_CONSUL_SOURCES {
+        return Err(invalid("static SSH Consul source count exceeds limit"));
+    }
+    let mut sources = Vec::with_capacity(raw.len());
+    for source in raw {
+        if sources
+            .iter()
+            .any(|existing: &StaticSshConsulConfig| existing.name() == source.name)
+        {
+            return Err(invalid("static SSH Consul source name is ambiguous"));
+        }
+        validate_backend_capacity(source.maximum_concurrent_builds_per_instance)?;
+        if !valid_endpoint(&source.endpoint, &["http://", "https://"])
+            || source.required_tags.len() > MAXIMUM_STATIC_SSH_CONSUL_TAGS
+            || source.refresh_interval_seconds == 0
+            || source.refresh_interval_seconds > MAXIMUM_STATIC_SSH_CONSUL_REFRESH_SECONDS
+            || source.request_timeout_seconds == 0
+            || source.request_timeout_seconds > MAXIMUM_STATIC_SSH_CONSUL_REQUEST_TIMEOUT_SECONDS
+            || source.request_timeout_seconds > source.refresh_interval_seconds
+        {
+            return Err(invalid("static SSH Consul source is invalid"));
+        }
+        let name = validate_subject(source.name, "static SSH Consul source name is invalid")?;
+        let system = validate_subject(source.system, "static SSH Consul system is invalid")?;
+        let service = validate_subject(source.service, "static SSH Consul service is invalid")?;
+        let datacenter = source
+            .datacenter
+            .map(|value| validate_subject(value, "static SSH Consul datacenter is invalid"))
+            .transpose()?;
+        let supported_features = source
+            .supported_features
+            .into_iter()
+            .map(|value| validate_subject(value, "static SSH Consul feature is invalid"))
+            .collect::<io::Result<Vec<_>>>()?;
+        let required_tags = source
+            .required_tags
+            .into_iter()
+            .map(|value| validate_subject(value, "static SSH Consul tag is invalid"))
+            .collect::<io::Result<Vec<_>>>()?;
+        let token_file = source
+            .token_file
+            .map(|path| validate_protected_file(path, "static SSH Consul token file is invalid"))
+            .transpose()?;
+        let ca_certificate_file = source
+            .ca_certificate_file
+            .map(|path| validate_public_file(path, "static SSH Consul CA file is invalid"))
+            .transpose()?;
+        let ssh_user = validate_subject(source.ssh_user, "static SSH Consul SSH user is invalid")?;
+        validate_identity_file(&source.identity_file)?;
+        validate_known_hosts_file(&source.known_hosts_file)?;
+        let ssh_program = source
+            .ssh_program
+            .unwrap_or_else(|| PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM)));
+        validate_executable_file(&ssh_program, "static SSH Consul SSH program is invalid")?;
+        sources.push(StaticSshConsulConfig {
+            name,
+            system,
+            supported_features,
+            maximum_concurrent_builds_per_instance: source.maximum_concurrent_builds_per_instance,
+            endpoint: source.endpoint,
+            service,
+            datacenter,
+            required_tags,
+            passing_only: source.passing_only,
+            refresh_interval: Duration::from_secs(source.refresh_interval_seconds),
+            request_timeout: Duration::from_secs(source.request_timeout_seconds),
+            token_file,
+            ca_certificate_file,
+            ssh_user,
+            identity_file: source.identity_file,
+            known_hosts_file: source.known_hosts_file,
+            ssh_program,
+        });
+    }
+    Ok(sources)
 }
 
 pub(super) fn validate_nomad_backends(

@@ -103,6 +103,8 @@ pub(super) struct BackendConfig {
     #[serde(default)]
     pub(super) static_ssh: Vec<RawStaticSshBackendConfig>,
     #[serde(default)]
+    pub(super) static_ssh_consul: Vec<RawStaticSshConsulConfig>,
+    #[serde(default)]
     pub(super) nomad: Vec<RawNomadBackendConfig>,
 }
 
@@ -131,6 +133,35 @@ pub(super) struct RawStaticSshBackendConfig {
     pub(super) identity_file: PathBuf,
     pub(super) known_hosts_file: PathBuf,
     pub(super) ssh_program: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawStaticSshConsulConfig {
+    pub(super) name: String,
+    pub(super) system: String,
+    #[serde(default)]
+    pub(super) supported_features: Vec<String>,
+    pub(super) maximum_concurrent_builds_per_instance: usize,
+    pub(super) endpoint: String,
+    pub(super) service: String,
+    pub(super) datacenter: Option<String>,
+    #[serde(default)]
+    pub(super) required_tags: Vec<String>,
+    #[serde(default = "default_true")]
+    pub(super) passing_only: bool,
+    pub(super) refresh_interval_seconds: u64,
+    pub(super) request_timeout_seconds: u64,
+    pub(super) token_file: Option<PathBuf>,
+    pub(super) ca_certificate_file: Option<PathBuf>,
+    pub(super) ssh_user: String,
+    pub(super) identity_file: PathBuf,
+    pub(super) known_hosts_file: PathBuf,
+    pub(super) ssh_program: Option<PathBuf>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
