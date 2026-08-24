@@ -603,9 +603,20 @@ fn unused_tcp_port() -> u16 {
         .port()
 }
 
+fn forwarding_was_denied(read: std::io::Result<usize>) -> bool {
+    read.is_err() || read == Ok(0)
+}
+
 #[test]
 fn fixture_suffixes_differ_when_clock_values_match() {
     assert_ne!(fixture_suffix(1), fixture_suffix(1));
+}
+
+#[test]
+fn forwarding_denial_accepts_connection_close_or_error() {
+    assert!(forwarding_was_denied(Ok(0)));
+    assert!(forwarding_was_denied(Err(std::io::Error::other("denied"))));
+    assert!(!forwarding_was_denied(Ok(1)));
 }
 
 fn unique_suffix() -> u128 {
