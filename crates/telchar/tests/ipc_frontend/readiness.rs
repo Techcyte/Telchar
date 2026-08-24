@@ -61,7 +61,7 @@ fn daemon_reconciles_expired_output_before_readiness() {
             .expect("lease reads")
             .expect("lease exists")
             .state,
-        telchar::persistence::StoreLeaseState::Released
+        telchar::persistence::StoreLeaseState::Reconciled
     );
     daemon.kill().expect("daemon stops");
     let _ = daemon.wait();

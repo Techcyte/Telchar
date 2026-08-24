@@ -729,6 +729,7 @@ fn run_daemon() -> io::Result<()> {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
                     reason = error_reason(&error),
+                    diagnostic = %error,
                     "frontend session failed"
                 );
             }
