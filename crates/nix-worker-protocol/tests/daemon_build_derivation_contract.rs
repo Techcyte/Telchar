@@ -394,6 +394,28 @@ fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
 }
 
 #[test]
+fn response_failure_identifies_build_derivation_phase() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+
+    let error = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon BuildDerivation response failed: failed to fill whole buffer"
+    );
+}
+
+#[test]
 fn daemon_rejection_preserves_bounded_build_diagnostic() {
     let mut input = Vec::new();
     handshake(&mut input, 1);

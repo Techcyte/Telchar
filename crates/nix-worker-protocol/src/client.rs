@@ -385,7 +385,19 @@ impl<S: Read + Write> WorkerClient<S> {
         }
         write_worker_integer_to(&mut self.stream, 0)?;
         self.stream.flush()?;
-        read_build_operation_frames(&mut self.stream, self.profile.version, logs)?;
+        read_build_operation_frames(&mut self.stream, self.profile.version, logs).map_err(
+            |error| {
+                let message = error.to_string();
+                if message.starts_with("Nix daemon BuildDerivation ") {
+                    error
+                } else {
+                    io::Error::new(
+                        error.kind(),
+                        format!("Nix daemon BuildDerivation response failed: {message}"),
+                    )
+                }
+            },
+        )?;
         read_worker_build_result(&mut self.stream, self.profile.version).map_err(|error| {
             if error
                 .to_string()
