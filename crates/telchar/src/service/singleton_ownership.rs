@@ -116,19 +116,50 @@ impl SingletonOwnership {
     }
 
     pub fn renew(&mut self) -> Result<(), SingletonOwnershipError> {
-        let lease_milliseconds = lease_milliseconds(&self.database_url, self.lease_duration)?;
-        let mut connection = Client::connect(&self.database_url, NoTls)
-            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
-        let renewed = connection
-            .execute(
-                "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'), updated_at = clock_timestamp() WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3 AND lease_expires_at > clock_timestamp()",
-                &[&self.owner_kind, &self.owner_token, &self.generation, &lease_milliseconds],
-            )
-            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
-        if renewed != 1 {
-            return Err(SingletonOwnershipError(SingletonOwnershipFailure::Fenced));
-        }
-        Ok(())
+        renew_lease(
+            &self.database_url,
+            self.owner_kind,
+            &self.owner_token,
+            self.generation,
+            self.lease_duration,
+        )
+    }
+
+    pub fn maintain_during<T>(
+        &mut self,
+        renewal_interval: Duration,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, SingletonOwnershipError> {
+        let database_url = self.database_url.clone();
+        let owner_kind = self.owner_kind;
+        let owner_token = self.owner_token.clone();
+        let generation = self.generation;
+        let lease_duration = self.lease_duration;
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let renewal = scope.spawn(|| {
+                loop {
+                    std::thread::park_timeout(renewal_interval);
+                    if finished.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    renew_lease(
+                        &database_url,
+                        owner_kind,
+                        &owner_token,
+                        generation,
+                        lease_duration,
+                    )?;
+                }
+            });
+            let result = operation();
+            finished.store(true, std::sync::atomic::Ordering::Release);
+            renewal.thread().unpark();
+            renewal
+                .join()
+                .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))??;
+            Ok(result)
+        })
     }
 
     pub fn check(&mut self) -> Result<(), SingletonOwnershipError> {
@@ -161,6 +192,28 @@ impl Drop for SingletonOwnership {
             &[&self.owner_kind, &self.owner_token, &self.generation],
         );
     }
+}
+
+fn renew_lease(
+    database_url: &str,
+    owner_kind: &str,
+    owner_token: &str,
+    generation: i64,
+    lease_duration: Duration,
+) -> Result<(), SingletonOwnershipError> {
+    let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
+    let mut connection = Client::connect(database_url, NoTls)
+        .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+    let renewed = connection
+        .execute(
+            "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'), updated_at = clock_timestamp() WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3 AND lease_expires_at > clock_timestamp()",
+            &[&owner_kind, &owner_token, &generation, &lease_milliseconds],
+        )
+        .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
+    if renewed != 1 {
+        return Err(SingletonOwnershipError(SingletonOwnershipFailure::Fenced));
+    }
+    Ok(())
 }
 
 fn lease_milliseconds(

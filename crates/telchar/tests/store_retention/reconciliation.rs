@@ -69,6 +69,22 @@ fn reconciliation_removes_only_durable_released_roots() {
 
     assert!(fs::symlink_metadata(root_directory.join("reconcile-released")).is_err());
     assert!(fs::symlink_metadata(root_directory.join("reconcile-active")).is_ok());
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "reconcile-released")
+            .expect("released lease reads")
+            .expect("released lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Reconciled
+    );
+    assert!(
+        telchar::persistence::read_released_request_leases_page(fixture.url(), None, 256)
+            .expect("released retry page reads")
+            .is_empty()
+    );
+
+    telchar::store::retention::reconcile_released_request_leases(fixture.url(), &mut backend)
+        .expect("drained reconciliation is idempotent");
+
     fs::remove_dir_all(root_directory).expect("root directory cleans");
 }
 
@@ -142,7 +158,7 @@ fn expiry_pass_releases_due_output_and_preserves_future_output() {
             .expect("due lease reads")
             .expect("due lease exists")
             .state,
-        telchar::persistence::StoreLeaseState::Released
+        telchar::persistence::StoreLeaseState::Reconciled
     );
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.url(), "expiry-retention-future")

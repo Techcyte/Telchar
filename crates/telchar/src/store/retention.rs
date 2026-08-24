@@ -71,6 +71,12 @@ pub fn reconcile_released_request_leases(
             .map(|lease| ReleasedRetentionEntry::new(&lease.lease_id, &lease.store_path))
             .collect::<Vec<_>>();
         backend.release(&entries)?;
+        let lease_ids = leases
+            .iter()
+            .map(|lease| lease.lease_id.clone())
+            .collect::<Vec<_>>();
+        crate::persistence::reconcile_store_leases(database_url, &lease_ids)
+            .map_err(|_| retention_error())?;
         if page_len < 256 {
             return Ok(());
         }
@@ -102,6 +108,12 @@ pub fn reconcile_output_retention(
                 .map(|lease| ReleasedRetentionEntry::new(&lease.lease_id, &lease.store_path))
                 .collect::<Vec<_>>();
             backend.release(&entries)?;
+            let lease_ids = released
+                .iter()
+                .map(|lease| lease.lease_id.clone())
+                .collect::<Vec<_>>();
+            crate::persistence::reconcile_store_leases(database_url, &lease_ids)
+                .map_err(|_| retention_error())?;
             after_lease_id = released.last().map(|lease| lease.lease_id.clone());
             if released.len() < 256 {
                 return Ok(());

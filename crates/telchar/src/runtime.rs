@@ -330,11 +330,15 @@ fn run_daemon() -> io::Result<()> {
         };
     let database_url = singleton_ownership.database_url().to_owned();
     let mut store_retention = gateway_store.retention()?;
-    telchar::store::retention::reconcile_output_retention(
-        &database_url,
-        store_retention.as_mut(),
-        SystemTime::now(),
-    )?;
+    singleton_ownership
+        .maintain_during(config.ownership_renewal_interval(), || {
+            telchar::store::retention::reconcile_output_retention(
+                &database_url,
+                store_retention.as_mut(),
+                SystemTime::now(),
+            )
+        })
+        .map_err(|_| invalid("singleton daemon ownership lost"))??;
     tracing::info!(
         event = "gateway.request_lease_release.completed",
         operation = "reconcile-release",
