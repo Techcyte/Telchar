@@ -31,6 +31,8 @@ mod environment;
 mod nomad;
 #[path = "service_config/static_ssh.rs"]
 mod static_ssh;
+#[path = "service_config/static_ssh_consul.rs"]
+mod static_ssh_consul;
 
 fn fixture_root(name: &str) -> PathBuf {
     let nonce = SystemTime::now()

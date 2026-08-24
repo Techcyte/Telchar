@@ -12,4 +12,5 @@ pub mod ipc;
 pub mod metrics;
 pub mod session;
 pub mod singleton_ownership;
+pub mod static_ssh_consul;
 pub mod transfer_limits;
