@@ -15,6 +15,10 @@ PACKAGE_MANIFESTS = (
     Path("crates/telchar-nomad-worker/Cargo.toml"),
 )
 WORKSPACE_PACKAGES = ("nix-worker-protocol", "telchar", "telchar-nomad-worker")
+LOCKFILE_PACKAGES = (
+    (Path("Cargo.lock"), WORKSPACE_PACKAGES),
+    (Path("crates/nix-worker-protocol/fuzz/Cargo.lock"), ("nix-worker-protocol",)),
+)
 
 
 def replace_exact(
@@ -48,9 +52,11 @@ def update_manifest(path: Path, old_version: str, version: str) -> None:
     path.write_text(content)
 
 
-def update_lockfile(path: Path, old_version: str, version: str) -> None:
+def update_lockfile(
+    path: Path, old_version: str, version: str, packages: tuple[str, ...]
+) -> None:
     content = path.read_text()
-    for package in WORKSPACE_PACKAGES:
+    for package in packages:
         package_pattern = re.compile(
             rf'(name = "{re.escape(package)}"\nversion = "){re.escape(old_version)}("\n)'
         )
@@ -66,7 +72,8 @@ def prepare_release(root: Path, version: str) -> None:
     old_version = current_version(root)
     for relative_path in PACKAGE_MANIFESTS:
         update_manifest(root / relative_path, old_version, version)
-    update_lockfile(root / "Cargo.lock", old_version, version)
+    for relative_path, packages in LOCKFILE_PACKAGES:
+        update_lockfile(root / relative_path, old_version, version, packages)
 
     packages_path = root / "nix/packages.nix"
     packages = replace_exact(
@@ -77,16 +84,6 @@ def prepare_release(root: Path, version: str) -> None:
         packages_path,
     )
     packages_path.write_text(packages)
-
-    contract_path = root / "nix/tests/oci-images.nix"
-    contract = replace_exact(
-        contract_path.read_text(),
-        f'imageTag == "{old_version}"',
-        f'imageTag == "{version}"',
-        4,
-        contract_path,
-    )
-    contract_path.write_text(contract)
 
 
 def next_version(root: Path, today: dt.date) -> str:

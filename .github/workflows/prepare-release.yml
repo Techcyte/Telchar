@@ -63,7 +63,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" || true
           git switch -C "$branch"
-          git add Cargo.lock crates/*/Cargo.toml nix/packages.nix nix/tests/oci-images.nix
+          git add Cargo.lock crates/*/Cargo.toml crates/nix-worker-protocol/fuzz/Cargo.lock nix/packages.nix
           if git diff --cached --quiet; then
             echo "release version is already prepared: $VERSION" >&2
             exit 1
