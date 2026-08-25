@@ -348,7 +348,7 @@ permit_wait_seconds = 30
 
 # REQUIRED BACKEND: fields in this section define exact execution authority.
 [[backends.nomad]]
-name = "nomad-linux-amd64"
+[backends.nomad.nomad-linux-amd64]
 system = "x86_64-linux"
 # Advertise profile selectors only when their operator policy below is enabled.
 # A derivation requirement is not authorization; these mappings and bounds are.
@@ -368,19 +368,19 @@ runtime_limit_seconds = 3600
 
 # Placement is operator authority. Add or remove constraints to match nodes
 # where worker_daemon_socket exists. Never infer CPU or memory from closure size.
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-linux-amd64.constraints]]
 attribute = "$${attr.cpu.arch}"
 operator = "="
 value = "amd64"
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-linux-amd64.driver_config]
 image = "${var.worker_image}"
 force_pull = true
 
 # Generated worker allocations mount the host Nix daemon. Docker must permit
 # this bind mount, and the socket must exist at the same path on every eligible
 # node. Alternatives are described in README.md.
-[[backends.nomad.driver_config.mount]]
+[[backends.nomad.nomad-linux-amd64.driver_config.mount]]
 source = "${var.worker_daemon_socket}"
 target = "/nix/var/nix/daemon-socket/socket"
 type = "bind"
@@ -388,7 +388,7 @@ readonly = false
 
 # OPERATOR POLICY: required explicit resources. Size from workload classes and
 # measured demand, never from derivation or closure byte size.
-[backends.nomad.resources]
+[backends.nomad.nomad-linux-amd64.resources]
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
@@ -396,7 +396,7 @@ disk_mb = 16384
 # OPERATOR POLICY: default Nomad job priority. Priority controls preemption when
 # enabled; it does not order pending jobs. Telchar does not accept a derivation-
 # supplied numeric priority.
-[backends.nomad.priority]
+[backends.nomad.nomad-linux-amd64.priority]
 minimum = 40
 default = 50
 maximum = 60
@@ -404,7 +404,7 @@ maximum = 60
 # OPERATOR POLICY EXAMPLE: requiring the arbitrary Nix feature "overflow-aws"
 # selects this profile. Base backend constraints above still apply. Replace or
 # remove this mapping when your cluster has no such placement class.
-[[backends.nomad.resource_profiles]]
+[[backends.nomad.nomad-linux-amd64.resource_profiles]]
 name = "overflow"
 required_feature = "overflow-aws"
 cpu_mhz = 4000
@@ -414,7 +414,7 @@ priority_minimum = 50
 priority_default = 60
 priority_maximum = 70
 
-[[backends.nomad.resource_profiles.constraints]]
+[[backends.nomad.nomad-linux-amd64.resource_profiles.constraints]]
 attribute = "$${node.class}"
 operator = "="
 value = "aws-overflow"
@@ -423,7 +423,7 @@ value = "aws-overflow"
 # device. GPU/device reservations are intentionally deferred.
 
 # REQUIRED: every callback is authenticated even on a trusted private network.
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-linux-amd64.transfer_authentication]
 mode = "workload-identity"
 issuer = "${var.nomad_api_endpoint}"
 # verify_issuer defaults to false because Nomad omits iss unless oidc_issuer is
@@ -433,14 +433,14 @@ jwks_url = "${var.nomad_api_endpoint}/.well-known/jwks.json"
 audience = "telchar-transfer"
 
 # REQUIRED: allocation-side Nix authority.
-[backends.nomad.store]
+[backends.nomad.nomad-linux-amd64.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
 # REQUIRED BOUNDS: Nomad backends intentionally have no implicit transfer-limit
 # defaults. Values below are production-shaped examples; reduce or increase them
 # only after considering memory, disk, expected closure, and expected output size.
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-linux-amd64.transfer_limits]
 maximum_manifest_paths = 65536
 maximum_manifest_bytes = 8388608
 maximum_input_nar_bytes = 17179869184

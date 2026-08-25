@@ -327,135 +327,221 @@ fn validate_ssh_leaf(
 }
 
 pub(super) fn validate_nomad_backends(
-    raw: Vec<RawNomadBackendConfig>,
+    raw: Vec<RawNomadConfig>,
     default_transfer_endpoint: &str,
 ) -> io::Result<Vec<NomadBackendConfig>> {
-    if raw.len() > MAXIMUM_NOMAD_BACKENDS {
-        return Err(invalid("Nomad backend count exceeds limit"));
-    }
-    let mut backends = Vec::with_capacity(raw.len());
-    for backend in raw {
-        if backends
-            .iter()
-            .any(|existing: &NomadBackendConfig| existing.target.name() == backend.name)
-        {
-            return Err(invalid("Nomad backend name is ambiguous"));
-        }
-        validate_backend_capacity(backend.maximum_concurrent_builds)?;
-        if backend.max_retries > MAXIMUM_NOMAD_RETRIES {
-            return Err(invalid("Nomad retry count exceeds limit"));
-        }
-        if !valid_nomad_endpoint(&backend.endpoint) {
-            return Err(invalid("Nomad endpoint is invalid"));
-        }
-        let namespace = validate_subject(backend.namespace, "Nomad namespace is invalid")?;
-        let node_pool = validate_subject(
-            backend.node_pool.unwrap_or_else(|| "default".to_owned()),
-            "Nomad node pool is invalid",
-        )?;
-        let driver = validate_subject(backend.driver, "Nomad task driver is invalid")?;
-        let job_name_scope =
-            validate_subject(backend.job_name_scope, "Nomad job-name scope is invalid")?;
-        if backend.poll_interval_seconds == 0
-            || backend.poll_interval_seconds > MAXIMUM_NOMAD_POLL_INTERVAL_SECONDS
-            || backend.runtime_limit_seconds == 0
-            || backend.runtime_limit_seconds > MAXIMUM_NOMAD_RUNTIME_LIMIT_SECONDS
-            || backend.poll_interval_seconds > backend.runtime_limit_seconds
-        {
-            return Err(invalid("Nomad timing bounds are invalid"));
-        }
-        let resources = validate_nomad_resources(backend.resources)?;
-        let priority = validate_nomad_priority(backend.priority)?;
-        let constraints = validate_nomad_constraints(backend.constraints)?;
-        let resource_profiles = validate_nomad_resource_profiles(
-            backend.resource_profiles,
-            &backend.supported_features,
-            constraints.len(),
-        )?;
-        let token_file = backend
-            .token_file
-            .map(|path| validate_protected_file(path, "Nomad token file is invalid"))
-            .transpose()?;
-        let ca_certificate_file = backend
-            .ca_certificate_file
-            .map(|path| validate_public_file(path, "Nomad CA certificate file is invalid"))
-            .transpose()?;
-        let client_certificate_file = backend
-            .client_certificate_file
-            .map(|path| validate_public_file(path, "Nomad client certificate file is invalid"))
-            .transpose()?;
-        let client_key_file = backend
-            .client_key_file
-            .map(|path| validate_protected_file(path, "Nomad client key file is invalid"))
-            .transpose()?;
-        if client_certificate_file.is_some() != client_key_file.is_some() {
-            return Err(invalid(
-                "Nomad client certificate and key must be configured together",
-            ));
-        }
-        let driver_config = validate_driver_config(backend.driver_config)?;
-        let transfer_endpoint = backend
-            .transfer_endpoint
-            .unwrap_or_else(|| default_transfer_endpoint.to_owned());
-        if !valid_nomad_transfer_endpoint(&transfer_endpoint) {
-            return Err(invalid("Nomad transfer endpoint is invalid"));
-        }
-        let callback_connect = backend
-            .callback_connect
-            .map(|connect| -> io::Result<NomadCallbackConnect> {
-                if connect.local_bind_port == 0 {
-                    return Err(invalid("Nomad callback Connect port is invalid"));
-                }
-                Ok(NomadCallbackConnect {
-                    source_service: validate_subject(
-                        connect.source_service,
-                        "Nomad callback source service is invalid",
-                    )?,
-                    destination_service: validate_subject(
-                        connect.destination_service,
-                        "Nomad callback destination service is invalid",
-                    )?,
-                    local_bind_port: connect.local_bind_port,
+    let mut backends = Vec::new();
+    for group in raw {
+        for (backend_name, backend) in group.backends {
+            if backends.len() == MAXIMUM_NOMAD_BACKENDS {
+                return Err(invalid("Nomad backend count exceeds limit"));
+            }
+            let name = validate_subject(backend_name, "Nomad backend name is invalid")?;
+            if backends
+                .iter()
+                .any(|existing: &NomadBackendConfig| existing.target.name() == name)
+            {
+                return Err(invalid("Nomad backend name is ambiguous"));
+            }
+            let system = backend
+                .system
+                .or_else(|| group.system.clone())
+                .ok_or_else(|| invalid("Nomad system is required"))?;
+            let supported_features = backend
+                .supported_features
+                .or_else(|| group.supported_features.clone())
+                .unwrap_or_default();
+            let maximum_concurrent_builds = backend
+                .maximum_concurrent_builds
+                .or(group.maximum_concurrent_builds)
+                .ok_or_else(|| invalid("Nomad concurrency is required"))?;
+            let max_retries = backend.max_retries.or(group.max_retries).unwrap_or(0);
+            let endpoint = backend
+                .endpoint
+                .or_else(|| group.endpoint.clone())
+                .ok_or_else(|| invalid("Nomad endpoint is required"))?;
+            let namespace = backend
+                .namespace
+                .or_else(|| group.namespace.clone())
+                .ok_or_else(|| invalid("Nomad namespace is required"))?;
+            let node_pool = backend
+                .node_pool
+                .or_else(|| group.node_pool.clone())
+                .unwrap_or_else(|| "default".to_owned());
+            let driver = backend
+                .driver
+                .or_else(|| group.driver.clone())
+                .ok_or_else(|| invalid("Nomad task driver is required"))?;
+            let job_name_scope = backend
+                .job_name_scope
+                .or_else(|| group.job_name_scope.clone())
+                .ok_or_else(|| invalid("Nomad job-name scope is required"))?;
+            let poll_interval_seconds = backend
+                .poll_interval_seconds
+                .or(group.poll_interval_seconds)
+                .ok_or_else(|| invalid("Nomad poll interval is required"))?;
+            let runtime_limit_seconds = backend
+                .runtime_limit_seconds
+                .or(group.runtime_limit_seconds)
+                .ok_or_else(|| invalid("Nomad runtime limit is required"))?;
+
+            validate_backend_capacity(maximum_concurrent_builds)?;
+            if max_retries > MAXIMUM_NOMAD_RETRIES {
+                return Err(invalid("Nomad retry count exceeds limit"));
+            }
+            if !valid_nomad_endpoint(&endpoint) {
+                return Err(invalid("Nomad endpoint is invalid"));
+            }
+            let namespace = validate_subject(namespace, "Nomad namespace is invalid")?;
+            let node_pool = validate_subject(node_pool, "Nomad node pool is invalid")?;
+            let driver = validate_subject(driver, "Nomad task driver is invalid")?;
+            let job_name_scope =
+                validate_subject(job_name_scope, "Nomad job-name scope is invalid")?;
+            if poll_interval_seconds == 0
+                || poll_interval_seconds > MAXIMUM_NOMAD_POLL_INTERVAL_SECONDS
+                || runtime_limit_seconds == 0
+                || runtime_limit_seconds > MAXIMUM_NOMAD_RUNTIME_LIMIT_SECONDS
+                || poll_interval_seconds > runtime_limit_seconds
+            {
+                return Err(invalid("Nomad timing bounds are invalid"));
+            }
+
+            let resources = validate_nomad_resources(
+                backend
+                    .resources
+                    .or_else(|| group.resources.clone())
+                    .ok_or_else(|| invalid("Nomad resources are required"))?,
+            )?;
+            let priority =
+                validate_nomad_priority(backend.priority.or_else(|| group.priority.clone()))?;
+            let constraints = validate_nomad_constraints(
+                backend
+                    .constraints
+                    .or_else(|| group.constraints.clone())
+                    .unwrap_or_default(),
+            )?;
+            let resource_profiles = validate_nomad_resource_profiles(
+                backend
+                    .resource_profiles
+                    .or_else(|| group.resource_profiles.clone())
+                    .unwrap_or_default(),
+                &supported_features,
+                constraints.len(),
+            )?;
+            let token_file = backend
+                .token_file
+                .or_else(|| group.token_file.clone())
+                .map(|path| validate_protected_file(path, "Nomad token file is invalid"))
+                .transpose()?;
+            let ca_certificate_file = backend
+                .ca_certificate_file
+                .or_else(|| group.ca_certificate_file.clone())
+                .map(|path| validate_public_file(path, "Nomad CA certificate file is invalid"))
+                .transpose()?;
+            let client_certificate_file = backend
+                .client_certificate_file
+                .or_else(|| group.client_certificate_file.clone())
+                .map(|path| validate_public_file(path, "Nomad client certificate file is invalid"))
+                .transpose()?;
+            let client_key_file = backend
+                .client_key_file
+                .or_else(|| group.client_key_file.clone())
+                .map(|path| validate_protected_file(path, "Nomad client key file is invalid"))
+                .transpose()?;
+            if client_certificate_file.is_some() != client_key_file.is_some() {
+                return Err(invalid(
+                    "Nomad client certificate and key must be configured together",
+                ));
+            }
+            let driver_config = validate_driver_config(
+                backend
+                    .driver_config
+                    .or_else(|| group.driver_config.clone())
+                    .unwrap_or_default(),
+            )?;
+            let transfer_endpoint = backend
+                .transfer_endpoint
+                .or_else(|| group.transfer_endpoint.clone())
+                .unwrap_or_else(|| default_transfer_endpoint.to_owned());
+            if !valid_nomad_transfer_endpoint(&transfer_endpoint) {
+                return Err(invalid("Nomad transfer endpoint is invalid"));
+            }
+            let callback_connect = backend
+                .callback_connect
+                .or_else(|| group.callback_connect.clone())
+                .map(|connect| -> io::Result<NomadCallbackConnect> {
+                    if connect.local_bind_port == 0 {
+                        return Err(invalid("Nomad callback Connect port is invalid"));
+                    }
+                    Ok(NomadCallbackConnect {
+                        source_service: validate_subject(
+                            connect.source_service,
+                            "Nomad callback source service is invalid",
+                        )?,
+                        destination_service: validate_subject(
+                            connect.destination_service,
+                            "Nomad callback destination service is invalid",
+                        )?,
+                        local_bind_port: connect.local_bind_port,
+                    })
                 })
-            })
-            .transpose()?;
-        let transfer_authentication =
-            validate_nomad_transfer_authentication(backend.transfer_authentication)?;
-        let store = validate_nomad_store(backend.store)?;
-        let transfer_limits = validate_nomad_transfer_limits(backend.transfer_limits)?;
-        let prestart = backend.prestart.map(validate_nomad_prestart).transpose()?;
-        backends.push(NomadBackendConfig {
-            target: BackendTarget::new(
-                &backend.name,
-                BackendKind::Nomad,
-                &backend.system,
-                &backend.supported_features,
-            )?,
-            maximum_concurrent_builds: backend.maximum_concurrent_builds,
-            max_retries: backend.max_retries,
-            endpoint: backend.endpoint,
-            namespace,
-            node_pool,
-            token_file,
-            ca_certificate_file,
-            client_certificate_file,
-            client_key_file,
-            driver,
-            driver_config,
-            resources,
-            priority,
-            resource_profiles,
-            job_name_scope,
-            poll_interval: Duration::from_secs(backend.poll_interval_seconds),
-            runtime_limit: Duration::from_secs(backend.runtime_limit_seconds),
-            constraints,
-            transfer_endpoint,
-            callback_connect,
-            transfer_authentication,
-            store,
-            transfer_limits,
-            prestart,
-        });
+                .transpose()?;
+            let transfer_authentication = validate_nomad_transfer_authentication(
+                backend
+                    .transfer_authentication
+                    .or_else(|| group.transfer_authentication.clone())
+                    .ok_or_else(|| invalid("Nomad transfer authentication is required"))?,
+            )?;
+            let store = validate_nomad_store(
+                backend
+                    .store
+                    .or_else(|| group.store.clone())
+                    .ok_or_else(|| invalid("Nomad store is required"))?,
+            )?;
+            let transfer_limits = validate_nomad_transfer_limits(
+                backend
+                    .transfer_limits
+                    .or_else(|| group.transfer_limits.clone())
+                    .ok_or_else(|| invalid("Nomad transfer limits are required"))?,
+            )?;
+            let prestart = backend
+                .prestart
+                .or_else(|| group.prestart.clone())
+                .map(validate_nomad_prestart)
+                .transpose()?;
+            backends.push(NomadBackendConfig {
+                target: BackendTarget::new(
+                    &name,
+                    BackendKind::Nomad,
+                    &system,
+                    &supported_features,
+                )?,
+                maximum_concurrent_builds,
+                max_retries,
+                endpoint,
+                namespace,
+                node_pool,
+                token_file,
+                ca_certificate_file,
+                client_certificate_file,
+                client_key_file,
+                driver,
+                driver_config,
+                resources,
+                priority,
+                resource_profiles,
+                job_name_scope,
+                poll_interval: Duration::from_secs(poll_interval_seconds),
+                runtime_limit: Duration::from_secs(runtime_limit_seconds),
+                constraints,
+                transfer_endpoint,
+                callback_connect,
+                transfer_authentication,
+                store,
+                transfer_limits,
+                prestart,
+            });
+        }
     }
     Ok(backends)
 }

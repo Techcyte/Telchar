@@ -92,7 +92,7 @@ Cache credentials and trust policy stay outside client requests and outside gene
 
 ## Configuration shape
 
-The callback listener is configured under `[backends.nomad_callback]`, not a top-level `[nomad_callback]` table. It is shared by all configured Nomad backends and is required whenever at least one `[[backends.nomad]]` target exists:
+The callback listener is configured under `[backends.nomad_callback]`, not a top-level `[nomad_callback]` table. It is shared by all configured Nomad backends and is required whenever at least one named Nomad backend exists:
 
 ```toml
 [backends.nomad_callback]
@@ -106,41 +106,54 @@ shutdown_drain_timeout_seconds = 30
 maximum_jwks_bytes = 1048576
 ```
 
-A Nomad target controls its own endpoint, namespace, node pool, credentials, capacity, retry count, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Set `node_pool` on `[[backends.nomad]]` to submit jobs to a specific Nomad node pool; when omitted, it defaults to Nomad's `default` pool.
+Each `[[backends.nomad]]` entry is a defaults group. Arbitrary named child tables define actual Nomad backends, matching the SSH group hierarchy. Group values cascade into each child; child values override the group. Lists and structured tables replace the group value as a whole rather than merging. The child key is the backend name, so a separate `name` field is invalid.
+
+A named Nomad backend controls its own endpoint, namespace, node pool, credentials, capacity, retry count, placement constraints, resources, driver, `driver_config`, store, transfer authentication, transfer limits, and optional prestart task. Set `node_pool` on the group or named backend to submit jobs to a specific Nomad node pool; when omitted, it defaults to Nomad's `default` pool.
 
 ```toml
 [[backends.nomad]]
+system = "x86_64-linux"
 namespace = "telchar"
-node_pool = "builders"
 maximum_concurrent_builds = 4
 max_retries = 2
+
+[backends.nomad.primary]
+endpoint = "https://nomad-primary.example:4646"
+node_pool = "builders-primary"
+
+[backends.nomad.overflow]
+endpoint = "https://nomad-overflow.example:4646"
+node_pool = "builders-overflow"
+maximum_concurrent_builds = 2
 ```
+
+Both `primary` and `overflow` inherit the group system, namespace, and retry policy. Required values may be supplied by the group or by each named backend. Multiple defaults groups are supported, but backend names must remain unique across all groups.
 
 `maximum_concurrent_builds` limits logical builds using the backend; a retry keeps that logical build's permit while replacing its Nomad execution attempt. `max_retries` is bounded to `100` and should normally remain small.
 
 Placement constraints are operator-supplied Nomad left target, operand, and right target values rendered directly into each generated job:
 
 ```toml
-[[backends.nomad.constraints]]
+[[backends.nomad.primary.constraints]]
 attribute = "${attr.cpu.arch}"
 operator = "="
 value = "amd64"
 
-[[backends.nomad.constraints]]
+[[backends.nomad.primary.constraints]]
 attribute = "${node.class}"
 operator = "="
 value = "general"
 ```
 
-The required `[backends.nomad.resources]` table remains the backward-compatible default resource profile. Its priority defaults to `50`; an operator may bound it explicitly:
+The required `[backends.nomad.<name>.resources]` table is the default resource profile. Its priority defaults to `50`; an operator may bound it explicitly:
 
 ```toml
-[backends.nomad.resources]
+[backends.nomad.primary.resources]
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
 
-[backends.nomad.priority]
+[backends.nomad.primary.priority]
 minimum = 40
 default = 50
 maximum = 60
@@ -152,7 +165,7 @@ Additional profiles map one operator-advertised Nix system feature to resources,
 # The selector must also be advertised by supported_features.
 supported_features = ["big-parallel", "overflow-aws"]
 
-[[backends.nomad.resource_profiles]]
+[[backends.nomad.primary.resource_profiles]]
 name = "overflow"
 required_feature = "overflow-aws"
 cpu_mhz = 4000
@@ -162,7 +175,7 @@ priority_minimum = 50
 priority_default = 60
 priority_maximum = 70
 
-[[backends.nomad.resource_profiles.constraints]]
+[[backends.nomad.primary.resource_profiles.constraints]]
 attribute = "${node.class}"
 operator = "="
 value = "aws-overflow"

@@ -50,7 +50,7 @@ fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
 public_url = "ws://gateway.internal:17443/build-callback"
 
 [[backends.nomad]]
-name = "nomad-primary"
+[backends.nomad.nomad-primary]
 system = "x86_64-linux"
 supported_features = []
 maximum_concurrent_builds = 1
@@ -61,25 +61,25 @@ job_name_scope = "telchar"
 poll_interval_seconds = 1
 runtime_limit_seconds = 60
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-primary.driver_config]
 command = "/bin/true"
 
-[backends.nomad.resources]
+[backends.nomad.nomad-primary.resources]
 cpu_mhz = 100
 memory_mb = 128
 disk_mb = 128
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-primary.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.internal:4646"
 jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
 audience = "telchar"
 
-[backends.nomad.store]
+[backends.nomad.nomad-primary.store]
 mode = "daemon"
 uri = "daemon"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 100
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1048576
@@ -155,7 +155,7 @@ fn rejects_nomad_retry_count_above_limit() {
         &config_path,
         r#"
 [[backends.nomad]]
-name = "nomad-primary"
+[backends.nomad.nomad-primary]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 max_retries = 101
@@ -167,25 +167,25 @@ poll_interval_seconds = 1
 runtime_limit_seconds = 60
 transfer_endpoint = "ws://gateway.internal:17443/build-callback"
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-primary.driver_config]
 command = "/bin/true"
 
-[backends.nomad.resources]
+[backends.nomad.nomad-primary.resources]
 cpu_mhz = 100
 memory_mb = 128
 disk_mb = 128
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-primary.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.internal:4646"
 jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
 audience = "telchar"
 
-[backends.nomad.store]
+[backends.nomad.nomad-primary.store]
 mode = "daemon"
 uri = "daemon"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 100
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1048576
@@ -240,7 +240,9 @@ fn loads_fungible_nomad_backends_with_operator_controlled_drivers() {
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad-docker"
+transfer_endpoint = "ws://telchar.example:7443"
+
+[backends.nomad.nomad-docker]
 system = "x86_64-linux"
 supported_features = ["docker"]
 maximum_concurrent_builds = 8
@@ -255,29 +257,27 @@ job_name_scope = "prod-a"
 poll_interval_seconds = 2
 runtime_limit_seconds = 3600
 
-transfer_endpoint = "ws://telchar.example:7443"
-
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-docker.constraints]]
 attribute = "${{attr.cpu.arch}}"
 operator = "="
 value = "amd64"
 
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-docker.constraints]]
 attribute = "${{node.class}}"
 operator = "="
 value = "general"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-docker.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
 jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad-docker.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-docker.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -298,17 +298,16 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad-docker.resources]
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-docker.driver_config]
 image = "registry.example/telchar-builder:1"
 privileged = false
 
-[[backends.nomad]]
-name = "nomad-raw"
+[backends.nomad.nomad-raw]
 system = "aarch64-linux"
 supported_features = ["raw-exec", "big-parallel"]
 maximum_concurrent_builds = 2
@@ -319,19 +318,17 @@ job_name_scope = "prod-b"
 poll_interval_seconds = 5
 runtime_limit_seconds = 1800
 
-transfer_endpoint = "ws://telchar.example:7443"
-
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-raw.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
 jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad-raw.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-raw.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -352,12 +349,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad-raw.resources]
 cpu_mhz = 1000
 memory_mb = 2048
 disk_mb = 8192
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-raw.driver_config]
 command = "/opt/telchar/bin/nomad-worker"
 args = ["--stdio"]
 "#,
@@ -437,6 +434,41 @@ args = ["--stdio"]
 }
 
 #[test]
+fn rejects_ordered_nomad_backend_leaf_syntax() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("ordered-nomad-backend");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[[backends.nomad]]
+name = "nomad-primary"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.internal:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("ordered Nomad backend syntax rejects")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn loads_nomad_transfer_configuration() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
@@ -451,7 +483,7 @@ fn loads_nomad_transfer_configuration() {
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad"
+[backends.nomad.nomad]
 system = "x86_64-linux"
 maximum_concurrent_builds = 2
 endpoint = "https://nomad.example:4646"
@@ -462,30 +494,30 @@ poll_interval_seconds = 2
 runtime_limit_seconds = 3600
 transfer_endpoint = "ws://127.0.0.1:17443/callback"
 
-[backends.nomad.callback_connect]
+[backends.nomad.nomad.callback_connect]
 source_service = "telchar-build-callback"
 destination_service = "telchar-callback"
 local_bind_port = 17443
 
-[backends.nomad.resources]
+[backends.nomad.nomad.resources]
 cpu_mhz = 1000
 memory_mb = 2048
 disk_mb = 8192
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad.driver_config]
 command = "/opt/telchar/bin/telchar-nomad-worker"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad.transfer_authentication]
 mode = "workload-identity"
 jwks_url = "https://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 ca_certificate_file = "{}"
 
-[backends.nomad.store]
+[backends.nomad.nomad.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad.transfer_limits]
 maximum_manifest_paths = 65536
 maximum_manifest_bytes = 8388608
 maximum_input_nar_bytes = 8589934592
@@ -506,16 +538,16 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.prestart]
+[backends.nomad.nomad.prestart]
 driver = "raw_exec"
 timeout_seconds = 120
 
-[backends.nomad.prestart.resources]
+[backends.nomad.nomad.prestart.resources]
 cpu_mhz = 100
 memory_mb = 128
 disk_mb = 256
 
-[backends.nomad.prestart.driver_config]
+[backends.nomad.nomad.prestart.driver_config]
 command = "/opt/operator/bin/configure-nix"
 args = ["/alloc/data/nix"]
 "#,
@@ -604,7 +636,7 @@ fn nomad_transfer_rejects_unprotected_hmac_secret_and_unknown_limits() {
             format!(
                 r#"
 [[backends.nomad]]
-name = "nomad"
+[backends.nomad.nomad]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 endpoint = "http://nomad.example:4646"
@@ -615,24 +647,24 @@ poll_interval_seconds = 2
 runtime_limit_seconds = 60
 transfer_endpoint = "ws://telchar.example:7443"
 
-[backends.nomad.resources]
+[backends.nomad.nomad.resources]
 cpu_mhz = 1000
 memory_mb = 1024
 disk_mb = 4096
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad.driver_config]
 command = "/opt/telchar/bin/telchar-nomad-worker"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad.transfer_authentication]
 mode = "hmac"
 key_id = "primary"
 secret_file = "{}"
 
-[backends.nomad.store]
+[backends.nomad.nomad.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -698,7 +730,7 @@ fn nomad_backend_rejects_unsafe_credentials_and_unbounded_driver_config() {
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad"
+[backends.nomad.nomad]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 endpoint = "https://nomad.example:4646"
@@ -711,17 +743,17 @@ runtime_limit_seconds = 60
 
 transfer_endpoint = "ws://telchar.example:7443"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
 jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -742,12 +774,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad.resources]
 cpu_mhz = 1000
 memory_mb = 1024
 disk_mb = 4096
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad.driver_config]
 image = "builder"
 "#,
             token_file.display()
@@ -770,7 +802,7 @@ image = "builder"
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad"
+[backends.nomad.nomad]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 endpoint = "https://nomad.example:4646"
@@ -782,17 +814,17 @@ runtime_limit_seconds = 60
 
 transfer_endpoint = "ws://telchar.example:7443"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
 jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -813,12 +845,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad.resources]
 cpu_mhz = 1000
 memory_mb = 1024
 disk_mb = 4096
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad.driver_config]
 image = "{}"
 "#,
             oversized

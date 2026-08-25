@@ -111,7 +111,7 @@ fn load_service_config(
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad-test"
+[backends.nomad.nomad-test]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 max_retries = 1
@@ -123,17 +123,17 @@ poll_interval_seconds = 1
 runtime_limit_seconds = 60
 transfer_endpoint = "ws://telchar.example:7443"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-test.transfer_authentication]
 mode = "workload-identity"
 issuer = "{endpoint}"
 jwks_url = "{endpoint}/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad-test.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-test.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -154,12 +154,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad-test.resources]
 cpu_mhz = 1000
 memory_mb = 512
 disk_mb = 1024
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-test.driver_config]
 command = "/bin/true"
 "#
         ),

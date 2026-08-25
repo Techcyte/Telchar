@@ -131,7 +131,7 @@ fn rejects_invalid_configured_tls_material() {
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad-tls"
+[backends.nomad.nomad-tls]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 endpoint = "https://nomad.example:4646"
@@ -143,17 +143,17 @@ poll_interval_seconds = 1
 runtime_limit_seconds = 60
 transfer_endpoint = "wss://telchar.example:7443"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-tls.transfer_authentication]
 mode = "workload-identity"
 issuer = "https://nomad.example:4646"
 jwks_url = "https://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad-tls.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-tls.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -174,12 +174,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad-tls.resources]
 cpu_mhz = 1000
 memory_mb = 512
 disk_mb = 1024
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-tls.driver_config]
 command = "/bin/true"
 "#,
             ca_path

@@ -13,7 +13,7 @@ fn renders_operator_selected_driver_and_stable_backend_bound_job() {
         &config_path,
         r#"
 [[backends.nomad]]
-name = "nomad-arm"
+[backends.nomad.nomad-arm]
 system = "aarch64-linux"
 supported_features = ["big-parallel", "telchar-ci", "telchar-memory"]
 maximum_concurrent_builds = 4
@@ -26,32 +26,32 @@ poll_interval_seconds = 2
 runtime_limit_seconds = 3600
 transfer_endpoint = "ws://127.0.0.1:17443/callback"
 
-[backends.nomad.callback_connect]
+[backends.nomad.nomad-arm.callback_connect]
 source_service = "telchar-build-callback"
 destination_service = "telchar-callback"
 local_bind_port = 17443
 
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-arm.constraints]]
 attribute = "${attr.cpu.arch}"
 operator = "="
 value = "amd64"
 
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-arm.constraints]]
 attribute = "${node.class}"
 operator = "="
 value = "general"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-arm.transfer_authentication]
 mode = "workload-identity"
 issuer = "http://nomad.example:4646"
 jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
 audience = "telchar-transfer"
 
-[backends.nomad.store]
+[backends.nomad.nomad-arm.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-arm.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -72,30 +72,30 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.prestart]
+[backends.nomad.nomad-arm.prestart]
 driver = "raw_exec"
 timeout_seconds = 120
 
-[backends.nomad.prestart.resources]
+[backends.nomad.nomad-arm.prestart.resources]
 cpu_mhz = 100
 memory_mb = 128
 disk_mb = 256
 
-[backends.nomad.prestart.driver_config]
+[backends.nomad.nomad-arm.prestart.driver_config]
 command = "/opt/operator/bin/configure-nix"
 args = ["/alloc/data/nix"]
 
-[backends.nomad.resources]
+[backends.nomad.nomad-arm.resources]
 cpu_mhz = 2000
 memory_mb = 4096
 disk_mb = 16384
 
-[backends.nomad.priority]
+[backends.nomad.nomad-arm.priority]
 minimum = 40
 default = 50
 maximum = 60
 
-[[backends.nomad.resource_profiles]]
+[[backends.nomad.nomad-arm.resource_profiles]]
 name = "ci"
 required_feature = "telchar-ci"
 cpu_mhz = 4000
@@ -105,12 +105,12 @@ priority_minimum = 55
 priority_default = 60
 priority_maximum = 70
 
-[[backends.nomad.resource_profiles.constraints]]
+[[backends.nomad.nomad-arm.resource_profiles.constraints]]
 attribute = "${node.class}"
 operator = "="
 value = "overflow-aws"
 
-[[backends.nomad.resource_profiles]]
+[[backends.nomad.nomad-arm.resource_profiles]]
 name = "memory"
 required_feature = "telchar-memory"
 cpu_mhz = 2000
@@ -120,7 +120,7 @@ priority_minimum = 45
 priority_default = 55
 priority_maximum = 65
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-arm.driver_config]
 command = "/opt/telchar/bin/worker"
 args = ["--stdio"]
 "#,
@@ -333,7 +333,7 @@ fn renders_short_lived_hmac_capability_without_backend_secret() {
         format!(
             r#"
 [[backends.nomad]]
-name = "nomad-hmac"
+[backends.nomad.nomad-hmac]
 system = "x86_64-linux"
 maximum_concurrent_builds = 1
 endpoint = "http://nomad.example:4646"
@@ -344,16 +344,16 @@ poll_interval_seconds = 1
 runtime_limit_seconds = 60
 transfer_endpoint = "ws://telchar.example:7443"
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-hmac.transfer_authentication]
 mode = "hmac"
 key_id = "primary"
 secret_file = {secret_path:?}
 
-[backends.nomad.store]
+[backends.nomad.nomad-hmac.store]
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-hmac.transfer_limits]
 maximum_manifest_paths = 1024
 maximum_manifest_bytes = 1048576
 maximum_input_nar_bytes = 1073741824
@@ -374,12 +374,12 @@ nonce_retention_seconds = 600
 reconnect_timeout_seconds = 30
 maximum_diagnostic_bytes = 65536
 
-[backends.nomad.resources]
+[backends.nomad.nomad-hmac.resources]
 cpu_mhz = 1000
 memory_mb = 512
 disk_mb = 1024
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-hmac.driver_config]
 command = "/opt/telchar/bin/worker"
 "#
         ),

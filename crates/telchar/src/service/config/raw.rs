@@ -103,7 +103,7 @@ pub(super) struct BackendConfig {
     #[serde(default)]
     pub(super) ssh: Vec<RawSshConfig>,
     #[serde(default)]
-    pub(super) nomad: Vec<RawNomadBackendConfig>,
+    pub(super) nomad: Vec<RawNomadConfig>,
 }
 
 #[derive(Deserialize)]
@@ -175,44 +175,70 @@ pub(super) struct RawSshHostConfig {
     pub(super) ssh_program: Option<PathBuf>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawNomadBackendConfig {
-    pub(super) name: String,
-    pub(super) system: String,
-    #[serde(default)]
-    pub(super) supported_features: Vec<String>,
-    pub(super) maximum_concurrent_builds: usize,
-    #[serde(default)]
-    pub(super) max_retries: usize,
-    pub(super) endpoint: String,
-    pub(super) namespace: String,
+#[derive(Clone, Default, Deserialize)]
+pub(super) struct RawNomadConfig {
+    pub(super) system: Option<String>,
+    pub(super) supported_features: Option<Vec<String>>,
+    pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) max_retries: Option<usize>,
+    pub(super) endpoint: Option<String>,
+    pub(super) namespace: Option<String>,
     pub(super) node_pool: Option<String>,
     pub(super) token_file: Option<PathBuf>,
     pub(super) ca_certificate_file: Option<PathBuf>,
     pub(super) client_certificate_file: Option<PathBuf>,
     pub(super) client_key_file: Option<PathBuf>,
-    pub(super) driver: String,
-    #[serde(default)]
-    pub(super) driver_config: toml::Table,
-    pub(super) resources: RawNomadResources,
+    pub(super) driver: Option<String>,
+    pub(super) driver_config: Option<toml::Table>,
+    pub(super) resources: Option<RawNomadResources>,
     pub(super) priority: Option<RawNomadPriority>,
-    #[serde(default)]
-    pub(super) resource_profiles: Vec<RawNomadResourceProfile>,
-    pub(super) job_name_scope: String,
-    pub(super) poll_interval_seconds: u64,
-    pub(super) runtime_limit_seconds: u64,
-    #[serde(default)]
-    pub(super) constraints: Vec<RawNomadConstraint>,
+    pub(super) resource_profiles: Option<Vec<RawNomadResourceProfile>>,
+    pub(super) job_name_scope: Option<String>,
+    pub(super) poll_interval_seconds: Option<u64>,
+    pub(super) runtime_limit_seconds: Option<u64>,
+    pub(super) constraints: Option<Vec<RawNomadConstraint>>,
     pub(super) transfer_endpoint: Option<String>,
     pub(super) callback_connect: Option<RawNomadCallbackConnect>,
-    pub(super) transfer_authentication: RawNomadTransferAuthentication,
-    pub(super) store: RawNomadStoreConfig,
-    pub(super) transfer_limits: RawNomadTransferLimits,
+    pub(super) transfer_authentication: Option<RawNomadTransferAuthentication>,
+    pub(super) store: Option<RawNomadStoreConfig>,
+    pub(super) transfer_limits: Option<RawNomadTransferLimits>,
+    pub(super) prestart: Option<RawNomadPrestartConfig>,
+    #[serde(flatten)]
+    pub(super) backends: BTreeMap<String, RawNomadBackendConfig>,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadBackendConfig {
+    pub(super) system: Option<String>,
+    pub(super) supported_features: Option<Vec<String>>,
+    pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) max_retries: Option<usize>,
+    pub(super) endpoint: Option<String>,
+    pub(super) namespace: Option<String>,
+    pub(super) node_pool: Option<String>,
+    pub(super) token_file: Option<PathBuf>,
+    pub(super) ca_certificate_file: Option<PathBuf>,
+    pub(super) client_certificate_file: Option<PathBuf>,
+    pub(super) client_key_file: Option<PathBuf>,
+    pub(super) driver: Option<String>,
+    pub(super) driver_config: Option<toml::Table>,
+    pub(super) resources: Option<RawNomadResources>,
+    pub(super) priority: Option<RawNomadPriority>,
+    pub(super) resource_profiles: Option<Vec<RawNomadResourceProfile>>,
+    pub(super) job_name_scope: Option<String>,
+    pub(super) poll_interval_seconds: Option<u64>,
+    pub(super) runtime_limit_seconds: Option<u64>,
+    pub(super) constraints: Option<Vec<RawNomadConstraint>>,
+    pub(super) transfer_endpoint: Option<String>,
+    pub(super) callback_connect: Option<RawNomadCallbackConnect>,
+    pub(super) transfer_authentication: Option<RawNomadTransferAuthentication>,
+    pub(super) store: Option<RawNomadStoreConfig>,
+    pub(super) transfer_limits: Option<RawNomadTransferLimits>,
     pub(super) prestart: Option<RawNomadPrestartConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadCallbackConnect {
     pub(super) source_service: String,
@@ -220,7 +246,7 @@ pub(super) struct RawNomadCallbackConnect {
     pub(super) local_bind_port: u16,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadConstraint {
     pub(super) attribute: String,
@@ -228,7 +254,7 @@ pub(super) struct RawNomadConstraint {
     pub(super) value: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum RawNomadTransferAuthentication {
     WorkloadIdentity {
@@ -245,13 +271,13 @@ pub(super) enum RawNomadTransferAuthentication {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum RawNomadStoreConfig {
     Daemon { uri: String },
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadTransferLimits {
     pub(super) maximum_manifest_paths: usize,
@@ -275,7 +301,7 @@ pub(super) struct RawNomadTransferLimits {
     pub(super) maximum_diagnostic_bytes: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadPrestartConfig {
     pub(super) driver: String,
@@ -285,7 +311,7 @@ pub(super) struct RawNomadPrestartConfig {
     pub(super) timeout_seconds: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadResources {
     pub(super) cpu_mhz: u64,
@@ -293,7 +319,7 @@ pub(super) struct RawNomadResources {
     pub(super) disk_mb: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadPriority {
     pub(super) minimum: u8,
@@ -301,7 +327,7 @@ pub(super) struct RawNomadPriority {
     pub(super) maximum: u8,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadResourceProfile {
     pub(super) name: String,

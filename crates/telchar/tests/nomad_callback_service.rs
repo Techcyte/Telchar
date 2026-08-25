@@ -45,7 +45,7 @@ maximum_jwks_bytes = 1048576
 maximum_retained_nonces = 65536
 
 [[backends.nomad]]
-name = "nomad-primary"
+[backends.nomad.nomad-primary]
 system = "x86_64-linux"
 supported_features = []
 maximum_concurrent_builds = 1
@@ -56,24 +56,24 @@ job_name_scope = "telchar"
 poll_interval_seconds = 1
 runtime_limit_seconds = 60
 
-[backends.nomad.driver_config]
+[backends.nomad.nomad-primary.driver_config]
 command = "/bin/true"
 
-[backends.nomad.resources]
+[backends.nomad.nomad-primary.resources]
 cpu_mhz = 100
 memory_mb = 128
 disk_mb = 128
 
-[backends.nomad.transfer_authentication]
+[backends.nomad.nomad-primary.transfer_authentication]
 mode = "hmac"
 key_id = "callback-test"
 secret_file = "{}"
 
-[backends.nomad.store]
+[backends.nomad.nomad-primary.store]
 mode = "daemon"
 uri = "daemon"
 
-[backends.nomad.transfer_limits]
+[backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 1
 maximum_manifest_bytes = 1024
 maximum_input_nar_bytes = 1024

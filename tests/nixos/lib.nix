@@ -600,7 +600,7 @@ rec {
               running_disconnect_policy = "detach-and-finish"
 
               [[backends.nomad]]
-              name = "nomad-primary"
+              [backends.nomad.nomad-primary]
               system = "${pkgs.stdenv.hostPlatform.system}"
               maximum_concurrent_builds = 1
               endpoint = "http://192.168.1.1:4646"
@@ -612,16 +612,16 @@ rec {
 
               transfer_endpoint = "ws://192.168.1.3:7443/callback"
 
-              [backends.nomad.transfer_authentication]
+              [backends.nomad.nomad-primary.transfer_authentication]
               mode = "hmac"
               key_id = "fixture"
               secret_file = "/var/lib/telchar-import/nomad-transfer.key"
 
-              [backends.nomad.store]
+              [backends.nomad.nomad-primary.store]
               mode = "daemon"
               uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-              [backends.nomad.transfer_limits]
+              [backends.nomad.nomad-primary.transfer_limits]
               maximum_manifest_paths = 1024
               maximum_manifest_bytes = 1048576
               maximum_input_nar_bytes = 1073741824
@@ -642,12 +642,12 @@ rec {
               reconnect_timeout_seconds = 30
               maximum_diagnostic_bytes = 65536
 
-              [backends.nomad.resources]
+              [backends.nomad.nomad-primary.resources]
               cpu_mhz = 100
               memory_mb = 128
               disk_mb = 256
 
-              [backends.nomad.driver_config]
+              [backends.nomad.nomad-primary.driver_config]
               command = "${worker}/bin/telchar-nomad-worker"
             '';
           };

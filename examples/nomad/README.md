@@ -128,10 +128,12 @@ Nomad often omits the JWT `iss` claim. The example therefore leaves `verify_issu
 
 ## Placement and resources
 
+Each `[[backends.nomad]]` entry supplies defaults to arbitrary named child backends. The example defines `[backends.nomad.nomad-linux-amd64]`; its child key is the backend name. Nested tables remain explicitly scoped beneath that name. Values on the named backend override group defaults, while lists and structured tables replace inherited values rather than merging.
+
 The backend's constraints select eligible execution nodes. The example selects Linux AMD64 nodes because its backend declares `x86_64-linux`:
 
 ```toml
-[[backends.nomad.constraints]]
+[[backends.nomad.nomad-linux-amd64.constraints]]
 attribute = "${attr.cpu.arch}"
 operator = "="
 value = "amd64"
@@ -139,7 +141,7 @@ value = "amd64"
 
 Add constraints for your storage/socket topology. For example, a node metadata flag can assert that the worker Nix daemon is installed. Do not copy a cluster-specific node class into a generic deployment.
 
-The required `[backends.nomad.resources]` table is the default profile. Optional profiles map an advertised Nix system feature to operator-defined CPU, memory, disk, bounded priority, and additive placement constraints. For example, a derivation requiring `overflow-aws` can select a profile constrained to an operator-approved overflow node class. Base backend constraints remain in force.
+The required `[backends.nomad.nomad-linux-amd64.resources]` table is the default profile. Optional profiles map an advertised Nix system feature to operator-defined CPU, memory, disk, bounded priority, and additive placement constraints. For example, a derivation requiring `overflow-aws` can select a profile constrained to an operator-approved overflow node class. Base backend constraints remain in force.
 
 A profile-selecting feature is a workload requirement, not authenticated authorization. Keep feature advertisement and mappings explicit, and retain hard resource, priority, queue, concurrency, and placement limits. No mapped feature selects the default profile; one selects its profile; multiple mapped profile features fail as ambiguous. Unknown required features remain incompatible with the backend.
 
