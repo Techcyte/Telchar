@@ -101,13 +101,16 @@ impl<R: CallbackExecutionResolver> CallbackResolver<R> {
 }
 
 pub struct PostgresCallbackExecutionResolver {
-    database_url: String,
+    database: crate::persistence::Database,
     namespaces: BTreeMap<String, String>,
 }
 
 impl PostgresCallbackExecutionResolver {
-    pub fn new(database_url: String, namespaces: Vec<(String, String)>) -> io::Result<Self> {
-        if database_url.trim().is_empty() || namespaces.is_empty() {
+    pub fn new(
+        database: crate::persistence::Database,
+        namespaces: Vec<(String, String)>,
+    ) -> io::Result<Self> {
+        if namespaces.is_empty() {
             return Err(invalid("Nomad callback resolver configuration is invalid"));
         }
         let mut configured = BTreeMap::new();
@@ -120,7 +123,7 @@ impl PostgresCallbackExecutionResolver {
             }
         }
         Ok(Self {
-            database_url,
+            database,
             namespaces: configured,
         })
     }
@@ -135,7 +138,7 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
             return Ok(None);
         }
         let build = crate::persistence::read_shared_build_by_execution(
-            &self.database_url,
+            &self.database,
             &authentication.backend,
             &authentication.job_id,
         )
@@ -237,17 +240,20 @@ pub trait ReplayAuthority {
 }
 
 pub struct PostgresReplayAuthority {
-    database_url: String,
+    database: crate::persistence::Database,
     maximum_retained_nonces: usize,
 }
 
 impl PostgresReplayAuthority {
-    pub fn new(database_url: String, maximum_retained_nonces: usize) -> io::Result<Self> {
-        if database_url.trim().is_empty() || maximum_retained_nonces == 0 {
+    pub fn new(
+        database: crate::persistence::Database,
+        maximum_retained_nonces: usize,
+    ) -> io::Result<Self> {
+        if maximum_retained_nonces == 0 {
             return Err(invalid("Nomad callback replay configuration is invalid"));
         }
         Ok(Self {
-            database_url,
+            database,
             maximum_retained_nonces,
         })
     }
@@ -260,7 +266,7 @@ impl ReplayAuthority for PostgresReplayAuthority {
         verified: &VerifiedHmacRequest,
     ) -> io::Result<bool> {
         crate::persistence::reserve_nomad_callback_nonce(
-            &self.database_url,
+            &self.database,
             &authentication.backend,
             &authentication.job_id,
             &authentication.allocation_id,

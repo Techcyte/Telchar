@@ -125,11 +125,10 @@ where
     T::TlsConnect: Send,
     <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
 {
-    Pool::builder()
+    Ok(Pool::builder()
         .max_size(16)
-        .min_idle(Some(1))
         .connection_timeout(Duration::from_secs(5))
-        .build(manager)
+        .build_unchecked(manager))
 }
 
 fn tls_connector(

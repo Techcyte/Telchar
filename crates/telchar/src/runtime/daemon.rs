@@ -37,7 +37,7 @@ pub(super) fn shutdown_daemon_services(
 pub(super) fn serve_connection(
     listener: &IpcListener,
     envelope_timeout: Duration,
-    database_url: &str,
+    database: &telchar::persistence::Database,
     service_config: &telchar::service::config::ServiceConfig,
     running_disconnect_policy: telchar::service::deployment::RunningDisconnectPolicy,
     output_retention: telchar::service::deployment::OutputRetention,
@@ -54,7 +54,7 @@ pub(super) fn serve_connection(
 ) -> io::Result<()> {
     serve_accepted_connection(
         listener.accept_with_envelope_timeout(envelope_timeout)?,
-        database_url,
+        database,
         service_config,
         running_disconnect_policy,
         output_retention,
@@ -74,7 +74,7 @@ pub(super) fn serve_connection(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn serve_accepted_connection(
     mut connection: telchar::service::ipc::IpcConnection,
-    database_url: &str,
+    database: &telchar::persistence::Database,
     service_config: &telchar::service::config::ServiceConfig,
     running_disconnect_policy: telchar::service::deployment::RunningDisconnectPolicy,
     output_retention: telchar::service::deployment::OutputRetention,
@@ -106,7 +106,7 @@ pub(super) fn serve_accepted_connection(
     let requester_reference =
         telchar::persistence::requester_reference(&connection.envelope().requester);
     if let Err(error) = telchar::persistence::open_protocol_session(
-        database_url,
+        database,
         &session_id,
         &requester_reference,
         &connection.envelope().requester.credential_id,
@@ -135,7 +135,7 @@ pub(super) fn serve_accepted_connection(
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = gateway_store.query();
-        let mut build_executor = backends.executor(database_url, Arc::clone(shared_builds))?;
+        let mut build_executor = backends.executor(database.clone(), Arc::clone(shared_builds))?;
         let mut store_export = gateway_store.export();
         let mut store_import = gateway_store.import()?;
         let mut store_closure = gateway_store.closure();
@@ -163,7 +163,7 @@ pub(super) fn serve_accepted_connection(
         )
         .build_executor(&mut build_executor)
         .identity(
-            database_url,
+            database,
             &session_id,
             &connection.envelope().requester.audit_subject,
             &connection.envelope().requester.quota_subject,
@@ -188,7 +188,7 @@ pub(super) fn serve_accepted_connection(
             "frontend session run failed"
         );
     }
-    match telchar::persistence::close_protocol_session(database_url, &session_id) {
+    match telchar::persistence::close_protocol_session(database, &session_id) {
         Ok(_) => tracing::info!(
             event = "database.protocol_session.closed",
             operation = "close",

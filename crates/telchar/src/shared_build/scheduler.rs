@@ -4,7 +4,7 @@ use std::io;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::persistence::{self, SharedBuild, SharedBuildFailure, SharedBuildState};
+use crate::persistence::{self, Database, SharedBuild, SharedBuildFailure, SharedBuildState};
 use crate::service::config::SchedulingLimits;
 
 const MAXIMUM_SCHEDULING_SUBJECTS: usize = 256;
@@ -13,7 +13,7 @@ const RECHECK_INTERVAL: Duration = Duration::from_millis(250);
 type LimitsForSubject = dyn Fn(&str) -> SchedulingLimits + Send + Sync;
 
 pub struct SharedBuildScheduler {
-    database_url: String,
+    database: Database,
     limits_for_subject: Box<LimitsForSubject>,
     state: Mutex<SchedulerState>,
     changed: Condvar,
@@ -25,14 +25,13 @@ struct SchedulerState {
 
 impl SharedBuildScheduler {
     pub fn new(
-        database_url: impl Into<String>,
+        database: Database,
         limits_for_subject: impl Fn(&str) -> SchedulingLimits + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let database_url = database_url.into();
-        let last_admitted_subject = persistence::read_shared_build_scheduler_subject(&database_url)
+        let last_admitted_subject = persistence::read_shared_build_scheduler_subject(&database)
             .map_err(shared_build_error)?;
         Ok(Self {
-            database_url,
+            database,
             limits_for_subject: Box::new(limits_for_subject),
             state: Mutex::new(SchedulerState {
                 last_admitted_subject,
@@ -53,7 +52,7 @@ impl SharedBuildScheduler {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             self.admit_eligible_builds(&mut state)?;
-            let build = persistence::read_shared_build(&self.database_url, derivation_path)
+            let build = persistence::read_shared_build(&self.database, derivation_path)
                 .map_err(shared_build_error)?
                 .ok_or_else(|| io::Error::other("queued shared build is unavailable"))?;
             match build.state {
@@ -95,7 +94,7 @@ impl SharedBuildScheduler {
         let mut cursor = state.last_admitted_subject.clone();
         while examined_subjects < MAXIMUM_SCHEDULING_SUBJECTS {
             let Some(entry) = persistence::read_next_queued_shared_build(
-                &self.database_url,
+                &self.database,
                 cursor.as_deref(),
                 MAXIMUM_SCHEDULING_SUBJECTS,
             )
@@ -126,13 +125,13 @@ impl SharedBuildScheduler {
             examined_subjects += 1;
             let limits = (self.limits_for_subject)(&entry.quota_subject);
             match persistence::start_queued_shared_build(
-                &self.database_url,
+                &self.database,
                 &entry.derivation_path,
                 limits.maximum_active_builds(),
             ) {
                 Ok(_) => {
                     persistence::record_shared_build_scheduler_subject(
-                        &self.database_url,
+                        &self.database,
                         &entry.quota_subject,
                     )
                     .map_err(shared_build_error)?;

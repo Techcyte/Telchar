@@ -234,7 +234,10 @@ fn configured_backend_does_not_retry_callback_recorded_build_failure() {
     };
     let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
-        .executor(database.url(), Arc::clone(&builds))
+        .executor(
+            telchar::persistence::Database::connect(database.url()).expect("database connects"),
+            Arc::clone(&builds),
+        )
         .expect("executor configures");
 
     executor
@@ -320,7 +323,10 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
     };
     let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
-        .executor(database.url(), Arc::clone(&builds))
+        .executor(
+            telchar::persistence::Database::connect(database.url()).expect("database connects"),
+            Arc::clone(&builds),
+        )
         .expect("executor configures");
 
     executor
@@ -466,7 +472,10 @@ fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
     });
     let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
-        .executor(database.url(), Arc::clone(&live_builds))
+        .executor(
+            telchar::persistence::Database::connect(database.url()).expect("database connects"),
+            Arc::clone(&live_builds),
+        )
         .expect("executor configures");
 
     let result = executor
@@ -587,7 +596,10 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
     };
     let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
         .expect("backends configure")
-        .executor(database.url(), Arc::clone(&live_builds))
+        .executor(
+            telchar::persistence::Database::connect(database.url()).expect("database connects"),
+            Arc::clone(&live_builds),
+        )
         .expect("executor configures");
     let result = executor
         .execute(&execution)

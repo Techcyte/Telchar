@@ -10,14 +10,14 @@ use crate::nomad::authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
 use crate::nomad::callback::{
-    CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
-    PostgresReplayAuthority, decode_authentication,
+    decode_authentication, CallbackAdmission, CallbackResolver, PostgresCallbackExecutionResolver,
+    PostgresReplayAuthority,
 };
-use crate::nomad::callback_http::{CallbackHttpLimits, accept_connection};
+use crate::nomad::callback_http::{accept_connection, CallbackHttpLimits};
 use crate::nomad::protocol::{
-    BuildOutcome, BuildResultMetadata, BuildSpecification, Direction, Frame, FrameKind,
-    InputManifest, NarMetadata, OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits,
-    TransferSession, decode_metadata, encode_metadata, read_frame, write_frame,
+    decode_metadata, encode_metadata, read_frame, write_frame, BuildOutcome, BuildResultMetadata,
+    BuildSpecification, Direction, Frame, FrameKind, InputManifest, NarMetadata, OutputReceipt,
+    PathManifestEntry, PathSet, ProtocolLimits, TransferSession,
 };
 use crate::service::config::{
     NomadBackendConfig, NomadCallbackConfig, NomadTransferAuthentication,
@@ -37,7 +37,7 @@ impl NomadCallbackService {
     pub fn start(
         listener: TcpListener,
         callback: NomadCallbackConfig,
-        database_url: String,
+        database: crate::persistence::Database,
         backends: Vec<NomadBackendConfig>,
         gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
@@ -80,7 +80,7 @@ impl NomadCallbackService {
                 registered.insert(identity, shutdown_connection);
                 drop(registered);
                 let callback = callback.clone();
-                let database_url = database_url.clone();
+                let database = database.clone();
                 let backends = backends.clone();
                 let connections = Arc::clone(&listener_connections);
                 let gateway_store = gateway_store.clone();
@@ -91,7 +91,7 @@ impl NomadCallbackService {
                     let result = serve_connection(
                         &mut connection,
                         &callback,
-                        &database_url,
+                        &database,
                         &backends,
                         &gateway_store,
                         output_retention,
@@ -189,7 +189,7 @@ impl Drop for NomadCallbackService {
 pub fn serve_connection(
     connection: &mut TcpStream,
     callback: &NomadCallbackConfig,
-    database_url: &str,
+    database: &crate::persistence::Database,
     backends: &[NomadBackendConfig],
     gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
@@ -205,7 +205,7 @@ pub fn serve_connection(
         })
         .collect();
     let resolver = CallbackResolver::new(PostgresCallbackExecutionResolver::new(
-        database_url.to_owned(),
+        database.clone(),
         namespaces,
     )?);
     connection.set_read_timeout(Some(callback.authentication_request_timeout()))?;
@@ -276,10 +276,8 @@ pub fn serve_connection(
                 nonce_retention: backend.transfer_limits().nonce_retention(),
                 maximum_retained_nonces: callback.maximum_retained_nonces(),
             })?;
-            let replay = PostgresReplayAuthority::new(
-                database_url.to_owned(),
-                callback.maximum_retained_nonces(),
-            )?;
+            let replay =
+                PostgresReplayAuthority::new(database.clone(), callback.maximum_retained_nonces())?;
             CallbackAdmission::with_replay(
                 verifier,
                 allocation,
@@ -444,7 +442,7 @@ pub fn serve_connection(
     let outcome = match receive_build_outputs(
         &mut socket,
         &mut session,
-        database_url,
+        database,
         derivation_path,
         build_request,
         gateway_store,
@@ -456,7 +454,7 @@ pub fn serve_connection(
         Ok(outcome) => outcome,
         Err(error) => {
             let _ = crate::persistence::complete_shared_build_failure(
-                database_url,
+                database,
                 derivation_path,
                 "nomad-transfer-failure",
                 &serde_json::json!({"stage": "output-collection"}),
@@ -474,7 +472,7 @@ pub fn serve_connection(
     );
     if let BuildCollectionOutcome::Failed { diagnostic } = outcome {
         crate::persistence::complete_shared_build_failure(
-            database_url,
+            database,
             derivation_path,
             "nomad-build-failure",
             &serde_json::json!({"diagnostic": diagnostic}),
@@ -484,7 +482,7 @@ pub fn serve_connection(
         return Ok(());
     }
     crate::persistence::complete_shared_build_success(
-        database_url,
+        database,
         derivation_path,
         &serde_json::json!({
             "status": "built",
@@ -568,7 +566,7 @@ fn log_output_collection_outcome(
 fn receive_build_outputs<S: io::Read + io::Write>(
     socket: &mut crate::nomad::callback_http::CallbackSocket<S>,
     session: &mut TransferSession,
-    database_url: &str,
+    database: &crate::persistence::Database,
     derivation_path: &str,
     build_request: &crate::build::BuildRequest,
     gateway_store: &GatewayStoreEndpoint,
@@ -610,10 +608,9 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     ));
                 }
                 if !collecting {
-                    crate::persistence::collect_shared_build(database_url, derivation_path)
-                        .map_err(|_| {
-                            io::Error::other("Nomad output collection transition failed")
-                        })?;
+                    crate::persistence::collect_shared_build(database, derivation_path).map_err(
+                        |_| io::Error::other("Nomad output collection transition failed"),
+                    )?;
                     collecting = true;
                 }
                 let metadata: PathManifestEntry =
@@ -1167,8 +1164,8 @@ impl Drop for ConnectionPermit {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputTransferSummary, ensure_before, phase_deadline, publish_live_log,
-        summarize_requested_inputs, take_chunk,
+        ensure_before, phase_deadline, publish_live_log, summarize_requested_inputs, take_chunk,
+        InputTransferSummary,
     };
     use crate::nomad::protocol::{PathManifestEntry, PathSet};
     use std::fmt;
@@ -1230,20 +1227,16 @@ mod tests {
         let events = captured.0.lock().expect("events lock");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, tracing::Level::WARN);
-        assert!(
-            events[0]
-                .1
-                .contains("event=\"nomad.callback.output_collection.completed\"")
-        );
+        assert!(events[0]
+            .1
+            .contains("event=\"nomad.callback.output_collection.completed\""));
         assert!(events[0].1.contains("backend=\"backend-a\""));
         assert!(events[0].1.contains("job_id=\"job-a\""));
         assert!(events[0].1.contains("allocation_id=\"allocation-a\""));
         assert!(events[0].1.contains("result=\"failed\""));
-        assert!(
-            events[0]
-                .1
-                .contains("diagnostic=\"builder exited with status 1\"")
-        );
+        assert!(events[0]
+            .1
+            .contains("diagnostic=\"builder exited with status 1\""));
     }
 
     #[test]

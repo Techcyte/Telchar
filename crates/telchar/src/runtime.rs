@@ -42,7 +42,8 @@ fn run_executor() -> io::Result<()> {
             config.ownership_lease_duration(),
         )
         .map_err(|_| invalid("local executor ownership refused"))?;
-    let database_url = ownership.database_url().to_owned();
+    let database = telchar::persistence::Database::connect(ownership.database_url())
+        .map_err(|_| invalid("database connection failed"))?;
     let ownership_renewal_interval = config.ownership_renewal_interval();
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
     let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw())?;
@@ -82,12 +83,12 @@ fn run_executor() -> io::Result<()> {
                     return Ok(());
                 }
                 let backend_execution_id = backend_execution_id.to_owned();
-                let database_url = database_url.clone();
+                let database = database.clone();
                 let specification = specification.clone();
                 let executor = Arc::clone(&executor);
                 std::thread::spawn(move || {
                     if telchar::persistence::record_local_backend_running(
-                        &database_url,
+                        &database,
                         &backend_execution_id,
                     )
                     .is_err()
@@ -146,7 +147,7 @@ fn run_executor() -> io::Result<()> {
                     };
                     if let Some((state, classification, metadata)) = terminal {
                         let _ = telchar::persistence::complete_local_backend_execution(
-                            &database_url,
+                            &database,
                             &backend_execution_id,
                             state,
                             classification,
@@ -157,7 +158,7 @@ fn run_executor() -> io::Result<()> {
                 Ok(())
             };
         if let Err(error) = telchar::service::executor_service::handle_connection_with_submit(
-            &database_url,
+            &database,
             &mut stream,
             &mut submit,
         ) {
@@ -328,12 +329,13 @@ fn run_daemon() -> io::Result<()> {
                 return Err(invalid("singleton daemon ownership refused"));
             }
         };
-    let database_url = singleton_ownership.database_url().to_owned();
+    let database = telchar::persistence::Database::connect(singleton_ownership.database_url())
+        .map_err(|_| invalid("database connection failed"))?;
     let mut store_retention = gateway_store.retention()?;
     singleton_ownership
         .maintain_during(config.ownership_renewal_interval(), || {
             telchar::store::retention::reconcile_output_retention(
-                &database_url,
+                &database,
                 store_retention.as_mut(),
                 SystemTime::now(),
             )
@@ -358,7 +360,7 @@ fn run_daemon() -> io::Result<()> {
             .map(std::path::Path::to_path_buf),
         static_ssh_health.clone(),
     )?;
-    let active_shared_builds = telchar::persistence::read_active_shared_builds(&database_url, 256)
+    let active_shared_builds = telchar::persistence::read_active_shared_builds(&database, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let recovery_started = std::time::Instant::now();
     telchar::service::metrics::recovery_started("startup");
@@ -370,7 +372,7 @@ fn run_daemon() -> io::Result<()> {
                 gateway_store.endpoint().cloned(),
             );
         telchar::shared_build::recovery::reconcile_shared_builds(
-            &database_url,
+            &database,
             output_retention.duration(),
             active_shared_builds,
             &mut shared_build_outputs,
@@ -404,9 +406,8 @@ fn run_daemon() -> io::Result<()> {
         monitoring_count = reconciliation.monitoring,
         "active shared builds reconciled"
     );
-    let operational_counts =
-        telchar::persistence::read_shared_build_operational_counts(&database_url)
-            .map_err(|_| invalid("shared build metric reconciliation failed"))?;
+    let operational_counts = telchar::persistence::read_shared_build_operational_counts(&database)
+        .map_err(|_| invalid("shared build metric reconciliation failed"))?;
     telchar::service::metrics::record_shared_build_operational_counts(operational_counts);
     let monitoring_derivations = reconciliation.monitoring_derivations;
     let backends = telchar::backend::routing::ReloadableBackends::new(configured_backends);
@@ -414,14 +415,14 @@ fn run_daemon() -> io::Result<()> {
     let scheduling_config = config.clone();
     let shared_build_scheduler = Arc::new(
         telchar::shared_build::scheduler::SharedBuildScheduler::new(
-            database_url.clone(),
+            database.clone(),
             move |quota_subject| scheduling_config.scheduling_limits(quota_subject),
         )
         .map_err(|_| invalid("shared build scheduler initialization failed"))?,
     );
     let mut recovery_services = Vec::with_capacity(monitoring_derivations.len());
     for derivation_path in monitoring_derivations {
-        let database_url = database_url.clone();
+        let database = database.clone();
         let backends = backends.clone();
         let retention = output_retention.duration();
         let gateway_store = gateway_store.endpoint().cloned();
@@ -435,7 +436,7 @@ fn run_daemon() -> io::Result<()> {
                             gateway_store.clone(),
                         );
                     let outcome = telchar::shared_build::recovery::reconcile_adopted_shared_builds(
-                        &database_url,
+                        &database,
                         retention,
                         std::slice::from_ref(&derivation_path),
                         &mut outputs,
@@ -473,7 +474,7 @@ fn run_daemon() -> io::Result<()> {
             telchar::nomad::callback_service::NomadCallbackService::start(
                 callback_listener,
                 callback.clone(),
-                database_url.clone(),
+                database.clone(),
                 config.nomad_backends().to_vec(),
                 gateway_store
                     .endpoint()
@@ -511,7 +512,7 @@ fn run_daemon() -> io::Result<()> {
         let result = serve_connection(
             &listener,
             envelope_timeout,
-            &database_url,
+            &database,
             &config,
             running_disconnect_policy,
             output_retention,
@@ -534,14 +535,14 @@ fn run_daemon() -> io::Result<()> {
         }
         return result;
     }
-    let maintenance_database_url = database_url.clone();
+    let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
     let mut maintenance_service = telchar::service::daemon_services::MaintenanceService::start(
         Duration::from_secs(60),
         move || {
             let mut backend = maintenance_gateway_store.retention()?;
             telchar::store::retention::reconcile_output_retention(
-                &maintenance_database_url,
+                &maintenance_database,
                 backend.as_mut(),
                 SystemTime::now(),
             )
@@ -730,7 +731,7 @@ fn run_daemon() -> io::Result<()> {
                 continue;
             }
         };
-        let database_url = database_url.clone();
+        let database = database.clone();
         let service_config = config.clone();
         let object_admission = object_admission.clone();
         let rate_admission = rate_admission.clone();
@@ -748,7 +749,7 @@ fn run_daemon() -> io::Result<()> {
                     accepted_session_id = Some(session_id.clone());
                     serve_accepted_connection(
                         connection,
-                        &database_url,
+                        &database,
                         &service_config,
                         running_disconnect_policy,
                         output_retention,

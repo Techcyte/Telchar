@@ -68,7 +68,8 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     let old_snapshot = initial.clone();
     let mut old_executor = old_snapshot
         .executor(
-            "postgresql://fixture",
+            telchar::persistence::Database::connect("postgresql://fixture")
+                .expect("database configuration is valid"),
             Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         )
         .expect("old executor configures");
@@ -112,13 +113,11 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         .set_target_name("pool.builder-a")
         .expect("exact target records");
     assert!(old_executor.execute(&execution).is_err());
-    assert!(
-        !old_snapshot
-            .static_ssh_scheduling()
-            .read()
-            .expect("scheduling reads")
-            .contains("pool.builder-a")
-    );
+    assert!(!old_snapshot
+        .static_ssh_scheduling()
+        .read()
+        .expect("scheduling reads")
+        .contains("pool.builder-a"));
     assert_eq!(
         reloadable
             .snapshot()
@@ -246,11 +245,9 @@ fn reload_refreshes_nomad_token_file_contents() {
             }
         }
         let request_text = String::from_utf8(bytes).expect("request is UTF-8");
-        assert!(
-            request_text
-                .to_ascii_lowercase()
-                .contains("x-nomad-token: replacement-token\r\n")
-        );
+        assert!(request_text
+            .to_ascii_lowercase()
+            .contains("x-nomad-token: replacement-token\r\n"));
         write!(
             request,
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"

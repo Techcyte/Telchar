@@ -316,7 +316,7 @@ impl NomadClient {
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
-        database_url: &str,
+        database: &(impl crate::persistence::DatabaseSource + ?Sized),
         execution: &BuildExecution<'_>,
         shared_build_key: &[u8],
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
@@ -347,7 +347,7 @@ impl NomadClient {
         let mut attempt_ordinal = 1_usize;
         let result = loop {
             let result = self.execute_attempt(
-                database_url,
+                database,
                 execution,
                 shared_build_key,
                 attempt_ordinal,
@@ -375,7 +375,7 @@ impl NomadClient {
                         next_ordinal,
                     )?;
                     crate::persistence::retry_shared_build(
-                        database_url,
+                        database,
                         derivation_path,
                         &current_execution_id,
                         &next_execution_id,
@@ -415,7 +415,7 @@ impl NomadClient {
     #[allow(clippy::too_many_arguments)]
     fn execute_attempt(
         &self,
-        database_url: &str,
+        database: &(impl crate::persistence::DatabaseSource + ?Sized),
         execution: &BuildExecution<'_>,
         shared_build_key: &[u8],
         attempt_ordinal: usize,
@@ -476,7 +476,7 @@ impl NomadClient {
                     )));
                 }
                 let build = crate::persistence::read_shared_build(
-                    database_url,
+                    database,
                     std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
                         NomadAttemptFailure::Terminal(io::Error::other(
                             "Nomad derivation path is invalid",

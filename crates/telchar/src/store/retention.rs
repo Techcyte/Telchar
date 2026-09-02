@@ -54,13 +54,13 @@ pub trait StoreRetentionBackend: Send {
 }
 
 pub fn reconcile_released_request_leases(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     backend: &mut dyn StoreRetentionBackend,
 ) -> io::Result<()> {
     let mut after_lease_id = None;
     loop {
         let leases = crate::persistence::read_released_request_leases_page(
-            database_url,
+            database,
             after_lease_id.as_deref(),
             256,
         )
@@ -75,7 +75,7 @@ pub fn reconcile_released_request_leases(
             .iter()
             .map(|lease| lease.lease_id.clone())
             .collect::<Vec<_>>();
-        crate::persistence::reconcile_store_leases(database_url, &lease_ids)
+        crate::persistence::reconcile_store_leases(database, &lease_ids)
             .map_err(|_| retention_error())?;
         if page_len < 256 {
             return Ok(());
@@ -85,16 +85,16 @@ pub fn reconcile_released_request_leases(
 }
 
 pub fn reconcile_output_retention(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     backend: &mut dyn StoreRetentionBackend,
     now: SystemTime,
 ) -> io::Result<()> {
     let result = (|| {
-        reconcile_released_request_leases(database_url, backend)?;
+        reconcile_released_request_leases(database, backend)?;
         let mut after_lease_id = None;
         loop {
             let released = crate::persistence::release_expired_request_output_leases(
-                database_url,
+                database,
                 now,
                 after_lease_id.as_deref(),
                 256,
@@ -112,7 +112,7 @@ pub fn reconcile_output_retention(
                 .iter()
                 .map(|lease| lease.lease_id.clone())
                 .collect::<Vec<_>>();
-            crate::persistence::reconcile_store_leases(database_url, &lease_ids)
+            crate::persistence::reconcile_store_leases(database, &lease_ids)
                 .map_err(|_| retention_error())?;
             after_lease_id = released.last().map(|lease| lease.lease_id.clone());
             if released.len() < 256 {

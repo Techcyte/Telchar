@@ -65,10 +65,8 @@ fn verifies_exact_callback_allocation_identity() {
     let client = NomadClient::new(config).expect("Nomad client constructs");
     let server = thread::spawn(move || {
         let (mut request, _) = listener.accept().expect("allocation request accepts");
-        assert!(
-            read_http_request(&mut request)
-                .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n")
-        );
+        assert!(read_http_request(&mut request)
+            .starts_with("GET /v1/allocation/allocation-1?namespace=telchar HTTP/1.1\r\n"));
         write_json_response(
             &mut request,
             200,
@@ -168,7 +166,8 @@ fn configured_backend_exposes_deterministic_execution_identity_before_submission
         ConfiguredBackends::new(&config, gateway_store_endpoint()).expect("backends configure");
     let executor = configured
         .executor(
-            "postgresql://fixture",
+            telchar::persistence::Database::connect("postgresql://fixture")
+                .expect("database configuration is valid"),
             Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         )
         .expect("executor configures");
