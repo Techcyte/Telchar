@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use postgres::config::SslMode;
 use postgres::{Client, Config, NoTls};
 use rustls::{ClientConfig, RootCertStore};
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -45,7 +44,12 @@ pub(super) fn connect(
 fn connection_config(
     database_url: &str,
 ) -> Result<(Config, ConnectionSecurity), Box<dyn std::error::Error + Send + Sync>> {
+    if !database_url.starts_with("postgres://") && !database_url.starts_with("postgresql://") {
+        return Ok((database_url.parse::<Config>()?, ConnectionSecurity::Plain));
+    }
+
     let mut url = Url::parse(database_url)?;
+    let mut tls_requested = false;
     let mut root_certificate = None;
     let mut parameters = Vec::new();
     let query_parameters = url
@@ -56,7 +60,12 @@ fn connection_config(
         match key.as_str() {
             "sslrootcert" => root_certificate = Some(PathBuf::from(value)),
             "sslmode" if matches!(value.as_str(), "verify-ca" | "verify-full") => {
+                tls_requested = true;
                 parameters.push((key, "require".to_owned()));
+            }
+            "sslmode" if value == "require" => {
+                tls_requested = true;
+                parameters.push((key, value));
             }
             _ => parameters.push((key, value)),
         }
@@ -65,11 +74,12 @@ fn connection_config(
     if !parameters.is_empty() {
         url.query_pairs_mut().extend_pairs(parameters);
     }
-    let config = url.as_str().parse::<Config>()?;
-    let security = if config.get_ssl_mode() == SslMode::Disable {
-        ConnectionSecurity::Plain
-    } else {
+    let normalized_database_url = url.as_str().replace('+', "%20");
+    let config = normalized_database_url.parse::<Config>()?;
+    let security = if tls_requested {
         ConnectionSecurity::Tls { root_certificate }
+    } else {
+        ConnectionSecurity::Plain
     };
     Ok((config, security))
 }
@@ -108,13 +118,31 @@ mod tests {
     }
 
     #[test]
-    fn default_database_urls_select_tls() {
+    fn database_urls_without_tls_configuration_select_unencrypted_connections() {
         assert_eq!(
             connection_security("postgresql://telchar@db.example.com/telchar")
                 .expect("default URL parses"),
-            ConnectionSecurity::Tls {
-                root_certificate: None,
-            }
+            ConnectionSecurity::Plain
         );
+    }
+
+    #[test]
+    fn keyword_database_configuration_preserves_unencrypted_connections() {
+        assert_eq!(
+            connection_security("host=/run/postgresql user=telchar dbname=telchar")
+                .expect("keyword configuration parses"),
+            ConnectionSecurity::Plain
+        );
+    }
+
+    #[test]
+    fn url_options_preserve_spaces() {
+        let (config, security) = connection_config(
+            "postgresql://telchar@localhost/telchar?options=-c%20telchar.owner_kind%3Dgateway",
+        )
+        .expect("URL options parse");
+
+        assert_eq!(security, ConnectionSecurity::Plain);
+        assert_eq!(config.get_options(), Some("-c telchar.owner_kind=gateway"));
     }
 }

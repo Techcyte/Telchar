@@ -71,7 +71,7 @@ impl PostgresFixture {
         let url = certificate.as_ref().map_or_else(
             || {
                 format!(
-                    "postgresql://telchar@localhost/{database}?host={}&port={port}&sslmode=disable",
+                    "postgresql://telchar@localhost/{database}?host={}&port={port}",
                     percent_encode(socket.to_str().expect("UTF-8 socket directory"))
                 )
             },
