@@ -3,16 +3,16 @@
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use telchar::nomad::protocol::{
-    Authentication, AuthenticationProof, BuildOutcome, BuildResultMetadata, BuildStarted,
-    Direction, Frame, FrameKind, InputManifest, InputTransferSession, LogChunk, NarMetadata,
-    OutputReceipt, PathManifestEntry, PathSet, ProtocolLimits, ProtocolSession, decode_metadata,
-    encode_metadata, read_frame, write_frame,
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildOutcome, BuildResultMetadata, BuildStarted, Direction, Frame, FrameKind, InputManifest,
+    InputTransferSession, LogChunk, NarMetadata, OutputReceipt, PathManifestEntry, PathSet,
+    ProtocolLimits, ProtocolSession,
 };
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 use tungstenite::client::IntoClientRequest;
@@ -457,6 +457,7 @@ pub struct WorkerConfig {
     transfer_chunk_bytes: usize,
     maximum_manifest_bytes: usize,
     transfer_idle_timeout: std::time::Duration,
+    setup_timeout: std::time::Duration,
     output_collection_timeout: std::time::Duration,
     maximum_connection_lifetime: std::time::Duration,
     maximum_diagnostic_bytes: usize,
@@ -497,6 +498,12 @@ impl WorkerConfig {
             .filter(|value| *value > 0)
             .map(std::time::Duration::from_secs)
             .ok_or_else(|| invalid("worker transfer idle timeout is invalid"))?;
+        let setup_timeout = required(&mut lookup, "TELCHAR_SETUP_TIMEOUT_SECONDS")?
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .map(std::time::Duration::from_secs)
+            .ok_or_else(|| invalid("worker setup timeout is invalid"))?;
         let output_collection_timeout =
             required(&mut lookup, "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS")?
                 .parse::<u64>()
@@ -599,6 +606,7 @@ impl WorkerConfig {
             transfer_chunk_bytes,
             maximum_manifest_bytes,
             transfer_idle_timeout,
+            setup_timeout,
             output_collection_timeout,
             maximum_connection_lifetime,
             maximum_diagnostic_bytes,
@@ -634,6 +642,10 @@ impl WorkerConfig {
         self.transfer_idle_timeout
     }
 
+    pub fn setup_timeout(&self) -> std::time::Duration {
+        self.setup_timeout
+    }
+
     pub fn output_collection_timeout(&self) -> std::time::Duration {
         self.output_collection_timeout
     }
@@ -652,6 +664,22 @@ impl WorkerConfig {
 }
 
 pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
+    let deadline = std::time::Instant::now()
+        .checked_add(config.setup_timeout())
+        .ok_or_else(|| invalid("worker setup timeout is invalid"))?;
+    loop {
+        match connect_once(config) {
+            Ok(socket) => return Ok(socket),
+            Err(error) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     let metadata = encode_metadata(
         config.authentication(),
         MAXIMUM_AUTHENTICATION_METADATA_BYTES,

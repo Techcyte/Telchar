@@ -820,6 +820,7 @@ fn render_job_at<S: AsRef<str>>(
             "TELCHAR_TRANSFER_CHUNK_BYTES": config.transfer_limits().stream_buffer_bytes().to_string(),
             "TELCHAR_MAXIMUM_MANIFEST_BYTES": config.transfer_limits().maximum_manifest_bytes().to_string(),
             "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS": config.transfer_limits().transfer_idle_timeout().as_secs().to_string(),
+            "TELCHAR_SETUP_TIMEOUT_SECONDS": config.transfer_limits().setup_timeout().as_secs().to_string(),
             "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS": config.transfer_limits().output_collection_timeout().as_secs().to_string(),
             "TELCHAR_MAXIMUM_CONNECTION_LIFETIME_SECONDS": config.transfer_limits().maximum_connection_lifetime().as_secs().to_string(),
             "TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES": config.transfer_limits().maximum_diagnostic_bytes().to_string(),

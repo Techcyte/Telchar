@@ -4,15 +4,15 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::thread;
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde_json::json;
 use telchar::nomad::protocol::{
-    Authentication, AuthenticationProof, BuildSpecification, Frame, FrameKind, InputManifest,
-    NamedOutput, PathManifestEntry, ProtocolLimits, decode_metadata, encode_metadata, read_frame,
-    write_frame,
+    decode_metadata, encode_metadata, read_frame, write_frame, Authentication, AuthenticationProof,
+    BuildSpecification, Frame, FrameKind, InputManifest, NamedOutput, PathManifestEntry,
+    ProtocolLimits,
 };
-use telchar_nomad_worker::{WorkerConfig, authenticate, receive_manifest};
+use telchar_nomad_worker::{authenticate, receive_manifest, WorkerConfig};
 
 fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -30,6 +30,7 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
             "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
             "30".to_owned(),
         ),
+        ("TELCHAR_SETUP_TIMEOUT_SECONDS".to_owned(), "300".to_owned()),
         (
             "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS".to_owned(),
             "300".to_owned(),
@@ -75,6 +76,7 @@ fn parses_exact_workload_identity_environment() {
         config.transfer_idle_timeout(),
         std::time::Duration::from_secs(30)
     );
+    assert_eq!(config.setup_timeout(), std::time::Duration::from_secs(300));
     assert_eq!(
         config.output_collection_timeout(),
         std::time::Duration::from_secs(300)
@@ -136,6 +138,7 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
             "TELCHAR_TRANSFER_IDLE_TIMEOUT_SECONDS".to_owned(),
             "30".to_owned(),
         ),
+        ("TELCHAR_SETUP_TIMEOUT_SECONDS".to_owned(), "300".to_owned()),
         (
             "TELCHAR_OUTPUT_COLLECTION_TIMEOUT_SECONDS".to_owned(),
             "300".to_owned(),
@@ -285,6 +288,28 @@ fn receives_exact_bounded_manifest_after_authentication() {
 
     let received = receive_manifest(&config).expect("worker receives manifest");
     assert_eq!(received.manifest(), &expected);
+    server.join().expect("server joins");
+}
+
+#[test]
+fn waits_for_callback_listener_during_setup() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let address = listener.local_addr().expect("address");
+    drop(listener);
+    let endpoint = format!("ws://{address}/callback");
+    let mut environment = workload_environment(&endpoint);
+    environment.insert("TELCHAR_SETUP_TIMEOUT_SECONDS".to_owned(), "2".to_owned());
+    let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
+        .expect("worker environment parses");
+    let server = thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(200));
+        let listener = TcpListener::bind(address).expect("delayed listener binds");
+        let (stream, _) = listener.accept().expect("callback accepted");
+        let mut socket = tungstenite::accept_hdr(stream, select_protocol).expect("socket accepts");
+        let _ = socket.read().expect("authentication reads");
+    });
+
+    authenticate(&config).expect("callback authentication waits for listener");
     server.join().expect("server joins");
 }
 
