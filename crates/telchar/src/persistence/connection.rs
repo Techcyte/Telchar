@@ -58,6 +58,10 @@ impl Database {
 
 pub trait DatabaseSource {
     fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>>;
+
+    fn is_configured(&self) -> bool {
+        true
+    }
 }
 
 impl DatabaseSource for Database {
@@ -70,11 +74,19 @@ impl DatabaseSource for str {
     fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
         Database::connect(self)
     }
+
+    fn is_configured(&self) -> bool {
+        !self.trim().is_empty()
+    }
 }
 
 impl DatabaseSource for String {
     fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
         self.as_str().database()
+    }
+
+    fn is_configured(&self) -> bool {
+        self.as_str().is_configured()
     }
 }
 

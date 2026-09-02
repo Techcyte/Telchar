@@ -93,7 +93,7 @@ pub struct ProtocolSession {
 }
 
 pub fn open_protocol_session(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     requester_reference: &str,
     credential_id: &str,
@@ -103,15 +103,15 @@ pub fn open_protocol_session(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(open_protocol_session));
     let authentication_authority = validate_protocol_session_inputs(
-        database_url,
+        database,
         session_id,
         requester_reference,
         credential_id,
         audit_subject,
         quota_subject,
     )?;
-    let mut client = connect(database_url)
-        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let mut client =
+        connect(database).map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
@@ -129,17 +129,17 @@ pub fn open_protocol_session(
 }
 
 pub fn close_protocol_session(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
 ) -> Result<ProtocolSession, ProtocolSessionError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(close_protocol_session));
     validate_session_id(session_id)?;
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
-    let mut client = connect(database_url)
-        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let mut client =
+        connect(database).map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
@@ -171,17 +171,17 @@ pub fn close_protocol_session(
 }
 
 pub fn read_protocol_session(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
 ) -> Result<Option<ProtocolSession>, ProtocolSessionError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_protocol_session));
     validate_session_id(session_id)?;
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
-    let mut client = connect(database_url)
-        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let mut client =
+        connect(database).map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     client
         .query_opt(
             "SELECT session_id, requester_reference, credential_id, authentication_authority, audit_subject, quota_subject, state, created_at, closed_at FROM protocol_sessions WHERE session_id = $1",
@@ -193,7 +193,7 @@ pub fn read_protocol_session(
 }
 
 fn validate_protocol_session_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     requester_reference: &str,
     credential_id: &str,
@@ -203,7 +203,7 @@ fn validate_protocol_session_inputs(
     validate_session_id(session_id)?;
     let authentication_authority = AuthenticationAuthority::for_credential_id(credential_id)
         .ok_or(ProtocolSessionError(ProtocolSessionFailure::Configuration))?;
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || !is_requester_reference(requester_reference)
         || credential_id.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || audit_subject.is_empty()

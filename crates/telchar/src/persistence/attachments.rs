@@ -60,13 +60,13 @@ pub struct RequestAttachment {
 }
 
 pub fn attach_request(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<RequestAttachment, RequestAttachmentError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(attach_request));
-    validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = connect(database_url)
+    validate_request_attachment_inputs(database, session_id, request_id)?;
+    let mut client = connect(database)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -113,13 +113,13 @@ pub fn attach_request(
 }
 
 pub fn detach_request(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<RequestAttachment, RequestAttachmentError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(detach_request));
-    validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = connect(database_url)
+    validate_request_attachment_inputs(database, session_id, request_id)?;
+    let mut client = connect(database)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -163,14 +163,14 @@ pub fn detach_request(
 }
 
 pub fn complete_request_delivery(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<RequestAttachment, RequestAttachmentError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(complete_request_delivery));
-    validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = connect(database_url)
+    validate_request_attachment_inputs(database, session_id, request_id)?;
+    let mut client = connect(database)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -203,14 +203,14 @@ pub fn complete_request_delivery(
 }
 
 pub fn read_request_attachment(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<Option<RequestAttachment>, RequestAttachmentError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_request_attachment));
-    validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = connect(database_url)
+    validate_request_attachment_inputs(database, session_id, request_id)?;
+    let mut client = connect(database)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     client
         .query_opt(
@@ -223,11 +223,11 @@ pub fn read_request_attachment(
 }
 
 fn validate_request_attachment_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<(), RequestAttachmentError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || session_id.is_empty()
         || session_id.len() > MAX_IPC_COMPONENT_BYTES
         || request_id.is_empty()

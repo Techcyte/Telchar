@@ -130,13 +130,13 @@ pub struct SharedBuildAttemptOutcome {
 }
 
 pub fn enqueue_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     quota_subject: &str,
     maximum_queued_builds: usize,
 ) -> Result<SharedBuildQueueEntry, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(enqueue_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     if quota_subject.is_empty()
         || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || quota_subject.contains('\0')
@@ -148,7 +148,7 @@ pub fn enqueue_shared_build(
     let maximum_queued_builds = i64::try_from(maximum_queued_builds)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -226,20 +226,20 @@ pub fn enqueue_shared_build(
 }
 
 pub fn start_queued_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     maximum_active_builds: usize,
 ) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(start_queued_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     if maximum_active_builds == 0 || maximum_active_builds > 65_536 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let maximum_active_builds = i64::try_from(maximum_active_builds)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -294,18 +294,18 @@ pub fn start_queued_shared_build(
 }
 
 pub fn read_queued_shared_builds(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     limit: usize,
 ) -> Result<Vec<SharedBuildQueueEntry>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_queued_shared_builds));
-    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+    if !database.is_configured() || limit == 0 || limit > 256 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let limit =
         i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query(
             "SELECT derivation_path, quota_subject, queue_position, queued_at
@@ -322,15 +322,15 @@ pub fn read_queued_shared_builds(
 }
 
 pub fn read_shared_build_scheduler_subject(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
 ) -> Result<Option<String>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_scheduler_subject));
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_one(
             "SELECT last_admitted_subject FROM shared_build_scheduler_state WHERE singleton",
@@ -342,12 +342,12 @@ pub fn read_shared_build_scheduler_subject(
 }
 
 pub fn record_shared_build_scheduler_subject(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     quota_subject: &str,
 ) -> Result<(), SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(record_shared_build_scheduler_subject));
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || quota_subject.is_empty()
         || quota_subject.len() > crate::service::ipc::MAX_IPC_CREDENTIAL_ID_BYTES
         || quota_subject.contains('\0')
@@ -355,7 +355,7 @@ pub fn record_shared_build_scheduler_subject(
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .execute(
             "UPDATE shared_build_scheduler_state
@@ -368,13 +368,13 @@ pub fn record_shared_build_scheduler_subject(
 }
 
 pub fn read_next_queued_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     after_quota_subject: Option<&str>,
     maximum_subjects: usize,
 ) -> Result<Option<SharedBuildQueueEntry>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_next_queued_shared_build));
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || maximum_subjects == 0
         || maximum_subjects > 256
         || after_quota_subject.is_some_and(|subject| {
@@ -388,7 +388,7 @@ pub fn read_next_queued_shared_build(
     let maximum_subjects = i64::try_from(maximum_subjects)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let rows = client
         .query(
             "SELECT DISTINCT ON (quota_subject)
@@ -433,7 +433,7 @@ fn decode_shared_build_queue_entry(row: &Row) -> Result<SharedBuildQueueEntry, S
 
 #[allow(clippy::too_many_arguments)]
 pub fn claim_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     request_digest: &[u8],
     backend_name: &str,
@@ -444,7 +444,7 @@ pub fn claim_shared_build(
 ) -> Result<SharedBuildClaim, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(claim_shared_build));
     claim_shared_build_inner(
-        database_url,
+        database,
         derivation_path,
         request_digest,
         backend_name,
@@ -458,7 +458,7 @@ pub fn claim_shared_build(
 
 #[allow(clippy::too_many_arguments)]
 pub fn claim_shared_build_with_request(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     request_digest: &[u8],
     backend_name: &str,
@@ -482,7 +482,7 @@ pub fn claim_shared_build_with_request(
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     claim_shared_build_inner(
-        database_url,
+        database,
         derivation_path,
         request_digest,
         backend_name,
@@ -496,7 +496,7 @@ pub fn claim_shared_build_with_request(
 
 #[allow(clippy::too_many_arguments)]
 fn claim_shared_build_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     request_digest: &[u8],
     backend_name: &str,
@@ -507,7 +507,7 @@ fn claim_shared_build_inner(
     build_request: Option<&crate::build::BuildRequest>,
 ) -> Result<SharedBuildClaim, SharedBuildError> {
     validate_shared_build_claim(
-        database_url,
+        database,
         derivation_path,
         request_digest,
         backend_name,
@@ -529,7 +529,7 @@ fn claim_shared_build_inner(
         .map(|output| (*output).to_owned())
         .collect::<Vec<_>>();
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -618,13 +618,13 @@ fn claim_shared_build_inner(
 }
 
 pub fn read_shared_build_by_execution(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     backend_name: &str,
     backend_execution_id: &str,
 ) -> Result<Option<SharedBuild>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_by_execution));
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || backend_name.is_empty()
         || backend_name.len() > MAX_IPC_COMPONENT_BYTES
         || backend_name.contains('\0')
@@ -635,7 +635,7 @@ pub fn read_shared_build_by_execution(
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -655,13 +655,13 @@ pub fn read_shared_build_by_execution(
 }
 
 pub fn read_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<Option<SharedBuild>, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -678,15 +678,15 @@ pub fn read_shared_build(
 }
 
 pub fn read_shared_build_operational_counts(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
 ) -> Result<SharedBuildOperationalCounts, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_operational_counts));
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let row = client
         .query_one(
             "SELECT count(*) FILTER (WHERE state = 'claimed' AND queue_position IS NOT NULL),
@@ -711,18 +711,18 @@ pub fn read_shared_build_operational_counts(
 }
 
 pub fn read_active_shared_builds(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     limit: usize,
 ) -> Result<Vec<SharedBuild>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_active_shared_builds));
-    if database_url.trim().is_empty() || limit == 0 || limit > 256 {
+    if !database.is_configured() || limit == 0 || limit > 256 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let limit =
         i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -743,13 +743,13 @@ pub fn read_active_shared_builds(
 }
 
 pub fn start_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(start_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -777,7 +777,7 @@ pub fn start_shared_build(
 }
 
 pub fn retry_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     current_execution_id: &str,
     next_execution_id: &str,
@@ -785,7 +785,7 @@ pub fn retry_shared_build(
     result_metadata: &serde_json::Value,
 ) -> Result<SharedBuildAttempt, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(retry_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let result_metadata_text = serde_json::to_string(result_metadata)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     if current_execution_id.is_empty()
@@ -803,7 +803,7 @@ pub fn retry_shared_build(
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -854,13 +854,13 @@ pub fn retry_shared_build(
 }
 
 pub fn collect_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(collect_shared_build));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -898,7 +898,7 @@ pub fn collect_shared_build(
 }
 
 pub fn complete_shared_build_success(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     result_metadata: &serde_json::Value,
     retention: Duration,
@@ -906,7 +906,7 @@ pub fn complete_shared_build_success(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(complete_shared_build_success));
     complete_shared_build(
-        database_url,
+        database,
         derivation_path,
         SharedBuildState::Succeeded,
         None,
@@ -916,7 +916,7 @@ pub fn complete_shared_build_success(
 }
 
 pub fn complete_shared_build_failure(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     failure_classification: &str,
     result_metadata: &serde_json::Value,
@@ -925,7 +925,7 @@ pub fn complete_shared_build_failure(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(complete_shared_build_failure));
     complete_shared_build(
-        database_url,
+        database,
         derivation_path,
         SharedBuildState::Failed,
         Some(failure_classification),
@@ -969,14 +969,14 @@ fn create_shared_build_attempt(
 }
 
 pub fn read_shared_build_attempt(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<Option<SharedBuildAttempt>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt));
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind,
@@ -994,16 +994,16 @@ pub fn read_shared_build_attempt(
 }
 
 pub fn read_shared_build_attempt_outcome(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     attempt_id: &i64,
 ) -> Result<Option<SharedBuildAttemptOutcome>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt_outcome));
-    if database_url.trim().is_empty() || *attempt_id <= 0 {
+    if !database.is_configured() || *attempt_id <= 0 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT attempt_id, classification, result_metadata::text, created_at
@@ -1057,14 +1057,14 @@ fn decode_shared_build_attempt_outcome(
 }
 
 fn complete_shared_build(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     terminal_state: SharedBuildState,
     failure_classification: Option<&str>,
     result_metadata: &serde_json::Value,
     retention: Duration,
 ) -> Result<SharedBuild, SharedBuildError> {
-    validate_shared_build_identity(database_url, derivation_path)?;
+    validate_shared_build_identity(database, derivation_path)?;
     let result_metadata_text = serde_json::to_string(result_metadata)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     if !result_metadata.is_object()
@@ -1091,7 +1091,7 @@ fn complete_shared_build(
             .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?,
     );
     let mut client =
-        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -1170,10 +1170,10 @@ fn complete_shared_build(
 }
 
 fn validate_shared_build_identity(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<(), SharedBuildError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || derivation_path.is_empty()
         || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
         || derivation_path.contains('\0')
@@ -1185,7 +1185,7 @@ fn validate_shared_build_identity(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_shared_build_claim(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     request_digest: &[u8],
     backend_name: &str,
@@ -1210,7 +1210,7 @@ fn validate_shared_build_claim(
             .iter()
             .enumerate()
             .all(|(index, output)| !expected_outputs[..index].contains(output));
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || derivation_path.is_empty()
         || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
         || derivation_path.contains('\0')

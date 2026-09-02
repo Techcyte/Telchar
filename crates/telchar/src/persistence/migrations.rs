@@ -157,20 +157,21 @@ pub fn latest_migration_version() -> i64 {
     MIGRATIONS.last().map_or(0, |migration| migration.version)
 }
 
-pub fn migrate(database_url: &str) -> Result<MigrationOutcome, MigrationError> {
-    migrate_list(database_url, MIGRATIONS)
+pub fn migrate(
+    database: &(impl DatabaseSource + ?Sized),
+) -> Result<MigrationOutcome, MigrationError> {
+    migrate_list(database, MIGRATIONS)
 }
 
 fn migrate_list(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     migrations: &[Migration],
 ) -> Result<MigrationOutcome, MigrationError> {
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(MigrationError(MigrationFailure::Configuration));
     }
     validate_migrations(migrations).map_err(MigrationError)?;
-    let mut client =
-        connect(database_url).map_err(|_| MigrationError(MigrationFailure::Connection))?;
+    let mut client = connect(database).map_err(|_| MigrationError(MigrationFailure::Connection))?;
     run_migrations(&mut client, migrations).map_err(MigrationError)
 }
 
