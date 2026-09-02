@@ -7,6 +7,28 @@ use std::time::Duration;
 use support::postgres::PostgresFixture;
 
 #[test]
+fn tls_owner_acquires_and_renews_the_database_lease() {
+    let fixture = PostgresFixture::start_tls();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates over TLS");
+
+    let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("daemon acquires ownership over TLS");
+
+    owner.renew().expect("daemon renews ownership over TLS");
+    owner.verify().expect("daemon verifies ownership over TLS");
+    drop(owner);
+
+    telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("replacement acquires released ownership over TLS");
+}
+
+#[test]
 fn only_one_owner_acquires_the_database_lease() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
@@ -101,17 +123,15 @@ fn expired_owner_cannot_mutate_durable_state_after_takeover() {
     )
     .expect("replacement acquires expired lease");
 
-    assert!(
-        telchar::persistence::create_build_request(
-            &stale_database_url,
-            "stale-owner-request",
-            "/nix/store/11111111111111111111111111111111-stale.drv",
-            "x86_64-linux",
-            "stale-owner",
-            "stale-owner",
-        )
-        .is_err()
-    );
+    assert!(telchar::persistence::create_build_request(
+        &stale_database_url,
+        "stale-owner-request",
+        "/nix/store/11111111111111111111111111111111-stale.drv",
+        "x86_64-linux",
+        "stale-owner",
+        "stale-owner",
+    )
+    .is_err());
     telchar::persistence::create_build_request(
         replacement.database_url(),
         "replacement-request",

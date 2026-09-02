@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use postgres::{Client, Config, NoTls};
+use crate::persistence::{connect, validate_connection};
 
 const DAEMON_OWNER_KIND: &str = "daemon";
 const LOCAL_EXECUTOR_OWNER_KIND: &str = "local-executor";
@@ -82,7 +82,7 @@ impl SingletonOwnership {
     ) -> Result<Self, SingletonOwnershipError> {
         let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
         let owner_token = owner_token();
-        let mut connection = Client::connect(database_url, NoTls)
+        let mut connection = connect(database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let row = connection
             .query_opt(
@@ -137,20 +137,18 @@ impl SingletonOwnership {
         let lease_duration = self.lease_duration;
         let finished = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|scope| {
-            let renewal = scope.spawn(|| {
-                loop {
-                    std::thread::park_timeout(renewal_interval);
-                    if finished.load(std::sync::atomic::Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    renew_lease(
-                        &database_url,
-                        owner_kind,
-                        &owner_token,
-                        generation,
-                        lease_duration,
-                    )?;
+            let renewal = scope.spawn(|| loop {
+                std::thread::park_timeout(renewal_interval);
+                if finished.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(());
                 }
+                renew_lease(
+                    &database_url,
+                    owner_kind,
+                    &owner_token,
+                    generation,
+                    lease_duration,
+                )?;
             });
             let result = operation();
             finished.store(true, std::sync::atomic::Ordering::Release);
@@ -167,7 +165,7 @@ impl SingletonOwnership {
     }
 
     pub fn verify(&self) -> Result<(), SingletonOwnershipError> {
-        let mut connection = Client::connect(&self.database_url, NoTls)
+        let mut connection = connect(&self.database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let current = connection
             .query_opt(
@@ -184,7 +182,7 @@ impl SingletonOwnership {
 
 impl Drop for SingletonOwnership {
     fn drop(&mut self) {
-        let Ok(mut connection) = Client::connect(&self.database_url, NoTls) else {
+        let Ok(mut connection) = connect(&self.database_url) else {
             return;
         };
         let _ = connection.execute(
@@ -202,7 +200,7 @@ fn renew_lease(
     lease_duration: Duration,
 ) -> Result<(), SingletonOwnershipError> {
     let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
-    let mut connection = Client::connect(database_url, NoTls)
+    let mut connection = connect(database_url)
         .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
     let renewed = connection
         .execute(
@@ -235,8 +233,7 @@ fn fenced_database_url(
     owner_token: &str,
     generation: i64,
 ) -> Result<String, SingletonOwnershipError> {
-    let _: Config = database_url
-        .parse()
+    validate_connection(database_url)
         .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Configuration))?;
     let options = format!(
         "-c telchar.owner_kind={owner_kind} -c telchar.owner_token={owner_token} -c telchar.owner_generation={generation}"

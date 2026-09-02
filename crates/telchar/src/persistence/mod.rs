@@ -30,7 +30,7 @@ mod attachments;
 mod build_requests;
 mod callback_nonces;
 mod connection;
-use connection::connect;
+pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
 mod leases;
 mod migrations;

@@ -11,7 +11,7 @@ enum ConnectionSecurity {
     Tls { root_certificate: Option<PathBuf> },
 }
 
-pub(super) fn connect(
+pub(crate) fn connect(
     database_url: &str,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
     let (config, security) = connection_config(database_url)?;
@@ -39,6 +39,10 @@ pub(super) fn connect(
             Ok(config.connect(MakeRustlsConnect::new(tls))?)
         }
     }
+}
+
+pub(crate) fn validate(database_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    connection_config(database_url).map(|_| ())
 }
 
 fn connection_config(
