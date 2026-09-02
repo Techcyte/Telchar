@@ -498,6 +498,7 @@ transfer_endpoint = "ws://127.0.0.1:17443/callback"
 source_service = "telchar-build-callback"
 destination_service = "telchar-callback"
 local_bind_port = 17443
+sidecar_image = "registry.example/envoy:v1.38.4"
 
 [backends.nomad.nomad.resources]
 cpu_mhz = 1000
@@ -564,6 +565,10 @@ args = ["/alloc/data/nix"]
     assert_eq!(connect.source_service(), "telchar-build-callback");
     assert_eq!(connect.destination_service(), "telchar-callback");
     assert_eq!(connect.local_bind_port(), 17443);
+    assert_eq!(
+        connect.sidecar_image(),
+        Some("registry.example/envoy:v1.38.4")
+    );
 
     let configured = fs::read_to_string(&config_path).expect("configuration reads");
     fs::write(

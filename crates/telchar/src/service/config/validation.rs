@@ -483,6 +483,7 @@ pub(super) fn validate_nomad_backends(
                             "Nomad callback destination service is invalid",
                         )?,
                         local_bind_port: connect.local_bind_port,
+                        sidecar_image: connect.sidecar_image,
                     })
                 })
                 .transpose()?;

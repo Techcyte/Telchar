@@ -4,14 +4,14 @@ use std::fs;
 use std::io::{self, Read};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Certificate, Identity};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
@@ -898,19 +898,27 @@ fn render_job_at<S: AsRef<str>>(
     group.insert("Tasks".to_owned(), Value::Array(tasks));
     if let Some(connect) = config.callback_connect() {
         group.insert("Networks".to_owned(), json!([{ "Mode": "bridge" }]));
+        let mut sidecar_service = json!({
+            "Proxy": {
+                "Upstreams": [{
+                    "DestinationName": connect.destination_service(),
+                    "LocalBindPort": connect.local_bind_port(),
+                }],
+            },
+        });
+        if let Some(image) = connect.sidecar_image() {
+            sidecar_service["SidecarTask"] = json!({
+                "Config": {
+                    "image": image,
+                },
+            });
+        }
         group.insert(
             "Services".to_owned(),
             json!([{
                 "Name": connect.source_service(),
                 "Connect": {
-                    "SidecarService": {
-                        "Proxy": {
-                            "Upstreams": [{
-                                "DestinationName": connect.destination_service(),
-                                "LocalBindPort": connect.local_bind_port(),
-                            }],
-                        },
-                    },
+                    "SidecarService": sidecar_service,
                 },
             }]),
         );

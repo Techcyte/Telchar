@@ -244,6 +244,7 @@ pub(super) struct RawNomadCallbackConnect {
     pub(super) source_service: String,
     pub(super) destination_service: String,
     pub(super) local_bind_port: u16,
+    pub(super) sidecar_image: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]

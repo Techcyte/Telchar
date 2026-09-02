@@ -611,6 +611,7 @@ pub struct NomadCallbackConnect {
     pub(super) source_service: String,
     pub(super) destination_service: String,
     pub(super) local_bind_port: u16,
+    pub(super) sidecar_image: Option<String>,
 }
 
 impl NomadCallbackConnect {
@@ -624,6 +625,10 @@ impl NomadCallbackConnect {
 
     pub fn local_bind_port(&self) -> u16 {
         self.local_bind_port
+    }
+
+    pub fn sidecar_image(&self) -> Option<&str> {
+        self.sidecar_image.as_deref()
     }
 }
 

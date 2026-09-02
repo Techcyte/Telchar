@@ -30,6 +30,7 @@ transfer_endpoint = "ws://127.0.0.1:17443/callback"
 source_service = "telchar-build-callback"
 destination_service = "telchar-callback"
 local_bind_port = 17443
+sidecar_image = "registry.example/envoy:v1.38.4"
 
 [[backends.nomad.nomad-arm.constraints]]
 attribute = "${attr.cpu.arch}"
@@ -237,9 +238,14 @@ args = ["--stdio"]
     assert_eq!(job["Job"]["TaskGroups"][0]["Networks"][0]["Mode"], "bridge");
     let callback_service = &job["Job"]["TaskGroups"][0]["Services"][0];
     assert_eq!(callback_service["Name"], "telchar-build-callback");
-    let callback_upstream = &callback_service["Connect"]["SidecarService"]["Proxy"]["Upstreams"][0];
+    let callback_sidecar = &callback_service["Connect"]["SidecarService"];
+    let callback_upstream = &callback_sidecar["Proxy"]["Upstreams"][0];
     assert_eq!(callback_upstream["DestinationName"], "telchar-callback");
     assert_eq!(callback_upstream["LocalBindPort"], 17443);
+    assert_eq!(
+        callback_sidecar["SidecarTask"]["Config"]["image"],
+        "registry.example/envoy:v1.38.4"
+    );
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Attempts"], 0);
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Mode"], "fail");
     assert_eq!(
@@ -425,11 +431,9 @@ command = "/opt/telchar/bin/worker"
         URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
     );
     assert!(claims["allocation_id"].is_null());
-    assert!(
-        claims["request_key"]
-            .as_str()
-            .is_some_and(|key| !key.is_empty())
-    );
+    assert!(claims["request_key"]
+        .as_str()
+        .is_some_and(|key| !key.is_empty()));
     assert!(
         claims["expires_at"].as_u64().expect("expiry is numeric")
             > claims["issued_at"].as_u64().expect("issue time is numeric")
