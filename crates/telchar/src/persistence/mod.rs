@@ -31,6 +31,7 @@ mod build_requests;
 mod callback_nonces;
 mod connection;
 pub(crate) use connection::{connect, validate as validate_connection};
+pub use connection::{Database, DatabaseConnection, DatabaseSource};
 mod executor;
 mod leases;
 mod migrations;

@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 
+use std::ops::{Deref, DerefMut};
+use std::time::Duration;
+
 use postgres::{Client, Config, NoTls};
+use r2d2::{Pool, PooledConnection};
+use r2d2_postgres::PostgresConnectionManager;
 use rustls::{ClientConfig, RootCertStore};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
@@ -11,34 +16,130 @@ enum ConnectionSecurity {
     Tls { root_certificate: Option<PathBuf> },
 }
 
-pub(crate) fn connect(
-    database_url: &str,
-) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    let (config, security) = connection_config(database_url)?;
-    match security {
-        ConnectionSecurity::Plain => Ok(config.connect(NoTls)?),
-        ConnectionSecurity::Tls { root_certificate } => {
-            let mut roots = RootCertStore::empty();
-            let native = rustls_native_certs::load_native_certs();
-            for certificate in native.certs {
-                roots.add(certificate)?;
+#[derive(Clone)]
+pub struct Database {
+    pool: DatabasePool,
+}
+
+#[derive(Clone)]
+enum DatabasePool {
+    Plain(Pool<PostgresConnectionManager<NoTls>>),
+    Tls(Pool<PostgresConnectionManager<MakeRustlsConnect>>),
+}
+
+pub enum DatabaseConnection {
+    Plain(PooledConnection<PostgresConnectionManager<NoTls>>),
+    Tls(PooledConnection<PostgresConnectionManager<MakeRustlsConnect>>),
+}
+
+impl Database {
+    pub fn connect(database_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (config, security) = connection_config(database_url)?;
+        let pool = match security {
+            ConnectionSecurity::Plain => {
+                DatabasePool::Plain(build_pool(PostgresConnectionManager::new(config, NoTls))?)
             }
-            if let Some(path) = root_certificate {
-                let certificate = std::fs::read(path)?;
-                let mut certificate = certificate.as_slice();
-                for certificate in rustls_pemfile::certs(&mut certificate) {
-                    roots.add(certificate?)?;
-                }
-            }
-            let tls = ClientConfig::builder_with_provider(
-                rustls::crypto::ring::default_provider().into(),
-            )
-            .with_safe_default_protocol_versions()?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-            Ok(config.connect(MakeRustlsConnect::new(tls))?)
+            ConnectionSecurity::Tls { root_certificate } => DatabasePool::Tls(build_pool(
+                PostgresConnectionManager::new(config, tls_connector(root_certificate)?),
+            )?),
+        };
+        Ok(Self { pool })
+    }
+
+    pub fn connection(
+        &self,
+    ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
+        match &self.pool {
+            DatabasePool::Plain(pool) => Ok(DatabaseConnection::Plain(pool.get()?)),
+            DatabasePool::Tls(pool) => Ok(DatabaseConnection::Tls(pool.get()?)),
         }
     }
+}
+
+pub trait DatabaseSource {
+    fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+impl DatabaseSource for Database {
+    fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.clone())
+    }
+}
+
+impl DatabaseSource for str {
+    fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
+        Database::connect(self)
+    }
+}
+
+impl DatabaseSource for String {
+    fn database(&self) -> Result<Database, Box<dyn std::error::Error + Send + Sync>> {
+        self.as_str().database()
+    }
+}
+
+pub(crate) fn connect(
+    database: &(impl DatabaseSource + ?Sized),
+) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
+    database.database()?.connection()
+}
+
+impl Deref for DatabaseConnection {
+    type Target = Client;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Plain(connection) => connection,
+            Self::Tls(connection) => connection,
+        }
+    }
+}
+
+impl DerefMut for DatabaseConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Plain(connection) => connection,
+            Self::Tls(connection) => connection,
+        }
+    }
+}
+
+fn build_pool<T>(
+    manager: PostgresConnectionManager<T>,
+) -> Result<Pool<PostgresConnectionManager<T>>, r2d2::Error>
+where
+    T: postgres::tls::MakeTlsConnect<postgres::Socket> + Clone + Send + Sync + 'static,
+    T::Stream: Send + Sync,
+    T::TlsConnect: Send,
+    <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
+{
+    Pool::builder()
+        .max_size(16)
+        .min_idle(Some(1))
+        .connection_timeout(Duration::from_secs(5))
+        .build(manager)
+}
+
+fn tls_connector(
+    root_certificate: Option<PathBuf>,
+) -> Result<MakeRustlsConnect, Box<dyn std::error::Error + Send + Sync>> {
+    let mut roots = RootCertStore::empty();
+    let native = rustls_native_certs::load_native_certs();
+    for certificate in native.certs {
+        roots.add(certificate)?;
+    }
+    if let Some(path) = root_certificate {
+        let certificate = std::fs::read(path)?;
+        let mut certificate = certificate.as_slice();
+        for certificate in rustls_pemfile::certs(&mut certificate) {
+            roots.add(certificate?)?;
+        }
+    }
+    let tls = ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(MakeRustlsConnect::new(tls))
 }
 
 pub(crate) fn validate(database_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
