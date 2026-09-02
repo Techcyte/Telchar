@@ -243,9 +243,10 @@ args = ["--stdio"]
     assert_eq!(callback_upstream["DestinationName"], "telchar-callback");
     assert_eq!(callback_upstream["LocalBindPort"], 17443);
     assert_eq!(
-        callback_sidecar["SidecarTask"]["Config"]["image"],
+        callback_service["Connect"]["SidecarTask"]["Config"]["image"],
         "registry.example/envoy:v1.38.4"
     );
+    assert!(callback_sidecar["SidecarTask"].is_null());
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Attempts"], 0);
     assert_eq!(job["Job"]["TaskGroups"][0]["RestartPolicy"]["Mode"], "fail");
     assert_eq!(

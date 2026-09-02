@@ -898,7 +898,7 @@ fn render_job_at<S: AsRef<str>>(
     group.insert("Tasks".to_owned(), Value::Array(tasks));
     if let Some(connect) = config.callback_connect() {
         group.insert("Networks".to_owned(), json!([{ "Mode": "bridge" }]));
-        let mut sidecar_service = json!({
+        let sidecar_service = json!({
             "Proxy": {
                 "Upstreams": [{
                     "DestinationName": connect.destination_service(),
@@ -906,8 +906,11 @@ fn render_job_at<S: AsRef<str>>(
                 }],
             },
         });
+        let mut connect_config = json!({
+            "SidecarService": sidecar_service,
+        });
         if let Some(image) = connect.sidecar_image() {
-            sidecar_service["SidecarTask"] = json!({
+            connect_config["SidecarTask"] = json!({
                 "Config": {
                     "image": image,
                 },
@@ -917,9 +920,7 @@ fn render_job_at<S: AsRef<str>>(
             "Services".to_owned(),
             json!([{
                 "Name": connect.source_service(),
-                "Connect": {
-                    "SidecarService": sidecar_service,
-                },
+                "Connect": connect_config,
             }]),
         );
     }
