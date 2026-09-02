@@ -23,7 +23,20 @@ pub struct PostgresFixture {
 
 impl PostgresFixture {
     pub fn start() -> Self {
+        Self::start_with_tls(None)
+    }
+
+    #[allow(dead_code)]
+    pub fn start_tls() -> Self {
         let root = temporary_root();
+        let certificate = create_tls_certificate(&root);
+        Self::start_with_tls(Some(certificate))
+    }
+
+    fn start_with_tls(certificate: Option<TlsCertificate>) -> Self {
+        let root = certificate
+            .as_ref()
+            .map_or_else(temporary_root, |certificate| certificate.root.clone());
         let data = root.join("data");
         let socket = root.join("socket");
         fs::create_dir_all(&socket).expect("PostgreSQL socket directory creates");
@@ -47,7 +60,7 @@ impl PostgresFixture {
             .expect("initdb succeeds");
 
         let port = available_port();
-        let server = start_server(&root, &data, &socket, port);
+        let server = start_server(&root, &data, &socket, port, certificate.as_ref());
 
         let database = format!("telchar_{}", SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let mut admin = connect(&socket, port, "postgres");
@@ -55,9 +68,24 @@ impl PostgresFixture {
             .batch_execute(&format!("CREATE DATABASE {database}"))
             .expect("test database creates");
         drop(admin);
-        let url = format!(
-            "postgresql://telchar@localhost/{database}?host={}&port={port}",
-            percent_encode(socket.to_str().expect("UTF-8 socket directory"))
+        let url = certificate.as_ref().map_or_else(
+            || {
+                format!(
+                    "postgresql://telchar@localhost/{database}?host={}&port={port}&sslmode=disable",
+                    percent_encode(socket.to_str().expect("UTF-8 socket directory"))
+                )
+            },
+            |certificate| {
+                format!(
+                    "postgresql://telchar@localhost:{port}/{database}?sslmode=verify-full&sslrootcert={}",
+                    percent_encode(
+                        certificate
+                            .authority
+                            .to_str()
+                            .expect("UTF-8 CA certificate path")
+                    )
+                )
+            },
         );
         Self {
             root,
@@ -75,11 +103,7 @@ impl PostgresFixture {
 
     #[allow(dead_code)]
     pub fn keyword_url(&self) -> String {
-        let database = self
-            .url
-            .strip_prefix("postgresql://telchar@localhost/")
-            .and_then(|tail| tail.split_once('?').map(|(database, _)| database))
-            .expect("fixture database URL has database name");
+        let database = database_name(&self.url);
         format!(
             "host={} port={} user=telchar dbname={database}",
             self.socket.to_str().expect("UTF-8 socket directory"),
@@ -95,12 +119,13 @@ impl PostgresFixture {
             &self.data,
             &self.socket,
             self.port,
+            None,
         ));
     }
 
     #[allow(dead_code)]
     pub fn connect(&self) -> Client {
-        Client::connect(&self.url, NoTls).expect("test database connects")
+        connect(&self.socket, self.port, database_name(&self.url))
     }
 
     #[allow(dead_code)]
@@ -142,31 +167,155 @@ impl PostgresFixture {
     }
 }
 
+struct TlsCertificate {
+    root: PathBuf,
+    authority: PathBuf,
+    certificate: PathBuf,
+    key: PathBuf,
+}
+
+fn create_tls_certificate(root: &std::path::Path) -> TlsCertificate {
+    fs::create_dir_all(root).expect("TLS fixture directory creates");
+    let authority = root.join("ca.crt");
+    let authority_key = root.join("ca.key");
+    let certificate = root.join("server.crt");
+    let request = root.join("server.csr");
+    let key = root.join("server.key");
+    let extensions = root.join("server.ext");
+    fs::write(
+        &extensions,
+        "subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
+    )
+    .expect("TLS certificate extensions write");
+    Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=Telchar test CA",
+            "-keyout",
+            authority_key.to_str().expect("UTF-8 CA key path"),
+            "-out",
+            authority.to_str().expect("UTF-8 CA certificate path"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("openssl starts")
+        .status
+        .success()
+        .then_some(())
+        .expect("TLS authority creates");
+    Command::new("openssl")
+        .args([
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-keyout",
+            key.to_str().expect("UTF-8 key path"),
+            "-out",
+            request.to_str().expect("UTF-8 request path"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("openssl starts")
+        .status
+        .success()
+        .then_some(())
+        .expect("TLS certificate request creates");
+    Command::new("openssl")
+        .args([
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-in",
+            request.to_str().expect("UTF-8 request path"),
+            "-CA",
+            authority.to_str().expect("UTF-8 CA certificate path"),
+            "-CAkey",
+            authority_key.to_str().expect("UTF-8 CA key path"),
+            "-CAcreateserial",
+            "-extfile",
+            extensions.to_str().expect("UTF-8 extension path"),
+            "-out",
+            certificate.to_str().expect("UTF-8 certificate path"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("openssl starts")
+        .status
+        .success()
+        .then_some(())
+        .expect("TLS certificate creates");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600))
+            .expect("TLS key permissions set");
+    }
+    TlsCertificate {
+        root: root.to_path_buf(),
+        authority,
+        certificate,
+        key,
+    }
+}
+
 fn start_server(
     root: &std::path::Path,
     data: &std::path::Path,
     socket: &std::path::Path,
     port: u16,
+    certificate: Option<&TlsCertificate>,
 ) -> Child {
     let log_path = root.join("postgres.log");
     let log = fs::File::create(&log_path).expect("PostgreSQL log creates");
-    let mut server = Command::new("postgres")
-        .args([
-            "-D",
-            data.to_str().expect("UTF-8 data directory"),
-            "-k",
-            socket.to_str().expect("UTF-8 socket directory"),
-            "-h",
-            "",
-            "-p",
-            &port.to_string(),
+    let mut command = Command::new("postgres");
+    command.args([
+        "-D",
+        data.to_str().expect("UTF-8 data directory"),
+        "-k",
+        socket.to_str().expect("UTF-8 socket directory"),
+        "-h",
+        if certificate.is_some() {
+            "127.0.0.1"
+        } else {
+            ""
+        },
+        "-p",
+        &port.to_string(),
+        "-c",
+        "fsync=off",
+        "-c",
+        "synchronous_commit=off",
+        "-c",
+        "full_page_writes=off",
+    ]);
+    if let Some(certificate) = certificate {
+        command.args([
             "-c",
-            "fsync=off",
+            "ssl=on",
             "-c",
-            "synchronous_commit=off",
+            &format!("ssl_cert_file={}", certificate.certificate.display()),
             "-c",
-            "full_page_writes=off",
-        ])
+            &format!("ssl_key_file={}", certificate.key.display()),
+        ]);
+    }
+    let mut server = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log)
@@ -174,6 +323,14 @@ fn start_server(
         .expect("postgres starts");
     wait_until_ready(&mut server, socket, port, &log_path);
     server
+}
+
+fn database_name(database_url: &str) -> &str {
+    database_url
+        .rsplit_once('/')
+        .and_then(|(_, tail)| tail.split_once('?'))
+        .map(|(database, _)| database)
+        .expect("fixture database URL has database name")
 }
 
 fn connect(socket: &std::path::Path, port: u16, database: &str) -> Client {

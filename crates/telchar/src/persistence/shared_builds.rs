@@ -147,8 +147,8 @@ pub fn enqueue_shared_build(
     }
     let maximum_queued_builds = i64::try_from(maximum_queued_builds)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -238,8 +238,8 @@ pub fn start_queued_shared_build(
     }
     let maximum_active_builds = i64::try_from(maximum_active_builds)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -304,8 +304,8 @@ pub fn read_queued_shared_builds(
     }
     let limit =
         i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query(
             "SELECT derivation_path, quota_subject, queue_position, queued_at
@@ -329,8 +329,8 @@ pub fn read_shared_build_scheduler_subject(
     if database_url.trim().is_empty() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_one(
             "SELECT last_admitted_subject FROM shared_build_scheduler_state WHERE singleton",
@@ -354,8 +354,8 @@ pub fn record_shared_build_scheduler_subject(
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .execute(
             "UPDATE shared_build_scheduler_state
@@ -387,8 +387,8 @@ pub fn read_next_queued_shared_build(
     }
     let maximum_subjects = i64::try_from(maximum_subjects)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let rows = client
         .query(
             "SELECT DISTINCT ON (quota_subject)
@@ -528,8 +528,8 @@ fn claim_shared_build_inner(
         .iter()
         .map(|output| (*output).to_owned())
         .collect::<Vec<_>>();
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -634,8 +634,8 @@ pub fn read_shared_build_by_execution(
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -660,8 +660,8 @@ pub fn read_shared_build(
 ) -> Result<Option<SharedBuild>, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -685,8 +685,8 @@ pub fn read_shared_build_operational_counts(
     if database_url.trim().is_empty() {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let row = client
         .query_one(
             "SELECT count(*) FILTER (WHERE state = 'claimed' AND queue_position IS NOT NULL),
@@ -721,8 +721,8 @@ pub fn read_active_shared_builds(
     }
     let limit =
         i64::try_from(limit).map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query(
             "SELECT derivation_path, request_digest, state, backend_name, backend_kind,
@@ -748,8 +748,8 @@ pub fn start_shared_build(
 ) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(start_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -802,8 +802,8 @@ pub fn retry_shared_build(
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -859,8 +859,8 @@ pub fn collect_shared_build(
 ) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(collect_shared_build));
     validate_shared_build_identity(database_url, derivation_path)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -975,8 +975,8 @@ pub fn read_shared_build_attempt(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt));
     validate_shared_build_identity(database_url, derivation_path)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind,
@@ -1002,8 +1002,8 @@ pub fn read_shared_build_attempt_outcome(
     if database_url.trim().is_empty() || *attempt_id <= 0 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     client
         .query_opt(
             "SELECT attempt_id, classification, result_metadata::text, created_at
@@ -1090,8 +1090,8 @@ fn complete_shared_build(
         u32::try_from(retention.as_secs())
             .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?,
     );
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;

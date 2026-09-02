@@ -169,8 +169,8 @@ fn migrate_list(
         return Err(MigrationError(MigrationFailure::Configuration));
     }
     validate_migrations(migrations).map_err(MigrationError)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| MigrationError(MigrationFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| MigrationError(MigrationFailure::Connection))?;
     run_migrations(&mut client, migrations).map_err(MigrationError)
 }
 
@@ -282,21 +282,17 @@ mod tests {
         let error = migrate_list(fixture.url(), &migrations).expect_err("later migration fails");
 
         assert_eq!(error.failure(), MigrationFailure::MigrationSql);
-        let mut client = Client::connect(fixture.url(), NoTls).expect("test database reconnects");
-        assert!(
-            client
-                .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
-                .expect("table lookup succeeds")
-                .get::<_, Option<String>>(0)
-                .is_none()
-        );
-        assert!(
-            client
-                .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
-                .expect("ledger lookup succeeds")
-                .get::<_, Option<String>>(0)
-                .is_none()
-        );
+        let mut client = connect(fixture.url()).expect("test database reconnects");
+        assert!(client
+            .query_one("SELECT to_regclass('migration_rollback_proof')::text", &[])
+            .expect("table lookup succeeds")
+            .get::<_, Option<String>>(0)
+            .is_none());
+        assert!(client
+            .query_one("SELECT to_regclass('telchar_schema_migrations')::text", &[])
+            .expect("ledger lookup succeeds")
+            .get::<_, Option<String>>(0)
+            .is_none());
     }
 
     #[test]

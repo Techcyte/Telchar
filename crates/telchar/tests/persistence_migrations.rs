@@ -10,6 +10,48 @@ use sha2::{Digest, Sha256};
 use support::postgres::PostgresFixture;
 
 #[test]
+fn verified_tls_database_migrates() {
+    let fixture = PostgresFixture::start_tls();
+
+    let outcome = telchar::persistence::migrate(fixture.url()).expect("TLS migration succeeds");
+
+    assert_eq!(
+        outcome.resulting_version,
+        telchar::persistence::latest_migration_version()
+    );
+}
+
+#[test]
+fn tls_database_with_wrong_hostname_fails_to_migrate() {
+    let fixture = PostgresFixture::start_tls();
+    let url = fixture.url().replacen("@localhost:", "@127.0.0.1:", 1);
+
+    let error = telchar::persistence::migrate(&url).expect_err("wrong hostname rejects");
+
+    assert_eq!(
+        error.failure(),
+        telchar::persistence::MigrationFailure::Connection
+    );
+}
+
+#[test]
+fn untrusted_tls_database_fails_to_migrate() {
+    let fixture = PostgresFixture::start_tls();
+    let url = fixture
+        .url()
+        .split('&')
+        .next()
+        .expect("TLS URL has query parameters");
+
+    let error = telchar::persistence::migrate(url).expect_err("untrusted certificate rejects");
+
+    assert_eq!(
+        error.failure(),
+        telchar::persistence::MigrationFailure::Connection
+    );
+}
+
+#[test]
 fn latest_migration_version_matches_resulting_schema() {
     let fixture = PostgresFixture::start();
 

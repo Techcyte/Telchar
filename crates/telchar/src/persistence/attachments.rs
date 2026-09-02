@@ -66,7 +66,7 @@ pub fn attach_request(
 ) -> Result<RequestAttachment, RequestAttachmentError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(attach_request));
     validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -119,7 +119,7 @@ pub fn detach_request(
 ) -> Result<RequestAttachment, RequestAttachmentError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(detach_request));
     validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -170,7 +170,7 @@ pub fn complete_request_delivery(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(complete_request_delivery));
     validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -210,7 +210,7 @@ pub fn read_request_attachment(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_request_attachment));
     validate_request_attachment_inputs(database_url, session_id, request_id)?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| RequestAttachmentError(RequestAttachmentFailure::Connection))?;
     client
         .query_opt(

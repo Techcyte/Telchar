@@ -70,7 +70,7 @@ pub fn register_local_backend_execution(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(register_local_backend_execution));
     validate_local_backend_execution_identity(database_url, backend_execution_id, idempotency_key)?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -124,7 +124,7 @@ pub fn record_local_backend_running(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(record_local_backend_running));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
     let row = client
         .query_opt(
@@ -193,7 +193,7 @@ pub fn complete_local_backend_execution(
             unreachable!()
         }
     };
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -267,7 +267,7 @@ pub fn read_local_backend_execution_result(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_local_backend_execution_result));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
     client
         .query_opt(
@@ -286,7 +286,7 @@ pub fn read_local_backend_execution(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_local_backend_execution));
     validate_local_backend_execution_identity(database_url, backend_execution_id, "validated")?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| LocalBackendExecutionError(LocalBackendExecutionFailure::Connection))?;
     client
         .query_opt(

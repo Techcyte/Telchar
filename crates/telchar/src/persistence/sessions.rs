@@ -110,7 +110,7 @@ pub fn open_protocol_session(
         audit_subject,
         quota_subject,
     )?;
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -138,7 +138,7 @@ pub fn close_protocol_session(
     if database_url.trim().is_empty() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     let mut transaction = client
         .transaction()
@@ -180,7 +180,7 @@ pub fn read_protocol_session(
     if database_url.trim().is_empty() {
         return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
+    let mut client = connect(database_url)
         .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
     client
         .query_opt(

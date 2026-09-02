@@ -67,8 +67,8 @@ pub fn create_build_request(
         audit_subject,
         quota_subject,
     )?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
@@ -102,8 +102,8 @@ pub fn read_build_request(
     if database_url.trim().is_empty() {
         return Err(BuildRequestError(BuildRequestFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     client
         .query_opt(
             "SELECT request_id, derivation_path, system, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1",

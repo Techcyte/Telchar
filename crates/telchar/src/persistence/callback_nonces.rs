@@ -44,7 +44,7 @@ pub fn reserve_nomad_callback_nonce(
     let maximum_retained_nonces =
         i64::try_from(maximum_retained_nonces).map_err(|_| NomadCallbackNonceError)?;
     let nonce_digest = Sha256::digest(nonce.as_bytes()).to_vec();
-    let mut client = Client::connect(database_url, NoTls).map_err(|_| NomadCallbackNonceError)?;
+    let mut client = connect(database_url).map_err(|_| NomadCallbackNonceError)?;
     let mut transaction = client.transaction().map_err(|_| NomadCallbackNonceError)?;
     transaction
         .query_one(

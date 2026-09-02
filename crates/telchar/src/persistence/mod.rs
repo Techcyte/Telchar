@@ -4,13 +4,13 @@ use std::fmt;
 
 use std::time::{Duration, SystemTime};
 
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, Row};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };
-use crate::service::ipc::{MAX_IPC_COMPONENT_BYTES, RequesterMetadata};
+use crate::service::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
 const RETAINED_INPUT_ADMISSION_LOCK_KEY: i64 = 0x5445_4c43_4841_5204_u64 as i64;
@@ -29,6 +29,8 @@ pub fn requester_reference(requester: &RequesterMetadata) -> String {
 mod attachments;
 mod build_requests;
 mod callback_nonces;
+mod connection;
+use connection::connect;
 mod executor;
 mod leases;
 mod migrations;

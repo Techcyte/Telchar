@@ -192,8 +192,8 @@ fn create_store_lease_inner(
     purpose: StoreLeasePurpose,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
     validate_store_lease_inputs(database_url, lease_id, owner_id, store_path)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -320,8 +320,8 @@ fn create_request_retained_leases_inner(
             return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
         }
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -455,8 +455,8 @@ pub fn ensure_request_output_leases(
         return Ok(Vec::new());
     }
     validate_request_output_lease_inputs(database_url, request_id, leases)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -542,8 +542,8 @@ fn create_request_output_leases_inner(
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     validate_request_output_lease_inputs(database_url, request_id, leases)?;
     let retention_seconds = retention_seconds as f64;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -622,8 +622,8 @@ fn detach_request_and_release_leases_inner(
     session_id: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -697,8 +697,8 @@ fn release_unattached_request_leases_inner(
     database_url: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -870,8 +870,8 @@ fn release_store_lease_inner(
     if database_url.trim().is_empty() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -959,8 +959,8 @@ fn release_expired_request_output_leases_inner(
     if let Some(after_lease_id) = after_lease_id {
         validate_store_lease_id(after_lease_id)?;
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -1013,8 +1013,8 @@ pub fn reconcile_store_leases(
     for lease_id in lease_ids {
         validate_store_lease_id(lease_id)?;
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let updated = client
         .execute(
             "UPDATE store_leases SET state = 'reconciled', reconciled_at = transaction_timestamp() WHERE lease_id = ANY($1) AND state = 'released'",
@@ -1044,8 +1044,8 @@ pub fn read_released_request_leases_page(
     if maximum_rows == 0 {
         return Ok(Vec::new());
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let rows = client
         .query(
             "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE owner_kind = 'request' AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
@@ -1086,8 +1086,8 @@ fn read_store_lease_inner(
     if database_url.trim().is_empty() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut client =
+        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let lease = client
         .query_opt(
             "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE lease_id = $1",
