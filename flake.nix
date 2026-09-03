@@ -45,7 +45,13 @@
     {
       nixosModules = {
         telchar = import ./nix/nixos-module.nix;
+        standalone = import ./nix/nixos-standalone.nix;
         default = self.nixosModules.telchar;
+      };
+
+      lib.mkStandaloneSystem = import ./nix/mk-standalone-system.nix {
+        nixosSystem = nixpkgs.lib.nixosSystem;
+        standaloneModule = self.nixosModules.standalone;
       };
 
       packages.${system} = import ./nix/packages.nix {
@@ -59,11 +65,14 @@
         // import ./nix/checks/policy.nix { inherit pkgs; }
         // import ./nix/checks/nixos.nix {
           inherit pkgs system;
+          nixosSystem = nixpkgs.lib.nixosSystem;
           telchar = self.packages.${system}.telchar;
           nomadWorker = self.packages.${system}.telchar-nomad-worker;
           telcharImage = self.packages.${system}.telchar-oci;
           nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           telcharModule = self.nixosModules.telchar;
+          standaloneModule = self.nixosModules.standalone;
+          mkStandaloneSystem = self.lib.mkStandaloneSystem;
         }
         // {
           oci-images = import ./nix/tests/oci-images.nix {
