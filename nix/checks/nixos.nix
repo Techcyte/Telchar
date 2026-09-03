@@ -39,6 +39,16 @@ import ./nixos/oci.nix {
     mkStandaloneSystem
     ;
 }
+// {
+  nixos-postgresql-tls = import ./nixos/postgresql-tls.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
+}
 // import ./nixos/local.nix checkArgs
 // import ./nixos/nomad.nix checkArgs
 // import ./nixos/static-ssh.nix checkArgs

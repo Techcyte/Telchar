@@ -8,8 +8,26 @@
 let
   cfg = config.services.telchar;
   toml = pkgs.formats.toml { };
-  configurationFile = toml.generate "telchar.toml" cfg.settings;
+  protectedDatabase = cfg.database.urlFile != null;
+  serviceSettings = lib.recursiveUpdate cfg.settings (
+    lib.optionalAttrs protectedDatabase {
+      database.url_file = cfg.database.urlFile;
+    }
+  );
+  configurationFile = toml.generate "telchar.toml" serviceSettings;
   credentialFiles = map (credential: "${credential.name}:${credential.source}") cfg.credentials;
+  databaseValidator = pkgs.writeShellScript "validate-telchar-database-url" ''
+    set -eu
+    database_url="$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg cfg.database.urlFile})"
+    case "$database_url" in
+      *"sslmode=verify-full"*) ;;
+      *) echo "database URL must use sslmode=verify-full" >&2; exit 1 ;;
+    esac
+    case "$database_url" in
+      *"sslrootcert=${cfg.database.rootCertificateFile}"*) ;;
+      *) echo "database URL must use the configured root certificate" >&2; exit 1 ;;
+    esac
+  '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
     set -eu
     : "''${SSH_USER_AUTH:?OpenSSH authentication metadata is unavailable}"
@@ -131,6 +149,16 @@ in
         defaultText = lib.literalExpression ''"host=/run/postgresql user=\${config.services.telchar.user} dbname=\${config.services.telchar.database.name}"'';
         description = "PostgreSQL connection URL used by Telchar.";
       };
+      urlFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Protected file containing the external PostgreSQL connection URL.";
+      };
+      rootCertificateFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Protected CA certificate required by the external PostgreSQL URL.";
+      };
     };
 
     gatewayStore = {
@@ -192,6 +220,18 @@ in
           lib.hasPrefix "/" credential.source && !(lib.hasPrefix builtins.storeDir credential.source)
         ) cfg.credentials;
         message = "services.telchar.credentials sources must be absolute and outside the Nix store";
+      }
+      {
+        assertion =
+          !protectedDatabase
+          || (
+            lib.hasPrefix "/" cfg.database.urlFile
+            && !(lib.hasPrefix builtins.storeDir cfg.database.urlFile)
+            && cfg.database.rootCertificateFile != null
+            && lib.hasPrefix "/" cfg.database.rootCertificateFile
+            && !(lib.hasPrefix builtins.storeDir cfg.database.rootCertificateFile)
+          );
+        message = "services.telchar.database protected files must be absolute and outside the Nix store";
       }
     ];
 
@@ -255,11 +295,11 @@ in
       ];
       environment = {
         TELCHAR_CONFIG = configurationFile;
-        TELCHAR_DATABASE_URL = cfg.database.url;
         TELCHAR_GATEWAY_STORE_URI = cfg.gatewayStore.uri;
         TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = cfg.gatewayStore.gcRootDirectory;
         TMPDIR = "/var/lib/telchar/import";
       }
+      // lib.optionalAttrs (!protectedDatabase) { TELCHAR_DATABASE_URL = cfg.database.url; }
       // cfg.environment;
       path = [
         pkgs.nix
@@ -274,6 +314,7 @@ in
         StateDirectory = "telchar";
         StateDirectoryMode = "0700";
         ExecStart = "${cfg.package}/bin/telchar daemon --socket ${cfg.socketPath} --frontend-uid ${toString cfg.frontendUid}";
+        ExecStartPre = lib.optional protectedDatabase databaseValidator;
         Restart = "on-failure";
         LoadCredential = credentialFiles;
       };
