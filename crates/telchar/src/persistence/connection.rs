@@ -226,7 +226,10 @@ fn connection_config(
     if !parameters.is_empty() {
         url.query_pairs_mut().extend_pairs(parameters);
     }
-    let normalized_database_url = url.as_str().replace('+', "%20");
+    let normalized_database_url = match url.as_str().split_once('?') {
+        Some((base, query)) => format!("{base}?{}", query.replace('+', "%20")),
+        None => url.as_str().to_owned(),
+    };
     let config = normalized_database_url.parse::<Config>()?;
     let security = if tls_requested {
         ConnectionSecurity::Tls {
@@ -322,6 +325,20 @@ mod tests {
                 .expect("keyword configuration parses"),
             ConnectionSecurity::Plain
         );
+    }
+
+    #[test]
+    fn url_components_preserve_literal_plus_signs() {
+        let (config, security) = connection_config(
+            "postgresql://user+name:pass+word@localhost/database+name?application_name=client%2Bname",
+        )
+        .expect("URL with plus signs parses");
+
+        assert_eq!(security, ConnectionSecurity::Plain);
+        assert_eq!(config.get_user(), Some("user+name"));
+        assert_eq!(config.get_password(), Some("pass+word".as_bytes()));
+        assert_eq!(config.get_dbname(), Some("database+name"));
+        assert_eq!(config.get_application_name(), Some("client+name"));
     }
 
     #[test]
