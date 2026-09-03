@@ -60,6 +60,14 @@ import ./nixos/oci.nix {
       standaloneModule
       ;
   };
+  nixos-nomad-credential-renewal = import ./nixos/nomad-credential-renewal.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
 }
 // import ./nixos/static-ssh.nix checkArgs
 // {

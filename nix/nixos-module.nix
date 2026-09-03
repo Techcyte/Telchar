@@ -8,6 +8,7 @@
 let
   cfg = config.services.telchar;
   sshRenewalCfg = cfg.sshHostCertificateRenewal;
+  nomadRenewalCfg = cfg.nomad.renewal;
   toml = pkgs.formats.toml { };
   protectedDatabase = cfg.database.urlFile != null;
   serviceSettings = lib.recursiveUpdate cfg.settings (
@@ -45,6 +46,24 @@ let
     trap - EXIT
     if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar-sshd.service; then
       ${pkgs.systemd}/bin/systemctl reload telchar-sshd.service
+    fi
+  '';
+  renewNomadToken = pkgs.writeShellScript "renew-telchar-nomad-token" ''
+    set -eu
+    candidate=${lib.escapeShellArg nomadRenewalCfg.candidateFile}
+    destination=${lib.escapeShellArg cfg.nomad.tokenFile}
+    test -f "$candidate"
+    test ! -L "$candidate"
+    test -s "$candidate"
+    mode="$(${pkgs.coreutils}/bin/stat -c %a "$candidate")"
+    test "$((0$mode & 077))" -eq 0
+    temporary="$(${pkgs.coreutils}/bin/mktemp "$(dirname "$destination")/.nomad-token.XXXXXX")"
+    trap '${pkgs.coreutils}/bin/rm -f "$temporary"' EXIT
+    ${pkgs.coreutils}/bin/install -m 0400 -o ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} "$candidate" "$temporary"
+    ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
+    trap - EXIT
+    if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar.service; then
+      ${pkgs.systemd}/bin/systemctl kill --kill-whom=main --signal=HUP telchar.service
     fi
   '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
@@ -193,10 +212,20 @@ in
       };
     };
 
-    nomad.tokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Protected Nomad token source mounted read-only into the Telchar service.";
+    nomad = {
+      tokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Protected Nomad token source mounted read-only into the Telchar service.";
+      };
+      renewal = {
+        enable = lib.mkEnableOption "atomic Telchar Nomad token installation";
+        candidateFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Protected candidate Nomad token installed by the renewal service.";
+        };
+      };
     };
 
     gatewayStore = {
@@ -314,6 +343,18 @@ in
       }
       {
         assertion =
+          !nomadRenewalCfg.enable
+          || (
+            cfg.nomad.tokenFile != null
+            && nomadRenewalCfg.candidateFile != null
+            && lib.hasPrefix "/" nomadRenewalCfg.candidateFile
+            && !(lib.hasPrefix builtins.storeDir nomadRenewalCfg.candidateFile)
+            && dirOf nomadRenewalCfg.candidateFile == dirOf cfg.nomad.tokenFile
+          );
+        message = "services.telchar.nomad.renewal requires protected token and candidate paths in the same directory outside the Nix store";
+      }
+      {
+        assertion =
           cfg.nomad.tokenFile == null
           || (
             lib.hasPrefix "/" cfg.nomad.tokenFile
@@ -373,6 +414,14 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = renewHostCertificate;
+      };
+    };
+
+    systemd.services.telchar-nomad-credential-renewal = lib.mkIf nomadRenewalCfg.enable {
+      description = "Install renewed Telchar Nomad token";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = renewNomadToken;
       };
     };
 
