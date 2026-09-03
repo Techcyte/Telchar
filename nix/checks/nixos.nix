@@ -62,5 +62,15 @@ import ./nixos/oci.nix {
   };
 }
 // import ./nixos/static-ssh.nix checkArgs
+// {
+  nixos-ssh-ca-authentication = import ./nixos/ssh-ca-authentication.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
+}
 // import ./nixos/recovery.nix checkArgs
 // import ./nixos/artifacts.nix checkArgs

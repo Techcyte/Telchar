@@ -42,10 +42,14 @@ let
       TELCHAR_AUTHENTICATED_KEY="$fingerprint" \
       ${cfg.package}/bin/telchar serve-stdio
   '';
+  certificateIngress = cfg.ingress.openssh.hostCertificateFile != null;
   sshdConfiguration = pkgs.writeText "telchar-sshd_config" ''
     Port ${toString cfg.ingress.openssh.port}
     ${lib.concatMapStringsSep "\n" (address: "ListenAddress ${address}") cfg.ingress.openssh.listenAddresses}
     HostKey ${cfg.ingress.openssh.hostKeyFile}
+    ${lib.optionalString certificateIngress "HostCertificate ${cfg.ingress.openssh.hostCertificateFile}"}
+    ${lib.optionalString certificateIngress "TrustedUserCAKeys ${cfg.ingress.openssh.trustedUserCAKeysFile}"}
+    ${lib.optionalString certificateIngress "AuthorizedPrincipalsFile ${cfg.ingress.openssh.authorizedPrincipalsFile}"}
     PidFile /run/telchar-sshd/sshd.pid
     AuthorizedKeysFile ${cfg.ingress.openssh.authorizedKeysFile}
     AuthenticationMethods publickey
@@ -204,6 +208,21 @@ in
         default = "/var/lib/telchar/.ssh/authorized_keys";
         description = "Operator-managed authorized keys file for Telchar ingress.";
       };
+      hostCertificateFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "SSH host certificate presented by the isolated Telchar ingress.";
+      };
+      trustedUserCAKeysFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Trusted client SSH CA public keys for the isolated Telchar ingress.";
+      };
+      authorizedPrincipalsFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Allowed SSH certificate principals for the Telchar account.";
+      };
     };
   };
 
@@ -219,6 +238,21 @@ in
           cfg.ingress.openssh.authorizedKeysFile
         ];
         message = "services.telchar.ingress.openssh file paths must be absolute";
+      }
+      {
+        assertion =
+          !certificateIngress
+          || lib.all (
+            path:
+            path != null
+            && lib.hasPrefix "/" path
+            && !(lib.hasPrefix builtins.storeDir path)
+          ) [
+            cfg.ingress.openssh.hostCertificateFile
+            cfg.ingress.openssh.trustedUserCAKeysFile
+            cfg.ingress.openssh.authorizedPrincipalsFile
+          ];
+        message = "services.telchar.ingress.openssh certificate files must be absolute and outside the Nix store";
       }
       {
         assertion = lib.all (
@@ -290,6 +324,7 @@ in
         RuntimeDirectory = "telchar-sshd";
         RuntimeDirectoryMode = "0755";
         ExecStart = "${pkgs.openssh}/bin/sshd -D -e -f /etc/telchar/sshd_config";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
       };
     }; 
