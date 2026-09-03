@@ -58,7 +58,7 @@
       gateway.succeed("sshd -T | grep -qx 'port 22'")
       gateway.succeed("${pkgs.openssh}/bin/sshd -T -f /etc/telchar/sshd_config | grep -qx 'port 2222'")
       gateway.succeed("! grep -q 'telchar-forced-command' /etc/ssh/sshd_config")
-      gateway.succeed("test -S /run/telchar/daemon.sock")
+      gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
       gateway.succeed("test $(stat -c %a /run/telchar) = 700")
       gateway.succeed("sudo -u postgres psql -Atc \"select 1 from pg_database where datname = 'telchar'\" | grep -qx 1")
       gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")

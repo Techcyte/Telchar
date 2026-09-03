@@ -20,6 +20,8 @@ let
   );
   configurationFile = toml.generate "telchar.toml" serviceSettings;
   credentialFiles = map (credential: "${credential.name}:${credential.source}") cfg.credentials;
+  daemonEnvironment =
+    if protectedDatabase then removeAttrs cfg.environment [ "TELCHAR_DATABASE_URL" ] else cfg.environment;
   databaseValidator = pkgs.writeShellScript "validate-telchar-database-url" ''
     set -eu
     database_url="$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg cfg.database.urlFile})"
@@ -683,7 +685,7 @@ in
         TMPDIR = "/var/lib/telchar/import";
       }
       // lib.optionalAttrs (!protectedDatabase) { TELCHAR_DATABASE_URL = cfg.database.url; }
-      // cfg.environment;
+      // daemonEnvironment;
       path = [
         pkgs.nix
         pkgs.openssh

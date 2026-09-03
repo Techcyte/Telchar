@@ -93,6 +93,7 @@ pkgs.testers.nixosTest {
             maximum_concurrent_builds = 1;
           };
           environment = {
+            TELCHAR_DATABASE_URL = "postgresql://telchar@postgres.database.test/telchar?sslmode=disable";
             TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
             TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           };
@@ -128,6 +129,7 @@ pkgs.testers.nixosTest {
     gateway.wait_for_unit("telchar.service")
     gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
     gateway.succeed("test \"$(systemctl show telchar.service -p Environment --value)\" != *postgres.database.test*")
+    gateway.succeed("test \"$(systemctl show telchar.service -p Environment --value)\" != *TELCHAR_DATABASE_URL*")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/database-url) = 400")
     gateway.succeed("case $(readlink -f /var/lib/telchar/credentials/database-url) in /nix/store/*) exit 1;; esac")
     gateway.fail("nix-store -qR /run/current-system | xargs grep -I -l -m1 postgres.database.test 2>/dev/null")
