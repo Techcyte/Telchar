@@ -98,6 +98,14 @@ import ./nixos/oci.nix {
       standaloneModule
       ;
   };
+  nixos-restart-reboot = import ./nixos/restart-reboot.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
 }
 // import ./nixos/recovery.nix checkArgs
 // import ./nixos/artifacts.nix checkArgs
