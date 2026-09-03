@@ -17,10 +17,6 @@
       enable = true;
       port = lib.mkDefault 2222;
     };
-    callback = {
-      enable = true;
-      openFirewall = true;
-    };
   };
 
   users.users.${config.services.telchar.user}.hashedPassword =

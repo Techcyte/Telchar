@@ -50,6 +50,10 @@ pkgs.testers.nixosTest {
         services.telchar = {
           package = telchar;
           database.url = "postgresql://telchar@postgres/telchar";
+          callback = {
+            enable = true;
+            openFirewall = true;
+          };
           ingress.openssh = {
             hostKeyFile = "/var/lib/telchar/ssh/ssh_host_ed25519_key";
             authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";

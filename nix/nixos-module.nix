@@ -18,7 +18,7 @@ let
       database.url_file = cfg.database.urlFile;
     }
     // lib.optionalAttrs cfg.callback.enable {
-      nomad_callback.bind = "${cfg.callback.bindAddress}:${toString cfg.callback.port}";
+      backends.nomad_callback.bind = "${cfg.callback.bindAddress}:${toString cfg.callback.port}";
     }
   );
   configurationFile = toml.generate "telchar.toml" serviceSettings;
