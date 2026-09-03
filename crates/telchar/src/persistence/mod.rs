@@ -30,9 +30,7 @@ mod attachments;
 mod build_requests;
 mod callback_nonces;
 mod connection;
-pub use connection::{
-    Database, DatabaseConnection, DatabaseSource, validate_verified_connection,
-};
+pub use connection::{Database, DatabaseConnection, DatabaseSource, validate_verified_connection};
 pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
 mod leases;

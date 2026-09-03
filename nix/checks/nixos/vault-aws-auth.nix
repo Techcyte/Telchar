@@ -12,18 +12,34 @@ let
     import os
     import subprocess
     import tempfile
+    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
 
     observed = "/tmp/observed"
     os.makedirs(observed, exist_ok=True)
 
+    metadata_token_requests = 0
+
     class MetadataHandler(BaseHTTPRequestHandler):
         def do_PUT(self):
             if self.path != "/latest/api/token":
                 self.send_error(404)
                 return
-            open(observed + "/imds-token", "w").write("requested")
+            global metadata_token_requests
+            metadata_token_requests += 1
+            open(observed + "/imds-token", "w").write(str(metadata_token_requests))
+            if os.path.exists(observed + "/stall-imds"):
+                time.sleep(30)
+                return
+            if os.path.exists(observed + "/oversized-imds"):
+                self.send_response(200)
+                self.send_header("Content-Length", str(2 * 1024 * 1024))
+                self.end_headers()
+                return
+            if metadata_token_requests == 1:
+                self.send_error(503)
+                return
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"metadata-token")
@@ -195,7 +211,7 @@ pkgs.testers.nixosTest {
     gateway.succeed("test $(systemctl show telchar-vault-aws-auth.service -p User --value) = telchar")
     gateway.succeed("test $(systemctl show telchar-ssh-host-certificate-renewal.service -p User --value) = telchar")
     gateway.succeed("test $(systemctl show telchar-nomad-credential-renewal.service -p User --value) = telchar")
-    identity.succeed("test -f /tmp/observed/imds-token")
+    identity.succeed("test $(cat /tmp/observed/imds-token) -ge 2")
     identity.succeed("test -f /tmp/observed/imds-role")
     identity.succeed("test -f /tmp/observed/imds-credentials")
     identity.succeed("test -f /tmp/observed/vault-login")
@@ -212,6 +228,19 @@ pkgs.testers.nixosTest {
     gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | grep -q vault-renewed")
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = vault-nomad-token")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token) = 400")
+    ssh_candidate_hash = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | cut -d' ' -f1").strip()
+    nomad_candidate_hash = gateway.succeed("sha256sum /var/lib/telchar/credentials/nomad-token.candidate | cut -d' ' -f1").strip()
+    identity.succeed("touch /tmp/observed/stall-imds")
+    gateway.fail("timeout 12 systemctl start telchar-vault-aws-auth.service")
+    gateway.succeed("test $(systemctl show telchar-vault-aws-auth.service -p TimeoutStartUSec --value) = 10s")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | cut -d' ' -f1) = " + ssh_candidate_hash)
+    gateway.succeed("test $(sha256sum /var/lib/telchar/credentials/nomad-token.candidate | cut -d' ' -f1) = " + nomad_candidate_hash)
+    identity.succeed("rm /tmp/observed/stall-imds && touch /tmp/observed/oversized-imds")
+    gateway.succeed("systemctl reset-failed telchar-vault-aws-auth.service")
+    gateway.fail("timeout 12 systemctl start telchar-vault-aws-auth.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | cut -d' ' -f1) = " + ssh_candidate_hash)
+    gateway.succeed("test $(sha256sum /var/lib/telchar/credentials/nomad-token.candidate | cut -d' ' -f1) = " + nomad_candidate_hash)
+    identity.succeed("rm /tmp/observed/oversized-imds")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key | cut -d' ' -f1) = " + original_key)
     gateway.succeed("systemctl is-active telchar-credential-renewal.timer")
     gateway.succeed("systemctl list-timers --all telchar-credential-renewal.timer | grep -q telchar-credential-renewal.timer")

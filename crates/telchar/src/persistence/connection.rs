@@ -266,8 +266,11 @@ mod tests {
                 root_certificate: Some("/run/secrets/rds-ca.pem".into()),
             }
         );
-        validate_verified_connection(database_url, std::path::Path::new("/run/secrets/rds-ca.pem"))
-            .expect("verified connection is accepted");
+        validate_verified_connection(
+            database_url,
+            std::path::Path::new("/run/secrets/rds-ca.pem"),
+        )
+        .expect("verified connection is accepted");
     }
 
     #[test]

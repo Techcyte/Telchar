@@ -74,6 +74,8 @@ let
     import os
     import pwd
     import tempfile
+    import time
+    import urllib.error
     import urllib.parse
     import urllib.request
 
@@ -83,28 +85,52 @@ let
 
     metadata_endpoint = ${builtins.toJSON vaultCfg.metadataEndpoint}
     vault_address = ${builtins.toJSON vaultCfg.address}
+    request_timeout_seconds = 2
+    request_attempts = 3
+    maximum_response_bytes = 1024 * 1024
+
+    def bounded_request(request):
+        for attempt in range(request_attempts):
+            try:
+                with urllib.request.urlopen(request, timeout=request_timeout_seconds) as response:
+                    content_length = response.headers.get("Content-Length")
+                    if content_length is not None and int(content_length) > maximum_response_bytes:
+                        raise ValueError("response exceeds maximum size")
+                    body = response.read(maximum_response_bytes + 1)
+                    if len(body) > maximum_response_bytes:
+                        raise ValueError("response exceeds maximum size")
+                    return body
+            except urllib.error.HTTPError as error:
+                if error.code < 500 and error.code != 429:
+                    raise
+                if attempt + 1 == request_attempts:
+                    raise
+            except (TimeoutError, urllib.error.URLError):
+                if attempt + 1 == request_attempts:
+                    raise
+            time.sleep(0.25 * (attempt + 1))
+
+    def json_request(request):
+        return json.loads(bounded_request(request))
     metadata_token_request = urllib.request.Request(
         metadata_endpoint + "/latest/api/token",
         method="PUT",
         headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
     )
-    with urllib.request.urlopen(metadata_token_request) as response:
-        metadata_token = response.read().decode()
+    metadata_token = bounded_request(metadata_token_request).decode()
 
     metadata_headers = {"X-aws-ec2-metadata-token": metadata_token}
     role_request = urllib.request.Request(
         metadata_endpoint + "/latest/meta-data/iam/security-credentials/",
         headers=metadata_headers,
     )
-    with urllib.request.urlopen(role_request) as response:
-        instance_role = response.read().decode().strip()
+    instance_role = bounded_request(role_request).decode().strip()
 
     credentials_request = urllib.request.Request(
         metadata_endpoint + "/latest/meta-data/iam/security-credentials/" + urllib.parse.quote(instance_role),
         headers=metadata_headers,
     )
-    with urllib.request.urlopen(credentials_request) as response:
-        credential_document = json.load(response)
+    credential_document = json_request(credentials_request)
 
     credentials = Credentials(
         credential_document["AccessKeyId"],
@@ -140,8 +166,7 @@ let
             method=method,
             headers=headers,
         )
-        with urllib.request.urlopen(request) as response:
-            return json.load(response)
+        return json_request(request)
 
     login = vault_request(
         "auth/${vaultCfg.authMount}/login",
@@ -625,6 +650,7 @@ in
         User = cfg.user;
         Group = cfg.group;
         ExecStart = "${vaultPython}/bin/python ${fetchVaultCandidates}";
+        TimeoutStartSec = 10;
         UMask = "0077";
       };
     };
