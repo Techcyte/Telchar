@@ -703,7 +703,7 @@ in
         User = cfg.user;
         Group = cfg.group;
         ExecStart = "${vaultPython}/bin/python ${fetchVaultCandidates}";
-        TimeoutStartSec = 10;
+        TimeoutStartSec = 60;
         UMask = "0077";
       };
     };
