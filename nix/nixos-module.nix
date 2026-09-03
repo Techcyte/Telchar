@@ -127,8 +127,8 @@ in
       };
       url = lib.mkOption {
         type = lib.types.str;
-        default = "postgresql://${cfg.user}@/${cfg.database.name}?host=/run/postgresql";
-        defaultText = lib.literalExpression ''"postgresql://\${config.services.telchar.user}@/\${config.services.telchar.database.name}?host=/run/postgresql"'';
+        default = "host=/run/postgresql user=${cfg.user} dbname=${cfg.database.name}";
+        defaultText = lib.literalExpression ''"host=/run/postgresql user=\${config.services.telchar.user} dbname=\${config.services.telchar.database.name}"'';
         description = "PostgreSQL connection URL used by Telchar.";
       };
     };
@@ -242,9 +242,17 @@ in
     systemd.services.telchar = {
       description = "Telchar Nix build gateway";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ] ++ lib.optional cfg.database.manage "postgresql.service";
+      after =
+        [ "network-online.target" ]
+        ++ lib.optionals cfg.database.manage [
+          "postgresql.service"
+          "postgresql-setup.service"
+        ];
       wants = [ "network-online.target" ];
-      requires = lib.optional cfg.database.manage "postgresql.service";
+      requires = lib.optionals cfg.database.manage [
+        "postgresql.service"
+        "postgresql-setup.service"
+      ];
       environment = {
         TELCHAR_CONFIG = configurationFile;
         TELCHAR_DATABASE_URL = cfg.database.url;
