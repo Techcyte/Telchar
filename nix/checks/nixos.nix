@@ -51,6 +51,16 @@ import ./nixos/oci.nix {
 }
 // import ./nixos/local.nix checkArgs
 // import ./nixos/nomad.nix checkArgs
+// {
+  nixos-nomad-credential = import ./nixos/nomad-credential.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
+}
 // import ./nixos/static-ssh.nix checkArgs
 // import ./nixos/recovery.nix checkArgs
 // import ./nixos/artifacts.nix checkArgs

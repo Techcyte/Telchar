@@ -161,6 +161,12 @@ in
       };
     };
 
+    nomad.tokenFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Protected Nomad token source mounted read-only into the Telchar service.";
+    };
+
     gatewayStore = {
       uri = lib.mkOption {
         type = lib.types.str;
@@ -232,6 +238,15 @@ in
             && !(lib.hasPrefix builtins.storeDir cfg.database.rootCertificateFile)
           );
         message = "services.telchar.database protected files must be absolute and outside the Nix store";
+      }
+      {
+        assertion =
+          cfg.nomad.tokenFile == null
+          || (
+            lib.hasPrefix "/" cfg.nomad.tokenFile
+            && !(lib.hasPrefix builtins.storeDir cfg.nomad.tokenFile)
+          );
+        message = "services.telchar.nomad.tokenFile must be absolute and outside the Nix store";
       }
     ];
 
@@ -317,6 +332,7 @@ in
         ExecStartPre = lib.optional protectedDatabase databaseValidator;
         Restart = "on-failure";
         LoadCredential = credentialFiles;
+        BindReadOnlyPaths = lib.optional (cfg.nomad.tokenFile != null) "${dirOf cfg.nomad.tokenFile}:/run/telchar/credentials";
       };
     };
 
