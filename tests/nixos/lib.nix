@@ -129,7 +129,7 @@ let
         ];
         environment = {
           OTEL_EXPORTER_OTLP_ENDPOINT = "http://otlp-collector:4317";
-          TELCHAR_DATABASE_URL = "postgresql://telchar-ingress@/telchar-ingress?host=/run/postgresql";
+          TELCHAR_DATABASE_URL = "host=/run/postgresql user=telchar-ingress dbname=telchar-ingress";
           TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
           TELCHAR_GATEWAY_STORE_URI = "unix:///nix/var/nix/daemon-socket/socket";
           TMPDIR = "/var/lib/telchar-import";
