@@ -62,6 +62,14 @@ Telchar is packaged through the flake and includes a NixOS module:
 
 The module manages only the Telchar daemon by default. Local PostgreSQL provisioning, host Nix trusted-user configuration, GC-root directory creation, and SSH ingress are explicit options. The optional ingress runs a dedicated `telchar-sshd.service` on port `2222`; it does not alter the host's regular `services.openssh` configuration.
 
+The flake exports three NixOS integration surfaces:
+
+- `nixosModules.telchar` and its `nixosModules.default` alias provide the low-level service module;
+- `nixosModules.standalone` provides generic standalone-host defaults and imports the service module;
+- `lib.mkStandaloneSystem` composes the standalone profile with caller-supplied deployment modules and optional `specialArgs`.
+
+Generic behavioral contracts are available as clearly named checks under `checks.x86_64-linux`, including `nixos-standalone-profile`, `nixos-postgresql-tls`, `nixos-nomad-credential`, `nixos-nomad-credential-renewal`, `nixos-ssh-ca-authentication`, `nixos-ssh-host-certificate-renewal`, `nixos-vault-aws-auth`, `nixos-callback-authentication`, and `nixos-restart-reboot`.
+
 A stock Nix client can then use the gateway as a remote builder:
 
 ```bash

@@ -87,7 +87,7 @@ let
                     open(public_key_path, "w").write(public_key)
                     subprocess.run([
                         "${pkgs.openssh}/bin/ssh-keygen", "-q", "-s", "/var/lib/vault-fixture/host-ca",
-                        "-I", "vault-renewed", "-h", "-n", "telchar.services.hub.techcyte.com",
+                        "-I", "vault-renewed", "-h", "-n", "gateway.test",
                         "-V", "-1m:+10m", public_key_path,
                     ], check=True)
                     signed_key = open(directory + "/host-cert.pub").read()
