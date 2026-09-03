@@ -123,6 +123,13 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl is-active --quiet telchar-sshd.service")
 
     renewed_certificate = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub").split()[0]
+    gateway.succeed("install -d -m 700 /root/private-candidate && cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /root/private-candidate/host-key.pub && ssh-keygen -q -s /var/lib/telchar/ssh/host-ca -I root-private -h -n gateway -V -1m:+10m /root/private-candidate/host-key.pub && rm -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub && ln -s /root/private-candidate/host-key-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
+    gateway.succeed("test $(systemctl show telchar-sshd.service -p MainPID --value) = " + original_sshd_pid)
+    gateway.succeed("systemctl is-active --quiet telchar-sshd.service")
+    gateway.succeed("rm /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/unrelated_host_key")
     gateway.succeed("ssh-keygen -q -s /var/lib/telchar/ssh/host-ca -I invalid -h -n gateway -V -1m:+10m /var/lib/telchar/ssh/unrelated_host_key.pub && mv /var/lib/telchar/ssh/unrelated_host_key-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
     gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")

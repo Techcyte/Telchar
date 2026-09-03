@@ -43,9 +43,11 @@ let
     ${pkgs.openssh}/bin/ssh-keygen -L -f "$candidate" | ${pkgs.gnugrep}/bin/grep -q 'Type:.*host certificate'
     temporary="$(${pkgs.coreutils}/bin/mktemp "$(dirname "$destination")/.host-certificate.XXXXXX")"
     trap '${pkgs.coreutils}/bin/rm -f "$temporary"' EXIT
-    ${pkgs.coreutils}/bin/install -m 0644 -o ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} "$candidate" "$temporary"
+    ${pkgs.coreutils}/bin/install -m 0644 "$candidate" "$temporary"
     ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
     trap - EXIT
+  '';
+  reloadSshIngress = pkgs.writeShellScript "reload-telchar-ssh-ingress" ''
     if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar-sshd.service; then
       ${pkgs.systemd}/bin/systemctl reload telchar-sshd.service
     fi
@@ -61,9 +63,11 @@ let
     test "$((0$mode & 077))" -eq 0
     temporary="$(${pkgs.coreutils}/bin/mktemp "$(dirname "$destination")/.nomad-token.XXXXXX")"
     trap '${pkgs.coreutils}/bin/rm -f "$temporary"' EXIT
-    ${pkgs.coreutils}/bin/install -m 0400 -o ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} "$candidate" "$temporary"
+    ${pkgs.coreutils}/bin/install -m 0400 "$candidate" "$temporary"
     ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
     trap - EXIT
+  '';
+  reloadTelchar = pkgs.writeShellScript "reload-telchar" ''
     if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar.service; then
       ${pkgs.systemd}/bin/systemctl kill --kill-whom=main --signal=HUP telchar.service
     fi
@@ -74,6 +78,7 @@ let
     import json
     import os
     import pwd
+    import tempfile
     import urllib.parse
     import urllib.request
 
@@ -165,13 +170,22 @@ let
     telchar_gid = grp.getgrnam(${builtins.toJSON cfg.group}).gr_gid
 
     def write_candidate(path, content):
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        temporary = path + ".tmp"
-        with open(temporary, "w") as output:
-            output.write(content)
-        os.chown(temporary, telchar_uid, telchar_gid)
-        os.chmod(temporary, 0o400)
-        os.replace(temporary, path)
+        directory = os.path.dirname(path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".telchar-candidate.", dir=directory, text=True)
+        try:
+            with os.fdopen(descriptor, "w") as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o400)
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
 
     write_candidate(${builtins.toJSON sshRenewalCfg.candidateFile}, signed_certificate)
     write_candidate(${builtins.toJSON nomadRenewalCfg.candidateFile}, nomad_token)
@@ -587,7 +601,10 @@ in
       requires = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
       serviceConfig = {
         Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
         ExecStart = renewHostCertificate;
+        ExecStartPost = "+${reloadSshIngress}";
       };
     };
 
@@ -597,7 +614,10 @@ in
       requires = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
       serviceConfig = {
         Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
         ExecStart = renewNomadToken;
+        ExecStartPost = "+${reloadTelchar}";
       };
     };
 
@@ -607,6 +627,8 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
         ExecStart = "${vaultPython}/bin/python ${fetchVaultCandidates}";
         UMask = "0077";
       };

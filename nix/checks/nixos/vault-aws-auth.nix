@@ -187,8 +187,14 @@ pkgs.testers.nixosTest {
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/ssh_host_ed25519_key")
     gateway.succeed("chown -R telchar:telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     original_key = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key").split()[0]
+    gateway.succeed("printf root-vault-victim > /root/vault-victim && ln -s /root/vault-victim /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub.tmp && ln -s /root/vault-victim /var/lib/telchar/credentials/nomad-token.candidate.tmp")
 
     gateway.succeed("systemctl start telchar-credential-renewal.service")
+    gateway.succeed("test $(cat /root/vault-victim) = root-vault-victim")
+    gateway.succeed("test $(stat -c %U:%G /root/vault-victim) = root:root")
+    gateway.succeed("test $(systemctl show telchar-vault-aws-auth.service -p User --value) = telchar")
+    gateway.succeed("test $(systemctl show telchar-ssh-host-certificate-renewal.service -p User --value) = telchar")
+    gateway.succeed("test $(systemctl show telchar-nomad-credential-renewal.service -p User --value) = telchar")
     identity.succeed("test -f /tmp/observed/imds-token")
     identity.succeed("test -f /tmp/observed/imds-role")
     identity.succeed("test -f /tmp/observed/imds-credentials")

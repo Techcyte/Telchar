@@ -219,6 +219,13 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl is-active --quiet telchar.service")
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = renewed-nomad-token")
 
+    gateway.succeed("install -d -m 700 /root/private-candidate && printf root-private-token > /root/private-candidate/nomad-token && rm -f /var/lib/telchar/credentials/nomad-token.candidate && ln -s /root/private-candidate/nomad-token /var/lib/telchar/credentials/nomad-token.candidate")
+    gateway.fail("systemctl start telchar-nomad-credential-renewal.service")
+    gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = renewed-nomad-token")
+    gateway.succeed("test $(systemctl show telchar.service -p MainPID --value) = " + original_pid)
+    gateway.succeed("systemctl is-active --quiet telchar.service")
+    gateway.succeed("rm /var/lib/telchar/credentials/nomad-token.candidate")
+
     gateway.succeed("printf invalid-nomad-token > /var/lib/telchar/credentials/nomad-token.candidate && chown telchar:telchar /var/lib/telchar/credentials/nomad-token.candidate && chmod 440 /var/lib/telchar/credentials/nomad-token.candidate")
     gateway.fail("systemctl start telchar-nomad-credential-renewal.service")
     gateway.succeed("systemctl is-failed --quiet telchar-nomad-credential-renewal.service")
