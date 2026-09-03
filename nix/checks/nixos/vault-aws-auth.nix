@@ -141,6 +141,11 @@ pkgs.testers.nixosTest {
             sshSignPath = "ssh/sign/telchar-host";
             nomadSecretPath = "kv/data/telchar/nomad";
             metadataEndpoint = "http://identity";
+            renewal = {
+              enable = true;
+              interval = "15min";
+              randomizedDelaySec = "5min";
+            };
           };
           ingress.openssh = {
             hostKeyFile = "/var/lib/telchar/ssh/ssh_host_ed25519_key";
@@ -183,7 +188,7 @@ pkgs.testers.nixosTest {
     gateway.succeed("chown -R telchar:telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     original_key = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key").split()[0]
 
-    gateway.succeed("systemctl start telchar-vault-aws-auth.service")
+    gateway.succeed("systemctl start telchar-credential-renewal.service")
     identity.succeed("test -f /tmp/observed/imds-token")
     identity.succeed("test -f /tmp/observed/imds-role")
     identity.succeed("test -f /tmp/observed/imds-credentials")
@@ -198,7 +203,15 @@ pkgs.testers.nixosTest {
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token.candidate) = vault-nomad-token")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token.candidate) = 400")
     gateway.succeed("test $(stat -c %U:%G /var/lib/telchar/credentials/nomad-token.candidate) = telchar:telchar")
+    gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | grep -q vault-renewed")
+    gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = vault-nomad-token")
+    gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token) = 400")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key | cut -d' ' -f1) = " + original_key)
+    gateway.succeed("systemctl is-active telchar-credential-renewal.timer")
+    gateway.succeed("systemctl list-timers --all telchar-credential-renewal.timer | grep -q telchar-credential-renewal.timer")
+    gateway.succeed("systemctl show telchar-ssh-host-certificate-renewal.service -p After --value | grep -q telchar-vault-aws-auth.service")
+    gateway.succeed("systemctl show telchar-nomad-credential-renewal.service -p After --value | grep -q telchar-vault-aws-auth.service")
+    gateway.fail("systemctl cat telchar-credential-renewal.service | grep -E 'systemctl (start|restart)'")
     gateway.fail("find /var/lib/telchar -iname '*role_id*' -o -iname '*secret_id*' | grep .")
     gateway.fail("systemctl cat telchar-vault-aws-auth.service | grep -E 'role_id|secret_id|approle|AKIAINSTANCEPROFILE|instance-profile-secret|instance-profile-session|vault-session-token'")
   '';

@@ -366,6 +366,19 @@ in
         default = "http://169.254.169.254";
         description = "EC2 instance metadata endpoint.";
       };
+      renewal = {
+        enable = lib.mkEnableOption "scheduled Vault-backed Telchar credential renewal";
+        interval = lib.mkOption {
+          type = lib.types.str;
+          default = "1h";
+          description = "Interval between credential renewal attempts.";
+        };
+        randomizedDelaySec = lib.mkOption {
+          type = lib.types.str;
+          default = "10min";
+          description = "Maximum randomized delay applied to scheduled renewals.";
+        };
+      };
     };
 
     gatewayStore = {
@@ -509,6 +522,10 @@ in
         message = "services.telchar.vaultAwsAuth requires enabled SSH and Nomad renewal with protected candidate paths";
       }
       {
+        assertion = !vaultCfg.renewal.enable || vaultCfg.enable;
+        message = "services.telchar.vaultAwsAuth.renewal requires Vault AWS authentication";
+      }
+      {
         assertion =
           cfg.nomad.tokenFile == null
           || (
@@ -566,6 +583,8 @@ in
 
     systemd.services.telchar-ssh-host-certificate-renewal = lib.mkIf sshRenewalCfg.enable {
       description = "Install renewed Telchar SSH host certificate";
+      after = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
+      requires = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = renewHostCertificate;
@@ -574,6 +593,8 @@ in
 
     systemd.services.telchar-nomad-credential-renewal = lib.mkIf nomadRenewalCfg.enable {
       description = "Install renewed Telchar Nomad token";
+      after = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
+      requires = lib.optional vaultCfg.renewal.enable "telchar-vault-aws-auth.service";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = renewNomadToken;
@@ -588,6 +609,34 @@ in
         Type = "oneshot";
         ExecStart = "${vaultPython}/bin/python ${fetchVaultCandidates}";
         UMask = "0077";
+      };
+    };
+
+    systemd.services.telchar-credential-renewal = lib.mkIf vaultCfg.renewal.enable {
+      description = "Renew Telchar credentials through Vault";
+      after = [
+        "telchar-ssh-host-certificate-renewal.service"
+        "telchar-nomad-credential-renewal.service"
+      ];
+      requires = [
+        "telchar-ssh-host-certificate-renewal.service"
+        "telchar-nomad-credential-renewal.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/true";
+      };
+    };
+
+    systemd.timers.telchar-credential-renewal = lib.mkIf vaultCfg.renewal.enable {
+      description = "Schedule Telchar credential renewal";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "5min";
+        OnUnitInactiveSec = vaultCfg.renewal.interval;
+        RandomizedDelaySec = vaultCfg.renewal.randomizedDelaySec;
+        Persistent = true;
+        Unit = "telchar-credential-renewal.service";
       };
     };
 
