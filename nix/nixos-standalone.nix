@@ -24,5 +24,7 @@
 
   networking.firewall.allowedTCPPorts =
     lib.optional config.services.telchar.ingress.openssh.enable config.services.telchar.ingress.openssh.port
-    ++ lib.optional config.services.telchar.callback.openFirewall config.services.telchar.callback.port;
+    ++ lib.optional (
+      config.services.telchar.callback.enable && config.services.telchar.callback.openFirewall
+    ) config.services.telchar.callback.port;
 }

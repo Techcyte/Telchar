@@ -36,6 +36,15 @@ let
       }
     ];
   };
+  disabledCallbackFirewall = mkStandaloneSystem {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    modules = [
+      {
+        services.telchar.callback.openFirewall = true;
+        system.stateVersion = "26.05";
+      }
+    ];
+  };
   protectedSystem = mkStandaloneSystem {
     inherit (pkgs.stdenv.hostPlatform) system;
     modules = [
@@ -71,6 +80,7 @@ in
     test ${if builtins.elem 7443 standalone.networking.firewall.allowedTCPPorts then "1" else "0"} = 0
     test ${if standalone.services.telchar.callback.enable then "1" else "0"} = 0
     test ${if standalone.services.telchar.callback.openFirewall then "1" else "0"} = 0
+    test ${if builtins.elem 7443 disabledCallbackFirewall.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 0
     test ${if builtins.elem 2200 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
     test ${if builtins.elem 7444 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
     test ${if builtins.elem 2222 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 0
