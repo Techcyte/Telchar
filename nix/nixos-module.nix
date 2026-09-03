@@ -9,6 +9,8 @@ let
   cfg = config.services.telchar;
   sshRenewalCfg = cfg.sshHostCertificateRenewal;
   nomadRenewalCfg = cfg.nomad.renewal;
+  vaultCfg = cfg.vaultAwsAuth;
+  vaultPython = pkgs.python3.withPackages (pythonPackages: [ pythonPackages.botocore ]);
   toml = pkgs.formats.toml { };
   protectedDatabase = cfg.database.urlFile != null;
   serviceSettings = lib.recursiveUpdate cfg.settings (
@@ -65,6 +67,114 @@ let
     if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar.service; then
       ${pkgs.systemd}/bin/systemctl kill --kill-whom=main --signal=HUP telchar.service
     fi
+  '';
+  fetchVaultCandidates = pkgs.writeText "fetch-telchar-vault-candidates.py" ''
+    import base64
+    import grp
+    import json
+    import os
+    import pwd
+    import urllib.parse
+    import urllib.request
+
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    metadata_endpoint = ${builtins.toJSON vaultCfg.metadataEndpoint}
+    vault_address = ${builtins.toJSON vaultCfg.address}
+    metadata_token_request = urllib.request.Request(
+        metadata_endpoint + "/latest/api/token",
+        method="PUT",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+    )
+    with urllib.request.urlopen(metadata_token_request) as response:
+        metadata_token = response.read().decode()
+
+    metadata_headers = {"X-aws-ec2-metadata-token": metadata_token}
+    role_request = urllib.request.Request(
+        metadata_endpoint + "/latest/meta-data/iam/security-credentials/",
+        headers=metadata_headers,
+    )
+    with urllib.request.urlopen(role_request) as response:
+        instance_role = response.read().decode().strip()
+
+    credentials_request = urllib.request.Request(
+        metadata_endpoint + "/latest/meta-data/iam/security-credentials/" + urllib.parse.quote(instance_role),
+        headers=metadata_headers,
+    )
+    with urllib.request.urlopen(credentials_request) as response:
+        credential_document = json.load(response)
+
+    credentials = Credentials(
+        credential_document["AccessKeyId"],
+        credential_document["SecretAccessKey"],
+        credential_document["Token"],
+    )
+    sts_url = "https://sts.amazonaws.com/"
+    sts_body = "Action=GetCallerIdentity&Version=2011-06-15"
+    aws_request = AWSRequest(
+        method="POST",
+        url=sts_url,
+        data=sts_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
+    )
+    SigV4Auth(credentials, "sts", "us-east-1").add_auth(aws_request)
+    prepared_request = aws_request.prepare()
+    login_payload = {
+        "role": ${builtins.toJSON vaultCfg.role},
+        "iam_http_request_method": "POST",
+        "iam_request_url": base64.b64encode(sts_url.encode()).decode(),
+        "iam_request_body": base64.b64encode(sts_body.encode()).decode(),
+        "iam_request_headers": base64.b64encode(json.dumps(dict(prepared_request.headers)).encode()).decode(),
+    }
+
+    def vault_request(path, method="GET", payload=None, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Vault-Token"] = token
+        body = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(
+            vault_address + "/v1/" + path.lstrip("/"),
+            data=body,
+            method=method,
+            headers=headers,
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
+
+    login = vault_request(
+        "auth/${vaultCfg.authMount}/login",
+        method="POST",
+        payload=login_payload,
+    )
+    vault_token = login["auth"]["client_token"]
+    with open(${builtins.toJSON "${cfg.ingress.openssh.hostKeyFile}.pub"}) as host_public_key:
+        signed_certificate = vault_request(
+            ${builtins.toJSON vaultCfg.sshSignPath},
+            method="POST",
+            payload={"public_key": host_public_key.read()},
+            token=vault_token,
+        )["data"]["signed_key"]
+    nomad_token = vault_request(
+        ${builtins.toJSON vaultCfg.nomadSecretPath},
+        token=vault_token,
+    )["data"]["data"]["token"]
+
+    telchar_uid = pwd.getpwnam(${builtins.toJSON cfg.user}).pw_uid
+    telchar_gid = grp.getgrnam(${builtins.toJSON cfg.group}).gr_gid
+
+    def write_candidate(path, content):
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w") as output:
+            output.write(content)
+        os.chown(temporary, telchar_uid, telchar_gid)
+        os.chmod(temporary, 0o400)
+        os.replace(temporary, path)
+
+    write_candidate(${builtins.toJSON sshRenewalCfg.candidateFile}, signed_certificate)
+    write_candidate(${builtins.toJSON nomadRenewalCfg.candidateFile}, nomad_token)
   '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
     set -eu
@@ -228,6 +338,36 @@ in
       };
     };
 
+    vaultAwsAuth = {
+      enable = lib.mkEnableOption "Vault AWS authentication through the EC2 instance profile";
+      address = lib.mkOption {
+        type = lib.types.str;
+        description = "Vault API address.";
+      };
+      role = lib.mkOption {
+        type = lib.types.str;
+        description = "Vault AWS authentication role.";
+      };
+      authMount = lib.mkOption {
+        type = lib.types.str;
+        default = "aws";
+        description = "Vault AWS authentication mount.";
+      };
+      sshSignPath = lib.mkOption {
+        type = lib.types.str;
+        description = "Vault path that signs the existing SSH host public key.";
+      };
+      nomadSecretPath = lib.mkOption {
+        type = lib.types.str;
+        description = "Vault path returning the Nomad token.";
+      };
+      metadataEndpoint = lib.mkOption {
+        type = lib.types.str;
+        default = "http://169.254.169.254";
+        description = "EC2 instance metadata endpoint.";
+      };
+    };
+
     gatewayStore = {
       uri = lib.mkOption {
         type = lib.types.str;
@@ -355,6 +495,21 @@ in
       }
       {
         assertion =
+          !vaultCfg.enable
+          || (
+            sshRenewalCfg.enable
+            && nomadRenewalCfg.enable
+            && sshRenewalCfg.candidateFile != null
+            && nomadRenewalCfg.candidateFile != null
+            && lib.hasPrefix "/" sshRenewalCfg.candidateFile
+            && lib.hasPrefix "/" nomadRenewalCfg.candidateFile
+            && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.candidateFile)
+            && !(lib.hasPrefix builtins.storeDir nomadRenewalCfg.candidateFile)
+          );
+        message = "services.telchar.vaultAwsAuth requires enabled SSH and Nomad renewal with protected candidate paths";
+      }
+      {
+        assertion =
           cfg.nomad.tokenFile == null
           || (
             lib.hasPrefix "/" cfg.nomad.tokenFile
@@ -422,6 +577,17 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = renewNomadToken;
+      };
+    };
+
+    systemd.services.telchar-vault-aws-auth = lib.mkIf vaultCfg.enable {
+      description = "Fetch Telchar renewal candidates through Vault AWS authentication";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${vaultPython}/bin/python ${fetchVaultCandidates}";
+        UMask = "0077";
       };
     };
 

@@ -87,6 +87,14 @@ import ./nixos/oci.nix {
       standaloneModule
       ;
   };
+  nixos-vault-aws-auth = import ./nixos/vault-aws-auth.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
 }
 // import ./nixos/recovery.nix checkArgs
 // import ./nixos/artifacts.nix checkArgs
