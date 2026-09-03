@@ -38,7 +38,11 @@ pkgs.testers.nixosTest {
               -CA /var/lib/postgresql/tls/ca.crt -CAkey /var/lib/postgresql/tls/ca.key \
               -CAcreateserial -out /var/lib/postgresql/tls/server.crt -days 1 \
               -extfile /var/lib/postgresql/tls/server.ext
+            openssl genrsa -out /var/lib/postgresql/tls/unrelated-ca.key 2048
+            openssl req -x509 -new -key /var/lib/postgresql/tls/unrelated-ca.key \
+              -out /var/lib/postgresql/tls/unrelated-ca.crt -days 1 -subj /CN=unrelated-test-ca
             cp /var/lib/postgresql/tls/ca.crt /tmp/shared/postgresql-ca.crt
+            cp /var/lib/postgresql/tls/unrelated-ca.crt /tmp/shared/unrelated-ca.crt
             chown -R postgres:postgres /var/lib/postgresql/tls
             chmod 600 /var/lib/postgresql/tls/*.key
           '';
@@ -94,6 +98,7 @@ pkgs.testers.nixosTest {
           };
           environment = {
             TELCHAR_DATABASE_URL = "postgresql://telchar@postgres.database.test/telchar?sslmode=disable";
+            SSL_CERT_FILE = "/var/lib/telchar/credentials/native-ca.crt";
             TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
             TELCHAR_NIX = "${pkgs.nix}/bin/nix";
           };
@@ -110,9 +115,10 @@ pkgs.testers.nixosTest {
           };
           script = ''
             set -eu
-            while [ ! -s /tmp/shared/postgresql-ca.crt ]; do sleep 0.1; done
+            while [ ! -s /tmp/shared/postgresql-ca.crt ] || [ ! -s /tmp/shared/unrelated-ca.crt ]; do sleep 0.1; done
             install -d -m 700 -o telchar -g telchar /var/lib/telchar/credentials
             install -m 400 -o telchar -g telchar /tmp/shared/postgresql-ca.crt /var/lib/telchar/credentials/postgresql-ca.crt
+            install -m 400 -o telchar -g telchar /tmp/shared/postgresql-ca.crt /var/lib/telchar/credentials/native-ca.crt
             printf '%s\n' 'postgresql://telchar@postgres.database.test/telchar?sslmode=verify-full&sslrootcert=/var/lib/telchar/credentials/postgresql-ca.crt' > /var/lib/telchar/credentials/database-url
             chown telchar:telchar /var/lib/telchar/credentials/database-url
             chmod 400 /var/lib/telchar/credentials/database-url
@@ -144,6 +150,9 @@ pkgs.testers.nixosTest {
     gateway.wait_until_succeeds("systemctl is-failed --quiet telchar.service")
     gateway.succeed("journalctl -u telchar.service --no-pager | grep -q 'database migration failed'")
     gateway.succeed("sed -i 's/wrong.database.test/postgres.database.test/' /var/lib/telchar/credentials/database-url")
+    gateway.succeed("install -m 400 -o telchar -g telchar /tmp/shared/unrelated-ca.crt /var/lib/telchar/credentials/postgresql-ca.crt")
+    gateway.succeed("systemctl reset-failed telchar.service && systemctl start telchar.service")
+    gateway.wait_until_succeeds("systemctl is-failed --quiet telchar.service")
     gateway.succeed("printf invalid-ca > /var/lib/telchar/credentials/postgresql-ca.crt")
     gateway.succeed("systemctl reset-failed telchar.service && systemctl start telchar.service")
     gateway.wait_until_succeeds("systemctl is-failed --quiet telchar.service")

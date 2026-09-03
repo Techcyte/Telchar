@@ -135,15 +135,16 @@ fn tls_connector(
     root_certificate: Option<PathBuf>,
 ) -> Result<MakeRustlsConnect, Box<dyn std::error::Error + Send + Sync>> {
     let mut roots = RootCertStore::empty();
-    let native = rustls_native_certs::load_native_certs();
-    for certificate in native.certs {
-        roots.add(certificate)?;
-    }
     if let Some(path) = root_certificate {
         let certificate = std::fs::read(path)?;
         let mut certificate = certificate.as_slice();
         for certificate in rustls_pemfile::certs(&mut certificate) {
             roots.add(certificate?)?;
+        }
+    } else {
+        let native = rustls_native_certs::load_native_certs();
+        for certificate in native.certs {
+            roots.add(certificate)?;
         }
     }
     let tls = ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
