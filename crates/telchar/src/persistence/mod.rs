@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };
-use crate::service::ipc::{RequesterMetadata, MAX_IPC_COMPONENT_BYTES};
+use crate::service::ipc::{MAX_IPC_COMPONENT_BYTES, RequesterMetadata};
 
 const MIGRATION_LOCK_KEY: i64 = 0x5445_4c43_4841_5201_u64 as i64;
 const RETAINED_INPUT_ADMISSION_LOCK_KEY: i64 = 0x5445_4c43_4841_5204_u64 as i64;
@@ -30,6 +30,7 @@ mod attachments;
 mod build_requests;
 mod callback_nonces;
 mod connection;
+pub use connection::{Database, DatabaseConnection, DatabaseSource};
 pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
 mod leases;

@@ -68,7 +68,8 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     let old_snapshot = initial.clone();
     let mut old_executor = old_snapshot
         .executor(
-            "postgresql://fixture",
+            telchar::persistence::Database::connect("postgresql://fixture")
+                .expect("database configuration is valid"),
             Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         )
         .expect("old executor configures");

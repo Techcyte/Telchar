@@ -137,18 +137,20 @@ impl SingletonOwnership {
         let lease_duration = self.lease_duration;
         let finished = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|scope| {
-            let renewal = scope.spawn(|| loop {
-                std::thread::park_timeout(renewal_interval);
-                if finished.load(std::sync::atomic::Ordering::Acquire) {
-                    return Ok(());
+            let renewal = scope.spawn(|| {
+                loop {
+                    std::thread::park_timeout(renewal_interval);
+                    if finished.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    renew_lease(
+                        &database_url,
+                        owner_kind,
+                        &owner_token,
+                        generation,
+                        lease_duration,
+                    )?;
                 }
-                renew_lease(
-                    &database_url,
-                    owner_kind,
-                    &owner_token,
-                    generation,
-                    lease_duration,
-                )?;
             });
             let result = operation();
             finished.store(true, std::sync::atomic::Ordering::Release);

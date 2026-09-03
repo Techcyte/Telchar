@@ -432,9 +432,11 @@ command = "/opt/telchar/bin/worker"
         URL_SAFE_NO_PAD.encode(Sha256::digest(b"shared-build-key"))
     );
     assert!(claims["allocation_id"].is_null());
-    assert!(claims["request_key"]
-        .as_str()
-        .is_some_and(|key| !key.is_empty()));
+    assert!(
+        claims["request_key"]
+            .as_str()
+            .is_some_and(|key| !key.is_empty())
+    );
     assert!(
         claims["expires_at"].as_u64().expect("expiry is numeric")
             > claims["issued_at"].as_u64().expect("issue time is numeric")

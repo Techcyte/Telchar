@@ -118,7 +118,7 @@ maximum_diagnostic_bytes = 1024
             .nomad_callback()
             .expect("Nomad callback is configured")
             .clone(),
-        database.url().to_owned(),
+        telchar::persistence::Database::connect(database.url()).expect("database connects"),
         vec![],
         telchar::store::daemon::GatewayStoreEndpoint::parse(
             "unix:///definitely-missing/telchar-gateway.sock",

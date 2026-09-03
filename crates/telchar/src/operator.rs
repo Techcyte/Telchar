@@ -16,30 +16,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = ServiceConfig::load()?;
     let value = match command {
         Command::ConfigCheck => ConfigReport::from_config(&config),
-        Command::Status => {
-            let database_url = config.require_database_url()?;
-            StatusReport::read(database_url)?
-        }
-        Command::Queue { limit } => {
-            let database_url = config.require_database_url()?;
-            QueueReport::read(database_url, limit)?
-        }
+        Command::Status => StatusReport::read(&database(&config)?)?,
+        Command::Queue { limit } => QueueReport::read(&database(&config)?, limit)?,
         Command::Build { derivation_path } => {
-            let database_url = config.require_database_url()?;
-            BuildReport::read(database_url, &derivation_path)?
+            BuildReport::read(&database(&config)?, &derivation_path)?
         }
-        Command::Backends => {
-            let database_url = config.require_database_url()?;
-            BackendReport::read(&config, database_url)?
-        }
-        Command::Recovery { limit } => {
-            let database_url = config.require_database_url()?;
-            RecoveryReport::read(database_url, limit)?
-        }
+        Command::Backends => BackendReport::read(&config, &database(&config)?)?,
+        Command::Recovery { limit } => RecoveryReport::read(&database(&config)?, limit)?,
     };
     serde_json::to_writer(std::io::stdout().lock(), &value)?;
     println!();
     Ok(())
+}
+
+fn database(
+    config: &ServiceConfig,
+) -> Result<telchar::persistence::Database, Box<dyn std::error::Error + Send + Sync>> {
+    telchar::persistence::Database::connect(config.require_database_url()?)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

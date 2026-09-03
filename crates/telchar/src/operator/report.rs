@@ -35,14 +35,14 @@ pub(super) struct StatusReport {
 
 impl StatusReport {
     pub(super) fn read(
-        database_url: &str,
+        database: &telchar::persistence::Database,
     ) -> Result<serde_json::Value, telchar::persistence::SharedBuildError> {
         let SharedBuildOperationalCounts {
             queued,
             running,
             collecting,
-        } = telchar::persistence::read_shared_build_operational_counts(database_url)?;
-        let active = telchar::persistence::read_active_shared_builds(database_url, 256)?.len();
+        } = telchar::persistence::read_shared_build_operational_counts(database)?;
+        let active = telchar::persistence::read_active_shared_builds(database, 256)?.len();
         Ok(json(Self {
             queued,
             running,
@@ -59,10 +59,10 @@ pub(super) struct QueueReport {
 
 impl QueueReport {
     pub(super) fn read(
-        database_url: &str,
+        database: &telchar::persistence::Database,
         limit: usize,
     ) -> Result<serde_json::Value, telchar::persistence::SharedBuildError> {
-        let builds = telchar::persistence::read_queued_shared_builds(database_url, limit)?
+        let builds = telchar::persistence::read_queued_shared_builds(database, limit)?
             .into_iter()
             .map(QueuedBuild::from)
             .collect();
@@ -104,16 +104,15 @@ pub(super) struct BuildReport {
 
 impl BuildReport {
     pub(super) fn read(
-        database_url: &str,
+        database: &telchar::persistence::Database,
         derivation_path: &str,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-        let build = telchar::persistence::read_shared_build(database_url, derivation_path)?
+        let build = telchar::persistence::read_shared_build(database, derivation_path)?
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "shared build not found")
             })?;
-        let attempt =
-            telchar::persistence::read_shared_build_attempt(database_url, derivation_path)?
-                .map(AttemptReport::from);
+        let attempt = telchar::persistence::read_shared_build_attempt(database, derivation_path)?
+            .map(AttemptReport::from);
         Ok(json(Self {
             derivation_path: build.derivation_path,
             state: state_name(build.state),
@@ -157,9 +156,9 @@ pub(super) struct BackendReport {
 impl BackendReport {
     pub(super) fn read(
         config: &ServiceConfig,
-        database_url: &str,
+        database: &telchar::persistence::Database,
     ) -> Result<serde_json::Value, telchar::persistence::SharedBuildError> {
-        let active = telchar::persistence::read_active_shared_builds(database_url, 256)?;
+        let active = telchar::persistence::read_active_shared_builds(database, 256)?;
         let static_ssh_health =
             telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
         let backends = configured_backends(config)
@@ -234,10 +233,10 @@ pub(super) struct RecoveryReport {
 
 impl RecoveryReport {
     pub(super) fn read(
-        database_url: &str,
+        database: &telchar::persistence::Database,
         limit: usize,
     ) -> Result<serde_json::Value, telchar::persistence::SharedBuildError> {
-        let builds = telchar::persistence::read_active_shared_builds(database_url, limit)?
+        let builds = telchar::persistence::read_active_shared_builds(database, limit)?
             .into_iter()
             .map(RecoverableBuild::from)
             .collect();

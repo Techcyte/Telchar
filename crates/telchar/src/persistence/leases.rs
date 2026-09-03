@@ -129,7 +129,7 @@ pub struct StoreLeaseRecord {
 }
 
 pub fn create_store_lease(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
     owner_kind: StoreLeaseOwnerKind,
     owner_id: &str,
@@ -138,19 +138,14 @@ pub fn create_store_lease(
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(create_store_lease));
     let result = create_store_lease_inner(
-        database_url,
-        lease_id,
-        owner_kind,
-        owner_id,
-        store_path,
-        purpose,
+        database, lease_id, owner_kind, owner_id, store_path, purpose,
     );
     emit_store_lease_failure("create", &result);
     result
 }
 
 pub fn create_request_retained_lease(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
     request_id: &str,
     store_path: &str,
@@ -167,7 +162,7 @@ pub fn create_request_retained_lease(
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
     let result = create_request_retained_leases_inner(
-        database_url,
+        database,
         request_id,
         maximum_retained_bytes,
         purpose,
@@ -184,16 +179,16 @@ pub fn create_request_retained_lease(
 }
 
 fn create_store_lease_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
     owner_kind: StoreLeaseOwnerKind,
     owner_id: &str,
     store_path: &str,
     purpose: StoreLeasePurpose,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
-    validate_store_lease_inputs(database_url, lease_id, owner_id, store_path)?;
+    validate_store_lease_inputs(database, lease_id, owner_id, store_path)?;
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -249,7 +244,7 @@ fn create_store_lease_inner(
 }
 
 pub fn create_request_input_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
@@ -259,11 +254,11 @@ pub fn create_request_input_leases(
         .iter()
         .map(|(lease_id, store_path)| (lease_id.clone(), store_path.clone(), 1_u64))
         .collect::<Vec<_>>();
-    create_request_input_leases_with_limit(database_url, request_id, u64::MAX, &sized)
+    create_request_input_leases_with_limit(database, request_id, u64::MAX, &sized)
 }
 
 pub fn create_request_input_leases_with_limit(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     maximum_retained_bytes: u64,
     leases: &[(String, String, u64)],
@@ -274,7 +269,7 @@ pub fn create_request_input_leases_with_limit(
         return Ok(Vec::new());
     }
     let result = create_request_retained_leases_inner(
-        database_url,
+        database,
         request_id,
         maximum_retained_bytes,
         StoreLeasePurpose::Input,
@@ -290,13 +285,13 @@ pub fn create_request_input_leases_with_limit(
 }
 
 fn create_request_retained_leases_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     maximum_retained_bytes: u64,
     purpose: StoreLeasePurpose,
     leases: &[(String, String, u64)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || !matches!(
             purpose,
             StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
@@ -321,7 +316,7 @@ fn create_request_retained_leases_inner(
         }
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -419,7 +414,7 @@ fn emit_store_lease_batch_failure(result: Result<(), &StoreLeaseError>, path_cou
 }
 
 pub fn create_request_output_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     retention: Duration,
     leases: &[(String, String)],
@@ -434,13 +429,13 @@ pub fn create_request_output_leases(
         return Ok(Vec::new());
     }
     let result =
-        create_request_output_leases_inner(database_url, request_id, retention_seconds, leases);
+        create_request_output_leases_inner(database, request_id, retention_seconds, leases);
     emit_request_output_lease_batch_result(result.as_ref().map(|records| records.len()), &result);
     result
 }
 
 pub fn ensure_request_output_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     retention: Duration,
     leases: &[(String, String)],
@@ -454,9 +449,9 @@ pub fn ensure_request_output_leases(
     if leases.is_empty() {
         return Ok(Vec::new());
     }
-    validate_request_output_lease_inputs(database_url, request_id, leases)?;
+    validate_request_output_lease_inputs(database, request_id, leases)?;
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -511,11 +506,11 @@ pub fn ensure_request_output_leases(
 }
 
 fn validate_request_output_lease_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     leases: &[(String, String)],
 ) -> Result<(), StoreLeaseError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || request_id.is_empty()
         || request_id.len() > MAX_IPC_COMPONENT_BYTES
         || leases.len() > nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
@@ -535,15 +530,15 @@ fn validate_request_output_lease_inputs(
 }
 
 fn create_request_output_leases_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     retention_seconds: u64,
     leases: &[(String, String)],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
-    validate_request_output_lease_inputs(database_url, request_id, leases)?;
+    validate_request_output_lease_inputs(database, request_id, leases)?;
     let retention_seconds = retention_seconds as f64;
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -601,14 +596,14 @@ pub struct ReleasedRequestLeases {
 }
 
 pub fn detach_request_and_release_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(detach_request_and_release_leases));
-    validate_request_lease_release_inputs(database_url, session_id, request_id)?;
-    let result = detach_request_and_release_leases_inner(database_url, session_id, request_id);
+    validate_request_lease_release_inputs(database, session_id, request_id)?;
+    let result = detach_request_and_release_leases_inner(database, session_id, request_id);
     emit_request_lease_release_result(
         "detach-release",
         result.as_ref().map(|released| released.leases.len()),
@@ -618,12 +613,12 @@ pub fn detach_request_and_release_leases(
 }
 
 fn detach_request_and_release_leases_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -673,18 +668,18 @@ fn detach_request_and_release_leases_inner(
 }
 
 pub fn release_unattached_request_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(release_unattached_request_leases));
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || request_id.is_empty()
         || request_id.len() > MAX_IPC_COMPONENT_BYTES
     {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
-    let result = release_unattached_request_leases_inner(database_url, request_id);
+    let result = release_unattached_request_leases_inner(database, request_id);
     emit_request_lease_release_result(
         "unattached-release",
         result.as_ref().map(|released| released.leases.len()),
@@ -694,11 +689,11 @@ pub fn release_unattached_request_leases(
 }
 
 fn release_unattached_request_leases_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
 ) -> Result<ReleasedRequestLeases, StoreLeaseError> {
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -809,11 +804,11 @@ fn release_locked_request_leases(
 }
 
 fn validate_request_lease_release_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
     request_id: &str,
 ) -> Result<(), StoreLeaseError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || session_id.is_empty()
         || session_id.len() > MAX_IPC_COMPONENT_BYTES
         || request_id.is_empty()
@@ -853,25 +848,25 @@ fn emit_request_lease_release_result(
 }
 
 pub fn release_store_lease(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(release_store_lease));
-    let result = release_store_lease_inner(database_url, lease_id);
+    let result = release_store_lease_inner(database, lease_id);
     emit_store_lease_failure("release", &result);
     result
 }
 
 fn release_store_lease_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
 ) -> Result<StoreLeaseRecord, StoreLeaseError> {
     validate_store_lease_id(lease_id)?;
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -913,19 +908,15 @@ fn release_store_lease_inner(
 const MAXIMUM_RELEASED_REQUEST_LEASES_PAGE_ROWS: usize = 256;
 
 pub fn release_expired_request_output_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     now: SystemTime,
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(release_expired_request_output_leases));
-    let result = release_expired_request_output_leases_inner(
-        database_url,
-        now,
-        after_lease_id,
-        maximum_rows,
-    );
+    let result =
+        release_expired_request_output_leases_inner(database, now, after_lease_id, maximum_rows);
     match &result {
         Ok(released) => tracing::info!(
             event = "database.store_lease.expired",
@@ -945,12 +936,12 @@ pub fn release_expired_request_output_leases(
 }
 
 fn release_expired_request_output_leases_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     now: SystemTime,
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || !(1..=256).contains(&maximum_rows)
         || now.duration_since(std::time::UNIX_EPOCH).is_err()
     {
@@ -960,7 +951,7 @@ fn release_expired_request_output_leases_inner(
         validate_store_lease_id(after_lease_id)?;
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
@@ -998,12 +989,12 @@ fn release_expired_request_output_leases_inner(
 }
 
 pub fn reconcile_store_leases(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_ids: &[String],
 ) -> Result<(), StoreLeaseError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(reconcile_store_leases));
-    if database_url.trim().is_empty() || lease_ids.is_empty() {
+    if !database.is_configured() || lease_ids.is_empty() {
         return if lease_ids.is_empty() {
             Ok(())
         } else {
@@ -1014,7 +1005,7 @@ pub fn reconcile_store_leases(
         validate_store_lease_id(lease_id)?;
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let updated = client
         .execute(
             "UPDATE store_leases SET state = 'reconciled', reconciled_at = transaction_timestamp() WHERE lease_id = ANY($1) AND state = 'released'",
@@ -1028,13 +1019,13 @@ pub fn reconcile_store_leases(
 }
 
 pub fn read_released_request_leases_page(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     after_lease_id: Option<&str>,
     maximum_rows: usize,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     let mut database_operation =
         telemetry::DatabaseOperation::silent(stringify!(read_released_request_leases_page));
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
     if let Some(after_lease_id) = after_lease_id {
@@ -1045,7 +1036,7 @@ pub fn read_released_request_leases_page(
         return Ok(Vec::new());
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let rows = client
         .query(
             "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE owner_kind = 'request' AND state = 'released' AND ($1::text IS NULL OR lease_id > $1) ORDER BY lease_id LIMIT $2",
@@ -1069,25 +1060,25 @@ pub fn read_released_request_leases_page(
 }
 
 pub fn read_store_lease(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
 ) -> Result<Option<StoreLeaseRecord>, StoreLeaseError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_store_lease));
-    let result = read_store_lease_inner(database_url, lease_id);
+    let result = read_store_lease_inner(database, lease_id);
     emit_store_lease_failure("read", &result);
     result
 }
 
 fn read_store_lease_inner(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
 ) -> Result<Option<StoreLeaseRecord>, StoreLeaseError> {
     validate_store_lease_id(lease_id)?;
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     let lease = client
         .query_opt(
             "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE lease_id = $1",
@@ -1111,13 +1102,13 @@ fn emit_store_lease_failure<T>(operation: &'static str, result: &Result<T, Store
 }
 
 fn validate_store_lease_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     lease_id: &str,
     owner_id: &str,
     store_path: &str,
 ) -> Result<(), StoreLeaseError> {
     validate_store_lease_id(lease_id)?;
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || owner_id.is_empty()
         || owner_id.len() > MAX_IPC_COMPONENT_BYTES
         || store_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES

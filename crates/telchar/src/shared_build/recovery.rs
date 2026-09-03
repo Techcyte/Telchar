@@ -88,18 +88,18 @@ pub struct ReconciliationOutcome {
 }
 
 pub fn reconcile_active_shared_builds(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     retention: Duration,
     outputs: &mut dyn SharedBuildOutputStore,
     backends: &mut dyn RecoveryBackend,
 ) -> io::Result<ReconciliationOutcome> {
-    let active = persistence::read_active_shared_builds(database_url, MAXIMUM_ACTIVE_SHARED_BUILDS)
+    let active = persistence::read_active_shared_builds(database, MAXIMUM_ACTIVE_SHARED_BUILDS)
         .map_err(|_| io::Error::other("shared build recovery failed"))?;
-    reconcile_shared_builds(database_url, retention, active, outputs, backends)
+    reconcile_shared_builds(database, retention, active, outputs, backends)
 }
 
 pub fn reconcile_adopted_shared_builds(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     retention: Duration,
     derivation_paths: &[String],
     outputs: &mut dyn SharedBuildOutputStore,
@@ -107,7 +107,7 @@ pub fn reconcile_adopted_shared_builds(
 ) -> io::Result<ReconciliationOutcome> {
     let mut active = Vec::with_capacity(derivation_paths.len());
     for derivation_path in derivation_paths {
-        let build = persistence::read_shared_build(database_url, derivation_path)
+        let build = persistence::read_shared_build(database, derivation_path)
             .map_err(|_| io::Error::other("shared build recovery failed"))?
             .ok_or_else(|| io::Error::other("shared build recovery failed"))?;
         if matches!(
@@ -117,11 +117,11 @@ pub fn reconcile_adopted_shared_builds(
             active.push(build);
         }
     }
-    reconcile_shared_builds(database_url, retention, active, outputs, backends)
+    reconcile_shared_builds(database, retention, active, outputs, backends)
 }
 
 pub fn reconcile_shared_builds(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     retention: Duration,
     active: Vec<SharedBuild>,
     outputs: &mut dyn SharedBuildOutputStore,
@@ -130,24 +130,24 @@ pub fn reconcile_shared_builds(
     let mut outcome = ReconciliationOutcome::default();
     for build in active {
         if outputs.contains_all(&build.expected_outputs)? {
-            complete_recovered_success(database_url, &build, retention)?;
+            complete_recovered_success(database, &build, retention)?;
             outcome.succeeded += 1;
             continue;
         }
-        let attempt = persistence::read_shared_build_attempt(database_url, &build.derivation_path)
+        let attempt = persistence::read_shared_build_attempt(database, &build.derivation_path)
             .map_err(|_| io::Error::other("shared build recovery failed"))?;
         if attempt.as_ref().is_none_or(|attempt| {
             attempt.backend_name != build.backend_name
                 || attempt.backend_kind != build.backend_kind
                 || attempt.backend_execution_id != build.backend_execution_id
         }) {
-            complete_recovery_failure(database_url, &build, retention)?;
+            complete_recovery_failure(database, &build, retention)?;
             outcome.failed += 1;
             continue;
         }
         let configured = backends.capabilities(&build.backend_name);
         if configured != Some((build.backend_kind, build.capabilities)) {
-            complete_recovery_failure(database_url, &build, retention)?;
+            complete_recovery_failure(database, &build, retention)?;
             outcome.failed += 1;
             continue;
         }
@@ -166,16 +166,16 @@ pub fn reconcile_shared_builds(
                     }
                 };
                 if recovered {
-                    complete_recovered_success(database_url, &build, retention)?;
+                    complete_recovered_success(database, &build, retention)?;
                     outcome.succeeded += 1;
                 } else {
-                    complete_recovery_failure(database_url, &build, retention)?;
+                    complete_recovery_failure(database, &build, retention)?;
                     outcome.failed += 1;
                 }
             }
             ExecutionRecovery::Adoptable => {
                 if build.backend_execution_id.is_none() {
-                    complete_recovery_failure(database_url, &build, retention)?;
+                    complete_recovery_failure(database, &build, retention)?;
                     outcome.failed += 1;
                     continue;
                 }
@@ -188,15 +188,15 @@ pub fn reconcile_shared_builds(
                     }
                     Ok(AdoptedExecution::Succeeded) => {
                         if outputs.contains_all(&build.expected_outputs)? {
-                            complete_recovered_success(database_url, &build, retention)?;
+                            complete_recovered_success(database, &build, retention)?;
                             outcome.succeeded += 1;
                         } else {
-                            complete_recovery_failure(database_url, &build, retention)?;
+                            complete_recovery_failure(database, &build, retention)?;
                             outcome.failed += 1;
                         }
                     }
                     Ok(AdoptedExecution::Failed | AdoptedExecution::Missing) | Err(_) => {
-                        complete_recovery_failure(database_url, &build, retention)?;
+                        complete_recovery_failure(database, &build, retention)?;
                         outcome.failed += 1;
                     }
                 }
@@ -207,13 +207,13 @@ pub fn reconcile_shared_builds(
 }
 
 fn complete_recovered_success(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     build: &SharedBuild,
     retention: Duration,
 ) -> io::Result<()> {
-    advance_to_collecting(database_url, build)?;
+    advance_to_collecting(database, build)?;
     persistence::complete_shared_build_success(
-        database_url,
+        database,
         &build.derivation_path,
         &serde_json::json!({
             "outputs": build.expected_outputs,
@@ -225,16 +225,19 @@ fn complete_recovered_success(
     Ok(())
 }
 
-fn advance_to_collecting(database_url: &str, build: &SharedBuild) -> io::Result<()> {
+fn advance_to_collecting(
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
+    build: &SharedBuild,
+) -> io::Result<()> {
     match build.state {
         SharedBuildState::Claimed => {
-            persistence::start_shared_build(database_url, &build.derivation_path)
+            persistence::start_shared_build(database, &build.derivation_path)
                 .map_err(|_| io::Error::other("shared build recovery failed"))?;
-            persistence::collect_shared_build(database_url, &build.derivation_path)
+            persistence::collect_shared_build(database, &build.derivation_path)
                 .map_err(|_| io::Error::other("shared build recovery failed"))?;
         }
         SharedBuildState::Running => {
-            persistence::collect_shared_build(database_url, &build.derivation_path)
+            persistence::collect_shared_build(database, &build.derivation_path)
                 .map_err(|_| io::Error::other("shared build recovery failed"))?;
         }
         SharedBuildState::Collecting => {}
@@ -246,12 +249,12 @@ fn advance_to_collecting(database_url: &str, build: &SharedBuild) -> io::Result<
 }
 
 fn complete_recovery_failure(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     build: &SharedBuild,
     retention: Duration,
 ) -> io::Result<()> {
     persistence::complete_shared_build_failure(
-        database_url,
+        database,
         &build.derivation_path,
         "restart-recovery-failed",
         &serde_json::json!({"stage": "restart-recovery"}),

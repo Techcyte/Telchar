@@ -51,7 +51,7 @@ pub struct BuildRequestState {
 }
 
 pub fn create_build_request(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     derivation_path: &str,
     system: &str,
@@ -60,7 +60,7 @@ pub fn create_build_request(
 ) -> Result<BuildRequestState, BuildRequestError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(create_build_request));
     validate_build_request_inputs(
-        database_url,
+        database,
         request_id,
         derivation_path,
         system,
@@ -68,7 +68,7 @@ pub fn create_build_request(
         quota_subject,
     )?;
     let mut client =
-        connect(database_url).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+        connect(database).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
@@ -94,16 +94,16 @@ pub fn create_build_request(
 }
 
 pub fn read_build_request(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
 ) -> Result<Option<BuildRequestState>, BuildRequestError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(read_build_request));
     validate_build_request_id(request_id)?;
-    if database_url.trim().is_empty() {
+    if !database.is_configured() {
         return Err(BuildRequestError(BuildRequestFailure::Configuration));
     }
     let mut client =
-        connect(database_url).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
+        connect(database).map_err(|_| BuildRequestError(BuildRequestFailure::Connection))?;
     client
         .query_opt(
             "SELECT request_id, derivation_path, system, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1",
@@ -115,7 +115,7 @@ pub fn read_build_request(
 }
 
 fn validate_build_request_inputs(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     request_id: &str,
     derivation_path: &str,
     system: &str,
@@ -123,7 +123,7 @@ fn validate_build_request_inputs(
     quota_subject: &str,
 ) -> Result<(), BuildRequestError> {
     validate_build_request_id(request_id)?;
-    if database_url.trim().is_empty()
+    if !database.is_configured()
         || derivation_path.is_empty()
         || derivation_path.len() > nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
         || system.is_empty()

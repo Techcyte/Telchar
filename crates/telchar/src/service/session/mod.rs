@@ -41,7 +41,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         store_closure,
         store_retention,
         store_substitution,
-        database_url,
+        database,
         session_id,
         audit_subject,
         quota_subject,
@@ -97,7 +97,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 };
                 let request_id = build_request_id();
                 if let Err(error) = crate::persistence::create_build_request(
-                    database_url,
+                    database,
                     &request_id,
                     derivation_path,
                     admitted.system(),
@@ -158,7 +158,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 if let Err(_error) = crate::persistence::create_request_retained_lease(
-                    database_url,
+                    database,
                     &lease_id,
                     &request_id,
                     derivation_path,
@@ -204,7 +204,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         if let Err(error) = release_unattached_request_leases(
                             store_retention,
-                            database_url,
+                            database,
                             &request_id,
                         ) {
                             return reject(
@@ -258,7 +258,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         if let Err(error) = release_unattached_request_leases(
                             store_retention,
-                            database_url,
+                            database,
                             &request_id,
                         ) {
                             return reject(
@@ -275,7 +275,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 if crate::persistence::create_request_input_leases_with_limit(
-                    database_url,
+                    database,
                     &request_id,
                     maximum_retained_input_bytes,
                     &input_leases,
@@ -305,7 +305,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                     if let Err(error) = release_unattached_request_leases(
                         store_retention,
-                        database_url,
+                        database,
                         &request_id,
                     ) {
                         return reject(
@@ -321,7 +321,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                 }
                 if let Err(error) =
-                    crate::persistence::attach_request(database_url, session_id, &request_id)
+                    crate::persistence::attach_request(database, session_id, &request_id)
                 {
                     tracing::warn!(
                         event = "database.request_attachment.failed",
@@ -331,7 +331,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                     if let Err(error) = release_unattached_request_leases(
                         store_retention,
-                        database_url,
+                        database,
                         &request_id,
                     ) {
                         return reject(
@@ -381,7 +381,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         Err(error) => {
                             if let Err(release_error) = release_attached_request_leases(
                                 store_retention,
-                                database_url,
+                                database,
                                 session_id,
                                 &request_id,
                             ) {
@@ -431,7 +431,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         let execution_started = std::time::Instant::now();
                         let durable_claim = crate::persistence::claim_shared_build_with_request(
-                            database_url,
+                            database,
                             derivation_path,
                             &admitted.shared_build_digest(),
                             selected_target.name(),
@@ -498,7 +498,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 | crate::persistence::SharedBuildState::Running
                                 | crate::persistence::SharedBuildState::Collecting => {
                                     let result = match wait_for_shared_build_terminal(
-                                        database_url,
+                                        database,
                                         derivation_path,
                                     )
                                     .map_err(|error| {
@@ -509,7 +509,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     })
                                     .and_then(|_| {
                                         crate::persistence::read_shared_build(
-                                            database_url,
+                                            database,
                                             derivation_path,
                                         )
                                         .map_err(|error| {
@@ -550,7 +550,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 "shared build enqueued"
                             );
                             if let Err(error) = crate::persistence::enqueue_shared_build(
-                                database_url,
+                                database,
                                 derivation_path,
                                 quota_subject,
                                 scheduling_limits.maximum_queued_builds(),
@@ -584,7 +584,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 );
                                 crate::service::metrics::shared_build_left_queue();
                                 let _ = crate::persistence::complete_shared_build_failure(
-                                    database_url,
+                                    database,
                                     derivation_path,
                                     "scheduling-failure",
                                     &serde_json::json!({"failure": execution_error_reason(&error)}),
@@ -692,7 +692,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     );
                                     let timeout_phase = execution_timeout_phase(&error);
                                     let _ = crate::persistence::complete_shared_build_failure(
-                                        database_url,
+                                        database,
                                         derivation_path,
                                         "backend-failure",
                                         &serde_json::json!({
@@ -778,7 +778,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                             }
                             })?;
-                        wait_for_shared_build_terminal(database_url, derivation_path)?;
+                        wait_for_shared_build_terminal(database, derivation_path)?;
                         Ok(result)
                     }
                 };
@@ -807,7 +807,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         if let Err(release_error) = release_attached_request_leases(
                             store_retention,
-                            database_url,
+                            database,
                             session_id,
                             &request_id,
                         ) {
@@ -860,14 +860,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     Ok(paths) => {
                         if durable_execution_owned.get() {
                             let build = crate::persistence::read_shared_build(
-                                database_url,
+                                database,
                                 derivation_path,
                             )
                             .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
                             .ok_or_else(|| io::Error::other("shared build is missing"))?;
                             if build.state == crate::persistence::SharedBuildState::Running
                                 && let Err(error) = crate::persistence::collect_shared_build(
-                                    database_url,
+                                    database,
                                     derivation_path,
                                 )
                             {
@@ -883,7 +883,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     Err(error) => {
                         if durable_execution_owned.get() {
                             let _ = crate::persistence::complete_shared_build_failure(
-                                database_url,
+                                database,
                                 derivation_path,
                                 "output-validation-failure",
                                 &serde_json::json!({"reason": execution_error_reason(&error)}),
@@ -898,7 +898,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         if let Err(release_error) = release_attached_request_leases(
                             store_retention,
-                            database_url,
+                            database,
                             session_id,
                             &request_id,
                         ) {
@@ -949,7 +949,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                         if let Err(release_error) = release_attached_request_leases(
                             store_retention,
-                            database_url,
+                            database,
                             session_id,
                             &request_id,
                         ) {
@@ -967,7 +967,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 if crate::persistence::create_request_output_leases(
-                    database_url,
+                    database,
                     &request_id,
                     output_retention.duration(),
                     &output_leases,
@@ -976,7 +976,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 {
                     if durable_execution_owned.get() {
                         let _ = crate::persistence::complete_shared_build_failure(
-                            database_url,
+                            database,
                             derivation_path,
                             "output-retention-failure",
                             &serde_json::json!({"stage": "lease"}),
@@ -1006,7 +1006,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                     if let Err(release_error) = release_attached_request_leases(
                         store_retention,
-                        database_url,
+                        database,
                         session_id,
                         &request_id,
                     ) {
@@ -1024,7 +1024,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 }
                 if let Err(error) = release_attached_request_leases(
                     store_retention,
-                    database_url,
+                    database,
                     session_id,
                     &request_id,
                 ) {
@@ -1035,7 +1035,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                 }
                 let build_already_succeeded =
-                    crate::persistence::read_shared_build(database_url, derivation_path)
+                    crate::persistence::read_shared_build(database, derivation_path)
                         .ok()
                         .flatten()
                         .is_some_and(|build| {
@@ -1044,7 +1044,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 if durable_execution_owned.get()
                     && !build_already_succeeded
                     && let Err(error) = crate::persistence::complete_shared_build_success(
-                        database_url,
+                        database,
                         derivation_path,
                         &serde_json::json!({
                         "status": match result.status() {
@@ -1779,12 +1779,12 @@ fn disk_reserve_rejected(
 
 fn release_attached_request_leases(
     store_retention: &mut dyn crate::store::retention::StoreRetentionBackend,
-    database_url: &str,
+    database: &crate::persistence::Database,
     session_id: &str,
     request_id: &str,
 ) -> io::Result<()> {
     let released =
-        crate::persistence::detach_request_and_release_leases(database_url, session_id, request_id)
+        crate::persistence::detach_request_and_release_leases(database, session_id, request_id)
             .map_err(|error| {
                 tracing::warn!(
                     event = "database.request_lease_release.failed",
@@ -1799,10 +1799,10 @@ fn release_attached_request_leases(
 
 fn release_unattached_request_leases(
     store_retention: &mut dyn crate::store::retention::StoreRetentionBackend,
-    database_url: &str,
+    database: &crate::persistence::Database,
     request_id: &str,
 ) -> io::Result<()> {
-    let released = crate::persistence::release_unattached_request_leases(database_url, request_id)
+    let released = crate::persistence::release_unattached_request_leases(database, request_id)
         .map_err(|error| {
             tracing::warn!(
                 event = "database.request_lease_release.failed",
@@ -1839,10 +1839,13 @@ fn release_committed_request_roots(
     })
 }
 
-fn wait_for_shared_build_terminal(database_url: &str, derivation_path: &str) -> io::Result<()> {
+fn wait_for_shared_build_terminal(
+    database: &crate::persistence::Database,
+    derivation_path: &str,
+) -> io::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let build = crate::persistence::read_shared_build(database_url, derivation_path)
+        let build = crate::persistence::read_shared_build(database, derivation_path)
             .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
             .ok_or_else(|| io::Error::other("shared build is missing"))?;
         match build.state {

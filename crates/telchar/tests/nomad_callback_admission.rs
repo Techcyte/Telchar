@@ -227,7 +227,7 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
     )
     .expect("shared build runs");
     let resolver = PostgresCallbackExecutionResolver::new(
-        database.url().to_owned(),
+        telchar::persistence::Database::connect(database.url()).expect("database connects"),
         vec![("nomad-primary".to_owned(), "telchar".to_owned())],
     )
     .expect("resolver creates");

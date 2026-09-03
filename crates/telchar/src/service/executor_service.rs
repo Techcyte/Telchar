@@ -76,12 +76,15 @@ pub enum ExecutorExecutionState {
     Cancelled,
 }
 
-pub fn handle_connection(database_url: &str, mut stream: UnixStream) -> io::Result<()> {
-    handle_connection_with_submit(database_url, &mut stream, &mut |_, _, _| Ok(()))
+pub fn handle_connection(
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
+    mut stream: UnixStream,
+) -> io::Result<()> {
+    handle_connection_with_submit(database, &mut stream, &mut |_, _, _| Ok(()))
 }
 
 pub fn handle_connection_with_submit(
-    database_url: &str,
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
     stream: &mut UnixStream,
     submit: &mut dyn FnMut(&str, &ExecutorSpecification, &LocalBackendExecution) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -106,7 +109,7 @@ pub fn handle_connection_with_submit(
             } else {
                 let digest: [u8; 32] = Sha256::digest(&specification_bytes).into();
                 match persistence::register_local_backend_execution(
-                    database_url,
+                    database,
                     &backend_execution_id,
                     &idempotency_key,
                     &digest,
@@ -131,8 +134,7 @@ pub fn handle_connection_with_submit(
             if version != EXECUTOR_PROTOCOL_VERSION {
                 invalid_response()
             } else {
-                match persistence::read_local_backend_execution(database_url, &backend_execution_id)
-                {
+                match persistence::read_local_backend_execution(database, &backend_execution_id) {
                     Ok(Some(execution)) => execution_response(ExecutorResult::Found, execution),
                     Ok(None) => result_response(ExecutorResult::NotFound),
                     Err(_) => result_response(ExecutorResult::Failed),

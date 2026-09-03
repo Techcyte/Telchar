@@ -123,15 +123,17 @@ fn expired_owner_cannot_mutate_durable_state_after_takeover() {
     )
     .expect("replacement acquires expired lease");
 
-    assert!(telchar::persistence::create_build_request(
-        &stale_database_url,
-        "stale-owner-request",
-        "/nix/store/11111111111111111111111111111111-stale.drv",
-        "x86_64-linux",
-        "stale-owner",
-        "stale-owner",
-    )
-    .is_err());
+    assert!(
+        telchar::persistence::create_build_request(
+            &stale_database_url,
+            "stale-owner-request",
+            "/nix/store/11111111111111111111111111111111-stale.drv",
+            "x86_64-linux",
+            "stale-owner",
+            "stale-owner",
+        )
+        .is_err()
+    );
     telchar::persistence::create_build_request(
         replacement.database_url(),
         "replacement-request",

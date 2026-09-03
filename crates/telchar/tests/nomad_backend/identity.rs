@@ -168,7 +168,8 @@ fn configured_backend_exposes_deterministic_execution_identity_before_submission
         ConfiguredBackends::new(&config, gateway_store_endpoint()).expect("backends configure");
     let executor = configured
         .executor(
-            "postgresql://fixture",
+            telchar::persistence::Database::connect("postgresql://fixture")
+                .expect("database configuration is valid"),
             Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         )
         .expect("executor configures");

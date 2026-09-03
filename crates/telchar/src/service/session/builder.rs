@@ -15,7 +15,7 @@ pub struct SessionBuilder<'a> {
     store_closure: Option<&'a mut dyn crate::store::closure::StoreClosureBackend>,
     store_retention: Option<&'a mut dyn crate::store::retention::StoreRetentionBackend>,
     store_substitution: Option<&'a mut dyn crate::store::substitution::StoreSubstitutionBackend>,
-    database_url: Option<&'a str>,
+    database: Option<&'a crate::persistence::Database>,
     session_id: Option<&'a str>,
     audit_subject: Option<&'a str>,
     quota_subject: Option<&'a str>,
@@ -45,7 +45,7 @@ pub(super) struct SessionContext<'a> {
     pub store_closure: &'a mut dyn crate::store::closure::StoreClosureBackend,
     pub store_retention: &'a mut dyn crate::store::retention::StoreRetentionBackend,
     pub store_substitution: &'a mut dyn crate::store::substitution::StoreSubstitutionBackend,
-    pub database_url: &'a str,
+    pub database: &'a crate::persistence::Database,
     pub session_id: &'a str,
     pub audit_subject: &'a str,
     pub quota_subject: &'a str,
@@ -81,7 +81,7 @@ impl<'a> SessionBuilder<'a> {
             store_closure: None,
             store_retention: None,
             store_substitution: None,
-            database_url: None,
+            database: None,
             session_id: None,
             audit_subject: None,
             quota_subject: None,
@@ -140,12 +140,12 @@ impl<'a> SessionBuilder<'a> {
     }
     pub fn identity(
         mut self,
-        database_url: &'a str,
+        database: &'a crate::persistence::Database,
         session_id: &'a str,
         audit_subject: &'a str,
         quota_subject: &'a str,
     ) -> Self {
-        self.database_url = Some(database_url);
+        self.database = Some(database);
         self.session_id = Some(session_id);
         self.audit_subject = Some(audit_subject);
         self.quota_subject = Some(quota_subject);
@@ -217,7 +217,7 @@ impl<'a> SessionBuilder<'a> {
             store_closure: self.store_closure.ok_or_else(missing)?,
             store_retention: self.store_retention.ok_or_else(missing)?,
             store_substitution: self.store_substitution.ok_or_else(missing)?,
-            database_url: self.database_url.ok_or_else(missing)?,
+            database: self.database.ok_or_else(missing)?,
             session_id: self.session_id.ok_or_else(missing)?,
             audit_subject: self.audit_subject.ok_or_else(missing)?,
             quota_subject: self.quota_subject.ok_or_else(missing)?,

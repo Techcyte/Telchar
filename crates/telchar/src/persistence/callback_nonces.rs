@@ -20,7 +20,7 @@ fn valid_nomad_callback_component(value: &str) -> bool {
 }
 
 pub fn reserve_nomad_callback_nonce(
-    database_url: &str,
+    database: &(impl DatabaseSource + ?Sized),
     backend_name: &str,
     job_id: &str,
     allocation_id: &str,
@@ -30,8 +30,7 @@ pub fn reserve_nomad_callback_nonce(
 ) -> Result<bool, NomadCallbackNonceError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(reserve_nomad_callback_nonce));
-    if database_url.trim().is_empty()
-        || !valid_nomad_callback_component(backend_name)
+    if !valid_nomad_callback_component(backend_name)
         || !valid_nomad_callback_component(job_id)
         || !valid_nomad_callback_component(allocation_id)
         || nonce.is_empty()
@@ -44,7 +43,7 @@ pub fn reserve_nomad_callback_nonce(
     let maximum_retained_nonces =
         i64::try_from(maximum_retained_nonces).map_err(|_| NomadCallbackNonceError)?;
     let nonce_digest = Sha256::digest(nonce.as_bytes()).to_vec();
-    let mut client = connect(database_url).map_err(|_| NomadCallbackNonceError)?;
+    let mut client = connect(database).map_err(|_| NomadCallbackNonceError)?;
     let mut transaction = client.transaction().map_err(|_| NomadCallbackNonceError)?;
     transaction
         .query_one(
