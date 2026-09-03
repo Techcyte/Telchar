@@ -71,6 +71,14 @@ import ./nixos/oci.nix {
       standaloneModule
       ;
   };
+  nixos-ssh-host-certificate-renewal = import ./nixos/ssh-host-certificate-renewal.nix {
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
+  };
 }
 // import ./nixos/recovery.nix checkArgs
 // import ./nixos/artifacts.nix checkArgs

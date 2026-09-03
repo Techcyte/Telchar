@@ -7,6 +7,7 @@
 }:
 let
   cfg = config.services.telchar;
+  sshRenewalCfg = cfg.sshHostCertificateRenewal;
   toml = pkgs.formats.toml { };
   protectedDatabase = cfg.database.urlFile != null;
   serviceSettings = lib.recursiveUpdate cfg.settings (
@@ -27,6 +28,24 @@ let
       *"sslrootcert=${cfg.database.rootCertificateFile}"*) ;;
       *) echo "database URL must use the configured root certificate" >&2; exit 1 ;;
     esac
+  '';
+  renewHostCertificate = pkgs.writeShellScript "renew-telchar-ssh-host-certificate" ''
+    set -eu
+    candidate=${lib.escapeShellArg sshRenewalCfg.candidateFile}
+    destination=${lib.escapeShellArg cfg.ingress.openssh.hostCertificateFile}
+    host_public_key=${lib.escapeShellArg "${cfg.ingress.openssh.hostKeyFile}.pub"}
+    candidate_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf "$candidate" | ${pkgs.gawk}/bin/awk '{ print $2 }')"
+    host_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf "$host_public_key" | ${pkgs.gawk}/bin/awk '{ print $2 }')"
+    test "$candidate_fingerprint" = "$host_fingerprint"
+    ${pkgs.openssh}/bin/ssh-keygen -L -f "$candidate" | ${pkgs.gnugrep}/bin/grep -q 'Type:.*host certificate'
+    temporary="$(${pkgs.coreutils}/bin/mktemp "$(dirname "$destination")/.host-certificate.XXXXXX")"
+    trap '${pkgs.coreutils}/bin/rm -f "$temporary"' EXIT
+    ${pkgs.coreutils}/bin/install -m 0644 -o ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} "$candidate" "$temporary"
+    ${pkgs.coreutils}/bin/mv -f "$temporary" "$destination"
+    trap - EXIT
+    if ${pkgs.systemd}/bin/systemctl is-active --quiet telchar-sshd.service; then
+      ${pkgs.systemd}/bin/systemctl reload telchar-sshd.service
+    fi
   '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
     set -eu
@@ -165,6 +184,15 @@ in
       };
     };
 
+    sshHostCertificateRenewal = {
+      enable = lib.mkEnableOption "atomic Telchar SSH host-certificate installation";
+      candidateFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Protected candidate SSH host certificate installed by the renewal service.";
+      };
+    };
+
     nomad.tokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -275,6 +303,17 @@ in
       }
       {
         assertion =
+          !sshRenewalCfg.enable
+          || (
+            certificateIngress
+            && sshRenewalCfg.candidateFile != null
+            && lib.hasPrefix "/" sshRenewalCfg.candidateFile
+            && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.candidateFile)
+          );
+        message = "services.telchar.sshHostCertificateRenewal requires certificate ingress and an absolute candidate path outside the Nix store";
+      }
+      {
+        assertion =
           cfg.nomad.tokenFile == null
           || (
             lib.hasPrefix "/" cfg.nomad.tokenFile
@@ -328,6 +367,14 @@ in
         Restart = "on-failure";
       };
     }; 
+
+    systemd.services.telchar-ssh-host-certificate-renewal = lib.mkIf sshRenewalCfg.enable {
+      description = "Install renewed Telchar SSH host certificate";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = renewHostCertificate;
+      };
+    };
 
     systemd.services.telchar = {
       description = "Telchar Nix build gateway";
