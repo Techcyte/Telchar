@@ -32,10 +32,22 @@ let
     candidate=${lib.escapeShellArg sshRenewalCfg.candidateFile}
     destination=${lib.escapeShellArg cfg.ingress.openssh.hostCertificateFile}
     host_public_key=${lib.escapeShellArg "${cfg.ingress.openssh.hostKeyFile}.pub"}
+    certificate="$(${pkgs.openssh}/bin/ssh-keygen -L -f "$candidate")"
     candidate_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf "$candidate" | ${pkgs.gawk}/bin/awk '{ print $2 }')"
     host_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf "$host_public_key" | ${pkgs.gawk}/bin/awk '{ print $2 }')"
+    signing_ca_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf ${lib.escapeShellArg sshRenewalCfg.expectedSigningCAFile} | ${pkgs.gawk}/bin/awk '{ print $2 }')"
     test "$candidate_fingerprint" = "$host_fingerprint"
-    ${pkgs.openssh}/bin/ssh-keygen -L -f "$candidate" | ${pkgs.gnugrep}/bin/grep -q 'Type:.*host certificate'
+    printf '%s\n' "$certificate" | ${pkgs.gnugrep}/bin/grep -q 'Type:.*host certificate'
+    printf '%s\n' "$certificate" | ${pkgs.gnugrep}/bin/grep -F -q "$signing_ca_fingerprint"
+    principals="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Principals:/{inside=1; next} inside && /^[[:space:]]*Critical Options:/{exit} inside {sub(/^[[:space:]]+/, ""); if (length) print}')"
+    ${lib.concatMapStringsSep "\n    " (principal: ''printf '%s\n' "$principals" | ${pkgs.gnugrep}/bin/grep -F -x -q ${lib.escapeShellArg principal}'') sshRenewalCfg.expectedPrincipals}
+    valid_from="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Valid: from /{print $3; exit}')"
+    valid_to="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Valid: from /{print $5; exit}')"
+    now="$(${pkgs.coreutils}/bin/date +%s)"
+    valid_from_epoch="$(${pkgs.coreutils}/bin/date -d "$valid_from" +%s)"
+    valid_to_epoch="$(${pkgs.coreutils}/bin/date -d "$valid_to" +%s)"
+    test "$valid_from_epoch" -le "$now"
+    test "$valid_to_epoch" -ge "$((now + ${toString sshRenewalCfg.minimumRemainingValiditySec}))"
     temporary="$(${pkgs.coreutils}/bin/mktemp "$(dirname "$destination")/.host-certificate.XXXXXX")"
     trap '${pkgs.coreutils}/bin/rm -f "$temporary"' EXIT
     ${pkgs.coreutils}/bin/install -m 0644 "$candidate" "$temporary"
@@ -354,6 +366,21 @@ in
         default = null;
         description = "Protected candidate SSH host certificate installed by the renewal service.";
       };
+      expectedSigningCAFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Public key of the authority trusted to sign renewed SSH host certificates.";
+      };
+      expectedPrincipals = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Host principals every renewed SSH host certificate must contain.";
+      };
+      minimumRemainingValiditySec = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 300;
+        description = "Minimum remaining certificate validity required at installation time.";
+      };
     };
 
     nomad = {
@@ -523,10 +550,14 @@ in
           || (
             certificateIngress
             && sshRenewalCfg.candidateFile != null
+            && sshRenewalCfg.expectedSigningCAFile != null
+            && sshRenewalCfg.expectedPrincipals != [ ]
             && lib.hasPrefix "/" sshRenewalCfg.candidateFile
+            && lib.hasPrefix "/" sshRenewalCfg.expectedSigningCAFile
             && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.candidateFile)
+            && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.expectedSigningCAFile)
           );
-        message = "services.telchar.sshHostCertificateRenewal requires certificate ingress and an absolute candidate path outside the Nix store";
+        message = "services.telchar.sshHostCertificateRenewal requires certificate ingress, expected signer and principals, and absolute candidate and signer paths outside the Nix store";
       }
       {
         assertion =

@@ -60,6 +60,9 @@ pkgs.testers.nixosTest {
           sshHostCertificateRenewal = {
             enable = true;
             candidateFile = "/var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub";
+            expectedSigningCAFile = "/var/lib/telchar/ssh/host-ca.pub";
+            expectedPrincipals = [ "gateway" ];
+            minimumRemainingValiditySec = 300;
           };
           settings.backends.local = {
             name = "local";
@@ -136,6 +139,25 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl is-failed --quiet telchar-ssh-host-certificate-renewal.service")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key | cut -d' ' -f1) = " + original_key)
+    gateway.succeed("test $(systemctl show telchar-sshd.service -p MainPID --value) = " + original_sshd_pid)
+    gateway.succeed("systemctl is-active --quiet telchar-sshd.service")
+
+    gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/untrusted-host-ca")
+    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/untrusted-host-ca -I wrong-signer -h -n gateway -V -1m:+10m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
+
+    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/host-ca -I wrong-principal -h -n other-gateway -V -1m:+10m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
+
+    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/host-ca -I future -h -n gateway -V +10m:+20m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
+
+    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/host-ca -I expired -h -n gateway -V -20m:-10m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
     gateway.succeed("test $(systemctl show telchar-sshd.service -p MainPID --value) = " + original_sshd_pid)
     gateway.succeed("systemctl is-active --quiet telchar-sshd.service")
   '';

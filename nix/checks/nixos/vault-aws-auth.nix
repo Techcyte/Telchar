@@ -172,6 +172,9 @@ pkgs.testers.nixosTest {
           sshHostCertificateRenewal = {
             enable = true;
             candidateFile = "/var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub";
+            expectedSigningCAFile = "/var/lib/telchar/ssh/host-ca.pub";
+            expectedPrincipals = [ "gateway.test" ];
+            minimumRemainingValiditySec = 300;
           };
           nomad = {
             tokenFile = "/var/lib/telchar/credentials/nomad-token";
