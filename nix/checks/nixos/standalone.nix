@@ -20,6 +20,18 @@ let
     ];
   };
   standalone = system.config;
+  customPorts = mkStandaloneSystem {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    modules = [
+      {
+        services.telchar = {
+          ingress.openssh.port = 2200;
+          callback.port = 7444;
+        };
+        system.stateVersion = "26.05";
+      }
+    ];
+  };
   protectedSystem = mkStandaloneSystem {
     inherit (pkgs.stdenv.hostPlatform) system;
     modules = [
@@ -53,6 +65,11 @@ in
     test ${toString standalone.services.telchar.ingress.openssh.port} = 2222
     test ${if builtins.elem 2222 standalone.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
     test ${if builtins.elem 7443 standalone.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
+    test ${if builtins.elem 2200 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
+    test ${if builtins.elem 7444 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 1
+    test ${if builtins.elem 2222 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 0
+    test ${if builtins.elem 7443 customPorts.config.networking.firewall.allowedTCPPorts then "1" else "0"} = 0
+    grep -q 'bind = "0.0.0.0:7444"' ${customPorts.config.systemd.services.telchar.environment.TELCHAR_CONFIG}
     test ${if protectedSystem.config.systemd.services.telchar.environment ? TELCHAR_DATABASE_URL then "1" else "0"} = 0
     touch $out
   '';

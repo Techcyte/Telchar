@@ -15,15 +15,18 @@
     };
     ingress.openssh = {
       enable = true;
-      port = 2222;
+      port = lib.mkDefault 2222;
+    };
+    callback = {
+      enable = true;
+      openFirewall = true;
     };
   };
 
   users.users.${config.services.telchar.user}.hashedPassword =
     lib.mkIf config.services.telchar.ingress.openssh.enable "";
 
-  networking.firewall.allowedTCPPorts = [
-    2222
-    7443
-  ];
+  networking.firewall.allowedTCPPorts =
+    lib.optional config.services.telchar.ingress.openssh.enable config.services.telchar.ingress.openssh.port
+    ++ lib.optional config.services.telchar.callback.openFirewall config.services.telchar.callback.port;
 }

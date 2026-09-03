@@ -17,6 +17,9 @@ let
     lib.optionalAttrs protectedDatabase {
       database.url_file = cfg.database.urlFile;
     }
+    // lib.optionalAttrs cfg.callback.enable {
+      nomad_callback.bind = "${cfg.callback.bindAddress}:${toString cfg.callback.port}";
+    }
   );
   configurationFile = toml.generate "telchar.toml" serviceSettings;
   credentialFiles = map (credential: "${credential.name}:${credential.source}") cfg.credentials;
@@ -439,6 +442,25 @@ in
           default = "10min";
           description = "Maximum randomized delay applied to scheduled renewals.";
         };
+      };
+    };
+
+    callback = {
+      enable = lib.mkEnableOption "the authenticated Nomad callback listener";
+      bindAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "0.0.0.0";
+        description = "Address for the authenticated Nomad callback listener.";
+      };
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 7443;
+        description = "TCP port for the authenticated Nomad callback listener.";
+      };
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether to open the callback listener port in the host firewall.";
       };
     };
 
