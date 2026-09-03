@@ -23,16 +23,9 @@ let
   daemonEnvironment =
     if protectedDatabase then removeAttrs cfg.environment [ "TELCHAR_DATABASE_URL" ] else cfg.environment;
   databaseValidator = pkgs.writeShellScript "validate-telchar-database-url" ''
-    set -eu
-    database_url="$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg cfg.database.urlFile})"
-    case "$database_url" in
-      *"sslmode=verify-full"*) ;;
-      *) echo "database URL must use sslmode=verify-full" >&2; exit 1 ;;
-    esac
-    case "$database_url" in
-      *"sslrootcert=${cfg.database.rootCertificateFile}"*) ;;
-      *) echo "database URL must use the configured root certificate" >&2; exit 1 ;;
-    esac
+    exec ${cfg.package}/bin/telchar validate-database-tls \
+      ${lib.escapeShellArg cfg.database.urlFile} \
+      ${lib.escapeShellArg cfg.database.rootCertificateFile}
   '';
   renewHostCertificate = pkgs.writeShellScript "renew-telchar-ssh-host-certificate" ''
     set -eu

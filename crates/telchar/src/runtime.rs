@@ -20,6 +20,22 @@ use daemon_runtime::{
     shutdown_daemon_services,
 };
 
+pub(crate) fn validate_database_tls() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let database_url_file = std::env::args_os()
+        .nth(2)
+        .map(PathBuf::from)
+        .ok_or_else(|| invalid("database TLS validation requires a URL file"))?;
+    let root_certificate = std::env::args_os()
+        .nth(3)
+        .map(PathBuf::from)
+        .ok_or_else(|| invalid("database TLS validation requires a root certificate"))?;
+    let database_url = std::fs::read_to_string(database_url_file)
+        .map_err(|_| invalid("database URL file could not be read"))?;
+    telchar::persistence::validate_verified_connection(database_url.trim(), &root_certificate)
+        .map_err(|_| invalid("database URL must use effective sslmode=verify-full and the configured root certificate"))?;
+    Ok(())
+}
+
 pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let telemetry = telemetry::Telemetry::initialize()?;
     let result = run_executor();

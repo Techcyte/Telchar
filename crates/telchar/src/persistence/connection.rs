@@ -157,6 +157,43 @@ pub(crate) fn validate(database_url: &str) -> Result<(), Box<dyn std::error::Err
     connection_config(database_url).map(|_| ())
 }
 
+pub fn validate_verified_connection(
+    database_url: &str,
+    expected_root_certificate: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let settings = connection_settings(database_url)?;
+    if settings.ssl_mode.as_deref() != Some("verify-full")
+        || settings.root_certificate.as_deref() != Some(expected_root_certificate)
+    {
+        return Err("database URL must use effective sslmode=verify-full and the configured root certificate".into());
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ConnectionSettings {
+    ssl_mode: Option<String>,
+    root_certificate: Option<PathBuf>,
+}
+
+fn connection_settings(
+    database_url: &str,
+) -> Result<ConnectionSettings, Box<dyn std::error::Error + Send + Sync>> {
+    if !database_url.starts_with("postgres://") && !database_url.starts_with("postgresql://") {
+        return Ok(ConnectionSettings::default());
+    }
+    let url = Url::parse(database_url)?;
+    let mut settings = ConnectionSettings::default();
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "sslmode" => settings.ssl_mode = Some(value.into_owned()),
+            "sslrootcert" => settings.root_certificate = Some(PathBuf::from(value.into_owned())),
+            _ => {}
+        }
+    }
+    Ok(settings)
+}
+
 fn connection_config(
     database_url: &str,
 ) -> Result<(Config, ConnectionSecurity), Box<dyn std::error::Error + Send + Sync>> {
@@ -165,8 +202,11 @@ fn connection_config(
     }
 
     let mut url = Url::parse(database_url)?;
-    let mut tls_requested = false;
-    let mut root_certificate = None;
+    let settings = connection_settings(database_url)?;
+    let tls_requested = matches!(
+        settings.ssl_mode.as_deref(),
+        Some("verify-ca" | "verify-full" | "require")
+    );
     let mut parameters = Vec::new();
     let query_parameters = url
         .query_pairs()
@@ -174,17 +214,12 @@ fn connection_config(
         .collect::<Vec<_>>();
     for (key, value) in query_parameters {
         match key.as_str() {
-            "sslrootcert" => root_certificate = Some(PathBuf::from(value)),
-            "sslmode" if matches!(value.as_str(), "verify-ca" | "verify-full") => {
-                tls_requested = true;
-                parameters.push((key, "require".to_owned()));
-            }
-            "sslmode" if value == "require" => {
-                tls_requested = true;
-                parameters.push((key, value));
-            }
+            "sslrootcert" | "sslmode" => {}
             _ => parameters.push((key, value)),
         }
+    }
+    if tls_requested {
+        parameters.push(("sslmode".to_owned(), "require".to_owned()));
     }
     url.set_query(None);
     if !parameters.is_empty() {
@@ -193,7 +228,9 @@ fn connection_config(
     let normalized_database_url = url.as_str().replace('+', "%20");
     let config = normalized_database_url.parse::<Config>()?;
     let security = if tls_requested {
-        ConnectionSecurity::Tls { root_certificate }
+        ConnectionSecurity::Tls {
+            root_certificate: settings.root_certificate,
+        }
     } else {
         ConnectionSecurity::Plain
     };
@@ -222,14 +259,46 @@ mod tests {
 
     #[test]
     fn verified_database_urls_select_tls_and_extract_the_root_certificate() {
+        let database_url = "postgresql://telchar@db.example.com/telchar?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Frds-ca.pem";
         assert_eq!(
-            connection_security(
-                "postgresql://telchar@db.example.com/telchar?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Frds-ca.pem",
-            )
-            .expect("TLS URL parses"),
+            connection_security(database_url).expect("TLS URL parses"),
             ConnectionSecurity::Tls {
                 root_certificate: Some("/run/secrets/rds-ca.pem".into()),
             }
+        );
+        validate_verified_connection(database_url, std::path::Path::new("/run/secrets/rds-ca.pem"))
+            .expect("verified connection is accepted");
+    }
+
+    #[test]
+    fn decoy_verified_tls_parameters_do_not_override_effective_plain_mode() {
+        let database_url = "postgresql://telchar@db.example.com/telchar?sslmode=disable&options=sslmode=verify-full&application_name=sslrootcert=/run/secrets/rds-ca.pem";
+        assert_eq!(
+            connection_security(database_url).expect("plain URL parses"),
+            ConnectionSecurity::Plain
+        );
+        assert!(
+            validate_verified_connection(
+                database_url,
+                std::path::Path::new("/run/secrets/rds-ca.pem")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn last_duplicate_tls_parameters_are_effective() {
+        let database_url = "postgresql://telchar@db.example.com/telchar?sslmode=verify-full&sslrootcert=%2Fwrong.pem&sslmode=disable&sslrootcert=%2Frun%2Fsecrets%2Frds-ca.pem";
+        assert_eq!(
+            connection_security(database_url).expect("duplicate URL parses"),
+            ConnectionSecurity::Plain
+        );
+        assert!(
+            validate_verified_connection(
+                database_url,
+                std::path::Path::new("/run/secrets/rds-ca.pem")
+            )
+            .is_err()
         );
     }
 
