@@ -53,6 +53,12 @@ impl io::Read for SessionInput {
         let timeout = self
             .deadline
             .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+        if timeout == Some(Duration::ZERO) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "worker protocol input timed out",
+            ));
+        }
         self.input.set_read_timeout(timeout)?;
         let received = self.input.read(buffer).map_err(|error| {
             if matches!(
@@ -75,5 +81,29 @@ impl WorkerInput for SessionInput {
     fn complete_message(&mut self) {
         self.deadline = None;
         let _ = self.input.set_read_timeout(None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read as _;
+
+    use super::*;
+
+    #[test]
+    fn expired_partial_message_returns_timeout() {
+        let (input, mut writer) = std::os::unix::net::UnixStream::pair().expect("stream pair");
+        writer.write_all(b"a").expect("initial byte");
+
+        let mut input = SessionInput::new(input, Duration::from_millis(1));
+        let mut byte = [0; 1];
+        assert_eq!(input.read(&mut byte).expect("initial read"), 1);
+        std::thread::sleep(Duration::from_millis(10));
+
+        let error = input
+            .read(&mut byte)
+            .expect_err("expired read must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), "worker protocol input timed out");
     }
 }
