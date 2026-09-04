@@ -143,7 +143,8 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl is-active --quiet telchar-sshd.service")
 
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/untrusted-host-ca")
-    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/untrusted-host-ca -I wrong-signer -h -n gateway -V -1m:+10m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
+    signing_ca_fingerprint = gateway.succeed("ssh-keygen -lf /var/lib/telchar/ssh/host-ca.pub | awk '{ print $2 }'").strip()
+    gateway.succeed("cp /var/lib/telchar/ssh/ssh_host_ed25519_key.pub /tmp/candidate.pub && ssh-keygen -q -s /var/lib/telchar/ssh/untrusted-host-ca -I 'Type: host certificate " + signing_ca_fingerprint + "' -n gateway -V -1m:+10m /tmp/candidate.pub && mv /tmp/candidate-cert.pub /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub")
     gateway.fail("systemctl start telchar-ssh-host-certificate-renewal.service")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | cut -d' ' -f1) = " + renewed_certificate)
 

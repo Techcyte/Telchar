@@ -40,8 +40,10 @@ let
     host_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf "$host_public_key" | ${pkgs.gawk}/bin/awk '{ print $2 }')"
     signing_ca_fingerprint="$(${pkgs.openssh}/bin/ssh-keygen -lf ${lib.escapeShellArg sshRenewalCfg.expectedSigningCAFile} | ${pkgs.gawk}/bin/awk '{ print $2 }')"
     test "$candidate_fingerprint" = "$host_fingerprint"
-    printf '%s\n' "$certificate" | ${pkgs.gnugrep}/bin/grep -q 'Type:.*host certificate'
-    printf '%s\n' "$certificate" | ${pkgs.gnugrep}/bin/grep -F -q "$signing_ca_fingerprint"
+    certificate_type="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Type:/{sub(/^[[:space:]]*Type:[[:space:]]*/, ""); print; exit}')"
+    certificate_signing_ca="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Signing CA:/{for (field = 1; field <= NF; field++) if ($field ~ /^SHA256:/) { print $field; exit }}')"
+    test "$certificate_type" = "ssh-ed25519-cert-v01@openssh.com host certificate"
+    test "$certificate_signing_ca" = "$signing_ca_fingerprint"
     principals="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Principals:/{inside=1; next} inside && /^[[:space:]]*Critical Options:/{exit} inside {sub(/^[[:space:]]+/, ""); if (length) print}')"
     ${lib.concatMapStringsSep "\n    " (principal: ''printf '%s\n' "$principals" | ${pkgs.gnugrep}/bin/grep -F -x -q ${lib.escapeShellArg principal}'') sshRenewalCfg.expectedPrincipals}
     valid_from="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Valid: from /{print $3; exit}')"
