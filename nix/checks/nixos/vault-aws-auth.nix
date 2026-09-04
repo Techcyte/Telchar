@@ -211,6 +211,8 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl stop telchar.service telchar-sshd.service || true")
     gateway.succeed("install -d -m 700 -o telchar -g telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/ssh_host_ed25519_key")
+    host_ca = identity.succeed("cat /var/lib/vault-fixture/host-ca.pub").strip()
+    gateway.succeed("printf '%s\\n' '" + host_ca + "' > /var/lib/telchar/ssh/host-ca.pub")
     gateway.succeed("chown -R telchar:telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     original_key = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key").split()[0]
     gateway.succeed("printf root-vault-victim > /root/vault-victim && ln -s /root/vault-victim /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub.tmp && ln -s /root/vault-victim /var/lib/telchar/credentials/nomad-token.candidate.tmp")
