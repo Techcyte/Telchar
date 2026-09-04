@@ -338,8 +338,7 @@ impl NixStoreExecutor {
             }
         };
         let stdout = join_reader(stdout_reader, "stdout")?;
-        join_log_reader(stderr_reader)?;
-        forward_logs(&log_receiver, logs)?;
+        finish_logs(stderr_reader, log_receiver, logs)?;
         if stdout.1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -648,6 +647,15 @@ fn forward_logs(
     Ok(())
 }
 
+fn finish_logs(
+    reader: std::thread::JoinHandle<io::Result<()>>,
+    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+    logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    join_log_reader(reader)?;
+    forward_logs(&receiver, logs)
+}
+
 fn join_log_reader(reader: std::thread::JoinHandle<io::Result<()>>) -> io::Result<()> {
     reader
         .join()
@@ -680,7 +688,7 @@ mod tests {
 
     use super::{
         MAXIMUM_BUILD_LOG_CHUNK_BYTES, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS,
-        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, spawn_log_reader,
+        MAXIMUM_QUEUED_BUILD_LOG_PAYLOAD_BYTES, finish_logs, spawn_log_reader,
     };
 
     struct FailingLogReader;
@@ -770,6 +778,62 @@ mod tests {
             .join()
             .expect("reader thread does not panic")
             .expect("reader completes after queue drain");
+    }
+
+    fn finish_queued_logs(
+        mut logs: impl FnMut(&[u8]) -> io::Result<()> + Send + 'static,
+    ) -> io::Result<()> {
+        let (completed_sender, completed_receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let (log_sender, log_receiver) =
+                std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+            let (error_sender, _error_receiver) = std::sync::mpsc::channel();
+            let (progress_sender, progress_receiver) = std::sync::mpsc::channel();
+            let reader = spawn_log_reader(
+                ChunkSource {
+                    remaining_chunks: 9,
+                    started: progress_sender,
+                },
+                log_sender,
+                error_sender,
+            );
+            for expected in (1..=9).rev() {
+                assert_eq!(progress_receiver.recv().expect("source progresses"), expected);
+            }
+            assert!(!reader.is_finished(), "reader waits for queue capacity");
+            completed_sender
+                .send(finish_logs(reader, log_receiver, &mut logs))
+                .expect("completion is received");
+        });
+        let result = completed_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("log completion must not deadlock on a full queue");
+        worker.join().expect("completion thread does not panic");
+        result
+    }
+
+    #[test]
+    fn log_completion_drains_a_full_queue_before_joining_reader() {
+        let (chunk_sender, chunk_receiver) = std::sync::mpsc::channel();
+        finish_queued_logs(move |chunk| {
+            chunk_sender.send(chunk.to_vec()).expect("chunk is received");
+            Ok(())
+        })
+        .expect("queued logs finish");
+        assert_eq!(
+            chunk_receiver.into_iter().collect::<Vec<_>>(),
+            (1..=9)
+                .rev()
+                .map(|chunk| vec![chunk; MAXIMUM_BUILD_LOG_CHUNK_BYTES])
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn log_completion_releases_reader_when_writer_fails() {
+        let error = finish_queued_logs(|_| Err(io::Error::other("writer closed")))
+            .expect_err("writer failure is returned");
+        assert_eq!(error.to_string(), "writer closed");
     }
 
     #[test]
