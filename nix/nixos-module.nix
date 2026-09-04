@@ -211,6 +211,14 @@ let
     nomad_token = nomad_secret.get("secret_id")
     if nomad_token is None:
         nomad_token = nomad_secret["data"]["token"]
+    host_ca = vault_request(
+        "ssh-host-signer/public_key",
+        token=vault_token,
+    )["data"]["public_key"]
+    client_ca = vault_request(
+        "ssh-client-signer/public_key",
+        token=vault_token,
+    )["data"]["public_key"]
 
     telchar_uid = pwd.getpwnam(${builtins.toJSON cfg.user}).pw_uid
     telchar_gid = grp.getgrnam(${builtins.toJSON cfg.group}).gr_gid
@@ -235,6 +243,8 @@ let
 
     write_candidate(${builtins.toJSON sshRenewalCfg.candidateFile}, signed_certificate)
     write_candidate(${builtins.toJSON nomadRenewalCfg.candidateFile}, nomad_token)
+    write_candidate(${builtins.toJSON sshRenewalCfg.expectedSigningCAFile}, host_ca)
+    write_candidate(${builtins.toJSON cfg.ingress.openssh.trustedUserCAKeysFile}, client_ca)
   '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
     set -eu

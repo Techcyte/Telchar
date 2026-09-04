@@ -120,12 +120,18 @@ let
             self.send_error(404)
 
         def do_GET(self):
-            if self.path != "/v1/kv/data/telchar/nomad":
-                self.send_error(404)
-                return
             assert self.headers.get("X-Vault-Token") == "vault-session-token"
-            open(observed + "/nomad-secret", "w").write("requested")
-            self.reply({"data": {"secret_id": "vault-nomad-token"}})
+            if self.path == "/v1/kv/data/telchar/nomad":
+                open(observed + "/nomad-secret", "w").write("requested")
+                self.reply({"data": {"secret_id": "vault-nomad-token"}})
+                return
+            if self.path == "/v1/ssh-host-signer/public_key":
+                self.reply({"data": {"public_key": open("/var/lib/vault-fixture/host-ca.pub").read()}})
+                return
+            if self.path == "/v1/ssh-client-signer/public_key":
+                self.reply({"data": {"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestClientAuthority"}})
+                return
+            self.send_error(404)
 
         def log_message(self, format, *args):
             pass
@@ -212,6 +218,7 @@ pkgs.testers.nixosTest {
     gateway.succeed("install -d -m 700 -o telchar -g telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/ssh_host_ed25519_key")
     host_ca = identity.succeed("cat /var/lib/vault-fixture/host-ca.pub").strip()
+    host_ca_hash = identity.succeed("sha256sum /var/lib/vault-fixture/host-ca.pub").split()[0]
     gateway.succeed("printf '%s\\n' '" + host_ca + "' > /var/lib/telchar/ssh/host-ca.pub")
     gateway.succeed("chown -R telchar:telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     original_key = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key").split()[0]
@@ -237,6 +244,8 @@ pkgs.testers.nixosTest {
     gateway.succeed("test $(stat -c %a /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub) = 400")
     gateway.succeed("test $(stat -c %U:%G /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub) = telchar:telchar")
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token.candidate) = vault-nomad-token")
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/host-ca.pub | cut -d' ' -f1) = " + host_ca_hash)
+    gateway.succeed("grep -q TestClientAuthority /var/lib/telchar/ssh/client-ca.pub")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token.candidate) = 400")
     gateway.succeed("test $(stat -c %U:%G /var/lib/telchar/credentials/nomad-token.candidate) = telchar:telchar")
     gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | grep -q vault-renewed")
