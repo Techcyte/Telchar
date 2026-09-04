@@ -280,11 +280,13 @@ fn cancellation_kills_and_reaps_a_silent_helper() {
     let mut executor = NixStoreExecutor::new(&helper, "unix:///fixed-gateway.sock")
         .expect("executor config is valid");
 
-    let mut cancellation_checks = 0;
     let error = executor
-        .execute_with_cancellation(&request, &mut |_| Ok(()), &mut || {
-            cancellation_checks += 1;
-            Ok(cancellation_checks > 1)
+        .execute_with_cancellation(&request, &mut |_| Ok(()), &mut || match fs::read_to_string(
+            &pid_path,
+        ) {
+            Ok(pid) => Ok(pid.ends_with('\n')),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
         })
         .expect_err("cancelled request must stop execution");
 
