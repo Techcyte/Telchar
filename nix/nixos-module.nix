@@ -572,11 +572,17 @@ in
           || (
             lib.hasPrefix "/" cfg.database.urlFile
             && !(lib.hasPrefix builtins.storeDir cfg.database.urlFile)
-            && cfg.database.rootCertificateFile != null
-            && lib.hasPrefix "/" cfg.database.rootCertificateFile
-            && !(lib.hasPrefix builtins.storeDir cfg.database.rootCertificateFile)
+
           );
         message = "services.telchar.database protected files must be absolute and outside the Nix store";
+      }
+      {
+        assertion = cfg.database.rootCertificateFile == null || (
+          protectedDatabase
+          && lib.hasPrefix "/" cfg.database.rootCertificateFile
+          && !(lib.hasPrefix builtins.storeDir cfg.database.rootCertificateFile)
+        );
+        message = "services.telchar.database.rootCertificateFile requires a protected URL file and an absolute CA path outside the Nix store";
       }
       {
         assertion =
@@ -786,7 +792,7 @@ in
         StateDirectory = "telchar";
         StateDirectoryMode = "0700";
         ExecStart = "${cfg.package}/bin/telchar daemon --socket ${cfg.socketPath} --frontend-uid ${toString cfg.frontendUid}";
-        ExecStartPre = lib.optional protectedDatabase databaseValidator;
+        ExecStartPre = lib.optional (cfg.database.rootCertificateFile != null) databaseValidator;
         Restart = "on-failure";
         LoadCredential = credentialFiles;
         BindReadOnlyPaths = lib.optional (

@@ -22,10 +22,25 @@ let
     authorizedPrincipalsFile = "/run/credentials/principals";
   };
   plain = configuration { };
+  database = (nixosSystem {
+    system = pkgs.stdenv.hostPlatform.system;
+    modules = [ telcharModule {
+      system.stateVersion = "26.05";
+      boot.loader.grub.devices = [ "/dev/vda" ];
+      fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
+      services.telchar = {
+        enable = true;
+        package = pkgs.hello;
+        database.urlFile = "/run/credentials/database-url";
+      };
+    } ];
+  }).config;
   valid = config: builtins.all (assertion: assertion.assertion) config.assertions;
 in
 assert valid hostCertificate;
 assert valid clientCertificate;
+assert valid database;
+assert database.systemd.services.telchar.serviceConfig.ExecStartPre == [ ];
 pkgs.runCommand "telchar-ssh-modes" { nativeBuildInputs = [ pkgs.openssh pkgs.python3 ]; } ''
   ssh-keygen -q -t ed25519 -N "" -f host-key
   ssh-keygen -q -t ed25519 -N "" -f host-ca

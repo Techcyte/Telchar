@@ -33,6 +33,34 @@ fn rejects_database_url_file_with_unsafe_permissions() {
 }
 
 #[test]
+fn database_credentials_follow_symlinks_and_validate_rotated_targets() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("linked-database-url");
+    let target = root.join("credential");
+    let link = root.join("database-url");
+    fs::write(&target, "host=/run/postgresql user=telchar dbname=telchar").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let config = root.join("telchar.toml");
+    fs::write(&config, format!("[database]\nurl_file = {:?}\n", link)).unwrap();
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config) };
+    let result = ServiceConfig::load();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    let unsafe_target = ServiceConfig::load();
+    fs::remove_file(&target).unwrap();
+    let dangling = ServiceConfig::load();
+    fs::create_dir(&target).unwrap();
+    let directory = ServiceConfig::load();
+    restore_environment(saved);
+    assert!(result.is_ok(), "protected symlink credential: {result:?}");
+    assert!(unsafe_target.is_err(), "unsafe target permissions accepted");
+    assert!(dangling.is_err(), "dangling credential accepted");
+    assert!(directory.is_err(), "directory credential accepted");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn loads_strict_toml_and_identity_mappings() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

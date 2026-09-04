@@ -80,8 +80,10 @@ pub(super) fn validate_regular_file(
     if !path.is_absolute() {
         return Err(invalid(message));
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| invalid(message))?;
-    if !metadata.file_type().is_file() {
+    let metadata = fs::metadata(path).map_err(|_| invalid(message))?;
+    if !metadata.file_type().is_file()
+        || (metadata.uid() != 0 && metadata.uid() != rustix::process::geteuid().as_raw())
+    {
         return Err(invalid(message));
     }
     Ok(metadata)
@@ -106,9 +108,26 @@ pub(super) fn validate_subject(value: String, message: &'static str) -> io::Resu
 }
 
 pub(super) fn read_secret(path: PathBuf) -> io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     validate_protected_file(path.clone(), "database URL file is invalid")?;
-    let value =
-        fs::read_to_string(path).map_err(|_| invalid("database URL file could not be read"))?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
+        .map_err(|_| invalid("database URL file could not be read"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| invalid("database URL file is invalid"))?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+        || (metadata.uid() != 0 && metadata.uid() != rustix::process::geteuid().as_raw())
+    {
+        return Err(invalid("database URL file is invalid"));
+    }
+    let mut value = String::new();
+    file.read_to_string(&mut value)
+        .map_err(|_| invalid("database URL file could not be read"))?;
     nonempty(value.trim().to_owned(), "database URL is invalid")
 }
 
