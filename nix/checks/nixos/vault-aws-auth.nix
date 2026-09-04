@@ -158,7 +158,10 @@ pkgs.testers.nixosTest {
     gateway =
       { ... }:
       {
-        imports = [ standaloneModule ];
+        imports = [
+          standaloneModule
+          ../../nixos-vault-aws.nix
+        ];
 
         services.telchar = {
           package = telchar;
@@ -168,6 +171,8 @@ pkgs.testers.nixosTest {
             role = "telchar-gateway";
             authMount = "aws";
             sshSignPath = "ssh/sign/telchar-host";
+            hostCAPath = "ssh-host-signer/public_key";
+            clientCAPath = "ssh-client-signer/public_key";
             nomadSecretPath = "kv/data/telchar/nomad";
             metadataEndpoint = "http://identity";
             renewal = {

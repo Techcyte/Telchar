@@ -46,6 +46,7 @@
       nixosModules = {
         telchar = import ./nix/nixos-module.nix;
         standalone = import ./nix/nixos-standalone.nix;
+        vaultAws = import ./nix/nixos-vault-aws.nix;
         default = self.nixosModules.telchar;
       };
 

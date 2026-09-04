@@ -54,9 +54,28 @@ Minimal local-backend configuration:
 
 The module enables local PostgreSQL, gateway Nix-daemon access, and OpenSSH ingress unless their `enable` options are disabled. `services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
 
-The module enables OpenSSH authentication metadata and derives `TELCHAR_AUTHENTICATED_KEY` from the public key OpenSSH matched for the current connection. Multiple keys may share the configured `authorizedKeysFile` while retaining distinct audit and quota identities. Keep the file operator-owned and restricted to the Telchar account.
+The module enables OpenSSH authentication metadata. Public keys produce fingerprint-based credential IDs. Certificates produce `ssh-cert:<CA-byte-length>:<CA-fingerprint>:<key-ID-byte-length>:<key-ID>` credential IDs, with certificate principals retained as metadata. NixOS and OCI ingress use the same extraction and normalization. Explicit identity mappings override audit and quota subjects; otherwise the first certificate principal supplies the audit subject and the credential ID supplies the quota subject. Keep authentication files operator-owned and restricted to the Telchar account.
+
+Server identity and client authentication are independent. `ingress.openssh.hostCertificateFile` adds a server certificate without requiring client certificates. `trustedUserCAKeysFile` enables client certificates with or without a server certificate; `authorizedPrincipalsFile` optionally restricts principals. `authorizedKeysFile` remains available alongside the client CA.
+
+Credential paths can be symlinks to regular files owned by root or the service UID. Private targets must deny group/other access; public targets must deny group/other writes. Protect the containing directories and rotation mechanism too: external programs such as SSH reopen paths when invoked.
+
+### Optional Vault AWS provisioning
+
+Import `inputs.telchar.nixosModules.vaultAws` alongside the service or standalone module only when Vault should provision credentials. The base module has no Vault or AWS requirement. Configure `services.telchar.vaultAwsAuth.enable`, `address`, and `role`; EC2 instance-profile credentials authenticate through IMDSv2.
+
+- `sshSignPath` enables host certificate issuance and requires `sshHostCertificateRenewal`.
+- `nomadSecretPath` enables Nomad token issuance and requires `nomad.renewal`.
+- Either path can be omitted. Other credentials can come from independent provisioning mechanisms.
+- Optional `hostCAPath` and `clientCAPath` deliver CA public keys to the configured consumer paths. Omit them to keep operator-provisioned trust anchors.
+- `authMount`, `metadataEndpoint`, `stsEndpoint`, and `region` select provider endpoints and signing configuration.
+- `renewal.enable` schedules fetching and installation for configured capabilities.
+
+Without this module, candidate files and renewal units accept credentials delivered by operator-controlled tooling.
 
 ## PostgreSQL and recovery
+
+`services.telchar.database.urlFile` selects a protected connection-string source, not a transport policy. It supports Unix-socket connections as well as remote endpoints. Setting `database.rootCertificateFile` additionally enables the startup validator requiring verified PostgreSQL TLS with that CA; it requires `urlFile`. Without that option, the connection string controls transport security.
 
 Only one daemon may own a deployment database. Ownership is a PostgreSQL lease renewed every five seconds by default and valid for twenty seconds by default. Configure `database.ownership_renewal_seconds` and `database.ownership_lease_seconds`; the lease duration must be at least three renewal intervals. A second daemon refuses startup while the lease is current. After expiration, a replacement acquires a higher fencing generation. PostgreSQL rejects durable mutations from expired generations, and a fenced daemon removes its IPC socket and exits unsuccessfully on its next renewal. This remains safe across process, node, proxy, and network loss without manual PostgreSQL session termination.
 
