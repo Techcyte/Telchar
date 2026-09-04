@@ -91,6 +91,48 @@ quota_subject = "shared-build-farm"
 }
 
 #[test]
+fn frontend_preserves_certificate_identity_and_mapping() {
+    let fixture = Fixture::start();
+    let config = fixture.root.join("certificate.toml");
+    fs::write(
+        &config,
+        r#"
+[identity.credentials."ssh-cert:9:SHA256:ca:7:builder"]
+audit_subject = "release-engineering"
+quota_subject = "shared-build-farm"
+"#,
+    )
+    .expect("frontend configuration writes");
+    let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_IPC_SOCKET", &fixture.socket)
+        .env_remove("TELCHAR_AUTHENTICATED_KEY")
+        .env("TELCHAR_AUTHENTICATED_CA", "SHA256:ca")
+        .env("TELCHAR_AUTHENTICATED_KEY_ID", "builder")
+        .env("TELCHAR_AUTHENTICATED_PRINCIPALS", "builder\nrelease")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("frontend starts");
+    complete_handshake(&mut frontend);
+    let sessions = fixture.database.connect().query(
+        "SELECT credential_id, audit_subject, quota_subject, authentication_authority FROM protocol_sessions",
+        &[],
+    ).expect("sessions read");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0].get::<_, String>(0),
+        "ssh-cert:9:SHA256:ca:7:builder"
+    );
+    assert_eq!(sessions[0].get::<_, String>(1), "release-engineering");
+    assert_eq!(sessions[0].get::<_, String>(2), "shared-build-farm");
+    assert_eq!(sessions[0].get::<_, String>(3), "openssh-certificate");
+    fixture.finish_successfully();
+}
+
+#[test]
 fn frontend_maps_multiple_credentials_to_one_quota_subject() {
     let fixture = Fixture::start_persistent(1_000);
     let config = fixture.root.join("shared-quota.toml");

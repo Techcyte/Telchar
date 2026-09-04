@@ -247,18 +247,10 @@ let
     write_candidate(${builtins.toJSON cfg.ingress.openssh.trustedUserCAKeysFile}, client_ca)
   '';
   forcedCommand = pkgs.writeShellScript "telchar-forced-command" ''
-    set -eu
-    : "''${SSH_USER_AUTH:?OpenSSH authentication metadata is unavailable}"
-    authenticated_key="$(${pkgs.gawk}/bin/awk '$1 == "publickey" { print $2, $3; exit }' "$SSH_USER_AUTH")"
-    if [ -z "$authenticated_key" ]; then
-      echo "OpenSSH public-key identity is unavailable" >&2
-      exit 1
-    fi
-    fingerprint="$(printf '%s\n' "$authenticated_key" | ${pkgs.openssh}/bin/ssh-keygen -lf - | ${pkgs.gawk}/bin/awk '{ print $2 }')"
-    exec env \
-      TELCHAR_IPC_SOCKET=${lib.escapeShellArg cfg.socketPath} \
-      TELCHAR_AUTHENTICATED_KEY="$fingerprint" \
-      ${cfg.package}/bin/telchar serve-stdio
+    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.gawk pkgs.openssh ]}
+    export TELCHAR_IPC_SOCKET=${lib.escapeShellArg cfg.socketPath}
+    export TELCHAR_PROGRAM=${lib.escapeShellArg "${cfg.package}/bin/telchar"}
+    ${builtins.readFile ../deploy/ssh/telchar-ssh-forced-command.sh}
   '';
   certificateIngress = cfg.ingress.openssh.hostCertificateFile != null;
   sshdConfiguration = pkgs.writeText "telchar-sshd_config" ''
@@ -268,8 +260,8 @@ let
     ) cfg.ingress.openssh.listenAddresses}
     HostKey ${cfg.ingress.openssh.hostKeyFile}
     ${lib.optionalString certificateIngress "HostCertificate ${cfg.ingress.openssh.hostCertificateFile}"}
-    ${lib.optionalString certificateIngress "TrustedUserCAKeys ${cfg.ingress.openssh.trustedUserCAKeysFile}"}
-    ${lib.optionalString certificateIngress "AuthorizedPrincipalsFile ${cfg.ingress.openssh.authorizedPrincipalsFile}"}
+    ${lib.optionalString (cfg.ingress.openssh.trustedUserCAKeysFile != null) "TrustedUserCAKeys ${cfg.ingress.openssh.trustedUserCAKeysFile}"}
+    ${lib.optionalString (cfg.ingress.openssh.authorizedPrincipalsFile != null) "AuthorizedPrincipalsFile ${cfg.ingress.openssh.authorizedPrincipalsFile}"}
     PidFile /run/telchar-sshd/sshd.pid
     AuthorizedKeysFile ${cfg.ingress.openssh.authorizedKeysFile}
     AuthenticationMethods publickey
@@ -559,9 +551,7 @@ in
       }
       {
         assertion =
-          !certificateIngress
-          ||
-            lib.all (path: path != null && lib.hasPrefix "/" path && !(lib.hasPrefix builtins.storeDir path))
+            lib.all (path: path == null || (lib.hasPrefix "/" path && !(lib.hasPrefix builtins.storeDir path)))
               [
                 cfg.ingress.openssh.hostCertificateFile
                 cfg.ingress.openssh.trustedUserCAKeysFile

@@ -74,6 +74,9 @@ import ./nixos/oci.nix {
 }
 // import ./nixos/static-ssh.nix checkArgs
 // {
+  nixos-ssh-modes = import ./nixos/ssh-modes.nix {
+    inherit pkgs nixosSystem telcharModule;
+  };
   nixos-ssh-ca-authentication = import ./nixos/ssh-ca-authentication.nix {
     inherit
       pkgs

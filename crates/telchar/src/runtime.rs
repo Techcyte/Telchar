@@ -234,16 +234,39 @@ pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Syn
 fn run_frontend() -> io::Result<()> {
     let config = telchar::service::config::ServiceConfig::load()?;
     let socket = config.require_ipc_socket()?;
-    let fingerprint = required_string("TELCHAR_AUTHENTICATED_KEY")?;
-    let credential_id = format!("ssh-pubkey:{fingerprint}");
-    let mapping = config.credential_mapping(&credential_id);
-    let requester = normalize_requester(IdentityInput::PublicKey {
-        fingerprint,
-        audit_subject: mapping.and_then(|mapping| mapping.audit_subject.clone()),
-        quota_subject: mapping.and_then(|mapping| mapping.quota_subject.clone()),
-        source_address: None,
-    })
-    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let identity = if std::env::var_os("TELCHAR_AUTHENTICATED_CA").is_some() {
+        if std::env::var_os("TELCHAR_AUTHENTICATED_KEY").is_some() {
+            return Err(invalid("authenticated identity is ambiguous"));
+        }
+        IdentityInput::Certificate {
+            ca_fingerprint: required_string("TELCHAR_AUTHENTICATED_CA")?,
+            key_id: required_string("TELCHAR_AUTHENTICATED_KEY_ID")?,
+            principals: required_string("TELCHAR_AUTHENTICATED_PRINCIPALS")?
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            audit_subject: None,
+            quota_subject: None,
+            source_address: None,
+        }
+    } else {
+        IdentityInput::PublicKey {
+            fingerprint: required_string("TELCHAR_AUTHENTICATED_KEY")?,
+            audit_subject: None,
+            quota_subject: None,
+            source_address: None,
+        }
+    };
+    let mut requester = normalize_requester(identity)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if let Some(mapping) = config.credential_mapping(&requester.credential_id) {
+        if let Some(subject) = &mapping.audit_subject {
+            requester.audit_subject = subject.clone();
+        }
+        if let Some(subject) = &mapping.quota_subject {
+            requester.quota_subject = subject.clone();
+        }
+    }
     let mut daemon = UnixStream::connect(socket)?;
     let envelope = IpcEnvelope {
         version: IPC_VERSION,
