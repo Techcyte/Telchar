@@ -652,8 +652,14 @@ fn finish_logs(
     receiver: std::sync::mpsc::Receiver<Vec<u8>>,
     logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
-    join_log_reader(reader)?;
-    forward_logs(&receiver, logs)
+    while let Ok(chunk) = receiver.recv() {
+        if let Err(error) = logs(&chunk) {
+            drop(receiver);
+            let _ = join_log_reader(reader);
+            return Err(error);
+        }
+    }
+    join_log_reader(reader)
 }
 
 fn join_log_reader(reader: std::thread::JoinHandle<io::Result<()>>) -> io::Result<()> {
@@ -798,7 +804,10 @@ mod tests {
                 error_sender,
             );
             for expected in (1..=9).rev() {
-                assert_eq!(progress_receiver.recv().expect("source progresses"), expected);
+                assert_eq!(
+                    progress_receiver.recv().expect("source progresses"),
+                    expected
+                );
             }
             assert!(!reader.is_finished(), "reader waits for queue capacity");
             completed_sender
@@ -816,7 +825,9 @@ mod tests {
     fn log_completion_drains_a_full_queue_before_joining_reader() {
         let (chunk_sender, chunk_receiver) = std::sync::mpsc::channel();
         finish_queued_logs(move |chunk| {
-            chunk_sender.send(chunk.to_vec()).expect("chunk is received");
+            chunk_sender
+                .send(chunk.to_vec())
+                .expect("chunk is received");
             Ok(())
         })
         .expect("queued logs finish");
