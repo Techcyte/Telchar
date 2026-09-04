@@ -4,4 +4,4 @@
 !/crates/nix-worker-protocol/fuzz/corpus/primitive_framing/empty
 /result
 /result-*
-/target/
+result/
