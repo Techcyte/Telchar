@@ -361,7 +361,7 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
         event.contains("database.store_lease.created")
             && event.contains("operation=\"create-output-retention\"")
             && event.contains("result=\"succeeded\"")
-    }));
+    }), "{events:?}");
     for forbidden in [
         fixture.url(),
         "output-telemetry-request",

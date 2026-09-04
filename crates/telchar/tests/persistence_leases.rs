@@ -3,7 +3,7 @@
 mod support;
 
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::Duration;
 
@@ -23,8 +23,20 @@ mod release;
 #[path = "persistence_leases/store.rs"]
 mod store;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct EventCapture(Arc<Mutex<Vec<String>>>);
+
+impl Default for EventCapture {
+    fn default() -> Self {
+        static SUBSCRIBER: Once = Once::new();
+        SUBSCRIBER.call_once(|| {
+            // Shared callsites can first execute on threads outside the capture scope.
+            tracing::subscriber::set_global_default(tracing_subscriber::registry())
+                .expect("global telemetry subscriber installs");
+        });
+        Self(Arc::default())
+    }
+}
 
 impl EventCapture {
     fn events(&self) -> Vec<String> {
