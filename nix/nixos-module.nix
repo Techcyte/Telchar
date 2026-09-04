@@ -24,7 +24,10 @@ let
   configurationFile = toml.generate "telchar.toml" serviceSettings;
   credentialFiles = map (credential: "${credential.name}:${credential.source}") cfg.credentials;
   daemonEnvironment =
-    if protectedDatabase then removeAttrs cfg.environment [ "TELCHAR_DATABASE_URL" ] else cfg.environment;
+    if protectedDatabase then
+      removeAttrs cfg.environment [ "TELCHAR_DATABASE_URL" ]
+    else
+      cfg.environment;
   databaseValidator = pkgs.writeShellScript "validate-telchar-database-url" ''
     exec ${cfg.package}/bin/telchar validate-database-tls \
       ${lib.escapeShellArg cfg.database.urlFile} \
@@ -45,7 +48,10 @@ let
     test "$certificate_type" = "ssh-ed25519-cert-v01@openssh.com host certificate"
     test "$certificate_signing_ca" = "$signing_ca_fingerprint"
     principals="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Principals:/{inside=1; next} inside && /^[[:space:]]*Critical Options:/{exit} inside {sub(/^[[:space:]]+/, ""); if (length) print}')"
-    ${lib.concatMapStringsSep "\n    " (principal: ''printf '%s\n' "$principals" | ${pkgs.gnugrep}/bin/grep -F -x -q ${lib.escapeShellArg principal}'') sshRenewalCfg.expectedPrincipals}
+    ${lib.concatMapStringsSep "\n    " (
+      principal:
+      ''printf '%s\n' "$principals" | ${pkgs.gnugrep}/bin/grep -F -x -q ${lib.escapeShellArg principal}''
+    ) sshRenewalCfg.expectedPrincipals}
     valid_from="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Valid: from /{print $3; exit}')"
     valid_to="$(printf '%s\n' "$certificate" | ${pkgs.gawk}/bin/awk '/^[[:space:]]*Valid: from /{print $5; exit}')"
     now="$(${pkgs.coreutils}/bin/date +%s)"
@@ -198,10 +204,13 @@ let
             payload={"public_key": host_public_key.read()},
             token=vault_token,
         )["data"]["signed_key"]
-    nomad_token = vault_request(
+    nomad_secret = vault_request(
         ${builtins.toJSON vaultCfg.nomadSecretPath},
         token=vault_token,
-    )["data"]["data"]["token"]
+    )["data"]
+    nomad_token = nomad_secret.get("secret_id")
+    if nomad_token is None:
+        nomad_token = nomad_secret["data"]["token"]
 
     telchar_uid = pwd.getpwnam(${builtins.toJSON cfg.user}).pw_uid
     telchar_gid = grp.getgrnam(${builtins.toJSON cfg.group}).gr_gid
@@ -244,7 +253,9 @@ let
   certificateIngress = cfg.ingress.openssh.hostCertificateFile != null;
   sshdConfiguration = pkgs.writeText "telchar-sshd_config" ''
     Port ${toString cfg.ingress.openssh.port}
-    ${lib.concatMapStringsSep "\n" (address: "ListenAddress ${address}") cfg.ingress.openssh.listenAddresses}
+    ${lib.concatMapStringsSep "\n" (
+      address: "ListenAddress ${address}"
+    ) cfg.ingress.openssh.listenAddresses}
     HostKey ${cfg.ingress.openssh.hostKeyFile}
     ${lib.optionalString certificateIngress "HostCertificate ${cfg.ingress.openssh.hostCertificateFile}"}
     ${lib.optionalString certificateIngress "TrustedUserCAKeys ${cfg.ingress.openssh.trustedUserCAKeysFile}"}
@@ -528,25 +539,24 @@ in
         message = "services.telchar.socketPath must be below /run";
       }
       {
-        assertion = cfg.ingress.openssh.enable -> lib.all (path: lib.hasPrefix "/" path) [
-          cfg.ingress.openssh.hostKeyFile
-          cfg.ingress.openssh.authorizedKeysFile
-        ];
+        assertion =
+          cfg.ingress.openssh.enable
+          -> lib.all (path: lib.hasPrefix "/" path) [
+            cfg.ingress.openssh.hostKeyFile
+            cfg.ingress.openssh.authorizedKeysFile
+          ];
         message = "services.telchar.ingress.openssh file paths must be absolute";
       }
       {
         assertion =
           !certificateIngress
-          || lib.all (
-            path:
-            path != null
-            && lib.hasPrefix "/" path
-            && !(lib.hasPrefix builtins.storeDir path)
-          ) [
-            cfg.ingress.openssh.hostCertificateFile
-            cfg.ingress.openssh.trustedUserCAKeysFile
-            cfg.ingress.openssh.authorizedPrincipalsFile
-          ];
+          ||
+            lib.all (path: path != null && lib.hasPrefix "/" path && !(lib.hasPrefix builtins.storeDir path))
+              [
+                cfg.ingress.openssh.hostCertificateFile
+                cfg.ingress.openssh.trustedUserCAKeysFile
+                cfg.ingress.openssh.authorizedPrincipalsFile
+              ];
         message = "services.telchar.ingress.openssh certificate files must be absolute and outside the Nix store";
       }
       {
@@ -618,8 +628,7 @@ in
         assertion =
           cfg.nomad.tokenFile == null
           || (
-            lib.hasPrefix "/" cfg.nomad.tokenFile
-            && !(lib.hasPrefix builtins.storeDir cfg.nomad.tokenFile)
+            lib.hasPrefix "/" cfg.nomad.tokenFile && !(lib.hasPrefix builtins.storeDir cfg.nomad.tokenFile)
           );
         message = "services.telchar.nomad.tokenFile must be absolute and outside the Nix store";
       }
@@ -658,7 +667,10 @@ in
     systemd.services.telchar-sshd = lib.mkIf cfg.ingress.openssh.enable {
       description = "Telchar isolated SSH ingress";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" "telchar.service" ];
+      after = [
+        "network-online.target"
+        "telchar.service"
+      ];
       wants = [ "network-online.target" ];
       requires = [ "telchar.service" ];
       serviceConfig = {
@@ -668,7 +680,7 @@ in
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
       };
-    }; 
+    };
 
     systemd.services.telchar-ssh-host-certificate-renewal = lib.mkIf sshRenewalCfg.enable {
       description = "Install renewed Telchar SSH host certificate";
@@ -741,12 +753,13 @@ in
     systemd.services.telchar = {
       description = "Telchar Nix build gateway";
       wantedBy = [ "multi-user.target" ];
-      after =
-        [ "network-online.target" ]
-        ++ lib.optionals cfg.database.manage [
-          "postgresql.service"
-          "postgresql-setup.service"
-        ];
+      after = [
+        "network-online.target"
+      ]
+      ++ lib.optionals cfg.database.manage [
+        "postgresql.service"
+        "postgresql-setup.service"
+      ];
       wants = [ "network-online.target" ];
       requires = lib.optionals cfg.database.manage [
         "postgresql.service"
@@ -776,13 +789,15 @@ in
         ExecStartPre = lib.optional protectedDatabase databaseValidator;
         Restart = "on-failure";
         LoadCredential = credentialFiles;
-        BindReadOnlyPaths = lib.optional (cfg.nomad.tokenFile != null) "${dirOf cfg.nomad.tokenFile}:/run/telchar/credentials";
+        BindReadOnlyPaths = lib.optional (
+          cfg.nomad.tokenFile != null
+        ) "${dirOf cfg.nomad.tokenFile}:/run/telchar/credentials";
       };
     };
 
-    systemd.tmpfiles.rules =
-      [ "d /var/lib/telchar/import 0700 ${cfg.user} ${cfg.group} -" ]
-      ++ lib.optional cfg.gatewayStore.manageGcRootDirectory
-        "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -";
+    systemd.tmpfiles.rules = [
+      "d /var/lib/telchar/import 0700 ${cfg.user} ${cfg.group} -"
+    ]
+    ++ lib.optional cfg.gatewayStore.manageGcRootDirectory "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -";
   };
 }

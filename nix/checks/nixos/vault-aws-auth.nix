@@ -125,7 +125,7 @@ let
                 return
             assert self.headers.get("X-Vault-Token") == "vault-session-token"
             open(observed + "/nomad-secret", "w").write("requested")
-            self.reply({"data": {"data": {"token": "vault-nomad-token"}}})
+            self.reply({"data": {"secret_id": "vault-nomad-token"}})
 
         def log_message(self, format, *args):
             pass
