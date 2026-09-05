@@ -6,13 +6,17 @@ import tempfile
 from urllib.parse import urlsplit
 
 
-def render(url, public_key, username, token, netrc_file):
+def render(url, public_key, username, token, netrc_file, public_key_name=""):
     endpoint = urlsplit(url)
     if (endpoint.scheme != "https" or not endpoint.hostname or endpoint.username
             or endpoint.password or endpoint.query or endpoint.fragment
             or any(character.isspace() for character in url)):
         raise ValueError("cache URL must be HTTPS without credentials, query or fragment")
     public_key = public_key.strip()
+    if public_key_name:
+        if ":" in public_key_name or any(c.isspace() for c in public_key_name):
+            raise ValueError("cache signing key name must not contain whitespace or colon")
+        public_key = f"{public_key_name}:{public_key}"
     name, separator, encoded = public_key.partition(":")
     try:
         key = base64.b64decode(encoded, validate=True)

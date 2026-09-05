@@ -174,6 +174,7 @@ let
           ${builtins.toJSON cacheCfg.url}, cache_public_key,
           ${builtins.toJSON cacheCfg.username}, cache_token,
           ${builtins.toJSON cacheCfg.netrcFile},
+          public_key_name=${builtins.toJSON cacheCfg.publicKeyName},
       )
     ''}
 
@@ -275,6 +276,11 @@ in
         publicKeyField = lib.mkOption {
           type = lib.types.str;
           description = "Signing public key field within the KV v2 secret.";
+        };
+        publicKeyName = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          description = "Signing key name prepended to a bare base64 key; empty when the field contains name:base64.";
         };
         netrcFile = lib.mkOption {
           type = lib.types.str;

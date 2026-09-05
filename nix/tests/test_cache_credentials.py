@@ -26,6 +26,19 @@ class CacheCredentialsTests(unittest.TestCase):
         self.assertNotIn("opaque-token", config)
         self.assertEqual(netrc, "machine cache.example.com login reader password opaque-token\n")
 
+    def test_render_key_with_explicit_name(self):
+        config, _ = credentials.render(
+            "https://cache.example.com/cache", KEY.split(":", 1)[1],
+            "reader", "token", "/state/netrc", public_key_name="cache"
+        )
+        self.assertIn(f"extra-trusted-public-keys = {KEY}\n", config)
+        for name in ["bad name", "cache\nsetting", "cache:other"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                credentials.render(
+                    "https://cache.example.com/cache", KEY.split(":", 1)[1],
+                    "reader", "token", "/state/netrc", public_key_name=name
+                )
+
     def test_reject_unusable_credentials_before_replacing_files(self):
         for url, key, token in [
             ("http://cache.example.com/cache", KEY, "token"),
