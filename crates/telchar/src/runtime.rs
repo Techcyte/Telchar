@@ -45,10 +45,10 @@ pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
 fn run_executor() -> io::Result<()> {
     let config = telchar::service::config::ServiceConfig::load()
-        .map_err(|_| invalid("database migration failed"))?;
+        .map_err(|_| configuration_failure("load-or-validation"))?;
     let database_url = config
         .require_database_url()
-        .map_err(|_| invalid("database migration failed"))?
+        .map_err(|_| configuration_failure("database-url-missing"))?
         .to_owned();
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
@@ -306,9 +306,18 @@ pub(crate) fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     result.map_err(Into::into)
 }
 
+fn configuration_failure(failure_class: &'static str) -> io::Error {
+    tracing::error!(
+        event = "configuration.failed",
+        failure_class,
+        "service configuration failed"
+    );
+    invalid("service configuration failed")
+}
+
 fn run_daemon() -> io::Result<()> {
     let mut config = telchar::service::config::ServiceConfig::load()
-        .map_err(|_| invalid("database migration failed"))?;
+        .map_err(|_| configuration_failure("load-or-validation"))?;
     let running_disconnect_policy = config.running_disconnect_policy();
     let output_retention = config.output_retention();
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
@@ -317,7 +326,7 @@ fn run_daemon() -> io::Result<()> {
     let gateway_store = telchar::store::runtime::GatewayStoreRuntime::from_environment()?;
     let database_url = config
         .require_database_url()
-        .map_err(|_| invalid("database migration failed"))?
+        .map_err(|_| configuration_failure("database-url-missing"))?
         .to_owned();
     tracing::info!(
         event = "database.migration.started",

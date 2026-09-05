@@ -151,12 +151,11 @@ fn daemon_rejects_missing_database_before_socket_preparation() {
         "daemon accepts missing database URL"
     );
     assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr)
-            .matches("database migration failed")
-            .count(),
-        1
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("configuration.failed"), "{stderr}");
+    assert!(stderr.contains("database-url-missing"), "{stderr}");
+    assert!(!stderr.contains("database.migration"), "{stderr}");
+    assert!(!stderr.contains("database migration failed"), "{stderr}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -183,7 +182,12 @@ fn daemon_rejects_empty_and_unreachable_database_before_socket_preparation() {
             "daemon accepts invalid database configuration"
         );
         assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
-        assert!(stderr.contains("database migration failed"), "{stderr}");
+        if database_url.is_empty() {
+            assert!(stderr.contains("configuration.failed"), "{stderr}");
+            assert!(!stderr.contains("database.migration"), "{stderr}");
+        } else {
+            assert!(stderr.contains("database migration failed"), "{stderr}");
+        }
         if !database_url.is_empty() {
             assert!(
                 !stderr.contains(database_url),
@@ -192,6 +196,29 @@ fn daemon_rejects_empty_and_unreachable_database_before_socket_preparation() {
         }
         let _ = fs::remove_dir_all(root);
     }
+}
+
+#[test]
+fn daemon_reports_invalid_configuration_before_migration() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut command = daemon_command_without_database(&socket, 1_000, true);
+    fs::write(&socket, b"preserve").expect("sentinel writes");
+    fs::write(
+        socket.with_extension("toml"),
+        "[backends.nomad.aws-spot]\nendpoint = 'https://private-config-marker.example'\n",
+    )
+    .expect("invalid configuration writes");
+    let output = command.output().expect("daemon command runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("configuration.failed"), "{stderr}");
+    assert!(stderr.contains("load-or-validation"), "{stderr}");
+    assert!(!stderr.contains("database.migration"), "{stderr}");
+    assert!(!stderr.contains("database migration failed"), "{stderr}");
+    assert!(!stderr.contains("private-config-marker"), "{stderr}");
+    assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+    fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
