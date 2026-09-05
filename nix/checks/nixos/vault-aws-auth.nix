@@ -6,6 +6,11 @@
   standaloneModule,
 }:
 let
+  vault =
+    (import pkgs.path {
+      inherit system;
+      config.allowUnfreePredicate = package: pkgs.lib.getName package == "vault-bin";
+    }).vault-bin;
   identityServices = pkgs.writeText "identity-services.py" ''
     import base64
     import json
@@ -13,6 +18,8 @@ let
     import subprocess
     import tempfile
     import time
+    import urllib.error
+    import urllib.request
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
 
@@ -87,6 +94,26 @@ let
             self.end_headers()
             self.wfile.write(body)
 
+        def forward_vault(self, method, path, payload=None):
+            token = open("/run/vault-test-token").read().strip()
+            request = urllib.request.Request(
+                "http://127.0.0.1:8201/v1/" + path,
+                data=None if payload is None else json.dumps(payload).encode(),
+                method=method,
+                headers={"X-Vault-Token": token, "Content-Type": "application/json"},
+            )
+            try:
+                response = urllib.request.urlopen(request, timeout=2)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                body = response.read()
+                self.send_response(response.code)
+                self.send_header("Content-Type", response.headers.get("Content-Type", "text/plain"))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
         def request_json(self):
             length = int(self.headers.get("Content-Length", "0"))
             return json.loads(self.rfile.read(length) or b"{}")
@@ -104,18 +131,8 @@ let
                 return
             if self.path == "/v1/ssh/sign/telchar-host":
                 assert self.headers.get("X-Vault-Token") == "vault-session-token"
-                public_key = request["public_key"]
-                with tempfile.TemporaryDirectory() as directory:
-                    public_key_path = directory + "/host.pub"
-                    open(public_key_path, "w").write(public_key)
-                    subprocess.run([
-                        "${pkgs.openssh}/bin/ssh-keygen", "-q", "-s", "/var/lib/vault-fixture/host-ca",
-                        "-I", "vault-renewed", "-h", "-n", "gateway.test",
-                        "-V", "-1m:+10m", public_key_path,
-                    ], check=True)
-                    signed_key = open(directory + "/host-cert.pub").read()
                 open(observed + "/ssh-sign", "w").write("requested")
-                self.reply({"data": {"signed_key": signed_key}})
+                self.forward_vault("POST", "ssh-host-signer/sign/telchar-host", request)
                 return
             self.send_error(404)
 
@@ -126,10 +143,10 @@ let
                 self.reply({"data": {"secret_id": "vault-nomad-token"}})
                 return
             if self.path == "/v1/ssh-host-signer/public_key":
-                self.reply({"data": {"public_key": open("/var/lib/vault-fixture/host-ca.pub").read()}})
+                self.forward_vault("GET", "ssh-host-signer/public_key")
                 return
             if self.path == "/v1/ssh-client-signer/public_key":
-                self.reply({"data": {"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestClientAuthority"}})
+                self.forward_vault("GET", "ssh-client-signer/public_key")
                 return
             self.send_error(404)
 
@@ -214,7 +231,17 @@ pkgs.testers.nixosTest {
 
   testScript = ''
     identity.start()
-    identity.succeed("install -d -m 700 /var/lib/vault-fixture && ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/vault-fixture/host-ca")
+    identity.succeed("install -d -m 700 /var/lib/vault-fixture; umask 077; head -c 32 /dev/urandom | base64 > /run/vault-test-token")
+    identity.succeed("systemd-run --unit=vault-test --setenv=PATH=/run/current-system/sw/bin ${pkgs.runtimeShell} -c 'export VAULT_DEV_ROOT_TOKEN_ID=$(cat /run/vault-test-token); exec ${vault}/bin/vault server -dev -dev-listen-address=127.0.0.1:8201 >/run/vault-test.log 2>&1'")
+    try:
+        identity.wait_until_succeeds("${pkgs.curl}/bin/curl -fsS http://127.0.0.1:8201/v1/sys/health >/dev/null 2>&1", timeout=30)
+    except Exception:
+        print(identity.succeed("grep -iE 'error|failed|permission|cannot' /run/vault-test.log || true"))
+        raise
+    vault_env = "export VAULT_ADDR=http://127.0.0.1:8201 VAULT_TOKEN=$(cat /run/vault-test-token); "
+    for mount in ["ssh-host-signer", "ssh-client-signer"]:
+        identity.succeed(vault_env + f"${vault}/bin/vault secrets enable -path={mount} ssh >/dev/null; ${vault}/bin/vault write {mount}/config/ca generate_signing_key=true >/dev/null; ${vault}/bin/vault read -field=public_key {mount}/config/ca > /var/lib/vault-fixture/{mount}.pub")
+    identity.succeed(vault_env + "${vault}/bin/vault write ssh-host-signer/roles/telchar-host key_type=ca allow_host_certificates=true allow_user_certificates=false allowed_domains=gateway.test allow_bare_domains=true ttl=600 max_ttl=600 >/dev/null")
     identity.succeed("systemd-run --unit=identity-services ${pkgs.python3}/bin/python3 ${identityServices}")
     identity.wait_until_succeeds("ss -ltn | grep -q ':80 ' && ss -ltn | grep -q ':8200 '")
 
@@ -222,8 +249,8 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl stop telchar.service telchar-sshd.service || true")
     gateway.succeed("install -d -m 700 -o telchar -g telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     gateway.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /var/lib/telchar/ssh/ssh_host_ed25519_key")
-    host_ca = identity.succeed("cat /var/lib/vault-fixture/host-ca.pub").strip()
-    host_ca_hash = identity.succeed("sha256sum /var/lib/vault-fixture/host-ca.pub").split()[0]
+    host_ca = identity.succeed("cat /var/lib/vault-fixture/ssh-host-signer.pub").strip()
+    host_ca_hash = identity.succeed("sha256sum /var/lib/vault-fixture/ssh-host-signer.pub").split()[0]
     gateway.succeed("printf '%s\\n' '" + host_ca + "' > /var/lib/telchar/ssh/host-ca.pub")
     gateway.succeed("chown -R telchar:telchar /var/lib/telchar/ssh /var/lib/telchar/credentials")
     original_key = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key").split()[0]
@@ -245,15 +272,16 @@ pkgs.testers.nixosTest {
     identity.succeed("test -f /tmp/observed/nomad-secret")
     identity.fail("test -e /tmp/observed/approle-login")
 
-    gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | grep -q vault-renewed")
+    gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | grep -q 'host certificate'")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub) = 400")
     gateway.succeed("test $(stat -c %U:%G /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub) = telchar:telchar")
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token.candidate) = vault-nomad-token")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/host-ca.pub | cut -d' ' -f1) = " + host_ca_hash)
-    gateway.succeed("grep -q TestClientAuthority /var/lib/telchar/ssh/client-ca.pub")
+    client_ca_hash = identity.succeed("sha256sum /var/lib/vault-fixture/ssh-client-signer.pub").split()[0]
+    gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/client-ca.pub | cut -d' ' -f1) = " + client_ca_hash)
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token.candidate) = 400")
     gateway.succeed("test $(stat -c %U:%G /var/lib/telchar/credentials/nomad-token.candidate) = telchar:telchar")
-    gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | grep -q vault-renewed")
+    gateway.succeed("ssh-keygen -L -f /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub | grep -q 'host certificate'")
     gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = vault-nomad-token")
     gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/nomad-token) = 400")
     ssh_candidate_hash = gateway.succeed("sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | cut -d' ' -f1").strip()

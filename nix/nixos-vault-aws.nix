@@ -102,7 +102,7 @@ let
         "iam_request_headers": base64.b64encode(json.dumps(dict(prepared_request.headers)).encode()).decode(),
     }
 
-    def vault_request(path, method="GET", payload=None, token=None):
+    def vault_request(path, method="GET", payload=None, token=None, text=False):
         headers = {"Content-Type": "application/json"}
         if token is not None:
             headers["X-Vault-Token"] = token
@@ -113,7 +113,8 @@ let
             method=method,
             headers=headers,
         )
-        return json_request(request)
+        response = bounded_request(request)
+        return response.decode() if text else json.loads(response)
 
     login = vault_request(
         "auth/${vaultCfg.authMount}/login",
@@ -126,7 +127,11 @@ let
           signed_certificate = vault_request(
               ${builtins.toJSON vaultCfg.sshSignPath},
               method="POST",
-              payload={"public_key": host_public_key.read()},
+              payload={
+                  "public_key": host_public_key.read(),
+                  "cert_type": "host",
+                  "valid_principals": ${builtins.toJSON (lib.concatStringsSep "," cfg.sshHostCertificateRenewal.expectedPrincipals)},
+              },
               token=vault_token,
           )["data"]["signed_key"]
     ''}
@@ -143,13 +148,15 @@ let
       host_ca = vault_request(
           ${builtins.toJSON vaultCfg.hostCAPath},
           token=vault_token,
-      )["data"]["public_key"]
+          text=True,
+      )
     ''}
     ${lib.optionalString (vaultCfg.clientCAPath != null) ''
       client_ca = vault_request(
           ${builtins.toJSON vaultCfg.clientCAPath},
           token=vault_token,
-      )["data"]["public_key"]
+          text=True,
+      )
 
     ''}
 
