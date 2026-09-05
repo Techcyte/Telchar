@@ -121,6 +121,8 @@ Reload treats the static SSH list as desired inventory. Added hosts are probed i
 
 Changing an existing host under the same backend name, changing local or Nomad backends, or changing any non-backend setting remains unsupported. Such a reload is rejected while the active configuration continues serving work. Newly added but unavailable hosts are accepted in degraded state and remain excluded from scheduling until a readiness check succeeds.
 
+NixOS automatically recovers SSH ingress while the daemon is active. Stopping only `telchar-sshd.service` does not keep ingress closed. For a persistent ingress shutdown, disable `services.telchar.ingress.openssh.enable` in the applied NixOS configuration.
+
 Failure procedure:
 
 1. stop client ingress or let requests fail closed;

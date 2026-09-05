@@ -286,11 +286,13 @@ in
         message = "Vault Nomad issuance requires Nomad credential renewal";
       }
       {
-        assertion = vaultCfg.hostCAPath == null || (
-          sshRenewalCfg.expectedSigningCAFile != null
-          && lib.hasPrefix "/" sshRenewalCfg.expectedSigningCAFile
-          && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.expectedSigningCAFile)
-        );
+        assertion =
+          vaultCfg.hostCAPath == null
+          || (
+            sshRenewalCfg.expectedSigningCAFile != null
+            && lib.hasPrefix "/" sshRenewalCfg.expectedSigningCAFile
+            && !(lib.hasPrefix builtins.storeDir sshRenewalCfg.expectedSigningCAFile)
+          );
         message = "Vault host CA delivery requires an absolute expectedSigningCAFile outside the Nix store";
       }
       {

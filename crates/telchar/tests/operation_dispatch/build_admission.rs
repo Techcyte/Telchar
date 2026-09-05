@@ -27,7 +27,10 @@ fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
         [
             ("TELCHAR_TEST_PROMOTE_HELPER", helper.display().to_string()),
             ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
-            ("TELCHAR_GATEWAY_STORE_DIRECTORY", root.join("absent").display().to_string()),
+            (
+                "TELCHAR_GATEWAY_STORE_DIRECTORY",
+                root.join("absent").display().to_string(),
+            ),
         ],
     );
     let child = &mut fixture.frontend;
@@ -56,7 +59,10 @@ fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
     assert!(!marker.exists(), "disk rejection started promotion helper");
     assert!(stderr.contains("worker.disk_reserve.rejected"), "{stderr}");
     assert!(stderr.contains("operation=\"transfer\""), "{stderr}");
-    assert!(stderr.contains("worker.disk_reserve.probe_failed"), "{stderr}");
+    assert!(
+        stderr.contains("worker.disk_reserve.probe_failed"),
+        "{stderr}"
+    );
     assert!(stderr.contains("filesystem=\"staging\""), "{stderr}");
     assert!(
         stderr.contains("reason=\"arithmetic-overflow\""),
@@ -90,7 +96,10 @@ fn disk_reserve_rejects_build_before_helper_or_log_frame() {
         [
             ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
             ("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string()),
-            ("TELCHAR_GATEWAY_STORE_DIRECTORY", root.display().to_string()),
+            (
+                "TELCHAR_GATEWAY_STORE_DIRECTORY",
+                root.display().to_string(),
+            ),
         ],
     );
     let child = &mut fixture.frontend;

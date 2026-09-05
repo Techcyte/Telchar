@@ -141,8 +141,10 @@ pkgs.testers.nixosTest {
         };
 
         environment.etc."ssh/authorized_keys.d/telchar".text = "";
-        systemd.services.telchar.unitConfig.ConditionPathExists = "/var/lib/telchar/credentials/nomad-token";
-        systemd.services.telchar-sshd.unitConfig.ConditionPathExists = "/var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub";
+        systemd.services.telchar.unitConfig.ConditionPathExists =
+          "/var/lib/telchar/credentials/nomad-token";
+        systemd.services.telchar-sshd.unitConfig.ConditionPathExists =
+          "/var/lib/telchar/ssh/ssh_host_ed25519_key-cert.pub";
         system.stateVersion = "26.05";
       };
   };

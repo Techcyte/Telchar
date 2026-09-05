@@ -93,9 +93,11 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
         released.state,
         telchar::persistence::StoreLeaseState::Released
     );
-    assert!(released
-        .released_at
-        .is_some_and(|at| at >= created.created_at));
+    assert!(
+        released
+            .released_at
+            .is_some_and(|at| at >= created.created_at)
+    );
     assert_eq!(
         telchar::persistence::release_store_lease(fixture.url(), "release-lease")
             .expect_err("released lease does not release again")
@@ -282,19 +284,25 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
         );
     });
     let events = captured.events();
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.created")
-            && event.contains("operation=\"create\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.released")
-            && event.contains("operation=\"release\"")));
-    assert!(events
-        .iter()
-        .any(|event| event.contains("database.store_lease.failed")
-            && event.contains("operation=\"create\"")
-            && event.contains("failure_class=\"configuration\"")));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.created")
+                && event.contains("operation=\"create\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.released")
+                && event.contains("operation=\"release\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("database.store_lease.failed")
+                && event.contains("operation=\"create\"")
+                && event.contains("failure_class=\"configuration\""))
+    );
     for forbidden in [
         fixture.url(),
         "sensitive-url",

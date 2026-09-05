@@ -50,9 +50,11 @@ let
       renewal.candidateFile = "/run/credentials/nomad-candidate";
     };
   };
-  hostCA = path: configuration { hostCAPath = "ssh/public_key"; } {
-    sshHostCertificateRenewal.expectedSigningCAFile = path;
-  };
+  hostCA =
+    path:
+    configuration { hostCAPath = "ssh/public_key"; } {
+      sshHostCertificateRenewal.expectedSigningCAFile = path;
+    };
   valid = config: builtins.all (assertion: assertion.assertion) config.assertions;
 in
 assert valid ssh;
