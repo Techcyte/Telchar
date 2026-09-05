@@ -199,6 +199,37 @@ fn daemon_rejects_empty_and_unreachable_database_before_socket_preparation() {
 }
 
 #[test]
+fn daemon_rejects_invalid_store_directory_before_migration_and_socket_preparation() {
+    for directory in ["", "relative-private-store"] {
+        let root = temporary_root();
+        let socket = root.join("daemon.sock");
+        let mut command = daemon_command(
+            &socket,
+            1_000,
+            true,
+            "postgresql://telchar@localhost:1/telchar",
+        );
+        fs::write(&socket, b"preserve").expect("sentinel writes");
+        let output = command
+            .env("TELCHAR_GATEWAY_STORE_DIRECTORY", directory)
+            .output()
+            .expect("daemon command runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(!output.status.success(), "invalid store directory accepted");
+        assert!(stderr.contains("configuration.failed"), "{stderr}");
+        assert!(
+            stderr.contains("gateway store directory must be absolute"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("relative-private-store"), "{stderr}");
+        assert!(!stderr.contains("database.migration"), "{stderr}");
+        assert_eq!(fs::read(&socket).expect("sentinel reads"), b"preserve");
+        fs::remove_dir_all(root).expect("fixture removes");
+    }
+}
+
+#[test]
 fn daemon_reports_invalid_configuration_before_migration() {
     let root = temporary_root();
     let socket = root.join("daemon.sock");

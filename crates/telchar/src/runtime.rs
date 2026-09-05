@@ -324,6 +324,8 @@ fn run_daemon() -> io::Result<()> {
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
     let transfer_limits = telchar::service::transfer_limits::TransferLimits::from_environment()?;
     let disk_reserve = telchar::service::disk_reserve::DiskReserve::from_environment()?;
+    telchar::service::disk_reserve::gateway_store_directory()
+        .map_err(|error| configuration_failure("gateway-store-directory", error))?;
     let gateway_store = telchar::store::runtime::GatewayStoreRuntime::from_environment()?;
     let database_url = config
         .require_database_url()
