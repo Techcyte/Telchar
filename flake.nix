@@ -76,6 +76,11 @@
           mkStandaloneSystem = self.lib.mkStandaloneSystem;
         }
         // {
+          cache-credentials = pkgs.runCommand "telchar-cache-credentials" { } ''
+            export PYTHONDONTWRITEBYTECODE=1
+            ${pkgs.python3}/bin/python -m unittest discover -s ${./nix}/tests -p test_cache_credentials.py
+            touch $out
+          '';
           oci-images = import ./nix/tests/oci-images.nix {
             inherit pkgs;
             telchar = self.packages.${system}.telchar;
