@@ -1,3 +1,5 @@
+/.ralph/
+/.pi/
 /target/
 /crates/nix-worker-protocol/fuzz/target/
 /crates/nix-worker-protocol/fuzz/corpus/primitive_framing/*

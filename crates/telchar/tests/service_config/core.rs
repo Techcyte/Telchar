@@ -92,7 +92,7 @@ socket = "/run/telchar/daemon.sock"
 maximum_sessions = 32
 
 [identity.credentials."ssh-pubkey:SHA256:abc"]
-audit_subject = "travis"
+audit_subject = "developer"
 quota_subject = "engineering"
 
 [identity.credentials."ssh-pubkey:SHA256:def"]
@@ -158,7 +158,7 @@ maximum_concurrent_builds = 2
     let mapping = config
         .credential_mapping("ssh-pubkey:SHA256:abc")
         .expect("credential mapping exists");
-    assert_eq!(mapping.audit_subject.as_deref(), Some("travis"));
+    assert_eq!(mapping.audit_subject.as_deref(), Some("developer"));
     assert_eq!(mapping.quota_subject.as_deref(), Some("engineering"));
     let second_mapping = config
         .credential_mapping("ssh-pubkey:SHA256:def")
