@@ -63,11 +63,30 @@ struct StorePathJson {
 
 pub struct GatewayStorePromotionBackend {
     endpoint: GatewayStoreEndpoint,
+    connection: Option<GatewayStoreConnection>,
 }
 
 impl GatewayStorePromotionBackend {
     pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
-        Self { endpoint }
+        Self {
+            endpoint,
+            connection: None,
+        }
+    }
+
+    fn with_connection<T>(
+        &mut self,
+        operation: impl FnOnce(&mut GatewayStoreConnection) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut connection = match self.connection.take() {
+            Some(connection) => connection,
+            None => GatewayStoreConnection::connect(&self.endpoint)?,
+        };
+        // Only completed operations leave a reusable protocol stream. A failed
+        // operation is not replayed, because the daemon may have committed it.
+        let value = operation(&mut connection)?;
+        self.connection = Some(connection);
+        Ok(value)
     }
 }
 
@@ -77,8 +96,9 @@ impl StorePromotionBackend for GatewayStorePromotionBackend {
     }
 
     fn is_valid_path(&mut self, path: &Path) -> io::Result<bool> {
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
-        connection.is_valid_path(path.as_os_str().as_encoded_bytes())
+        self.with_connection(|connection| {
+            connection.is_valid_path(path.as_os_str().as_encoded_bytes())
+        })
     }
 
     fn promote(&mut self, request: &PromotionRequest) -> io::Result<()> {
@@ -107,14 +127,14 @@ impl StorePromotionBackend for GatewayStorePromotionBackend {
             signatures: &signatures,
             content_address: request.content_address.as_deref().map(str::as_bytes),
         };
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
-        connection.add_to_store_nar(&info, &mut nar, false, true)
+        self.with_connection(|connection| connection.add_to_store_nar(&info, &mut nar, false, true))
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
-        let info = connection
-            .query_path_info(path.as_os_str().as_encoded_bytes())?
+        let info = self
+            .with_connection(|connection| {
+                connection.query_path_info(path.as_os_str().as_encoded_bytes())
+            })?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "registered path omitted"))?;
         Ok(RegisteredPathInfo {
             path: path.to_path_buf(),
