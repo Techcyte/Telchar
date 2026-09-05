@@ -33,7 +33,6 @@ r2d2 = "0.8"
 r2d2_postgres = "0.18"
 tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8"
-rustls-pemfile = "2"
 url = "2"
 toml = "0.8"
 reqwest.workspace = true

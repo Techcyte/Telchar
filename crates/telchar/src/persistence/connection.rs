@@ -137,8 +137,8 @@ fn tls_connector(
     let mut roots = RootCertStore::empty();
     if let Some(path) = root_certificate {
         let certificate = std::fs::read(path)?;
-        let mut certificate = certificate.as_slice();
-        for certificate in rustls_pemfile::certs(&mut certificate) {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        for certificate in CertificateDer::pem_slice_iter(&certificate) {
             roots.add(certificate?)?;
         }
     } else {
