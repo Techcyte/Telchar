@@ -30,6 +30,7 @@ import ./nixos/oci.nix {
     nomadWorkerImage
     ;
 }
+// { nixos-import-connections = import ./nixos/import-connections.nix checkArgs; }
 // import ./nixos/module.nix checkArgs
 // import ./nixos/standalone.nix {
   inherit
