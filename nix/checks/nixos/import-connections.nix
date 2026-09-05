@@ -1,5 +1,11 @@
 # Checks cold SSH imports against a real daemon and records reference-heavy transfer timings.
-{ pkgs, system, telchar, telcharModule, ... }:
+{
+  pkgs,
+  system,
+  telchar,
+  telcharModule,
+  ...
+}:
 pkgs.testers.nixosTest {
   name = "telchar-nixos-import-connections";
   nodes = {

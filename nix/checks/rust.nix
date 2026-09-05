@@ -32,7 +32,11 @@ in
     common
     // {
       inherit cargoArtifacts;
-      nativeBuildInputs = [ pkgs.postgresql ];
+      nativeBuildInputs = [
+        pkgs.postgresql
+        pkgs.nix
+        pkgs.openssh
+      ];
       cargoTestExtraArgs = "--workspace --lib";
     }
   );
