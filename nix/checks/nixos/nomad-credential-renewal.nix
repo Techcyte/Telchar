@@ -213,15 +213,16 @@ pkgs.testers.nixosTest {
     gateway.succeed("printf '%s' '" + derivation_export + "' | base64 -d | nix-store --import >/dev/null")
 
     original_pid = gateway.succeed("systemctl show telchar.service -p MainPID --value").strip()
-    gateway.succeed("printf renewed-nomad-token > /var/lib/telchar/credentials/nomad-token.candidate && chown telchar:telchar /var/lib/telchar/credentials/nomad-token.candidate && chmod 400 /var/lib/telchar/credentials/nomad-token.candidate")
+    gateway.succeed("umask 077; cat /proc/sys/kernel/random/uuid > /root/expected-token; cp /root/expected-token /var/lib/telchar/credentials/nomad-token.candidate; chown telchar:telchar /var/lib/telchar/credentials/nomad-token.candidate; chmod 400 /var/lib/telchar/credentials/nomad-token.candidate")
+    expected_digest = gateway.succeed("tr -d '\\n' < /root/expected-token | sha256sum | cut -d ' ' -f1").strip()
     gateway.succeed("systemctl start telchar-nomad-credential-renewal.service")
     gateway.succeed("test $(systemctl show telchar.service -p MainPID --value) = " + original_pid)
     gateway.succeed("systemctl is-active --quiet telchar.service")
-    gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = renewed-nomad-token")
+    gateway.succeed("test $(tr -d '\\n' < /var/lib/telchar/credentials/nomad-token | sha256sum | cut -d ' ' -f1) = " + expected_digest)
 
     gateway.succeed("install -d -m 700 /root/private-candidate && printf root-private-token > /root/private-candidate/nomad-token && rm -f /var/lib/telchar/credentials/nomad-token.candidate && ln -s /root/private-candidate/nomad-token /var/lib/telchar/credentials/nomad-token.candidate")
     gateway.fail("systemctl start telchar-nomad-credential-renewal.service")
-    gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = renewed-nomad-token")
+    gateway.succeed("test $(tr -d '\\n' < /var/lib/telchar/credentials/nomad-token | sha256sum | cut -d ' ' -f1) = " + expected_digest)
     gateway.succeed("test $(systemctl show telchar.service -p MainPID --value) = " + original_pid)
     gateway.succeed("systemctl is-active --quiet telchar.service")
     gateway.succeed("rm /var/lib/telchar/credentials/nomad-token.candidate")
@@ -229,14 +230,16 @@ pkgs.testers.nixosTest {
     gateway.succeed("printf invalid-nomad-token > /var/lib/telchar/credentials/nomad-token.candidate && chown telchar:telchar /var/lib/telchar/credentials/nomad-token.candidate && chmod 440 /var/lib/telchar/credentials/nomad-token.candidate")
     gateway.fail("systemctl start telchar-nomad-credential-renewal.service")
     gateway.succeed("systemctl is-failed --quiet telchar-nomad-credential-renewal.service")
-    gateway.succeed("test $(cat /var/lib/telchar/credentials/nomad-token) = renewed-nomad-token")
+    gateway.succeed("test $(tr -d '\\n' < /var/lib/telchar/credentials/nomad-token | sha256sum | cut -d ' ' -f1) = " + expected_digest)
     gateway.succeed("test $(systemctl show telchar.service -p MainPID --value) = " + original_pid)
     gateway.succeed("systemctl is-active --quiet telchar.service")
 
     build = "HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -p 2222' nix --extra-experimental-features nix-command build --no-link --max-jobs 0 --builders 'ssh-ng://telchar@192.168.1.2 ${system} - 1 1' '" + derivation_path + "^*'"
     client.succeed("(" + build + " >/tmp/build.out 2>&1) & echo $! >/tmp/build.pid")
-    nomad_api.wait_until_succeeds("test $(cat /tmp/observed-token) = renewed-nomad-token", timeout=60)
+    nomad_api.wait_until_succeeds("test $(sha256sum /tmp/observed-token | cut -d ' ' -f1) = " + expected_digest, timeout=60)
     client.succeed("kill $(cat /tmp/build.pid) || true")
-    gateway.fail("grep -R renewed-nomad-token /nix/store")
+    status, output = gateway.execute("timeout 120 grep -rFl -f /root/expected-token /nix/store", timeout=130)
+    assert status == 1, f"Store credential scan did not confirm absence: status={status} output={output}"
+    assert output == "", f"Store credential scan emitted diagnostics: {output}"
   '';
 }
