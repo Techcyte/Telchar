@@ -95,6 +95,13 @@ let
             self.wfile.write(body)
 
         def forward_vault(self, method, path, payload=None):
+            if path.endswith("/public_key") and os.path.exists(observed + "/ca-response"):
+                body = open(observed + "/ca-response", "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             token = open("/run/vault-test-token").read().strip()
             request = urllib.request.Request(
                 "http://127.0.0.1:8201/v1/" + path,
@@ -297,6 +304,15 @@ pkgs.testers.nixosTest {
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key-cert.candidate.pub | cut -d' ' -f1) = " + ssh_candidate_hash)
     gateway.succeed("test $(sha256sum /var/lib/telchar/credentials/nomad-token.candidate | cut -d' ' -f1) = " + nomad_candidate_hash)
     identity.succeed("rm /tmp/observed/oversized-imds")
+    for response in ["", "<html>unavailable</html>", '{"data":{"public_key":"invalid"}}']:
+        identity.succeed("printf '%s' '" + response + "' > /tmp/observed/ca-response")
+        gateway.succeed("systemctl reset-failed telchar-vault-aws-auth.service")
+        gateway.fail("systemctl start telchar-vault-aws-auth.service")
+        gateway.succeed("journalctl -u telchar-vault-aws-auth.service -n 30 --no-pager | grep -q 'Vault CA public key is invalid'")
+        gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/host-ca.pub | cut -d' ' -f1) = " + host_ca_hash)
+        gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/client-ca.pub | cut -d' ' -f1) = " + client_ca_hash)
+    identity.succeed("rm /tmp/observed/ca-response")
+    gateway.succeed("systemctl reset-failed telchar-vault-aws-auth.service; systemctl start telchar-vault-aws-auth.service")
     gateway.succeed("test $(sha256sum /var/lib/telchar/ssh/ssh_host_ed25519_key | cut -d' ' -f1) = " + original_key)
     gateway.succeed("systemctl is-active telchar-credential-renewal.timer")
     gateway.succeed("systemctl list-timers --all telchar-credential-renewal.timer | grep -q telchar-credential-renewal.timer")

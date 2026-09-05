@@ -20,6 +20,7 @@ let
     import base64
     import json
     import os
+    import subprocess
     import tempfile
     import time
     import urllib.error
@@ -159,6 +160,24 @@ let
       )
 
     ''}
+
+    def validate_ca(content):
+        lines = content.strip().splitlines()
+        fields = lines[0].split() if len(lines) == 1 else []
+        if len(fields) < 2 or "-cert-" in fields[0] or "PRIVATE" in content:
+            raise ValueError("Vault CA public key is invalid")
+        with tempfile.NamedTemporaryFile(mode="w+") as candidate:
+            candidate.write(content)
+            candidate.flush()
+            result = subprocess.run(
+                ["${pkgs.openssh}/bin/ssh-keygen", "-lf", candidate.name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        if result.returncode != 0:
+            raise ValueError("Vault CA public key is invalid")
+
+    ${lib.optionalString (vaultCfg.hostCAPath != null) "validate_ca(host_ca)"}
+    ${lib.optionalString (vaultCfg.clientCAPath != null) "validate_ca(client_ca)"}
 
     def write_candidate(path, content):
         directory = os.path.dirname(path)
