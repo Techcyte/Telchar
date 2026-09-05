@@ -84,6 +84,8 @@ pkgs.testers.nixosTest {
       { pkgs, ... }:
       {
         imports = [ standaloneModule ];
+        virtualisation.useNixStoreImage = true;
+        virtualisation.writableStore = true;
 
         services.openssh.enable = true;
         networking.extraHosts = ''
@@ -184,6 +186,8 @@ pkgs.testers.nixosTest {
     nomad_api.wait_until_succeeds("ss -ltn | grep -q ':4646 '")
 
     gateway.start()
+    assert gateway.succeed("findmnt -fn -o FSTYPE -T /nix/.ro-store").strip() == "erofs"
+    assert gateway.succeed("findmnt -fn -o FSTYPE -T /nix/store").strip() == "overlay"
     gateway.succeed("systemctl stop telchar.service")
     gateway.succeed("systemctl reset-failed telchar.service")
     gateway.wait_for_unit("network-online.target")
