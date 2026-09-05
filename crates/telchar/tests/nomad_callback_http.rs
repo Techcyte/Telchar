@@ -123,6 +123,36 @@ fn applies_updated_message_limit_to_outbound_binary_frames() {
 }
 
 #[test]
+fn rejects_plain_http_health_probe_with_bounded_response() {
+    for maximum_read in [11, 128] {
+        let mut stream = FragmentedStream::new(
+            "GET /callback HTTP/1.1\r\nHost: gateway\r\nX-Private: private-marker\r\n\r\n",
+            maximum_read,
+        );
+        assert!(accept_connection(&mut stream, CallbackHttpLimits::new(1024, 8)).is_err());
+        assert_eq!(
+            stream.output,
+            b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+}
+
+#[test]
+fn closes_incomplete_and_oversized_probes_without_response() {
+    for request in [
+        "GET /callback HTTP/1.1\r\nHost: gateway\r\n".to_owned(),
+        format!(
+            "GET /callback HTTP/1.1\r\nX-Fill: {}\r\n\r\n",
+            "a".repeat(1100)
+        ),
+    ] {
+        let mut stream = FragmentedStream::new(request, 128);
+        assert!(accept_connection(&mut stream, CallbackHttpLimits::new(1024, 8)).is_err());
+        assert!(stream.output.is_empty());
+    }
+}
+
+#[test]
 fn rejects_wrong_subprotocol_and_oversized_headers() {
     for request in [
         handshake("/callback", "foreign"),
@@ -132,7 +162,9 @@ fn rejects_wrong_subprotocol_and_oversized_headers() {
             "a".repeat(1100)
         ),
     ] {
-        let stream = FragmentedStream::new(request, 11);
-        assert!(accept_connection(stream, CallbackHttpLimits::new(1024, 8)).is_err());
+        let mut stream = FragmentedStream::new(request, 11);
+        assert!(accept_connection(&mut stream, CallbackHttpLimits::new(1024, 8)).is_err());
+        let response = String::from_utf8(stream.output).expect("response is UTF-8");
+        assert!(response.matches("HTTP/1.1").count() <= 1, "{response}");
     }
 }

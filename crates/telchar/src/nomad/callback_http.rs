@@ -62,13 +62,30 @@ pub fn accept_connection<S: Read + Write>(
         );
         Ok(response)
     }
-    let stream = HeaderLimitedStream::new(stream, limits.maximum_header_bytes);
-    let inner = tungstenite::accept_hdr(stream, validate_upgrade).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Nomad WebSocket handshake failed: {error:?}"),
-        )
-    })?;
+    let mut stream = HeaderLimitedStream::new(stream, limits.maximum_header_bytes);
+    match tungstenite::accept_hdr(&mut stream, validate_upgrade) {
+        Ok(socket) => {
+            socket.into_inner();
+        }
+        Err(error) => {
+            let protocol_failure = matches!(
+                error,
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Protocol(_))
+            );
+            if protocol_failure && stream.header_complete {
+                stream.write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )?;
+                stream.flush()?;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad WebSocket handshake failed",
+            ));
+        }
+    }
+    let inner =
+        tungstenite::WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
     Ok(CallbackSocket {
         inner,
         maximum_message_bytes: limits.maximum_message_bytes,
