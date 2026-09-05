@@ -77,7 +77,7 @@ audience = "telchar"
 
 [backends.nomad.nomad-primary.store]
 mode = "daemon"
-uri = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
 
 [backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 100
@@ -183,7 +183,7 @@ audience = "telchar"
 
 [backends.nomad.nomad-primary.store]
 mode = "daemon"
-uri = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
 
 [backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 100
@@ -571,6 +571,64 @@ args = ["/alloc/data/nix"]
     );
 
     let configured = fs::read_to_string(&config_path).expect("configuration reads");
+    for uri in [
+        "daemon",
+        "/nix/var/nix/daemon-socket/socket",
+        "unix://relative",
+        "unix:///",
+        "unix:////socket",
+        "unix:///socket?secret=hidden",
+        "unix:///socket#hidden",
+    ] {
+        fs::write(
+            &config_path,
+            configured.replace("unix:///nix/var/nix/daemon-socket/socket", uri),
+        )
+        .unwrap();
+        let error =
+            ServiceConfig::load().expect_err("invalid worker endpoint rejected before launch");
+        assert_eq!(
+            error.to_string(),
+            "Nomad store URI must be unix:///absolute/socket without query or fragment"
+        );
+        assert!(!error.to_string().contains("hidden"));
+    }
+    for attribute in ["$${attr.cpu.arch}", "${attr.cpu.arch", "${unknown.value}"] {
+        let constraints = format!(
+            "job_name_scope = \"prod\"\nconstraints = [{{ attribute = \"{attribute}\", operator = \"=\", value = \"amd64\" }}]"
+        );
+        fs::write(
+            &config_path,
+            configured.replace("job_name_scope = \"prod\"", &constraints),
+        )
+        .unwrap();
+        assert_eq!(
+            ServiceConfig::load().unwrap_err().to_string(),
+            "Nomad constraint attribute must be a literal or a supported ${...} reference"
+        );
+    }
+    for attribute in [
+        "literal",
+        "${attr.cpu.arch}",
+        "${meta.pool}",
+        "${node.pool}",
+        "${device.model}",
+    ] {
+        let constraints = format!(
+            "job_name_scope = \"prod\"\nconstraints = [{{ attribute = \"{attribute}\", operator = \"=\", value = \"amd64\" }}]"
+        );
+        fs::write(
+            &config_path,
+            configured.replace("job_name_scope = \"prod\"", &constraints),
+        )
+        .unwrap();
+        ServiceConfig::load().expect("supported Nomad target accepted");
+    }
+    fs::write(&config_path, configured.replace("[[backends.nomad]]", "")).unwrap();
+    assert!(
+        ServiceConfig::load().is_err(),
+        "backend groups must be an array"
+    );
     fs::write(
         &config_path,
         configured.replace("local_bind_port = 17443", "local_bind_port = 0"),

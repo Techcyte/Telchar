@@ -17,7 +17,10 @@ use telchar_nomad_worker::{WorkerConfig, authenticate, receive_manifest};
 fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("TELCHAR_TRANSFER_ENDPOINT".to_owned(), endpoint.to_owned()),
-        ("TELCHAR_NIX_STORE_URI".to_owned(), "daemon".to_owned()),
+        (
+            "TELCHAR_NIX_STORE_URI".to_owned(),
+            "unix:///nix/var/nix/daemon-socket/socket".to_owned(),
+        ),
         (
             "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
             "262144".to_owned(),
@@ -160,7 +163,10 @@ fn parses_exact_workload_identity_environment() {
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())
         .expect("worker environment parses");
 
-    assert_eq!(config.store_uri(), "daemon");
+    assert_eq!(
+        config.store_uri(),
+        "unix:///nix/var/nix/daemon-socket/socket"
+    );
     assert_eq!(config.transfer_chunk_bytes(), 262_144);
     assert_eq!(config.maximum_manifest_bytes(), 8_388_608);
     assert_eq!(
@@ -216,7 +222,10 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
             "TELCHAR_TRANSFER_ENDPOINT".to_owned(),
             "wss://gateway.example/callback".to_owned(),
         ),
-        ("TELCHAR_NIX_STORE_URI".to_owned(), "daemon".to_owned()),
+        (
+            "TELCHAR_NIX_STORE_URI".to_owned(),
+            "unix:///nix/var/nix/daemon-socket/socket".to_owned(),
+        ),
         (
             "TELCHAR_TRANSFER_CHUNK_BYTES".to_owned(),
             "262144".to_owned(),
@@ -264,6 +273,24 @@ fn derives_hmac_identity_only_from_signed_capability_and_nomad_environment() {
     assert_eq!(actual.as_str(), capability);
     assert_eq!(config.authentication().backend, "nomad-primary");
     assert_eq!(config.authentication().allocation_id, "allocation-1");
+}
+
+#[test]
+fn rejects_store_uri_before_callback_connection() {
+    for uri in [
+        "daemon",
+        "/nix/var/nix/daemon-socket/socket",
+        "unix://relative",
+        "unix:///socket?hidden",
+    ] {
+        let mut environment = workload_environment("ws://127.0.0.1:1234/callback");
+        environment.insert("TELCHAR_NIX_STORE_URI".to_owned(), uri.to_owned());
+        let error = WorkerConfig::from_lookup(|name| environment.get(name).cloned()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "worker store URI must be unix:///absolute/socket without query or fragment"
+        );
+    }
 }
 
 #[test]

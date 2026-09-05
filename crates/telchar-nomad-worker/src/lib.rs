@@ -496,6 +496,9 @@ impl WorkerConfig {
             return Err(invalid("worker callback endpoint is invalid"));
         }
         let store_uri = required(&mut lookup, "TELCHAR_NIX_STORE_URI")?;
+        GatewayStoreEndpoint::parse(&store_uri).map_err(|_| {
+            invalid("worker store URI must be unix:///absolute/socket without query or fragment")
+        })?;
         let transfer_chunk_bytes = required(&mut lookup, "TELCHAR_TRANSFER_CHUNK_BYTES")?
             .parse::<usize>()
             .ok()

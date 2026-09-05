@@ -605,6 +605,9 @@ pub(super) fn validate_nomad_store(raw: RawNomadStoreConfig) -> io::Result<Nomad
             {
                 return Err(invalid("Nomad store URI is invalid"));
             }
+            crate::store::daemon::GatewayStoreEndpoint::parse(&uri).map_err(|_| {
+                invalid("Nomad store URI must be unix:///absolute/socket without query or fragment")
+            })?;
             Ok(NomadStoreConfig { uri })
         }
     }
@@ -727,6 +730,26 @@ pub(super) fn validate_nomad_constraints(
                 || constraint.value.len() > MAXIMUM_NOMAD_CONSTRAINT_FIELD_BYTES
             {
                 return Err(invalid("Nomad constraint is invalid"));
+            }
+            let attribute = &constraint.attribute;
+            if attribute.starts_with('$')
+                && !(attribute.starts_with("${")
+                    && attribute.ends_with('}')
+                    && ([
+                        "${node.unique.id}",
+                        "${node.datacenter}",
+                        "${node.unique.name}",
+                        "${node.class}",
+                        "${node.pool}",
+                    ]
+                    .contains(&attribute.as_str())
+                        || ["${attr.", "${device.", "${meta."]
+                            .iter()
+                            .any(|prefix| attribute.starts_with(prefix))))
+            {
+                return Err(invalid(
+                    "Nomad constraint attribute must be a literal or a supported ${...} reference",
+                ));
             }
             Ok(NomadConstraint {
                 attribute: constraint.attribute,
