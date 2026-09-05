@@ -6,6 +6,19 @@ use std::path::Path;
 pub const DEFAULT_GATEWAY_DISK_RESERVE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub const GATEWAY_STORE_DIRECTORY: &str = "/nix/store";
 
+pub fn gateway_store_directory() -> io::Result<std::path::PathBuf> {
+    let path = std::env::var_os("TELCHAR_GATEWAY_STORE_DIRECTORY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| GATEWAY_STORE_DIRECTORY.into());
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gateway store directory must be absolute",
+        ));
+    }
+    Ok(path)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Filesystem {
     identity: u64,
@@ -150,10 +163,10 @@ impl DiskReserve {
         probe: &dyn DiskReserveProbe,
         store_directory: &Path,
     ) -> Result<(), AdmissionFailure> {
-        let store = probe
-            .probe(store_directory)
-            .map_err(|error| failure("gateway-store", error))?;
-        admit("gateway-store", store.available_bytes, self.bytes)
+        match measure(probe, store_directory, "gateway-store") {
+            Some(store) => admit("gateway-store", store.available_bytes, self.bytes),
+            None => Ok(()),
+        }
     }
 
     pub fn admit_transfer(
@@ -163,13 +176,28 @@ impl DiskReserve {
         staging_directory: &Path,
         nar_size: u64,
     ) -> Result<(), AdmissionFailure> {
-        let store = probe
-            .probe(store_directory)
-            .map_err(|error| failure("gateway-store", error))?;
-        let staging = probe
-            .probe(staging_directory)
-            .map_err(|error| failure("staging", error))?;
-        self.admit_transfer_filesystems(store, staging, nar_size)
+        let store = measure(probe, store_directory, "gateway-store");
+        let staging = measure(probe, staging_directory, "staging");
+        match (store, staging) {
+            (Some(store), Some(staging)) => {
+                self.admit_transfer_filesystems(store, staging, nar_size)
+            }
+            (None, None) => Ok(()),
+            (Some(measured), None) => self.admit_copy("gateway-store", measured, nar_size),
+            (None, Some(measured)) => self.admit_copy("staging", measured, nar_size),
+        }
+    }
+
+    fn admit_copy(
+        self,
+        filesystem: &'static str,
+        measured: Filesystem,
+        nar_size: u64,
+    ) -> Result<(), AdmissionFailure> {
+        let required = self.bytes.checked_add(nar_size).ok_or_else(|| {
+            AdmissionFailure::failed(filesystem, RejectionReason::ArithmeticOverflow)
+        })?;
+        admit(filesystem, measured.available_bytes, required)
     }
 
     fn admit_transfer_filesystems(
@@ -200,14 +228,27 @@ impl DiskReserve {
     }
 }
 
-fn failure(filesystem: &'static str, error: ProbeError) -> AdmissionFailure {
-    AdmissionFailure::failed(
-        filesystem,
-        match error {
-            ProbeError::Failed => RejectionReason::ProbeFailed,
-            ProbeError::ArithmeticOverflow => RejectionReason::ArithmeticOverflow,
-        },
-    )
+fn measure(
+    probe: &dyn DiskReserveProbe,
+    path: &Path,
+    filesystem: &'static str,
+) -> Option<Filesystem> {
+    match probe.probe(path) {
+        Ok(measured) => Some(measured),
+        Err(error) => {
+            let reason = match error {
+                ProbeError::Failed => "probe-failed",
+                ProbeError::ArithmeticOverflow => "arithmetic-overflow",
+            };
+            tracing::warn!(
+                event = "worker.disk_reserve.probe_failed",
+                filesystem,
+                reason,
+                "Capacity measurement unavailable; continuing without this measurement"
+            );
+            None
+        }
+    }
 }
 
 fn admit(

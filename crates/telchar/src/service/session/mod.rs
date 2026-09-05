@@ -55,6 +55,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         scheduling_limits,
         cache_publisher,
     } = context;
+    let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
         transfer_limits.maximum_inbound_session_bytes,
     );
@@ -76,7 +77,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             let requested_system = $requested_system;
                 if let Err(error) = disk_reserve.admit_build(
                     disk_probe,
-                    std::path::Path::new(crate::service::disk_reserve::GATEWAY_STORE_DIRECTORY),
+                    &store_directory,
                 ) {
                     disk_reserve_rejected("build", disk_reserve, error);
                     return reject(
@@ -1489,9 +1490,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         if let Some(staging_directory) = staging_directory.as_deref()
                             && let Err(error) = disk_reserve.admit_transfer(
                                 disk_probe,
-                                std::path::Path::new(
-                                    crate::service::disk_reserve::GATEWAY_STORE_DIRECTORY,
-                                ),
+                                &store_directory,
                                 staging_directory,
                                 info.nar_size(),
                             )

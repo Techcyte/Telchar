@@ -294,6 +294,11 @@ in
         default = "unix:///nix/var/nix/daemon-socket/socket";
         description = "Gateway store URI used for closure and output transfer.";
       };
+      directory = lib.mkOption {
+        type = lib.types.str;
+        default = "/nix/store";
+        description = "Physical local store directory for best-effort capacity measurement; inaccessible paths warn without blocking admission.";
+      };
       gcRootDirectory = lib.mkOption {
         type = lib.types.str;
         default = "/var/lib/telchar/gc-roots";
@@ -521,6 +526,7 @@ in
       environment = {
         TELCHAR_CONFIG = configurationFile;
         TELCHAR_GATEWAY_STORE_URI = cfg.gatewayStore.uri;
+        TELCHAR_GATEWAY_STORE_DIRECTORY = cfg.gatewayStore.directory;
         TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = cfg.gatewayStore.gcRootDirectory;
         TMPDIR = "/var/lib/telchar/import";
       }

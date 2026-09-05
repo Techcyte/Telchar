@@ -237,16 +237,14 @@ fn transfer_rejects_arithmetic_overflow() {
 }
 
 #[test]
-fn transfer_propagates_probe_failure() {
+fn transfer_admits_when_store_probe_fails_and_staging_has_space() {
     let reserve = DiskReserve::parse("10").expect("positive reserve parses");
     let probe = ControlledProbe {
         store: Err(ProbeError::Failed),
         staging: filesystem(1, u64::MAX),
     };
 
-    let rejection = reserve
+    reserve
         .admit_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 1)
-        .expect_err("probe failure rejects");
-    assert_eq!(rejection.reason(), RejectionReason::ProbeFailed);
-    assert_eq!(rejection.filesystem(), "gateway-store");
+        .expect("unknown store capacity does not reject");
 }
