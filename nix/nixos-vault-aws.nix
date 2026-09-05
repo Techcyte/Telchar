@@ -10,6 +10,7 @@ let
   sshRenewalCfg = cfg.sshHostCertificateRenewal;
   nomadRenewalCfg = cfg.nomad.renewal;
   vaultCfg = cfg.vaultAwsAuth;
+  cacheCfg = vaultCfg.cache;
   vaultPython = pkgs.python3.withPackages (pythonPackages: [ pythonPackages.botocore ]);
   sshIssuance = vaultCfg.sshSignPath != null;
   nomadIssuance = vaultCfg.nomadSecretPath != null;
@@ -17,6 +18,7 @@ let
     lib.optional sshIssuance "telchar-ssh-host-certificate-renewal.service"
     ++ lib.optional nomadIssuance "telchar-nomad-credential-renewal.service";
   fetchVaultCandidates = pkgs.writeText "fetch-telchar-vault-candidates.py" ''
+    ${builtins.readFile ./cache_credentials.py}
     import base64
     import json
     import os
@@ -161,6 +163,20 @@ let
 
     ''}
 
+    ${lib.optionalString cacheCfg.enable ''
+      cache_token = vault_request(
+          ${builtins.toJSON cacheCfg.tokenPath}, token=vault_token,
+      )["data"]["data"][${builtins.toJSON cacheCfg.tokenField}]
+      cache_public_key = vault_request(
+          ${builtins.toJSON cacheCfg.publicKeyPath}, token=vault_token,
+      )["data"]["data"][${builtins.toJSON cacheCfg.publicKeyField}]
+      cache_config, cache_netrc = render(
+          ${builtins.toJSON cacheCfg.url}, cache_public_key,
+          ${builtins.toJSON cacheCfg.username}, cache_token,
+          ${builtins.toJSON cacheCfg.netrcFile},
+      )
+    ''}
+
     def validate_ca(content):
         lines = content.strip().splitlines()
         fields = lines[0].split() if len(lines) == 1 else []
@@ -179,23 +195,12 @@ let
     ${lib.optionalString (vaultCfg.hostCAPath != null) "validate_ca(host_ca)"}
     ${lib.optionalString (vaultCfg.clientCAPath != null) "validate_ca(client_ca)"}
 
-    def write_candidate(path, content):
-        directory = os.path.dirname(path)
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=".telchar-candidate.", dir=directory, text=True)
-        try:
-            with os.fdopen(descriptor, "w") as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            os.chmod(temporary, 0o400)
-            os.replace(temporary, path)
-        except BaseException:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-            raise
+    write_candidate = write
+
+    ${lib.optionalString cacheCfg.enable ''
+      write_candidate(${builtins.toJSON cacheCfg.netrcFile}, cache_netrc)
+      write_candidate(${builtins.toJSON cacheCfg.configurationFile}, cache_config)
+    ''}
 
     ${lib.optionalString sshIssuance "write_candidate(${builtins.toJSON sshRenewalCfg.candidateFile}, signed_certificate)"}
     ${lib.optionalString nomadIssuance "write_candidate(${builtins.toJSON nomadRenewalCfg.candidateFile}, nomad_token)"}
@@ -244,6 +249,44 @@ in
         default = null;
         description = "Optional Vault API path returning the client CA public key.";
       };
+      cache = {
+        enable = lib.mkEnableOption "authenticated binary-cache credential delivery";
+        url = lib.mkOption {
+          type = lib.types.str;
+          description = "HTTPS binary-cache URL.";
+        };
+        username = lib.mkOption {
+          type = lib.types.str;
+          description = "HTTP authentication username for the binary cache.";
+        };
+        tokenPath = lib.mkOption {
+          type = lib.types.str;
+          description = "Vault KV v2 API path containing the cache token.";
+        };
+        tokenField = lib.mkOption {
+          type = lib.types.str;
+          default = "token";
+          description = "Token field within the KV v2 secret.";
+        };
+        publicKeyPath = lib.mkOption {
+          type = lib.types.str;
+          description = "Vault KV v2 API path containing the cache signing public key.";
+        };
+        publicKeyField = lib.mkOption {
+          type = lib.types.str;
+          description = "Signing public key field within the KV v2 secret.";
+        };
+        netrcFile = lib.mkOption {
+          type = lib.types.str;
+          default = "/var/lib/telchar/credentials/cache-netrc";
+          description = "Protected runtime netrc file for the consuming Nix daemon.";
+        };
+        configurationFile = lib.mkOption {
+          type = lib.types.str;
+          default = "/var/lib/telchar/credentials/cache.conf";
+          description = "Runtime Nix configuration fragment for the consuming daemon.";
+        };
+      };
       region = lib.mkOption {
         type = lib.types.str;
         default = "us-east-1";
@@ -277,6 +320,16 @@ in
   };
   config = lib.mkIf (cfg.enable && vaultCfg.enable) {
     assertions = [
+      {
+        assertion = !cacheCfg.enable || (
+          lib.hasPrefix "/" cacheCfg.configurationFile
+          && lib.hasPrefix "/" cacheCfg.netrcFile
+          && !(lib.hasPrefix builtins.storeDir cacheCfg.configurationFile)
+          && !(lib.hasPrefix builtins.storeDir cacheCfg.netrcFile)
+          && cacheCfg.configurationFile != cacheCfg.netrcFile
+        );
+        message = "Cache credential files must be distinct absolute paths outside the Nix store";
+      }
       {
         assertion = !sshIssuance || sshRenewalCfg.enable;
         message = "Vault SSH issuance requires SSH host certificate renewal";
