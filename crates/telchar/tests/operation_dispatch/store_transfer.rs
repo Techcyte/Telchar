@@ -151,12 +151,14 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
         .flush()
         .expect("BuildPathsWithResults request flushes");
     drop(output);
-    wait_for_path_state_for(
-        frontend.database.url(),
-        derivation,
-        telchar::persistence::SharedBuildState::Claimed,
-        Duration::from_secs(10),
-    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while telchar::persistence::read_shared_build(frontend.database.url(), derivation)
+        .expect("shared build reads")
+        .is_none()
+    {
+        assert!(Instant::now() < deadline, "real workload was not admitted");
+        thread::sleep(Duration::from_millis(5));
+    }
     drop(input);
     let _ = client.kill();
     let _ = client.wait();
