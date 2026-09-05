@@ -469,13 +469,14 @@ in
         "telchar.service"
       ];
       wants = [ "network-online.target" ];
-      requires = [ "telchar.service" ];
+      unitConfig.Requisite = "telchar.service";
       serviceConfig = {
         RuntimeDirectory = "telchar-sshd";
         RuntimeDirectoryMode = "0755";
         ExecStart = "${pkgs.openssh}/bin/sshd -D -e -f /etc/telchar/sshd_config";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
+        RestartSec = "5s";
       };
     };
 
@@ -504,6 +505,7 @@ in
     systemd.services.telchar = {
       description = "Telchar Nix build gateway";
       wantedBy = [ "multi-user.target" ];
+      unitConfig.Upholds = lib.optional cfg.ingress.openssh.enable "telchar-sshd.service";
       after = [
         "network-online.target"
       ]
@@ -539,6 +541,7 @@ in
         ExecStart = "${cfg.package}/bin/telchar daemon --socket ${cfg.socketPath} --frontend-uid ${toString cfg.frontendUid}";
         ExecStartPre = lib.optional (cfg.database.rootCertificateFile != null) databaseValidator;
         Restart = "on-failure";
+        RestartSec = "5s";
         LoadCredential = credentialFiles;
         BindReadOnlyPaths = lib.optional (
           cfg.nomad.tokenFile != null
