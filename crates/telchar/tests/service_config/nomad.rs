@@ -592,6 +592,18 @@ args = ["/alloc/data/nix"]
             "Nomad store URI must be unix:///absolute/socket without query or fragment"
         );
         assert!(!error.to_string().contains("hidden"));
+        for mode in ["daemon", "executor"] {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+                .arg(mode)
+                .env("TELCHAR_CONFIG", &config_path)
+                .output()
+                .expect("invalid configuration command runs");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success());
+            assert!(stderr.contains(&error.to_string()), "{mode}: {stderr}");
+            assert!(stderr.contains("configuration.failed"), "{stderr}");
+            assert!(!stderr.contains("database.migration"), "{stderr}");
+        }
     }
     for attribute in ["$${attr.cpu.arch}", "${attr.cpu.arch", "${unknown.value}"] {
         let constraints = format!(
