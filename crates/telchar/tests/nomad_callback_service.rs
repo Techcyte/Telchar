@@ -71,7 +71,7 @@ secret_file = "{}"
 
 [backends.nomad.nomad-primary.store]
 mode = "daemon"
-uri = "daemon"
+uri = "unix:///definitely-missing/telchar-worker.sock"
 
 [backends.nomad.nomad-primary.transfer_limits]
 maximum_manifest_paths = 1
