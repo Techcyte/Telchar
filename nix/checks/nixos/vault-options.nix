@@ -50,10 +50,16 @@ let
       renewal.candidateFile = "/run/credentials/nomad-candidate";
     };
   };
+  hostCA = path: configuration { hostCAPath = "ssh/public_key"; } {
+    sshHostCertificateRenewal.expectedSigningCAFile = path;
+  };
   valid = config: builtins.all (assertion: assertion.assertion) config.assertions;
 in
 assert valid ssh;
 assert valid nomad;
+assert valid (hostCA "/run/credentials/host-ca");
+assert !(valid (hostCA "relative-ca"));
+assert !(valid (hostCA "${builtins.storeDir}/host-ca"));
 assert !(ssh.systemd.services ? telchar-nomad-credential-renewal);
 assert !(nomad.systemd.services ? telchar-ssh-host-certificate-renewal);
 pkgs.runCommand "telchar-vault-options" { } "touch $out"
