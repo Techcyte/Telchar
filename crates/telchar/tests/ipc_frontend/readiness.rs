@@ -222,6 +222,39 @@ fn daemon_reports_invalid_configuration_before_migration() {
 }
 
 #[test]
+fn daemon_reports_configuration_parse_location_without_source_contents() {
+    for (contents, line, column) in [
+        ("# private-config-marker\n\n@\n", 3, 1),
+        (
+            "# private-config-marker\r\n\r\nunknown_setting = true\r\n",
+            3,
+            1,
+        ),
+        (
+            "# private-config-marker\n[backends.nomad.aws-spot]\n",
+            2,
+            11,
+        ),
+    ] {
+        let root = temporary_root();
+        let socket = root.join("daemon.sock");
+        let mut command = daemon_command_without_database(&socket, 1_000, true);
+        fs::write(socket.with_extension("toml"), contents).expect("invalid configuration writes");
+        let output = command.output().expect("daemon command runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(stderr.contains("configuration.parse_failed"), "{stderr}");
+        assert!(stderr.contains(&format!("line={line}")), "{stderr}");
+        assert!(stderr.contains(&format!("column={column}")), "{stderr}");
+        assert!(!stderr.contains("private-config-marker"), "{stderr}");
+        assert!(!stderr.contains("unknown_setting"), "{stderr}");
+        assert!(!stderr.contains("database.migration"), "{stderr}");
+        assert!(!socket.exists());
+        fs::remove_dir_all(root).expect("fixture removes");
+    }
+}
+
+#[test]
 fn daemon_reports_startup_failure_without_panicking() {
     let root = temporary_root();
     fs::create_dir(&root).expect("fixture root creates");

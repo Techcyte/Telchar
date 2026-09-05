@@ -26,7 +26,30 @@ pub(super) struct CachePublicationSection {
 
 impl RawServiceConfig {
     pub(super) fn parse(raw: &str) -> io::Result<Self> {
-        toml::from_str(raw).map_err(|_| invalid("service configuration is invalid"))
+        toml::from_str(raw).map_err(|error: toml::de::Error| {
+            if let Some(prefix) = error.span().and_then(|span| raw.get(..span.start)) {
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = prefix
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .count()
+                    + 1;
+                tracing::error!(
+                    event = "configuration.parse_failed",
+                    line,
+                    column,
+                    "service configuration parse failed"
+                );
+            } else {
+                tracing::error!(
+                    event = "configuration.parse_failed",
+                    "service configuration parse failed"
+                );
+            }
+            invalid("service configuration is invalid")
+        })
     }
 }
 
