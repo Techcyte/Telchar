@@ -743,9 +743,14 @@ pub(super) fn validate_nomad_constraints(
                         "${node.pool}",
                     ]
                     .contains(&attribute.as_str())
-                        || ["${attr.", "${device.", "${meta."]
-                            .iter()
-                            .any(|prefix| attribute.starts_with(prefix))))
+                        || ["${attr.", "${device.", "${meta."].iter().any(|prefix| {
+                            attribute
+                                .strip_prefix(prefix)
+                                .and_then(|key| key.strip_suffix('}'))
+                                .is_some_and(|key| {
+                                    !key.is_empty() && !key.contains(['$', '{', '}'])
+                                })
+                        })))
             {
                 return Err(invalid(
                     "Nomad constraint attribute must be a literal or a supported ${...} reference",

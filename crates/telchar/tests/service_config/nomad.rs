@@ -605,7 +605,18 @@ args = ["/alloc/data/nix"]
             assert!(!stderr.contains("database.migration"), "{stderr}");
         }
     }
-    for attribute in ["$${attr.cpu.arch}", "${attr.cpu.arch", "${unknown.value}"] {
+    for attribute in [
+        "$${attr.cpu.arch}",
+        "${attr.cpu.arch",
+        "${unknown.value}",
+        "${attr.}",
+        "${meta.}",
+        "${device.}",
+        "${attr.cpu.arch}${unknown.value}",
+        "${meta.pool}{extra}",
+        "${attr.${meta.pool}}",
+        "${meta.pool$}",
+    ] {
         let constraints = format!(
             "job_name_scope = \"prod\"\nconstraints = [{{ attribute = \"{attribute}\", operator = \"=\", value = \"amd64\" }}]"
         );
@@ -622,7 +633,13 @@ args = ["/alloc/data/nix"]
     for attribute in [
         "literal",
         "${attr.cpu.arch}",
+        "${attr.cpu.numcores}",
         "${meta.pool}",
+        "${meta.build_pool-name}",
+        "${node.unique.id}",
+        "${node.datacenter}",
+        "${node.unique.name}",
+        "${node.class}",
         "${node.pool}",
         "${device.model}",
     ] {
