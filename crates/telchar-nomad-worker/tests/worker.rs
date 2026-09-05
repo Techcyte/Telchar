@@ -64,6 +64,97 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
 }
 
 #[test]
+fn worker_reports_configuration_failure_without_environment_values() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar-nomad-worker"))
+        .env_clear()
+        .env("TELCHAR_TRANSFER_ENDPOINT", "private-marker://secret")
+        .output()
+        .expect("worker runs");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains("event=worker.phase.started phase=configuration"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=worker.phase.failed phase=configuration"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("error_kind=InvalidInput"), "{stderr}");
+    assert!(!stderr.contains("private-marker"), "{stderr}");
+    assert!(!stderr.contains("phase=manifest"), "{stderr}");
+}
+
+#[test]
+fn worker_reports_manifest_and_store_failure_without_payloads() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let endpoint = format!("ws://{}/callback", listener.local_addr().expect("address"));
+    let mut environment = workload_environment(&endpoint);
+    environment.insert(
+        "TELCHAR_NIX_STORE_URI".to_owned(),
+        "unix:///nonexistent-private-marker/socket".to_owned(),
+    );
+    environment.insert(
+        "NOMAD_TOKEN_telchar_transfer".to_owned(),
+        "private-token-marker".to_owned(),
+    );
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("callback accepted");
+        let mut socket = tungstenite::accept_hdr(stream, select_protocol).expect("socket accepts");
+        let _ = socket.read().expect("authentication reads");
+        let mut sent = manifest();
+        sent.build
+            .environment
+            .push((b"SECRET".to_vec(), b"private-build-marker".to_vec()));
+        let metadata = encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes");
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &Frame::new(FrameKind::InputManifest, metadata, vec![]),
+            ProtocolLimits::new(8 * 1024 * 1024, 0),
+        )
+        .expect("frame writes");
+        socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .expect("manifest sends");
+    });
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar-nomad-worker"))
+        .env_clear()
+        .envs(environment)
+        .output()
+        .expect("worker runs");
+    server.join().expect("server joins");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains("event=worker.phase.completed phase=configuration"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=worker.phase.completed phase=manifest"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=worker.manifest.received input_count=1 output_count=1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=worker.phase.failed phase=resolve-inputs"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("elapsed_ms="), "{stderr}");
+    for secret in [
+        "private-marker",
+        "private-token-marker",
+        "private-build-marker",
+        "/nix/store/",
+    ] {
+        assert!(!stderr.contains(secret), "{stderr}");
+    }
+    assert!(!stderr.contains("phase=build"), "{stderr}");
+}
+
+#[test]
 fn parses_exact_workload_identity_environment() {
     let environment = workload_environment("ws://127.0.0.1:1234/callback");
     let config = WorkerConfig::from_lookup(|name| environment.get(name).cloned())

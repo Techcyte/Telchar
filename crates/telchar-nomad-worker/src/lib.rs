@@ -50,8 +50,10 @@ impl WorkerSession {
         self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        eprintln!("event=worker.store.connecting operation=resolve-inputs");
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        eprintln!("event=worker.store.connected operation=resolve-inputs");
         let mut valid = Vec::new();
         for entry in &self.manifest.paths {
             if store
@@ -101,8 +103,10 @@ impl WorkerSession {
         self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
+        eprintln!("event=worker.store.connecting operation=build");
         let mut store = GatewayStoreConnection::connect_for_build(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
+        eprintln!("event=worker.store.connected operation=build");
         let specification = self.manifest.build.clone();
         let derivation_path = self.manifest.derivation_path.clone();
         self.send_metadata(FrameKind::BuildStarted, &BuildStarted { derivation_path })?;
@@ -128,7 +132,7 @@ impl WorkerSession {
         let socket = &mut self.socket;
         let protocol = &mut self.protocol;
         let mut sequence = 0_u64;
-        store.build_derivation(&request, &mut |message| {
+        let result = store.build_derivation(&request, &mut |message| {
             for chunk in message.chunks(MAXIMUM_AUTHENTICATION_METADATA_BYTES) {
                 let frame = Frame::new(
                     FrameKind::LogChunk,
@@ -150,7 +154,9 @@ impl WorkerSession {
                     .ok_or_else(|| invalid("worker build log sequence overflow"))?;
             }
             Ok(())
-        })
+        });
+        eprintln!("event=worker.build.log_summary chunk_count={sequence}");
+        result
     }
 
     pub fn report_failure(&mut self, error: &io::Error, maximum_bytes: usize) -> io::Result<()> {
@@ -192,7 +198,7 @@ impl WorkerSession {
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        for (_, path) in expected_outputs {
+        for (index, (_, path)) in expected_outputs.into_iter().enumerate() {
             self.ensure_connection_active()?;
             let info = store
                 .query_path_info(&path)
@@ -226,6 +232,10 @@ impl WorkerSession {
                     })
                     .transpose()?,
             };
+            eprintln!(
+                "event=worker.output.exporting index={index} nar_size={}",
+                metadata.nar_size
+            );
             self.send_metadata(FrameKind::OutputMetadata, &metadata)?;
             let mut sink = OutputNarWriter::new(
                 &mut self.socket,
@@ -241,6 +251,7 @@ impl WorkerSession {
             if receipt.path != metadata.path || !receipt.accepted {
                 return Err(invalid("gateway rejected worker output"));
             }
+            eprintln!("event=worker.output.accepted index={index}");
         }
         self.send_metadata(
             FrameKind::BuildResult,
@@ -264,7 +275,7 @@ impl WorkerSession {
         if requested_inputs(&self.manifest, requested.clone())? != *requested {
             return Err(invalid("worker input request order is inconsistent"));
         }
-        for path in &requested.paths {
+        for (index, path) in requested.paths.iter().enumerate() {
             self.ensure_connection_active()?;
             let entry = self
                 .manifest
@@ -289,8 +300,8 @@ impl WorkerSession {
                 content_address: None,
             };
             eprintln!(
-                "telchar-nomad-worker: importing input path={} nar_size={} reference_count={}",
-                entry.path,
+                "event=worker.input.importing index={} nar_size={} reference_count={}",
+                index,
                 entry.nar_size,
                 entry.references.len()
             );
@@ -302,8 +313,8 @@ impl WorkerSession {
             );
             if let Err(error) = store.add_to_store_nar(&info, &mut source, false, true) {
                 eprintln!(
-                    "telchar-nomad-worker: input import reader failed path={} stage={:?}",
-                    entry.path,
+                    "event=worker.input.failed index={} reader_stage={:?}",
+                    index,
                     source.failure_stage()
                 );
                 return Err(io::Error::other(format!(
@@ -312,7 +323,10 @@ impl WorkerSession {
                 )));
             }
             source.finish()?;
-            eprintln!("telchar-nomad-worker: imported input path={}", entry.path);
+            eprintln!(
+                "event=worker.input.imported index={index} nar_size={}",
+                entry.nar_size
+            );
         }
         self.inputs.ready_to_build()
     }
@@ -667,12 +681,22 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     let deadline = std::time::Instant::now()
         .checked_add(config.setup_timeout())
         .ok_or_else(|| invalid("worker setup timeout is invalid"))?;
+    let mut attempt = 0_u64;
     loop {
+        attempt = attempt.saturating_add(1);
         match connect_once(config) {
-            Ok(socket) => return Ok(socket),
+            Ok(socket) => {
+                eprintln!("event=worker.callback.connected attempt={attempt}");
+                return Ok(socket);
+            }
             Err(error) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                let _ = error;
+                if attempt == 1 || attempt.is_multiple_of(10) {
+                    eprintln!(
+                        "event=worker.callback.retry attempt={attempt} error_kind={:?}",
+                        error.kind()
+                    );
+                }
             }
             Err(error) => return Err(error),
         }
@@ -768,8 +792,13 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
     let mut socket = connect(config).map_err(|error| startup_error("connect", error))?;
+    eprintln!("event=worker.manifest.waiting");
     let message =
         read_binary_message(&mut socket).map_err(|error| startup_error("receive", error))?;
+    eprintln!(
+        "event=worker.manifest.received_bytes bytes={}",
+        message.len()
+    );
     let mut input = message.as_slice();
     let frame = read_frame(
         &mut input,
@@ -1030,7 +1059,11 @@ impl io::Read for InputNarReader<'_> {
     }
 }
 
-fn startup_error(stage: &'static str, _error: io::Error) -> io::Error {
+fn startup_error(stage: &'static str, error: io::Error) -> io::Error {
+    eprintln!(
+        "event=worker.startup.failed stage={stage} error_kind={:?}",
+        error.kind()
+    );
     io::Error::other(format!("worker startup failed at {stage}"))
 }
 
