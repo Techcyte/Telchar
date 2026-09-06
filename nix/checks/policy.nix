@@ -124,10 +124,12 @@
     assert_count operation_dispatch/store_transfer.rs 2 "$private_reason"
     assert_count store_promotion/real_store.rs 1 "$private_reason"
     assert_count ipc_auth.rs 1 "$helper_reason"
+    assert_count nomad_input_allocations.rs 1 '#[ignore = "release-mode protocol CPU benchmark; no timing assertion"]'
+    assert_count persistence_leases/batch.rs 1 '#[ignore = "release-mode PostgreSQL batch benchmark; no timing assertion"]'
 
     ignored_count=$(grep -R -h '^#\[ignore' "$tests" | wc -l)
-    if [ "$ignored_count" -ne 8 ]; then
-      echo "ignored-test policy changed: expected 8, found $ignored_count" >&2
+    if [ "$ignored_count" -ne 10 ]; then
+      echo "ignored-test policy changed: expected 10, found $ignored_count" >&2
       exit 1
     fi
 
