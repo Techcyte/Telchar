@@ -511,7 +511,10 @@ fn stage_nar_to_file(
     source: impl Read,
     file: &mut std::fs::File,
 ) -> io::Result<crate::store::nar::NarFingerprint> {
-    stage_nar(source, file)
+    let mut staged = io::BufWriter::new(file);
+    let fingerprint = stage_nar(source, &mut staged)?;
+    staged.flush()?;
+    Ok(fingerprint)
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
