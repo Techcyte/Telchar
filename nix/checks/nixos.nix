@@ -31,6 +31,7 @@ import ./nixos/oci.nix {
     ;
 }
 // {
+  nixos-export-connections = import ./nixos/export-connections.nix checkArgs;
   nixos-import-connections = import ./nixos/import-connections.nix checkArgs;
   nixos-query-trace = import ./nixos/import-connections.nix (checkArgs // { traceQueries = true; });
 }
