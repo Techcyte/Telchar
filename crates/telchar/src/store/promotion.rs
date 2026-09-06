@@ -446,7 +446,7 @@ fn promote_staged(
     backend: &mut impl StorePromotionBackend,
 ) -> io::Result<RegisteredPathInfo> {
     let mut staged = std::fs::File::create(nar_path)?;
-    let fingerprint = stage_nar(source, &mut staged)?;
+    let fingerprint = stage_nar_to_file(source, &mut staged)?;
     if fingerprint.sha256 != declared.nar_hash {
         let error = io::Error::new(io::ErrorKind::InvalidData, "NAR hash mismatch");
         let _ = backend.is_valid_path(&declared.path);
@@ -505,6 +505,13 @@ fn promote_staged(
         ));
     }
     Ok(registered)
+}
+
+fn stage_nar_to_file(
+    source: impl Read,
+    file: &mut std::fs::File,
+) -> io::Result<crate::store::nar::NarFingerprint> {
+    stage_nar(source, file)
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {

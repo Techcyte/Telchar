@@ -39,3 +39,68 @@ fn check_operation() {
     daemon.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
 }
+
+fn regular_nar() -> Vec<u8> {
+    let mut nar = Vec::new();
+    for value in [
+        b"nix-archive-1".as_slice(),
+        b"(",
+        b"type",
+        b"regular",
+        b"contents",
+        b"staged content",
+        b")",
+    ] {
+        nar.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        nar.extend_from_slice(value);
+        nar.resize(nar.len().next_multiple_of(8), 0);
+    }
+    nar
+}
+
+#[cfg(target_os = "linux")]
+fn write_syscalls() -> u64 {
+    std::fs::read_to_string("/proc/thread-self/io")
+        .expect("thread I/O counters readable")
+        .lines()
+        .find_map(|line| line.strip_prefix("syscw: "))
+        .expect("write syscall counter present")
+        .parse()
+        .expect("write syscall counter numeric")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn staging_coalesces_small_nar_writes_and_publishes_complete_bytes() {
+    use sha2::{Digest, Sha256};
+    let nar = regular_nar();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("archive");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let before = write_syscalls();
+    let fingerprint = super::stage_nar_to_file(nar.as_slice(), &mut file).unwrap();
+    let writes = write_syscalls() - before;
+    assert_eq!(std::fs::read(path).unwrap(), nar);
+    assert_eq!(fingerprint.size, nar.len() as u64);
+    assert_eq!(
+        fingerprint.sha256.as_slice(),
+        Sha256::digest(&nar).as_slice()
+    );
+    assert_eq!(
+        writes, 1,
+        "small NAR must reach file in one write, observed {writes}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn staging_reports_pending_write_failure() {
+    let nar = regular_nar();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let error = super::stage_nar_to_file(nar.as_slice(), &mut file)
+        .expect_err("failed staging write cannot report success");
+    assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
+}
