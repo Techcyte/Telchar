@@ -103,6 +103,7 @@ pub(super) fn serve_accepted_connection(
     let session_id = connection.envelope().session_id.clone();
     let session = tracing::info_span!("ipc.daemon.session", session_id = %session_id);
     let _entered = session.enter();
+    tracing::trace!(event = "ipc.daemon.session_received", session_id = %session_id);
     let requester_reference =
         telchar::persistence::requester_reference(&connection.envelope().requester);
     if let Err(error) = telchar::persistence::open_protocol_session(

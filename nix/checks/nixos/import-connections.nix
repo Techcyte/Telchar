@@ -113,6 +113,8 @@ pkgs.testers.nixosTest {
                 print("FRONTEND_TIMELINE " + workload + "\n" + frontend_trace)
                 assert 'event="ipc.frontend.envelope_sent"' in frontend_trace, frontend_trace
                 assert 'event="ipc.relay.first_bytes"' in frontend_trace, frontend_trace
+                session = next(line.split("session_id=")[1].strip() for line in frontend_trace.splitlines() if 'event="ipc.frontend.envelope_sent"' in line)
+                assert 'event="ipc.daemon.session_received" session_id=' + session in traces, traces
                 assert 'event="store.query.wait"' in traces, traces
                 assert 'event="worker.query_valid_paths.flushed"' in traces, traces
             gateway.succeed("nix-store --verify-path " + " ".join(paths))
