@@ -45,15 +45,10 @@
     {
       nixosModules = {
         telchar = import ./nix/nixos-module.nix;
-        standalone = import ./nix/nixos-standalone.nix;
-        vaultAws = import ./nix/nixos-vault-aws.nix;
         default = self.nixosModules.telchar;
       };
 
-      lib.mkStandaloneSystem = import ./nix/mk-standalone-system.nix {
-        nixosSystem = nixpkgs.lib.nixosSystem;
-        standaloneModule = self.nixosModules.standalone;
-      };
+      lib.sshForcedCommand = import ./nix/ssh-forced-command.nix;
 
       packages.${system} = import ./nix/packages.nix {
         inherit pkgs craneLib source;
@@ -71,15 +66,12 @@
           telcharImage = self.packages.${system}.telchar-oci;
           nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           telcharModule = self.nixosModules.telchar;
-          standaloneModule = self.nixosModules.standalone;
-          mkStandaloneSystem = self.lib.mkStandaloneSystem;
+          exampleModule = {
+            imports = [ self.nixosModules.telchar ./examples/nixos/host.nix ];
+            _module.args.telcharSshCommand = self.lib.sshForcedCommand;
+          };
         }
         // {
-          cache-credentials = pkgs.runCommand "telchar-cache-credentials" { } ''
-            export PYTHONDONTWRITEBYTECODE=1
-            ${pkgs.python3}/bin/python -m unittest discover -s ${./nix}/tests -p test_cache_credentials.py
-            touch $out
-          '';
           oci-images = import ./nix/tests/oci-images.nix {
             inherit pkgs;
             telchar = self.packages.${system}.telchar;

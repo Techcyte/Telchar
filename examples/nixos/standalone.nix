@@ -5,7 +5,7 @@
   ...
 }:
 {
-  imports = [ ./nixos-module.nix ];
+  imports = [ ./host.nix ];
 
   services.telchar = {
     enable = true;
