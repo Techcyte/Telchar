@@ -259,7 +259,10 @@ fn query_valid_paths_sends_batch_and_substitution_flag() {
         });
         let mut client = connected(response);
         let requested = vec![PATH.to_vec(), REFERENCE_A.to_vec()];
-        assert_eq!(client.query_valid_paths(&requested, substitute).unwrap(), vec![REFERENCE_A.to_vec()]);
+        assert_eq!(
+            client.query_valid_paths(&requested, substitute).unwrap(),
+            vec![REFERENCE_A.to_vec()]
+        );
         let mut exact = expected_handshake();
         integer(&mut exact, 31);
         integer(&mut exact, 2);
@@ -285,19 +288,40 @@ fn query_valid_paths_rejects_invalid_requests_before_writing() {
 
 #[test]
 fn query_valid_paths_rejects_hostile_response_sets() {
-    for paths in [vec![PATH.to_vec(), PATH.to_vec()], vec![REFERENCE_B.to_vec()], vec![b"relative".to_vec()]] {
+    for paths in [
+        vec![PATH.to_vec(), PATH.to_vec()],
+        vec![REFERENCE_B.to_vec()],
+        vec![b"relative".to_vec()],
+    ] {
         let response = response_with(|out| {
             integer(out, paths.len() as u64);
-            for path in paths { byte_string(out, &path); }
+            for path in paths {
+                byte_string(out, &path);
+            }
         });
-        assert!(connected(response).query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false).is_err());
+        assert!(
+            connected(response)
+                .query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false)
+                .is_err()
+        );
     }
     for count in [3, u64::MAX] {
         let response = response_with(|out| integer(out, count));
-        assert!(connected(response).query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false).is_err());
+        assert!(
+            connected(response)
+                .query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false)
+                .is_err()
+        );
     }
-    let response = response_with(|out| { integer(out, 1); integer(out, u64::MAX); });
-    assert!(connected(response).query_valid_paths(&[PATH.to_vec()], false).is_err());
+    let response = response_with(|out| {
+        integer(out, 1);
+        integer(out, u64::MAX);
+    });
+    assert!(
+        connected(response)
+            .query_valid_paths(&[PATH.to_vec()], false)
+            .is_err()
+    );
 }
 
 #[test]
@@ -314,7 +338,38 @@ fn query_valid_paths_empty_and_daemon_error_preserve_next_operation() {
     integer(&mut response, 1);
     let mut client = connected(response);
     assert!(client.query_valid_paths(&[], false).unwrap().is_empty());
-    let error = client.query_valid_paths(&[PATH.to_vec()], true).unwrap_err();
+    let error = client
+        .query_valid_paths(&[PATH.to_vec()], true)
+        .unwrap_err();
     assert_eq!(error.to_string(), "Nix daemon operation failed");
     assert!(client.is_valid_path(PATH).unwrap());
+}
+
+#[test]
+fn batch_validity_uses_flag_on_every_supported_version() {
+    use nix_worker_protocol::{MINIMUM_WORKER_VERSION, WorkerVersion};
+    for version in [MINIMUM_WORKER_VERSION, LATEST_WORKER_VERSION] {
+        let mut input = Vec::new();
+        integer(&mut input, SERVER_WORKER_MAGIC);
+        integer(&mut input, version.to_wire());
+        if version >= WorkerVersion::new(1, 38) { integer(&mut input, 0); }
+        byte_string(&mut input, b"2.34.8");
+        integer(&mut input, 2);
+        integer(&mut input, STDERR_LAST);
+        integer(&mut input, STDERR_LAST);
+        integer(&mut input, 0);
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+        assert!(client.query_valid_paths(&[], true).unwrap().is_empty());
+        assert_eq!(&client.into_inner().output[client_request_offset(version)..], &[31_u64, 0, 1].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
+    }
+    for version in [WorkerVersion::new(1, 26), WorkerVersion::new(1, 27)] {
+        let mut input = Vec::new();
+        integer(&mut input, SERVER_WORKER_MAGIC);
+        integer(&mut input, version.to_wire());
+        assert!(WorkerClient::connect(ScriptedStream::new(input)).is_err());
+    }
+}
+
+fn client_request_offset(version: nix_worker_protocol::WorkerVersion) -> usize {
+    if version >= nix_worker_protocol::WorkerVersion::new(1, 38) { 40 } else { 32 }
 }

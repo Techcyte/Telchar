@@ -306,6 +306,56 @@ impl<S: Read + Write> WorkerClient<S> {
         read_strict_client_boolean(&mut self.stream)
     }
 
+    pub fn query_valid_paths(
+        &mut self,
+        paths: &[Vec<u8>],
+        substitute: bool,
+    ) -> io::Result<Vec<Vec<u8>>> {
+        if paths.len() > MAXIMUM_QUERY_VALID_PATHS {
+            return Err(protocol_client_error());
+        }
+        let mut requested = std::collections::BTreeSet::new();
+        for path in paths {
+            validate_store_path_in_directory(path, &self.store_directory)?;
+            if !requested.insert(path.as_slice()) {
+                return Err(protocol_client_error());
+            }
+        }
+        write_worker_integer_to(&mut self.stream, WorkerOperation::QueryValidPaths.code())?;
+        write_byte_string_collection(&mut self.stream, paths)?;
+        write_worker_integer_to(&mut self.stream, u64::from(substitute))?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
+        let count = usize::try_from(read_worker_integer_from(&mut self.stream)?)
+            .map_err(|_| protocol_client_error())?;
+        if count > paths.len() {
+            return Err(protocol_client_error());
+        }
+        let budget = SessionAllocationBudget::new(ProtocolSessionLimits::DEFAULT);
+        let _collection_charge = budget
+            .charge(
+                count
+                    .checked_mul(std::mem::size_of::<Vec<u8>>())
+                    .ok_or_else(protocol_client_error)?,
+            )
+            .map_err(|_| protocol_client_error())?;
+        let mut valid = Vec::with_capacity(count);
+        let mut charges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (path, charge) = read_worker_byte_string_with_charge_from(
+                &mut self.stream,
+                MAXIMUM_WORKER_STORE_PATH_BYTES,
+                &budget,
+            )?;
+            if !requested.remove(path.as_slice()) {
+                return Err(protocol_client_error());
+            }
+            valid.push(path);
+            charges.push(charge);
+        }
+        Ok(valid)
+    }
+
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.write_store_path_operation(WorkerOperation::QueryPathInfo, path)?;
         read_operation_frames(&mut self.stream, self.profile.version)?;
