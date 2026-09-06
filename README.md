@@ -69,17 +69,66 @@ Fixture-only diagnostics remain opt-in under `legacyPackages.x86_64-linux.fixtur
 nix build --no-link .#legacyPackages.x86_64-linux.fixtureChecks.nixos-artifacts
 ```
 
-A stock Nix client can then use the gateway as a remote builder:
+Before production deployment, read the [operator guide](docs/operations.md). Nomad deployments also need the [Nomad guide](docs/nomad.md). A heavily commented, cluster-independent jobspec is available in [`examples/nomad`](examples/nomad/README.md).
+
+## Using a running gateway
+
+### Configure the requesting client's SSH access
+
+Obtain the gateway's SSH hostname, port, login user, client credentials, and trusted host key or host CA from its operator. The examples below use `build.example.com:2222` and login user `telchar`; replace them with your deployment's values. Telchar ingress is a forced-command Nix endpoint, not an interactive shell.
+
+For multi-user Nix, remote-builder SSH connections normally originate from the **requesting machine's root-owned Nix daemon**, not your interactive user. Install credentials and SSH configuration for that account. A successful connection as your user does not prove the daemon can connect. Single-user installations use the account running Nix instead.
+
+For a root-owned daemon, create a private directory for SSH control sockets:
 
 ```bash
-nix build \
-  --max-jobs 0 \
-  --builders 'ssh-ng://telchar@build-host x86_64-linux'
+sudo install -d -m 0700 /root/.ssh/control
 ```
 
-The gateway must have its own Nix store. Do not point a local client and Telchar at the same host store; recursive store locking can deadlock the build.
+Add a host-specific entry to `/root/.ssh/config` (preserving other host entries):
 
-Before production deployment, read the [operator guide](docs/operations.md). Nomad deployments also need the [Nomad guide](docs/nomad.md). A heavily commented, cluster-independent jobspec is available in [`examples/nomad`](examples/nomad/README.md).
+```sshconfig
+Host build.example.com
+    User telchar
+    Port 2222
+    IdentityFile /root/.ssh/telchar-client
+    CertificateFile /root/.ssh/telchar-client-cert.pub
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /root/.ssh/telchar-known-hosts
+    ControlMaster auto
+    ControlPath /root/.ssh/control/%C
+    ControlPersist 60
+```
+
+Use the credential paths supplied by your operator. Omit `CertificateFile` only when the deployment accepts ordinary authorized keys rather than client certificates. Protect the private key and SSH configuration from other users; populate the known-hosts file with the operator-verified host key or host CA. Do not disable host verification to make a connection succeed.
+
+Connection sharing avoids repeating SSH connection establishment and authentication for every small derivation. `ControlMaster` shares an SSH transport, not a Nix build result or daemon session. `ControlPersist 60` keeps the transport available for 60 seconds **after it becomes idle**; it is not a maximum connection lifetime. An established transport does not reauthenticate each session after certificate rotation or expiry. Operators requiring fresh authentication must arrange to retire shared connections, coordinating with active builds. Use separate control sockets for distinct credential identities, even when they share a host/login. See the [OpenSSH connection-sharing documentation](https://man.openbsd.org/ssh_config#ControlMaster).
+
+Check store access using the same account and configuration as the daemon:
+
+```bash
+sudo nix --extra-experimental-features nix-command store info \
+  --store ssh-ng://telchar@build.example.com:2222
+```
+
+### Submit a build
+
+From a flake project with a default package:
+
+```bash
+nix build .#default \
+  --max-jobs 0 \
+  --builders 'ssh-ng://telchar@build.example.com:2222 x86_64-linux /root/.ssh/telchar-client 5 1' \
+  --option builders-use-substitutes true
+```
+
+Replace `.#default` with your package attribute and `x86_64-linux` with a system supported by the gateway. The builder entry's `5` allows five simultaneous remote derivations; the following `1` is the builder's scheduling speed factor. This does not allocate five CPU cores or limit compiler parallelism inside a derivation. Choose a slot count appropriate for deployment capacity and Telchar's admission/backend limits. `--max-jobs 0` prevents local builds but still allows the client to fetch cached outputs. For persistent builder configuration, see the [Nix remote-build guide](https://nix.dev/manual/nix/stable/advanced-topics/distributed-builds).
+
+The requesting Nix client walks the dependency graph and copies returned outputs into its own store. A fresh client can therefore issue many small requests even when gateway results are cached. SSH connection reuse and sufficient remote slots matter for this workload. For deliberately constrained single-slot tests, Nix versions exposing `build-poll-interval` can reduce postponed-build retry waits with `--option build-poll-interval 1`; this is a client scheduler setting, not a Telchar server setting.
+
+Keep the gateway store separate from the requesting client's store. **Execution workers must not delegate their Nix builds back to the same Telchar gateway**: a worker can otherwise join its own in-progress build and wait on itself. In particular, inspect the host daemon's remote-builder configuration when a Nomad worker mounts its Nix daemon socket.
 
 ## Development
 
