@@ -249,3 +249,72 @@ fn present_info_with(write_prefix: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
         write_prefix(out);
     })
 }
+
+#[test]
+fn query_valid_paths_sends_batch_and_substitution_flag() {
+    for substitute in [false, true] {
+        let response = response_with(|out| {
+            integer(out, 1);
+            byte_string(out, REFERENCE_A);
+        });
+        let mut client = connected(response);
+        let requested = vec![PATH.to_vec(), REFERENCE_A.to_vec()];
+        assert_eq!(client.query_valid_paths(&requested, substitute).unwrap(), vec![REFERENCE_A.to_vec()]);
+        let mut exact = expected_handshake();
+        integer(&mut exact, 31);
+        integer(&mut exact, 2);
+        byte_string(&mut exact, PATH);
+        byte_string(&mut exact, REFERENCE_A);
+        integer(&mut exact, u64::from(substitute));
+        assert_eq!(client.into_inner().output, exact);
+    }
+}
+
+#[test]
+fn query_valid_paths_rejects_invalid_requests_before_writing() {
+    for paths in [
+        vec![b"relative".to_vec()],
+        vec![PATH.to_vec(), PATH.to_vec()],
+        vec![PATH.to_vec(); nix_worker_protocol::MAXIMUM_QUERY_VALID_PATHS + 1],
+    ] {
+        let mut client = connected(vec![]);
+        assert!(client.query_valid_paths(&paths, false).is_err());
+        assert_eq!(client.into_inner().output, expected_handshake());
+    }
+}
+
+#[test]
+fn query_valid_paths_rejects_hostile_response_sets() {
+    for paths in [vec![PATH.to_vec(), PATH.to_vec()], vec![REFERENCE_B.to_vec()], vec![b"relative".to_vec()]] {
+        let response = response_with(|out| {
+            integer(out, paths.len() as u64);
+            for path in paths { byte_string(out, &path); }
+        });
+        assert!(connected(response).query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false).is_err());
+    }
+    for count in [3, u64::MAX] {
+        let response = response_with(|out| integer(out, count));
+        assert!(connected(response).query_valid_paths(&[PATH.to_vec(), REFERENCE_A.to_vec()], false).is_err());
+    }
+    let response = response_with(|out| { integer(out, 1); integer(out, u64::MAX); });
+    assert!(connected(response).query_valid_paths(&[PATH.to_vec()], false).is_err());
+}
+
+#[test]
+fn query_valid_paths_empty_and_daemon_error_preserve_next_operation() {
+    let mut response = response_with(|out| integer(out, 0));
+    integer(&mut response, STDERR_ERROR);
+    byte_string(&mut response, b"sensitive-type");
+    integer(&mut response, 1);
+    byte_string(&mut response, b"sensitive-name");
+    byte_string(&mut response, b"sensitive-message");
+    integer(&mut response, 0);
+    integer(&mut response, 0);
+    integer(&mut response, STDERR_LAST);
+    integer(&mut response, 1);
+    let mut client = connected(response);
+    assert!(client.query_valid_paths(&[], false).unwrap().is_empty());
+    let error = client.query_valid_paths(&[PATH.to_vec()], true).unwrap_err();
+    assert_eq!(error.to_string(), "Nix daemon operation failed");
+    assert!(client.is_valid_path(PATH).unwrap());
+}
