@@ -228,6 +228,30 @@ and environment dumps are not added by worker instrumentation. Existing client
 build-log delivery is independent of the tracing filter and remains live-only.
 These variables must be set in the worker process environment, not only on the gateway.
 
+### Server build lifecycle
+
+Server INFO records shared-build leader/follower selection, durable result reuse,
+queue entry and admission. `server.phase.started`, `server.phase.completed`, and
+`server.phase.failed` describe `queue`, `substitute`, `execute`, `follow`,
+`await-terminal`, and `validate-outputs` operations. Durations use monotonic time;
+failures include error kind rather than arbitrary error text. Phase success means
+the operation returned normally: substitution can still miss, and a follower wait
+can return a failed shared result. Existing build completion/failure events report
+the terminal outcome.
+
+Long phases emit `server.phase.running` every ten seconds without catch-up bursts.
+These indicate waiting or ongoing work, not measured build progress. Reporters stop
+before the phase completion/failure event. For Nomad, `execute` includes placement,
+worker execution and callback output collection; it does not assert the builder
+is already running.
+
+`RUST_LOG=info,telchar=debug` includes `server.build.paths` and
+`server.build.output`. Nomad output is copied once at callback receipt rather than
+once per attached client; local/static-SSH output is copied at the execution callback.
+DEBUG text can contain arbitrary builder output, including secrets printed by builds.
+Client log forwarding is independent of these diagnostic copies. No NAR payloads,
+capability tokens, argv, or environment dumps are added by this instrumentation.
+
 ### Upload latency traces
 
 Operation-level TRACE spans and events cover frontend connection/envelope/relay boundaries,
