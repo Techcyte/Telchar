@@ -40,10 +40,16 @@ harness.mkNomadGatewayTest {
             stock_client.succeed("systemctl is-active poll-" + mode)
             stock_client.fail("journalctl -u poll-" + mode + " --no-pager -o cat | grep -qx POLL_FINISHED")
         if mode == "cancel":
+            job_id = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc " + shlex.quote("select backend_execution_id from shared_builds where derivation_path = '" + drv + "'")).strip()
+            allocations = json.loads(nomad_server.succeed("nomad job allocs -namespace telchar -json " + shlex.quote(job_id)))
+            assert len(allocations) == 1 and allocations[0]["ClientStatus"] == "running", allocations
+            allocation_id = allocations[0]["ID"]
             stock_client.succeed("systemctl stop poll-cancel")
             gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc " + shlex.quote("select state from shared_builds where derivation_path = '" + drv + "'") + " | grep -qx failed", timeout=30)
             cancel_journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
-            assert 'operation="stop"' in cancel_journal, cancel_journal
+            assert any('event="nomad.api.request.completed"' in line and 'operation="stop"' in line and 'result="succeeded"' in line for line in cancel_journal.splitlines()), cancel_journal
+            nomad_server.wait_until_succeeds("nomad alloc status -namespace telchar -json " + shlex.quote(allocation_id) + " | ${pkgs.jq}/bin/jq -e '.DesiredStatus == \"stop\" and (.ClientStatus == \"complete\" or .ClientStatus == \"failed\") and (.TaskStates | length > 0) and (.TaskStates | all(.State == \"dead\"))'", timeout=30)
+            print("NOMAD_POLL_ALLOCATION " + nomad_server.succeed("nomad alloc status -namespace telchar -json " + shlex.quote(allocation_id) + " | ${pkgs.jq}/bin/jq -c '{ID, DesiredStatus, ClientStatus, TaskStates: (.TaskStates | map_values(.State))}'").strip())
             gateway.succeed("test ! -e " + shlex.quote(output))
             print("NOMAD_POLL_CANCELLATION verified real allocation stop after requester disconnect")
             continue
@@ -61,7 +67,7 @@ harness.mkNomadGatewayTest {
         events = [json.loads(line) for line in journal.splitlines() if line.startswith("{")]
         polls = [e for e in events if 'event="nomad.api.request.started"' in e.get("MESSAGE", "") and 'operation="status"' in e["MESSAGE"]]
         completed_polls = [e for e in events if 'event="nomad.api.request.completed"' in e.get("MESSAGE", "") and 'operation="status"' in e["MESSAGE"]]
-        assert len(completed_polls) == len(polls), events
+        assert len(completed_polls) == len(polls) and len(completed_polls) > 0, events
         results.append(dict(mode=mode, log_interarrival_us=spacing_us, finish_to_result_us=completion - finish, status_polls=len(polls), status_http_gets=2 * len(completed_polls), poll_timestamps_us=[int(e["__MONOTONIC_TIMESTAMP"]) for e in polls]))
         print("NOMAD_POLL_BENCHMARK " + json.dumps(results[-1]))
         gateway.succeed("test $(cat " + shlex.quote(output) + ") = " + nonce + "; nix-store --verify-path " + shlex.quote(output))
