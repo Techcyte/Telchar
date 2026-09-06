@@ -9,16 +9,29 @@ use crate::service::identity::Requester;
 
 pub const MAX_FRONTEND_BUFFER_BYTES: usize = 16 * 1024;
 
+#[tracing::instrument(level = "trace", skip_all)]
 pub fn copy_bounded(mut source: impl Read, mut destination: impl Write) -> io::Result<RelayStats> {
+    let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
     let mut buffer = [0; MAX_FRONTEND_BUFFER_BYTES];
     let mut maximum_buffered_bytes = 0;
     loop {
         let received = source.read(&mut buffer)?;
         if received == 0 {
             destination.flush()?;
+            tracing::trace!(
+                event = "ipc.relay.finished",
+                elapsed_us = started.map(|start| start.elapsed().as_micros() as u64)
+            );
             return Ok(RelayStats {
                 maximum_buffered_bytes,
             });
+        }
+        if maximum_buffered_bytes == 0 {
+            tracing::trace!(
+                event = "ipc.relay.first_bytes",
+                elapsed_us = started.map(|start| start.elapsed().as_micros() as u64),
+                bytes = received
+            );
         }
         maximum_buffered_bytes = maximum_buffered_bytes.max(received);
         destination.write_all(&buffer[..received])?;

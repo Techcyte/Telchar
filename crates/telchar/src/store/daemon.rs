@@ -76,6 +76,7 @@ impl GatewayStoreConnection {
     }
 
     #[doc(hidden)]
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn connect_with_timeout(
         endpoint: &GatewayStoreEndpoint,
         timeout: Duration,
@@ -83,7 +84,14 @@ impl GatewayStoreConnection {
         if timeout.is_zero() {
             return Err(connection_error());
         }
-        let stream = UnixStream::connect(&endpoint.socket_path).map_err(|_| connection_error())?;
+        let connecting = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+        let stream = UnixStream::connect(&endpoint.socket_path);
+        tracing::trace!(
+            event = "store.daemon.connected",
+            elapsed_us = connecting.map(|start| start.elapsed().as_micros() as u64),
+            success = stream.is_ok()
+        );
+        let stream = stream.map_err(|_| connection_error())?;
         stream
             .set_read_timeout(Some(timeout))
             .map_err(|_| connection_error())?;
@@ -91,7 +99,14 @@ impl GatewayStoreConnection {
             .set_write_timeout(Some(timeout))
             .map_err(|_| connection_error())?;
         let shutdown_stream = stream.try_clone().map_err(|_| connection_error())?;
-        match WorkerClient::connect(stream) {
+        let handshaking = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+        let client = WorkerClient::connect(stream);
+        tracing::trace!(
+            event = "store.daemon.handshake",
+            elapsed_us = handshaking.map(|start| start.elapsed().as_micros() as u64),
+            success = client.is_ok()
+        );
+        match client {
             Ok(client) => Ok(Self {
                 client,
                 shutdown_stream,

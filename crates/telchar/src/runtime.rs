@@ -231,6 +231,7 @@ pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Syn
     result.map_err(Into::into)
 }
 
+#[tracing::instrument(level = "trace", skip_all)]
 fn run_frontend() -> io::Result<()> {
     let config = telchar::service::config::ServiceConfig::load()?;
     let socket = config.require_ipc_socket()?;
@@ -267,17 +268,30 @@ fn run_frontend() -> io::Result<()> {
             requester.quota_subject = subject.clone();
         }
     }
-    let mut daemon = UnixStream::connect(socket)?;
+    let connecting = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+    let daemon = UnixStream::connect(socket);
+    tracing::trace!(
+        event = "ipc.frontend.connected",
+        elapsed_us = connecting.map(|start| start.elapsed().as_micros() as u64),
+        success = daemon.is_ok()
+    );
+    let mut daemon = daemon?;
     let envelope = IpcEnvelope {
         version: IPC_VERSION,
         requester: RequesterMetadata::try_from(&requester)?,
         session_id: session_id(),
         error: None,
     };
+    let _session =
+        tracing::trace_span!("ipc.frontend.session", session_id = %envelope.session_id).entered();
     IpcListener::send_envelope(&mut daemon, &envelope)?;
+    tracing::trace!(event = "ipc.frontend.envelope_sent");
 
     let mut request = daemon.try_clone()?;
+    let parent = tracing::Span::current();
     std::thread::spawn(move || {
+        let _parent = parent.enter();
+        let _relay = tracing::trace_span!("ipc.frontend.relay", direction = "request").entered();
         let result = telchar::service::ipc::copy_bounded(io::stdin().lock(), &mut request);
         let _ = request.shutdown(std::net::Shutdown::Write);
         if let Err(error) = result {
@@ -288,6 +302,7 @@ fn run_frontend() -> io::Result<()> {
             );
         }
     });
+    let _relay = tracing::trace_span!("ipc.frontend.relay", direction = "response").entered();
     telchar::service::ipc::copy_bounded(daemon, io::stdout().lock())?;
     Ok(())
 }

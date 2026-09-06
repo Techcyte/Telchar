@@ -66,8 +66,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     let mut cancellation_input = input.try_clone()?;
     let input = SessionInput::new(input, limits.incomplete_message_idle_timeout);
     let mut reader = WorkerReader::new(input, limits);
+    let handshake = tracing::trace_span!("worker.handshake").entered();
     let negotiated = reader.perform_server_handshake(&mut output, &[])?;
     reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")?;
+    drop(handshake);
 
     macro_rules! execute_admitted_build {
         ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $write_success:expr $(,)?) => {{
@@ -1124,7 +1126,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     }
 
     loop {
-        match reader.read_operation() {
+        let receiving = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+        let operation = reader.read_operation();
+        tracing::trace!(event = "worker.operation.received", operation = ?operation.as_ref().ok(), elapsed_us = receiving.map(|start| start.elapsed().as_micros() as u64), success = operation.is_ok());
+        let _operation =
+            tracing::trace_span!("worker.operation", operation = ?operation.as_ref().ok())
+                .entered();
+        match operation {
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                 tracing::error!(
@@ -1593,6 +1601,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 );
             }
             Ok(WorkerOperation::QueryValidPaths) => {
+                let decoding =
+                    tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
                 let request = match reader.complete_query_valid_paths(negotiated.version) {
                     Ok(request) => request,
                     Err(error) => {
@@ -1610,6 +1620,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 let requested_count = request.paths().len();
+                tracing::trace!(
+                    event = "worker.query_valid_paths.decoded",
+                    elapsed_us = decoding.map(|start| start.elapsed().as_micros() as u64),
+                    requested_count
+                );
+                let querying =
+                    tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
                 let valid_paths = match store_query.query_valid_paths(request.paths()) {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -1625,9 +1642,24 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                tracing::trace!(
+                    event = "worker.query_valid_paths.queried",
+                    elapsed_us = querying.map(|start| start.elapsed().as_micros() as u64),
+                    valid_count = valid_paths.len()
+                );
+                let responding =
+                    tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
                 write_query_valid_paths_response(&mut output, &valid_paths)?;
+                tracing::trace!(
+                    event = "worker.query_valid_paths.written",
+                    elapsed_us = responding.map(|start| start.elapsed().as_micros() as u64)
+                );
                 output.flush()?;
+                tracing::trace!(
+                    event = "worker.query_valid_paths.flushed",
+                    elapsed_us = responding.map(|start| start.elapsed().as_micros() as u64)
+                );
                 tracing::info!(
                     event = "worker.query_valid_paths.completed",
                     requested_count,

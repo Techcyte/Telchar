@@ -45,17 +45,38 @@ fn real_query_trace_reports_phases_without_paths_or_environment() {
         .envs(fixture.environment())
         .output()
         .unwrap();
-    assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
-    let path = String::from_utf8(added.stdout).unwrap().trim().as_bytes().to_vec();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let path = String::from_utf8(added.stdout)
+        .unwrap()
+        .trim()
+        .as_bytes()
+        .to_vec();
     let mut query = GatewayStoreQuery::with_endpoint_and_environment(
         "nix",
         Some(GatewayStoreEndpoint::parse(&daemon.store_url()).unwrap()),
-        fixture.environment().into_iter().map(|(key, value)| (key.to_owned(), value)),
+        fixture
+            .environment()
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value)),
     );
     let trace = capture(tracing::Level::TRACE, || {
-        assert_eq!(query.query_valid_paths(std::slice::from_ref(&path)).unwrap(), vec![path.clone()]);
+        assert_eq!(
+            query
+                .query_valid_paths(std::slice::from_ref(&path))
+                .unwrap(),
+            vec![path.clone()]
+        );
     });
-    for phase in ["store.query.spawn", "store.query.wait", "store.query.drain", "store.query.parse"] {
+    for phase in [
+        "store.query.spawn",
+        "store.query.wait",
+        "store.query.drain",
+        "store.query.parse",
+    ] {
         assert!(trace.contains(phase), "missing {phase}: {trace}");
     }
     assert!(trace.contains("elapsed_us="), "{trace}");
@@ -77,7 +98,13 @@ fn spawn_failure_trace_is_bounded_and_filtered() {
         GatewayStoreEndpoint::parse("unix:///nonexistent/sensitive-socket-marker").unwrap(),
     );
     let trace = capture(tracing::Level::TRACE, || {
-        assert!(query.query_valid_paths(&[b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sensitive-path-marker".to_vec()]).is_err());
+        assert!(
+            query
+                .query_valid_paths(&[
+                    b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sensitive-path-marker".to_vec()
+                ])
+                .is_err()
+        );
     });
     assert!(trace.contains("store.query.spawn"), "{trace}");
     assert!(trace.contains("success=false"), "{trace}");

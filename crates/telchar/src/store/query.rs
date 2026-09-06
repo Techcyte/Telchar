@@ -65,6 +65,7 @@ impl GatewayStoreQuery {
 }
 
 impl QueryValidPathsStore for GatewayStoreQuery {
+    #[tracing::instrument(level = "trace", skip_all, fields(path_count = paths.len()))]
     fn query_valid_paths(&mut self, paths: &[Vec<u8>]) -> io::Result<Vec<Vec<u8>>> {
         if paths.is_empty() {
             return Ok(Vec::new());
@@ -115,6 +116,7 @@ impl QueryValidPathsStore for GatewayStoreQuery {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
+        let parsing = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let entries: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(&output.stdout).map_err(|_| invalid_response())?;
         if entries.len() > MAXIMUM_RESPONSE_ENTRIES {
@@ -133,6 +135,11 @@ impl QueryValidPathsStore for GatewayStoreQuery {
                 _ => return Err(invalid_response()),
             }
         }
+        tracing::trace!(
+            event = "store.query.parse",
+            elapsed_us = parsing.map(|start| start.elapsed().as_micros() as u64),
+            valid_count = valid.len()
+        );
         Ok(valid.into_iter().map(String::into_bytes).collect())
     }
 
@@ -164,7 +171,14 @@ struct BoundedOutput {
 }
 
 fn run_bounded(mut command: Command) -> io::Result<BoundedOutput> {
-    let mut child = command.spawn()?;
+    let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+    let child = command.spawn();
+    tracing::trace!(
+        event = "store.query.spawn",
+        elapsed_us = started.map(|start| start.elapsed().as_micros() as u64),
+        success = child.is_ok()
+    );
+    let mut child = child?;
     let stdout = child
         .stdout
         .take()
@@ -175,13 +189,28 @@ fn run_bounded(mut command: Command) -> io::Result<BoundedOutput> {
         .ok_or_else(|| io::Error::other("stderr unavailable"))?;
     let stdout_reader = thread::spawn(|| drain(stdout));
     let stderr_reader = thread::spawn(|| drain(stderr));
-    let status = child.wait()?;
+    let waiting = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+    let status = child.wait();
+    tracing::trace!(
+        event = "store.query.wait",
+        elapsed_us = waiting.map(|start| start.elapsed().as_micros() as u64),
+        success = status.as_ref().is_ok_and(|status| status.success())
+    );
+    let status = status?;
+    let draining = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
     let (stdout, stdout_exceeded) = stdout_reader
         .join()
         .map_err(|_| io::Error::other("stdout reader panicked"))??;
     let (stderr, stderr_exceeded) = stderr_reader
         .join()
         .map_err(|_| io::Error::other("stderr reader panicked"))??;
+    tracing::trace!(
+        event = "store.query.drain",
+        elapsed_us = draining.map(|start| start.elapsed().as_micros() as u64),
+        stdout_bytes = stdout.len(),
+        stderr_bytes = stderr.len(),
+        exceeded_limit = stdout_exceeded || stderr_exceeded
+    );
     Ok(BoundedOutput {
         status,
         stdout,
