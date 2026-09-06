@@ -278,11 +278,14 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
             .collect::<Vec<_>>(),
         vec!["expiry-b", "expiry-c"]
     );
-    assert!(
-        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 256,)
-            .expect("released rows are not selected again")
-            .is_empty()
-    );
+    assert!(telchar::persistence::release_expired_request_output_leases(
+        fixture.url(),
+        now,
+        None,
+        256,
+    )
+    .expect("released rows are not selected again")
+    .is_empty());
 }
 
 #[test]
@@ -306,16 +309,14 @@ fn release_expired_output_leases_rejects_invalid_inputs_before_connection() {
 #[test]
 fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry() {
     let _guard = TELEMETRY_TESTS.lock().expect("telemetry lock holds");
-    assert!(
-        telchar::persistence::create_request_output_leases(
-            "postgresql://127.0.0.1:1/no-connection",
-            "output-empty-request",
-            Duration::from_secs(3_600),
-            &[],
-        )
-        .expect("empty output lease batch succeeds")
-        .is_empty()
-    );
+    assert!(telchar::persistence::create_request_output_leases(
+        "postgresql://127.0.0.1:1/no-connection",
+        "output-empty-request",
+        Duration::from_secs(3_600),
+        &[],
+    )
+    .expect("empty output lease batch succeeds")
+    .is_empty());
 
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
