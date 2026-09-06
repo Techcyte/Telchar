@@ -769,3 +769,6 @@ fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
         exceeded |= read > available;
     }
 }
+
+#[cfg(test)]
+mod tests;
