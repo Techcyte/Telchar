@@ -540,7 +540,7 @@ fn log_output_collection_outcome(
     outcome: &BuildCollectionOutcome,
 ) {
     match outcome {
-        BuildCollectionOutcome::Built => tracing::debug!(
+        BuildCollectionOutcome::Built => tracing::info!(
             event = "nomad.callback.output_collection.completed",
             backend,
             job_id,
@@ -589,6 +589,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
         match frame.kind() {
             FrameKind::BuildStarted => {
                 session.accept(Direction::WorkerToGateway, frame)?;
+                tracing::info!(event = "nomad.callback.build.started", "worker began daemon build request");
             }
             FrameKind::LogChunk => {
                 session.accept(Direction::WorkerToGateway, frame.clone())?;
@@ -613,6 +614,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                         |_| io::Error::other("Nomad output collection transition failed"),
                     )?;
                     collecting = true;
+                    tracing::info!(event = "nomad.callback.outputs.collecting", expected_output_count = build_request.expected_outputs().len(), "worker output transfer began");
                 }
                 let metadata: PathManifestEntry =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
