@@ -28,7 +28,6 @@ pkgs.testers.nixosTest {
       services.openssh.enable = true;
       services.openssh.settings.PermitRootLogin = "prohibit-password";
       nix.settings.experimental-features = [ "nix-command" ];
-      nix.settings.substituters = pkgs.lib.mkForce [ "file:///var/lib/query-cache" ];
       services.telchar = {
         enable = true;
         package = telchar;
@@ -135,6 +134,7 @@ pkgs.testers.nixosTest {
             for path in paths:
                 for field in ["narHash", "narSize", "references"]:
                     assert source_info[path][field] == destination_info[path][field], (path, field)
+    gateway.succeed("mkdir -p /run/systemd/system/nix-daemon.service.d; printf '%s\\n' '[Service]' 'Environment=\"NIX_CONFIG=substituters = file:///var/lib/query-cache\"' > /run/systemd/system/nix-daemon.service.d/cache.conf; systemctl daemon-reload; systemctl restart nix-daemon")
     # Only the cache retains these fresh paths when validity requests begin.
     for transport in ["daemon", "ssh"]:
         nonce = uuid.uuid4().hex
