@@ -13,11 +13,13 @@ pkgs.testers.nixosTest {
     client = { ... }: {
       nix.settings.experimental-features = [ "nix-command" ];
       environment.systemPackages = [ pkgs.python3 ];
+      environment.etc."query-valid-paths.py".source = ../../tests/query-valid-paths.py;
       system.stateVersion = "26.05";
     };
     gateway = { ... }: {
       imports = [ telcharModule ];
-      environment.systemPackages = pkgs.lib.optionals traceQueries [ pkgs.strace ];
+      environment.systemPackages = [ pkgs.python3 ] ++ pkgs.lib.optionals traceQueries [ pkgs.strace ];
+      environment.etc."query-valid-paths.py".source = ../../tests/query-valid-paths.py;
       systemd.services.telchar-sshd.serviceConfig.ExecStart = pkgs.lib.mkIf traceQueries (
         pkgs.lib.mkForce "${pkgs.openssh}/bin/sshd -D -e -f /etc/telchar/sshd_config -o SetEnv=RUST_LOG=info,telchar::service=trace,telchar::runtime=trace"
       );
@@ -26,6 +28,7 @@ pkgs.testers.nixosTest {
       services.openssh.enable = true;
       services.openssh.settings.PermitRootLogin = "prohibit-password";
       nix.settings.experimental-features = [ "nix-command" ];
+      nix.settings.substituters = pkgs.lib.mkForce [ "file:///var/lib/query-cache" ];
       services.telchar = {
         enable = true;
         package = telchar;
@@ -71,7 +74,7 @@ pkgs.testers.nixosTest {
     results = []
     tracing_queries = ${if traceQueries then "True" else "False"}
     for workload in (["large-file", "derivations"] if tracing_queries else ["derivations", "references", "small-files", "large-file"]):
-        for repetition, frontend in enumerate(["telchar"] if tracing_queries else ["plain", "telchar"] * 3):
+        for repetition, frontend in enumerate(["telchar"] * 3 if tracing_queries else ["plain", "telchar"] * 3):
             nonce = uuid.uuid4().hex
             references = 8 if workload == "references" else 0
             # Indirect roots protect the fresh source closure until the VM exits.
@@ -99,12 +102,21 @@ pkgs.testers.nixosTest {
             gateway.succeed(" && ".join("test ! -e " + shlex.quote(path) for path in paths))
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
+            if tracing_queries:
+                gateway.succeed("pid=$(systemctl show -p MainPID --value telchar); strace -f -e trace=execve -o /tmp/gateway-exec -p $pid 2>/tmp/strace-status & echo $! >/tmp/strace-pid")
+                gateway.wait_until_succeeds("grep -q 'attached' /tmp/strace-status")
             started = time.monotonic()
             client.succeed("NIX_SSHOPTS='-4' nix copy --to " + endpoint + " " + " ".join(paths) + (" 2>/tmp/frontend-trace" if tracing_queries else ""), timeout=120)
             elapsed = time.monotonic() - started
+            if tracing_queries:
+                gateway.succeed("kill -INT $(cat /tmp/strace-pid)")
+                gateway.wait_until_succeeds("! kill -0 $(cat /tmp/strace-pid) 2>/dev/null")
+                executions = gateway.succeed("cat /tmp/gateway-exec")
+                assert "execve(" not in executions, executions
+                print("GATEWAY_EXEC_TRACE " + workload + "\n" + executions)
             journal = gateway.succeed("journalctl --sync; journalctl -u nix-daemon.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
             connections = journal.count("accepted connection from pid ")
-            results.append(dict(workload=workload, repetition=repetition // 2, frontend=frontend, references=references, paths=len(paths), nar_bytes=sum(info["narSize"] for info in source_info.values()), seconds=elapsed, connections=connections))
+            results.append(dict(workload=workload, repetition=repetition if tracing_queries else repetition // 2, frontend=frontend, references=references, paths=len(paths), nar_bytes=sum(info["narSize"] for info in source_info.values()), seconds=elapsed, connections=connections))
             print("IMPORT_BENCHMARK " + json.dumps(results[-1]))
             if tracing_queries:
                 traces = gateway.succeed("journalctl --sync; journalctl -u telchar.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o short-monotonic")
@@ -115,7 +127,7 @@ pkgs.testers.nixosTest {
                 assert 'event="ipc.relay.first_bytes"' in frontend_trace, frontend_trace
                 session = next(line.split("session_id=")[1].strip() for line in frontend_trace.splitlines() if 'event="ipc.frontend.envelope_sent"' in line)
                 assert 'event="ipc.daemon.session_received" session_id=' + session in traces, traces
-                assert 'event="store.query.wait"' in traces, traces
+                assert 'event="store.daemon.query_valid_paths"' in traces, traces
                 assert 'event="worker.query_valid_paths.flushed"' in traces, traces
             gateway.succeed("nix-store --verify-path " + " ".join(paths))
             destination_info = json.loads(gateway.succeed("nix path-info --json --json-format 1 " + " ".join(paths)))
@@ -123,35 +135,22 @@ pkgs.testers.nixosTest {
             for path in paths:
                 for field in ["narHash", "narSize", "references"]:
                     assert source_info[path][field] == destination_info[path][field], (path, field)
-    if tracing_queries:
-        for mode in ["path-info", "path-info-offline", "check-validity"]:
-            for repetition in range(3):
-                nonce = uuid.uuid4().hex
-                path = "/nix/store/" + "a" * 32 + "-query-" + nonce
-                gateway.succeed("test ! -e " + shlex.quote(path))
-                command = ["nix", "path-info", "--json", "--json-format", "1"] if mode.startswith("path-info") else ["nix-store", "--check-validity"]
-                if mode == "path-info-offline":
-                    command += ["--offline"]
-                command += ["--store", "unix:///nix/var/nix/daemon-socket/socket", path]
-                shell = "status=0; runuser -u telchar -- " + shlex.join(command) + " > /tmp/query-stdout 2>/tmp/query-stderr || status=$?; printf '%s' \"$status\""
-                started = time.monotonic()
-                status = gateway.succeed(shell).strip()
-                print("QUERY_COMPARISON " + json.dumps(dict(mode=mode, repetition=repetition, seconds=time.monotonic()-started, status=status)))
-                if mode == "check-validity":
-                    assert status == "1", status
-                    error = gateway.succeed("cat /tmp/query-stderr")
-                    assert "not valid" in error, error
-                else:
-                    assert status == "0", (status, gateway.succeed("cat /tmp/query-stderr"))
-                    error = gateway.succeed("cat /tmp/query-stderr")
-                    assert "don't know how to build these paths" in error, error
-                    if mode == "path-info":
-                        assert "Could not resolve host: cache.nixos.org" in error, error
-                    else:
-                        assert "unable to download" not in error, error
-                    print("QUERY_STDERR " + mode + "\n" + error)
-        gateway.succeed("strace -f -ttt -T -o /tmp/query-syscalls runuser -u telchar -- nix path-info --json --json-format 1 --store unix:///nix/var/nix/daemon-socket/socket /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-query-" + uuid.uuid4().hex + " >/tmp/query-stdout 2>/tmp/query-stderr")
-        gateway.copy_from_vm("/tmp/query-syscalls")
+    # Only the cache retains these fresh paths when validity requests begin.
+    for transport in ["daemon", "ssh"]:
+        nonce = uuid.uuid4().hex
+        cache_source = "/tmp/cache-input-" + nonce
+        gateway.succeed("printf '%s' " + shlex.quote(nonce) + " > " + cache_source)
+        cached_path = gateway.succeed("nix-store --add " + cache_source).strip()
+        gateway.succeed("nix copy --to file:///var/lib/query-cache " + cached_path)
+        gateway.succeed("nix-store --delete " + cached_path)
+        gateway.succeed("test ! -e " + cached_path)
+        if transport == "daemon":
+            report = gateway.succeed("runuser -u telchar -- python3 /etc/query-valid-paths.py /nix/var/nix/daemon-socket/socket " + cached_path)
+        else:
+            report = client.succeed("python3 /etc/query-valid-paths.py ssh " + cached_path)
+        print("CACHE_VALIDITY " + report)
+        gateway.succeed("test $(cat " + cached_path + ") = " + shlex.quote(nonce))
+        gateway.succeed("nix-store --verify-path " + cached_path)
     print("IMPORT_BENCHMARK_RESULTS " + json.dumps(results))
     for result in results:
         assert result["connections"] == (1 if result["frontend"] == "plain" else 2), result

@@ -203,7 +203,7 @@ Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail st
 ### Upload latency traces
 
 Operation-level TRACE spans and events cover frontend connection/envelope/relay boundaries,
-worker opcode reception, QueryValidPaths decoding, subprocess spawn/wait/drain/parse,
+worker opcode reception, QueryValidPaths decoding, daemon batch queries,
 daemon connection/handshake, and response write/flush. Enable selected targets in the
 **server process** environment, not just the calling Nix client:
 
@@ -219,7 +219,7 @@ client; capture `nix copy ... 2>frontend-trace.log`. Never redirect frontend
 stdout, which carries the Nix protocol, into diagnostic output.
 
 Events carry monotonic `elapsed_us` durations. Opcode-read duration includes client
-idle time; subprocess wait includes Nix work and subprocess shutdown; response
+idle time; daemon query duration includes any requested substitution; response
 flush duration is cumulative since response writing began. Console timestamps have
 second resolution; use journal timestamps plus duration fields rather than
 subtracting console timestamps. The frontend envelope event supplies `session_id`

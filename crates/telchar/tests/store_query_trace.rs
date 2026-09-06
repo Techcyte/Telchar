@@ -34,11 +34,10 @@ fn capture(level: tracing::Level, operation: impl FnOnce()) -> String {
 fn real_query_trace_reports_daemon_phases_without_paths() {
     let fixture = NixFixture::create().unwrap();
     let mut daemon = fixture.start_daemon(TrustMode::Trusted).unwrap();
-    let mut query =
-        GatewayStoreQuery::new(GatewayStoreEndpoint::parse(&daemon.store_url()).unwrap());
-    let paths = [b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sensitive-input".to_vec()];
+    let endpoint = GatewayStoreEndpoint::parse(&daemon.store_url()).unwrap();
     let trace = capture(tracing::Level::TRACE, || {
-        assert!(query.query_valid_paths(&paths, false).unwrap().is_empty());
+        let mut connection = telchar::store::GatewayStoreConnection::connect(&endpoint).unwrap();
+        assert!(connection.query_valid_paths(&[], false).unwrap().is_empty());
     });
     for phase in [
         "store.daemon.connected",
@@ -52,7 +51,8 @@ fn real_query_trace_reports_daemon_phases_without_paths() {
     assert!(!trace.contains(&daemon.store_url()), "{trace}");
     assert!(!trace.contains("NIX_CONFIG"), "{trace}");
     let filtered = capture(tracing::Level::INFO, || {
-        query.query_valid_paths(&paths, false).unwrap();
+        let mut connection = telchar::store::GatewayStoreConnection::connect(&endpoint).unwrap();
+        connection.query_valid_paths(&[], false).unwrap();
     });
     assert!(filtered.is_empty(), "{filtered}");
     daemon.stop().unwrap();
