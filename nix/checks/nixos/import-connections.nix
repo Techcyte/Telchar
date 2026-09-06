@@ -72,7 +72,7 @@ pkgs.testers.nixosTest {
             client.succeed("nix-instantiate --add-root /tmp/import-root --indirect --expr " + shlex.quote(expression) + " >/dev/null")
             paths = client.succeed("readlink -f /tmp/import-root*").splitlines()
             assert len(paths) == 100, paths
-            gateway.succeed("; ".join("test ! -e " + shlex.quote(path) for path in paths))
+            gateway.succeed(" && ".join("test ! -e " + shlex.quote(path) for path in paths))
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
             started = time.monotonic()
