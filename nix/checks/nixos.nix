@@ -61,6 +61,7 @@ import ./nixos/oci.nix {
     inherit pkgs telchar nomadWorker;
   };
   nixos-nomad-polling = import ./nixos/nomad-polling.nix checkArgs;
+  nixos-worker-telemetry = import ./nixos/worker-telemetry.nix checkArgs;
   nixos-nomad-credential = import ./nixos/nomad-credential.nix {
     inherit
       pkgs
