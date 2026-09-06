@@ -6,6 +6,17 @@
   telcharModule,
   ...
 }:
+let
+  exportTests = telchar.overrideAttrs (previous: {
+    postInstall = (previous.postInstall or "") + ''
+      for executable in target/release/deps/telchar-*; do
+        if test -f "$executable" && test -x "$executable"; then
+          install -Dm755 "$executable" "$out/bin/telchar-export-tests"
+        fi
+      done
+    '';
+  });
+in
 pkgs.testers.nixosTest {
   name = "telchar-nixos-export-connections";
   nodes = {
@@ -16,7 +27,10 @@ pkgs.testers.nixosTest {
     };
     gateway = { ... }: {
       imports = [ telcharModule ];
-      environment.systemPackages = [ pkgs.python3 ];
+      environment.systemPackages = [
+        pkgs.python3
+        exportTests
+      ];
       networking.firewall.enable = false;
       users.users.telchar.hashedPassword = "*";
       services.openssh.enable = true;
@@ -108,6 +122,12 @@ pkgs.testers.nixosTest {
                         assert source_info[path][field] == destination_info[path][field], (path, field)
     print("EXPORT_BENCHMARK_RESULTS " + json.dumps(results))
     for result in results:
-        assert result["connections"] == 1, result
+        # Non-derivation copy also performs two independent validity queries.
+        expected = 3 if result["frontend"] == "telchar" and result["paths"] == 1 else 1
+        assert result["connections"] == expected, result
+    gateway.succeed("printf '%s' " + shlex.quote(uuid.uuid4().hex) + " > /tmp/export-verification.drv")
+    path = gateway.succeed("nix-store --add /tmp/export-verification.drv").strip()
+    gateway.succeed("TELCHAR_EXPORT_TEST_STORE=unix:///nix/var/nix/daemon-socket/socket TELCHAR_EXPORT_TEST_PATH=" + path + " telchar-export-tests store::export::tests::verified_export_failure_discards_connection --ignored --nocapture")
+    gateway.succeed("nix-store --verify-path " + path)
   '';
 }

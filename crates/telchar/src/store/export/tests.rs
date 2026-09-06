@@ -93,6 +93,40 @@ fn verified_export_failure_discards_connection() {
     let recovered = export_verified_nar(&path, &mut std::io::sink(), &mut backend).unwrap();
     assert_eq!(first, recovered);
     assert!(backend.connection.is_some());
+    let contents = super::load_stored_derivation(&path, 1024, &mut backend).unwrap();
+    assert!(!contents.is_empty());
+    let error = super::load_stored_derivation(&path, 0, &mut backend)
+        .expect_err("bounded derivation read fails");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(backend.connection.is_none());
+    assert_eq!(
+        super::load_stored_derivation(&path, 1024, &mut backend).unwrap(),
+        contents
+    );
+
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    let mut corrupted = contents.clone();
+    corrupted[0] ^= 1;
+    std::fs::write(&path, &corrupted).unwrap();
+    let error = export_verified_nar(&path, &mut std::io::sink(), &mut backend)
+        .expect_err("real daemon bytes must match registered hash");
+    assert_eq!(error.to_string(), "exported NAR hash mismatch");
+    assert!(
+        backend.connection.is_none(),
+        "post-transfer verification failure discards stream"
+    );
+    let error = super::load_stored_derivation(&path, 1024, &mut backend)
+        .expect_err("derivation hash verification fails");
+    assert_eq!(error.to_string(), "exported derivation NAR hash mismatch");
+    assert!(backend.connection.is_none());
+    std::fs::write(&path, &contents).unwrap();
+    assert_eq!(
+        export_verified_nar(&path, &mut std::io::sink(), &mut backend).unwrap(),
+        first
+    );
     backend.discard_connection();
     assert!(backend.connection.is_none());
 }
