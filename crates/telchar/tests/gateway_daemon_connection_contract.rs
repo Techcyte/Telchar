@@ -179,31 +179,7 @@ fn build_derivation_preserves_bounded_daemon_diagnostic() {
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("connection accepts");
         complete_handshake(&mut stream, 1);
-        assert_eq!(read_integer(&mut stream), 36);
-        let _derivation_path = read_byte_string(&mut stream);
-        let output_count = read_integer(&mut stream);
-        for _ in 0..output_count {
-            let _name = read_byte_string(&mut stream);
-            let _path = read_byte_string(&mut stream);
-            let _hash_algorithm = read_byte_string(&mut stream);
-            let _hash = read_byte_string(&mut stream);
-        }
-        let input_count = read_integer(&mut stream);
-        for _ in 0..input_count {
-            let _input = read_byte_string(&mut stream);
-        }
-        let _platform = read_byte_string(&mut stream);
-        let _builder = read_byte_string(&mut stream);
-        let argument_count = read_integer(&mut stream);
-        for _ in 0..argument_count {
-            let _argument = read_byte_string(&mut stream);
-        }
-        let environment_count = read_integer(&mut stream);
-        for _ in 0..environment_count {
-            let _key = read_byte_string(&mut stream);
-            let _value = read_byte_string(&mut stream);
-        }
-        assert_eq!(read_integer(&mut stream), 0);
+        read_build_derivation_request(&mut stream);
         integer(&mut stream, STDERR_ERROR);
         byte_string(&mut stream, b"Error");
         integer(&mut stream, 1);
@@ -242,6 +218,34 @@ fn build_derivation_preserves_bounded_daemon_diagnostic() {
     server.join().expect("server exits");
 }
 
+fn read_build_derivation_request(stream: &mut impl Read) {
+    assert_eq!(read_integer(stream), 36);
+    let _derivation_path = read_byte_string(stream);
+    let output_count = read_integer(stream);
+    for _ in 0..output_count {
+        let _name = read_byte_string(stream);
+        let _path = read_byte_string(stream);
+        let _hash_algorithm = read_byte_string(stream);
+        let _hash = read_byte_string(stream);
+    }
+    let input_count = read_integer(stream);
+    for _ in 0..input_count {
+        let _input = read_byte_string(stream);
+    }
+    let _platform = read_byte_string(stream);
+    let _builder = read_byte_string(stream);
+    let argument_count = read_integer(stream);
+    for _ in 0..argument_count {
+        let _argument = read_byte_string(stream);
+    }
+    let environment_count = read_integer(stream);
+    for _ in 0..environment_count {
+        let _key = read_byte_string(stream);
+        let _value = read_byte_string(stream);
+    }
+    assert_eq!(read_integer(stream), 0);
+}
+
 #[test]
 fn build_derivation_preserves_bounded_protocol_failure() {
     let fixture = SocketFixture::create();
@@ -249,7 +253,7 @@ fn build_derivation_preserves_bounded_protocol_failure() {
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("connection accepts");
         complete_handshake(&mut stream, 1);
-        assert_eq!(read_integer(&mut stream), 36);
+        read_build_derivation_request(&mut stream);
         stream
             .shutdown(std::net::Shutdown::Both)
             .expect("stream closes");
@@ -279,11 +283,12 @@ fn build_derivation_preserves_bounded_protocol_failure() {
     assert!(
         error
             .to_string()
-            .starts_with("gateway Nix daemon BuildDerivation operation failed: ")
+            .starts_with("gateway Nix daemon BuildDerivation response failed: "),
+        "unexpected diagnostic: {error}"
     );
     assert_ne!(
         error.to_string(),
-        "gateway Nix daemon BuildDerivation operation failed"
+        "gateway Nix daemon BuildDerivation response failed: "
     );
     server.join().expect("server exits");
 }
