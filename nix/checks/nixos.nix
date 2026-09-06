@@ -44,22 +44,9 @@ import ./nixos/oci.nix {
     mkStandaloneSystem
     ;
 }
-// {
-  nixos-postgresql-tls = import ./nixos/postgresql-tls.nix {
-    inherit
-      pkgs
-      system
-      telchar
-      standaloneModule
-      ;
-  };
-}
 // import ./nixos/local.nix checkArgs
-// import ./nixos/nomad.nix checkArgs
+// removeAttrs (import ./nixos/nomad.nix checkArgs) [ "nixos-nomad-fixture" ]
 // {
-  nixos-callback-authentication = import ./nixos/callback-authentication.nix {
-    inherit pkgs telchar nomadWorker;
-  };
   nixos-nomad-polling = import ./nixos/nomad-polling.nix checkArgs;
   nixos-nomad-credential = import ./nixos/nomad-credential.nix {
     inherit
@@ -78,7 +65,7 @@ import ./nixos/oci.nix {
       ;
   };
 }
-// import ./nixos/static-ssh.nix checkArgs
+// removeAttrs (import ./nixos/static-ssh.nix checkArgs) [ "nixos-static-ssh-fixture" ]
 // {
   nixos-ssh-modes = import ./nixos/ssh-modes.nix {
     inherit pkgs nixosSystem telcharModule;
@@ -120,4 +107,3 @@ import ./nixos/oci.nix {
   };
 }
 // import ./nixos/recovery.nix checkArgs
-// import ./nixos/artifacts.nix checkArgs

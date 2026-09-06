@@ -68,7 +68,15 @@ The flake exports three NixOS integration surfaces:
 - `nixosModules.standalone` provides generic standalone-host defaults and imports the service module;
 - `lib.mkStandaloneSystem` composes the standalone profile with caller-supplied deployment modules and optional `specialArgs`.
 
-Generic behavioral contracts are available as clearly named checks under `checks.x86_64-linux`, including `nixos-standalone-profile`, `nixos-postgresql-tls`, `nixos-nomad-credential`, `nixos-nomad-credential-renewal`, `nixos-ssh-ca-authentication`, `nixos-ssh-host-certificate-renewal`, `nixos-vault-aws-auth`, `nixos-callback-authentication`, and `nixos-restart-reboot`.
+Generic behavioral contracts are available as clearly named checks under `checks.x86_64-linux`, including `nixos-standalone-profile`, `nixos-module`, `nixos-nomad-gateway`, `nixos-nomad-credential`, `nixos-nomad-credential-renewal`, `nixos-ssh-ca-authentication`, `nixos-ssh-host-certificate-renewal`, `nixos-vault-aws-auth`, and `nixos-restart-reboot`.
+
+`nixos-module` covers protected PostgreSQL TLS configuration, service startup, SSH ingress, and delivery to an OTLP collector. Certificate rejection cases also run against real PostgreSQL processes in `crates/telchar/tests/persistence_migrations.rs`. `nixos-nomad-gateway` covers rejection of unauthenticated callbacks alongside authenticated builds.
+
+Fixture-only diagnostics remain opt-in under `legacyPackages.x86_64-linux.fixtureChecks`: `nixos-artifacts`, `nixos-nomad-fixture`, and `nixos-static-ssh-fixture`. They validate test infrastructure, not product acceptance, and are excluded from `nix flake check`. For example:
+
+```bash
+nix build --no-link .#legacyPackages.x86_64-linux.fixtureChecks.nixos-artifacts
+```
 
 A stock Nix client can then use the gateway as a remote builder:
 
