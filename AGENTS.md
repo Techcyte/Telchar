@@ -127,7 +127,7 @@ Important distinctions:
 
 - Full process/PostgreSQL integration authority is the serial workspace Cargo command above. `nix/checks/rust.nix` runs sandbox-compatible library tests, not the full integration suite.
 - Run real-Nix/PostgreSQL fixtures as a non-root user with process/socket permissions. Helpers start isolated stores and databases; do not redirect them at production state. Nix fixtures also hold a cross-process lock; waiting on another test process is not necessarily a hung test. Do not bypass fixture locking to force parallelism.
-- Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests; `ignored-test-authority` in `nix/checks/policy.nix` checks the inventory. Do not blanket-enable, add ignores, or remove tests to get green output.
+- Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.
 - CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts. It is not synonymous with building every flake check.
 - Credential helper tests: `nix build --no-link .#checks.x86_64-linux.cache-credentials`. Release tooling tests: `nix develop -c scripts/test-prepare-release.py`.

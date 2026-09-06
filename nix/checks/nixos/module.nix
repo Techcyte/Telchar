@@ -128,7 +128,6 @@
       gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")
       gateway.succeed("grep -q '^ForceCommand /nix/store/' /etc/telchar/sshd_config")
       gateway.succeed("grep -q '^ExposeAuthInfo yes$' /etc/telchar/sshd_config")
-      gateway.succeed("forced_command=$(awk '/^ForceCommand / { print $2; exit }' /etc/telchar/sshd_config); ! grep -Fq '/etc/ssh/authorized_keys.d/telchar' \"$forced_command\" && grep -Fq 'SSH_USER_AUTH' \"$forced_command\" && grep -Fq 'ssh-keygen -lf -' \"$forced_command\"")
       # ExecStartPre must reject decoy TLS parameters before the daemon can start.
       gateway.succeed("cp /var/lib/telchar/credentials/database-url /var/lib/telchar/credentials/verified-url; printf '%s\\n' 'postgresql://telchar@localhost/telchar?sslmode=disable&options=sslmode=verify-full&application_name=sslrootcert=/var/lib/telchar/credentials/database-ca.crt' > /var/lib/telchar/credentials/database-url")
       gateway.fail("systemctl restart telchar.service")

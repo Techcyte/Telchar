@@ -135,7 +135,7 @@ Hostile multi-tenancy needs a separate store, cache, log, backend, and recovery 
 
 ## Protocol boundary
 
-The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, property tests, and fuzz targets. It may emit `tracing` instrumentation but contains no Telchar identity, scheduling, persistence, backend, service configuration, or OpenTelemetry exporter policy. Telchar may depend on the protocol crate; the reverse dependency is forbidden. The `protocol-dependency-boundary` check in `nix/checks/policy.nix` enforces that direction through `nix flake check`.
+The `nix-worker-protocol` crate owns bounded wire primitives, negotiation, typed operations, activity and error frames, build results, fixtures, property tests, and fuzz targets. It may emit `tracing` instrumentation but contains no Telchar identity, scheduling, persistence, backend, service configuration, or OpenTelemetry exporter policy. Telchar may depend on the protocol crate; the reverse dependency is forbidden.
 
 Unknown or unsupported operations fail closed because the worker protocol has no generic envelope that can safely skip arbitrary messages. Compatibility claims require typed coverage and real Nix fixtures, not only a matching protocol number.
 

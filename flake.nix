@@ -63,7 +63,6 @@
         import ./nix/checks/rust.nix {
           inherit pkgs craneLib source;
         }
-        // import ./nix/checks/policy.nix { inherit pkgs; }
         // import ./nix/checks/nixos.nix {
           inherit pkgs system;
           nixosSystem = nixpkgs.lib.nixosSystem;

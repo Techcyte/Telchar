@@ -151,7 +151,6 @@ Release-relevant files:
 - `flake.nix`: output composition;
 - `nix/packages.nix`: packages and OCI archives;
 - `nix/checks/rust.nix`: sandbox-compatible Rust checks;
-- `nix/checks/policy.nix`: dependency and policy checks;
 - `nix/checks/nixos.nix`: VM integration derivations;
 - `nix/tests/oci-images.nix`: OCI metadata and loadability contract;
 - `tests/nixos/lib.nix`: reusable VM topology.

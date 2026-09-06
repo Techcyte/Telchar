@@ -39,7 +39,7 @@ Compatibility claims come from code and tests, not a separate support manifest.
 | Stock Nix static SSH | static SSH backend and worker-protocol tests | `nixos-static-ssh-gateway` |
 | Stock Nix Nomad | Nomad callback, persistence, transfer, and worker tests | `nixos-nomad-gateway` |
 
-`scripts/check-release.sh` names the end-to-end checks required for release. `nix/checks/policy.nix` verifies that the documented production operation set has concrete session dispatch and that release verification still includes every claimed real-workload check. Tests marked `#[ignore]` are counted directly by the same policy check; their reasons remain beside the tests rather than in a second inventory.
+`scripts/check-release.sh` names the end-to-end checks required for release. Reasons for tests marked `#[ignore]` remain beside the tests.
 
 ## Gateway Nix daemon
 

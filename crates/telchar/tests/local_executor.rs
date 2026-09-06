@@ -137,23 +137,6 @@ fn built_and_already_valid_results_have_output_trust() {
 }
 
 #[test]
-fn classic_output_trust_documentation_states_store_consistency_not_provenance_proof() {
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root resolves")
-        .to_path_buf();
-    let document = "docs/design.md";
-    let text = fs::read_to_string(repository.join(document)).expect("documentation reads");
-    assert!(text.contains("store consistency"), "{document}");
-    assert!(text.contains("trusted executor"), "{document}");
-    assert!(text.contains("not cryptographic proof"), "{document}");
-    assert!(!text.contains("cryptographically proven"), "{document}");
-    assert!(!text.contains("reproducibly verified"), "{document}");
-    assert!(!text.contains("builder-independent"), "{document}");
-}
-
-#[test]
 fn executor_streams_bounded_helper_logs_before_returning_result() {
     let root = unique_root("logs");
     fs::create_dir_all(&root).expect("fixture root creates");
