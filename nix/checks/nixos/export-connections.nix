@@ -94,7 +94,7 @@ pkgs.testers.nixosTest {
                 cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
                 endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
                 started = time.monotonic()
-                client.succeed("NIX_SSHOPTS='-4' nix copy --derivation --from " + endpoint + " " + " ".join(paths), timeout=120)
+                client.succeed("NIX_SSHOPTS='-4' nix copy " + ("--derivation " if workload in ["derivations", "references"] else "") + "--from " + endpoint + " " + " ".join(paths), timeout=120)
                 elapsed = time.monotonic() - started
                 journal = gateway.succeed("journalctl --sync; journalctl -u nix-daemon.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
                 connections = journal.count("accepted connection from pid ")
