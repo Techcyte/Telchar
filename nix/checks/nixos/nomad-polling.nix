@@ -20,10 +20,10 @@ harness.mkNomadGatewayTest {
             gateway.succeed("sed -i 's/detach-and-finish/cancel-running/' /var/lib/telchar-import/telchar.toml; systemctl restart telchar-daemon")
         nonce = uuid.uuid4().hex
         script = "set -eu; export PATH=$tools/bin; echo POLL_STARTED >&2; "
-        if mode in ["chatty", "cancel"]:
+        if mode == "chatty":
             script += "for i in $(seq 1 80); do echo POLL_CHUNK_$i $(date +%s%N) >&2; sleep 0.1; done; "
         else:
-            script += "sleep 8; "
+            script += "sleep " + ("60" if mode == "cancel" else "8") + "; "
         script += "echo POLL_FINISHED >&2; printf " + nonce + " > $out"
         expression = 'derivation { name = "poll-' + nonce + '"; system = "${pkgs.stdenv.hostPlatform.system}"; builder = builtins.storePath "${pkgs.runtimeShell}"; tools = builtins.storePath "${pkgs.coreutils}"; args = [ "-c" ' + json.dumps(script) + ' ]; }'
         drv = stock_client.succeed("nix-instantiate --expr " + shlex.quote(expression)).strip()
@@ -35,16 +35,17 @@ harness.mkNomadGatewayTest {
         build = "PATH=/run/current-system/sw/bin HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' nix --extra-experimental-features nix-command build -L --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' " + shlex.quote(drv + "^*")
         stock_client.succeed("systemd-run --unit=poll-" + mode + " ${pkgs.bash}/bin/bash -c " + shlex.quote(build))
         if mode in ["chatty", "cancel"]:
-            stock_client.wait_until_succeeds("journalctl -u poll-" + mode + " --no-pager -o cat | grep '^POLL_CHUNK_1 '", timeout=90)
+            marker = "^POLL_CHUNK_1 " if mode == "chatty" else "^POLL_STARTED$"
+            stock_client.wait_until_succeeds("journalctl -u poll-" + mode + " --no-pager -o cat | grep " + shlex.quote(marker), timeout=90)
             stock_client.succeed("systemctl is-active poll-" + mode)
             stock_client.fail("journalctl -u poll-" + mode + " --no-pager -o cat | grep -qx POLL_FINISHED")
         if mode == "cancel":
             stock_client.succeed("systemctl stop poll-cancel")
             gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc " + shlex.quote("select state from shared_builds where derivation_path = '" + drv + "'") + " | grep -qx failed", timeout=30)
             cancel_journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
-            assert 'Nomad job execution cancelled' in cancel_journal, cancel_journal
+            assert 'operation="stop"' in cancel_journal, cancel_journal
             gateway.succeed("test ! -e " + shlex.quote(output))
-            print("NOMAD_POLL_CANCELLATION verified real allocation cancellation after live log")
+            print("NOMAD_POLL_CANCELLATION verified real allocation stop after requester disconnect")
             continue
         stock_client.wait_until_fails("systemctl is-active poll-" + mode, timeout=120)
         stock_client.succeed("test $(systemctl show -p ExecMainStatus --value poll-" + mode + ") = 0")
