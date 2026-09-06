@@ -773,6 +773,50 @@ mod tests {
     };
 
     #[test]
+    fn emits_service_identity() {
+        if std::env::var_os("TELCHAR_TELEMETRY_IDENTITY_TEST").is_none() {
+            return;
+        }
+        let telemetry = super::Telemetry::initialize().expect("telemetry initializes");
+        {
+            let span = tracing::info_span!("request", request_id = "identity-test");
+            let _entered = span.enter();
+            tracing::info!(request_id = "identity-test", "service started");
+            opentelemetry::global::meter("identity-test")
+                .u64_counter("test.starts")
+                .build()
+                .add(1, &[]);
+        }
+        telemetry.shutdown();
+    }
+
+    #[test]
+    fn exports_configured_service_identity() {
+        let collector = start_collector();
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["telemetry::tests::emits_service_identity", "--exact", "--nocapture"])
+            .env("TELCHAR_TELEMETRY_IDENTITY_TEST", "1")
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            .env("RUST_LOG", "info")
+            .output()
+            .expect("identity process starts");
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        assert!(collector.has_all_signals());
+        collector.assert_correlated("identity-test", "telchar-nomad-worker");
+        for request in collector.log_requests.lock().expect("log requests").iter() {
+            for resource in &request.resource_logs {
+                assert!(Collector::has_attribute(
+                    &resource.resource.as_ref().expect("resource").attributes,
+                    "service.version",
+                    "identity-version"
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn selects_supported_otlp_transports() {
         assert_eq!(
             OtlpTransport::from_environment_value(None).expect("default transport"),
