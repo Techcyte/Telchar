@@ -13,8 +13,9 @@ PACKAGE_MANIFESTS = (
     Path("crates/nix-worker-protocol/Cargo.toml"),
     Path("crates/telchar/Cargo.toml"),
     Path("crates/telchar-nomad-worker/Cargo.toml"),
+    Path("crates/telchar-telemetry/Cargo.toml"),
 )
-WORKSPACE_PACKAGES = ("nix-worker-protocol", "telchar", "telchar-nomad-worker")
+WORKSPACE_PACKAGES = ("nix-worker-protocol", "telchar", "telchar-nomad-worker", "telchar-telemetry")
 LOCKFILE_PACKAGES = (
     (Path("Cargo.lock"), WORKSPACE_PACKAGES),
     (Path("crates/nix-worker-protocol/fuzz/Cargo.lock"), ("nix-worker-protocol",)),

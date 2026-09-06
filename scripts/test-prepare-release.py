@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,19 @@ class PrepareReleaseTest(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative_path, destination)
         return root
+
+    def test_release_versions_shared_telemetry(self) -> None:
+        root = self.prepare_copy()
+        relative = Path("crates/telchar-telemetry/Cargo.toml")
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+        PREPARE_RELEASE.prepare_release(root, RELEASE_VERSION)
+        manifest = tomllib.loads(destination.read_text())
+        self.assertEqual(manifest["package"]["version"], RELEASE_VERSION)
+        lockfile = tomllib.loads((root / "Cargo.lock").read_text())
+        package = next(p for p in lockfile["package"] if p["name"] == "telchar-telemetry")
+        self.assertEqual(package["version"], RELEASE_VERSION)
 
     def test_oci_runtime_references_follow_image_metadata(self) -> None:
         root = self.prepare_copy()
