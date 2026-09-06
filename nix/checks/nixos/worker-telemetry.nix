@@ -66,15 +66,30 @@ harness.mkNomadGatewayTest {
         logs = nomad_server.succeed("nomad alloc logs -namespace telchar -stderr " + shlex.quote(allocation) + " build")
         for event in ["worker.started", "worker.phase.running", "worker.inputs.resolved", "worker.completed", "worker.inputs.summary", "worker.outputs.summary"]:
             assert event in logs, logs
-        assert ('path="/nix/store/' in logs) == (level == "debug"), logs
+        assert ("path=/nix/store/" in logs) == (level == "debug"), logs
         assert ("WORKER_BUILD_BEGIN" in logs) == (level == "debug"), logs
         assert ("WORKER_BUILD_END" in logs) == (level == "debug"), logs
         assert logs.index("worker.phase.running") < logs.index("worker.completed"), logs
         print("WORKER_TELEMETRY_LOGS " + level + " " + logs)
     nomad_client.succeed("systemctl stop worker-collector")
-    records = nomad_client.succeed("cat /tmp/worker-telemetry.json")
-    for value in ["resourceSpans", "resourceLogs", "resourceMetrics", "telchar-nomad-worker", "worker.completed", "WORKER_BUILD_BEGIN", "telchar.worker.phase.duration"]:
-        assert value in records, value
+    records = [json.loads(line) for line in nomad_client.succeed("cat /tmp/worker-telemetry.json").splitlines() if line.strip()]
+    signals = {key: [resource for record in records for resource in record.get(key, [])] for key in ["resourceSpans", "resourceLogs", "resourceMetrics"]}
+    for key, resources in signals.items():
+        assert resources, key
+        assert all(any(a["key"] == "service.name" and a["value"].get("stringValue") == "telchar-nomad-worker" for a in r["resource"]["attributes"]) for r in resources), key
+    logs = [item for resource in signals["resourceLogs"] for scope in resource["scopeLogs"] for item in scope["logRecords"]]
+    def attributes(item):
+        return {a["key"]: a["value"] for a in item.get("attributes", [])}
+    completed = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.completed"]
+    assert len(completed) == 2, completed
+    assert len({item["traceId"] for item in completed}) == 2, completed
+    for item in completed:
+        assert any(span["traceId"] == item["traceId"] and span["name"] == "worker.execution" for resource in signals["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]), item
+    output_logs = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.build.output"]
+    assert output_logs and all(item["severityText"] == "DEBUG" for item in output_logs), output_logs
+    assert len({item["traceId"] for item in output_logs}) == 1, output_logs
+    metrics = [metric for resource in signals["resourceMetrics"] for scope in resource["scopeMetrics"] for metric in scope["metrics"]]
+    assert any(metric["name"] == "telchar.worker.phase.duration" for metric in metrics), metrics
     print("WORKER_TELEMETRY_VERIFIED grpc http/protobuf info debug client-output-preserved")
   '';
 }
