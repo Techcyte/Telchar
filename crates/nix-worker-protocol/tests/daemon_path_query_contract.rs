@@ -352,7 +352,9 @@ fn batch_validity_uses_flag_on_every_supported_version() {
         let mut input = Vec::new();
         integer(&mut input, SERVER_WORKER_MAGIC);
         integer(&mut input, version.to_wire());
-        if version >= WorkerVersion::new(1, 38) { integer(&mut input, 0); }
+        if version >= WorkerVersion::new(1, 38) {
+            integer(&mut input, 0);
+        }
         byte_string(&mut input, b"2.34.8");
         integer(&mut input, 2);
         integer(&mut input, STDERR_LAST);
@@ -360,7 +362,13 @@ fn batch_validity_uses_flag_on_every_supported_version() {
         integer(&mut input, 0);
         let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
         assert!(client.query_valid_paths(&[], true).unwrap().is_empty());
-        assert_eq!(&client.into_inner().output[client_request_offset(version)..], &[31_u64, 0, 1].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
+        assert_eq!(
+            &client.into_inner().output[client_request_offset(version)..],
+            &[31_u64, 0, 1]
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
     }
     for version in [WorkerVersion::new(1, 26), WorkerVersion::new(1, 27)] {
         let mut input = Vec::new();
@@ -371,5 +379,9 @@ fn batch_validity_uses_flag_on_every_supported_version() {
 }
 
 fn client_request_offset(version: nix_worker_protocol::WorkerVersion) -> usize {
-    if version >= nix_worker_protocol::WorkerVersion::new(1, 38) { 40 } else { 32 }
+    if version >= nix_worker_protocol::WorkerVersion::new(1, 38) {
+        40
+    } else {
+        32
+    }
 }

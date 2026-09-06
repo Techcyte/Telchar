@@ -36,7 +36,7 @@ fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
     )
     .expect("endpoint is valid");
 
-    let _query = telchar::store::query::GatewayStoreQuery::new("nix", endpoint.clone());
+    let _query = telchar::store::query::GatewayStoreQuery::new(endpoint.clone());
     let _import = telchar::store::import::GatewayStoreImport::new(endpoint.clone())
         .expect("importer creates");
     let _outputs =

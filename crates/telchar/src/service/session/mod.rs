@@ -1243,7 +1243,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let target = &request.targets()[0];
                 if !target.ends_with(b".drv") && !target.contains(&b'!') {
                     let valid_paths =
-                        match store_query.query_valid_paths([target.clone()].as_slice()) {
+                        match store_query.query_valid_paths([target.clone()].as_slice(), false) {
                             Ok(paths) => paths,
                             Err(error) => {
                                 tracing::error!(
@@ -1627,21 +1627,22 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 );
                 let querying =
                     tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-                let valid_paths = match store_query.query_valid_paths(request.paths()) {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        tracing::error!(
-                            event = "worker.query_valid_paths.failed",
-                            reason = error.to_string(),
-                            "gateway store QueryValidPaths failed"
-                        );
-                        return reject(
-                            &mut output,
-                            "query-valid-paths-store-failure",
-                            "QueryValidPaths store query failed",
-                        );
-                    }
-                };
+                let valid_paths =
+                    match store_query.query_valid_paths(request.paths(), request.substitute()) {
+                        Ok(paths) => paths,
+                        Err(error) => {
+                            tracing::error!(
+                                event = "worker.query_valid_paths.failed",
+                                reason = error.to_string(),
+                                "gateway store QueryValidPaths failed"
+                            );
+                            return reject(
+                                &mut output,
+                                "query-valid-paths-store-failure",
+                                "QueryValidPaths store query failed",
+                            );
+                        }
+                    };
                 tracing::trace!(
                     event = "worker.query_valid_paths.queried",
                     elapsed_us = querying.map(|start| start.elapsed().as_micros() as u64),

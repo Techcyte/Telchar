@@ -25,8 +25,8 @@ use crate::store::substitution::{
 #[derive(Clone)]
 pub struct GatewayStoreRuntime {
     endpoint: Option<GatewayStoreEndpoint>,
+    #[cfg(debug_assertions)]
     nix_executable: String,
-    environment: Vec<(String, String)>,
     #[cfg(debug_assertions)]
     build_helper: Option<PathBuf>,
     #[cfg(debug_assertions)]
@@ -41,13 +41,10 @@ impl GatewayStoreRuntime {
         let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
             .map(|value| GatewayStoreEndpoint::parse_os(&value))
             .transpose()?;
-        let environment = std::env::vars()
-            .filter(|(name, _)| name.starts_with("NIX_") || name == "HOME" || name == "TMPDIR")
-            .collect();
         Ok(Self {
             endpoint,
+            #[cfg(debug_assertions)]
             nix_executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
-            environment,
             #[cfg(debug_assertions)]
             build_helper: std::env::var_os("TELCHAR_TEST_BUILD_HELPER").map(PathBuf::from),
             #[cfg(debug_assertions)]
@@ -73,11 +70,7 @@ impl GatewayStoreRuntime {
     }
 
     pub fn query(&self) -> GatewayStoreQuery {
-        GatewayStoreQuery::with_endpoint_and_environment(
-            self.nix_executable.clone(),
-            self.endpoint.clone(),
-            self.environment.clone(),
-        )
+        GatewayStoreQuery::with_endpoint(self.endpoint.clone())
     }
 
     pub fn export(&self) -> Box<dyn StoreExportBackend> {

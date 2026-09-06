@@ -1,12 +1,8 @@
-//! Queries exact gateway-store path validity for stock-Nix protocol operations.
+//! Queries authoritative gateway-store path validity through the daemon protocol.
 
-use std::collections::BTreeSet;
-use std::io::{self, Read};
-use std::process::{Command, Stdio};
-use std::thread;
+use std::io;
 
-const MAXIMUM_SUBPROCESS_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_RESPONSE_ENTRIES: usize = nix_worker_protocol::MAXIMUM_QUERY_VALID_PATHS;
+use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MissingPaths {
@@ -18,140 +14,53 @@ pub struct MissingPaths {
 }
 
 pub trait QueryValidPathsStore {
-    fn query_valid_paths(&mut self, paths: &[Vec<u8>]) -> io::Result<Vec<Vec<u8>>>;
+    fn query_valid_paths(
+        &mut self,
+        paths: &[Vec<u8>],
+        substitute: bool,
+    ) -> io::Result<Vec<Vec<u8>>>;
     fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<MissingPaths>;
 }
 
 pub struct GatewayStoreQuery {
-    executable: String,
-    store_uri: Option<String>,
-    environment: Vec<(String, String)>,
+    endpoint: Option<GatewayStoreEndpoint>,
 }
 
 impl GatewayStoreQuery {
-    pub fn new(
-        executable: impl Into<String>,
-        endpoint: crate::store::daemon::GatewayStoreEndpoint,
-    ) -> Self {
-        Self::with_endpoint(executable, Some(endpoint))
+    pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
+        Self::with_endpoint(Some(endpoint))
     }
 
-    pub fn with_endpoint(
-        executable: impl Into<String>,
-        endpoint: Option<crate::store::daemon::GatewayStoreEndpoint>,
-    ) -> Self {
-        Self::with_endpoint_and_environment(executable, endpoint, [])
+    pub fn with_endpoint(endpoint: Option<GatewayStoreEndpoint>) -> Self {
+        Self { endpoint }
     }
 
-    pub fn with_endpoint_and_environment(
-        executable: impl Into<String>,
-        endpoint: Option<crate::store::daemon::GatewayStoreEndpoint>,
-        environment: impl IntoIterator<Item = (String, String)>,
-    ) -> Self {
-        Self {
-            executable: executable.into(),
-            store_uri: endpoint.map(|endpoint| endpoint.to_string()),
-            environment: environment.into_iter().collect(),
-        }
-    }
-
-    pub fn from_environment() -> Self {
-        Self {
-            executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
-            store_uri: std::env::var("TELCHAR_GATEWAY_STORE_URI").ok(),
-            environment: Vec::new(),
-        }
+    fn endpoint(&self) -> io::Result<&GatewayStoreEndpoint> {
+        self.endpoint.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "gateway store endpoint is not configured",
+            )
+        })
     }
 }
 
 impl QueryValidPathsStore for GatewayStoreQuery {
-    #[tracing::instrument(level = "trace", skip_all, fields(path_count = paths.len()))]
-    fn query_valid_paths(&mut self, paths: &[Vec<u8>]) -> io::Result<Vec<Vec<u8>>> {
+    #[tracing::instrument(level = "trace", skip_all, fields(path_count = paths.len(), substitute))]
+    fn query_valid_paths(
+        &mut self,
+        paths: &[Vec<u8>],
+        substitute: bool,
+    ) -> io::Result<Vec<Vec<u8>>> {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        let store_uri = self.store_uri.as_deref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "gateway store endpoint is not configured",
-            )
-        })?;
-        let requested = paths
-            .iter()
-            .map(|path| String::from_utf8(path.clone()).map_err(|_| invalid_response()))
-            .collect::<io::Result<BTreeSet<_>>>()?;
-        let mut command = Command::new(&self.executable);
-        command
-            .args([
-                "--extra-experimental-features",
-                "nix-command",
-                "path-info",
-                "--store",
-                store_uri,
-                "--json",
-            ])
-            .args(
-                paths
-                    .iter()
-                    .map(|path| String::from_utf8_lossy(path).into_owned()),
-            )
-            .envs(
-                self.environment
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value.as_str())),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = run_bounded(command)?;
-        if output.exceeded_limit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "path-info response exceeds limit",
-            ));
-        }
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "gateway store query failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let parsing = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-        let entries: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(&output.stdout).map_err(|_| invalid_response())?;
-        if entries.len() > MAXIMUM_RESPONSE_ENTRIES {
-            return Err(invalid_response());
-        }
-        let mut valid = BTreeSet::new();
-        for (key, value) in entries {
-            if !requested.contains(&key) {
-                return Err(invalid_response());
-            }
-            match value {
-                serde_json::Value::Null => {}
-                serde_json::Value::Object(_) => {
-                    valid.insert(key);
-                }
-                _ => return Err(invalid_response()),
-            }
-        }
-        tracing::trace!(
-            event = "store.query.parse",
-            elapsed_us = parsing.map(|start| start.elapsed().as_micros() as u64),
-            valid_count = valid.len()
-        );
-        Ok(valid.into_iter().map(String::into_bytes).collect())
+        let mut connection = GatewayStoreConnection::connect(self.endpoint()?)?;
+        connection.query_valid_paths(paths, substitute)
     }
 
     fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<MissingPaths> {
-        let endpoint = self.store_uri.as_deref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "gateway store endpoint is not configured",
-            )
-        })?;
-        let endpoint = crate::store::daemon::GatewayStoreEndpoint::parse(endpoint)?;
-        let mut connection = crate::store::daemon::GatewayStoreConnection::connect(&endpoint)?;
+        let mut connection = GatewayStoreConnection::connect(self.endpoint()?)?;
         let missing = connection.query_missing(targets)?;
         Ok(MissingPaths {
             will_build: missing.will_build,
@@ -161,79 +70,4 @@ impl QueryValidPathsStore for GatewayStoreQuery {
             nar_size: missing.nar_size,
         })
     }
-}
-
-struct BoundedOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    exceeded_limit: bool,
-}
-
-fn run_bounded(mut command: Command) -> io::Result<BoundedOutput> {
-    let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-    let child = command.spawn();
-    tracing::trace!(
-        event = "store.query.spawn",
-        elapsed_us = started.map(|start| start.elapsed().as_micros() as u64),
-        success = child.is_ok()
-    );
-    let mut child = child?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("stderr unavailable"))?;
-    let stdout_reader = thread::spawn(|| drain(stdout));
-    let stderr_reader = thread::spawn(|| drain(stderr));
-    let waiting = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-    let status = child.wait();
-    tracing::trace!(
-        event = "store.query.wait",
-        elapsed_us = waiting.map(|start| start.elapsed().as_micros() as u64),
-        success = status.as_ref().is_ok_and(|status| status.success())
-    );
-    let status = status?;
-    let draining = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-    let (stdout, stdout_exceeded) = stdout_reader
-        .join()
-        .map_err(|_| io::Error::other("stdout reader panicked"))??;
-    let (stderr, stderr_exceeded) = stderr_reader
-        .join()
-        .map_err(|_| io::Error::other("stderr reader panicked"))??;
-    tracing::trace!(
-        event = "store.query.drain",
-        elapsed_us = draining.map(|start| start.elapsed().as_micros() as u64),
-        stdout_bytes = stdout.len(),
-        stderr_bytes = stderr.len(),
-        exceeded_limit = stdout_exceeded || stderr_exceeded
-    );
-    Ok(BoundedOutput {
-        status,
-        stdout,
-        stderr,
-        exceeded_limit: stdout_exceeded || stderr_exceeded,
-    })
-}
-
-fn drain(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
-    let mut retained = Vec::new();
-    let mut exceeded = false;
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = source.read(&mut buffer)?;
-        if read == 0 {
-            return Ok((retained, exceeded));
-        }
-        let available = MAXIMUM_SUBPROCESS_OUTPUT_BYTES.saturating_sub(retained.len());
-        retained.extend_from_slice(&buffer[..read.min(available)]);
-        exceeded |= read > available;
-    }
-}
-
-fn invalid_response() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "invalid gateway store response")
 }

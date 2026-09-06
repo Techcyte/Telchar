@@ -128,6 +128,26 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())
     }
 
+    #[tracing::instrument(level = "trace", skip_all, fields(path_count = paths.len(), substitute))]
+    pub fn query_valid_paths(
+        &mut self,
+        paths: &[Vec<u8>],
+        substitute: bool,
+    ) -> io::Result<Vec<Vec<u8>>> {
+        let querying = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+        let result = self
+            .client
+            .query_valid_paths(paths, substitute)
+            .map_err(|_| connection_error());
+        tracing::trace!(
+            event = "store.daemon.query_valid_paths",
+            elapsed_us = querying.map(|start| start.elapsed().as_micros() as u64),
+            success = result.is_ok(),
+            valid_count = result.as_ref().ok().map(Vec::len)
+        );
+        result
+    }
+
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.client
             .query_path_info(path)
