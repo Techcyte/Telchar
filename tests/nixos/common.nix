@@ -14,6 +14,8 @@ let
     }
     // extraConfig;
 
+  # Smoke/artifact checks exercise CLI telemetry and bounded failure diagnostics,
+  # including redaction of a deliberate secret sentinel; no builds execute here.
   gatewayModule = machineModule {
     role = "gateway";
     extraConfig = {

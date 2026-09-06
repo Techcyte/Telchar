@@ -4,6 +4,9 @@ let
   inherit (ingress) restrictedIngressGatewayModule restrictedIngressClientModule;
 in
 {
+  # An isolated raw_exec worker returns outputs through authenticated callbacks.
+  # The caller checks job identity, detached completion, followers, and result reuse;
+  # this constructor establishes cluster readiness and gateway/client credentials.
   mkNomadGatewayTest =
     {
       name,
@@ -171,6 +174,8 @@ in
       '';
     };
 
+  # Establishes a real ready Nomad client for the caller's batch-job lifecycle
+  # and server-restart assertions. This fixture does not run Telchar.
   mkNomadFixtureTest =
     {
       name,

@@ -114,6 +114,9 @@ let
 
 in
 {
+  # Proves stock Nix can reach a pinned builder while shell commands, PTYs,
+  # TCP forwarding, and forwarded agent/display access remain unavailable.
+  # This is an SSH fixture contract; no Telchar daemon participates.
   mkStaticSshFixtureTest =
     {
       name,
@@ -151,6 +154,8 @@ in
       '';
     };
 
+  # Supplies separate client, gateway, and builder stores for the caller's
+  # remote-build, live-log, and gateway-output validation assertions.
   mkStaticSshBuildTest =
     {
       name,
@@ -186,6 +191,8 @@ in
       '';
     };
 
+  # Two builders advertise disjoint features so the caller can distinguish
+  # shared-request coalescing from routing distinct builds to compatible targets.
   mkStaticSshGatewayTest =
     {
       name,

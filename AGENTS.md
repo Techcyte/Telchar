@@ -26,7 +26,7 @@ Three Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_6
 | `crates/telchar-nomad-worker/` | Allocation-side worker binary/library: callback authentication, inputs, Nix build, logs, output return. Depends on both other crates. |
 | `crates/telchar/migrations/` | Numbered PostgreSQL schema migrations, embedded by `persistence/migrations.rs`. |
 | `nix/` | Packages, OCI archives, NixOS modules, credential helpers, flake checks. |
-| `nix/checks/nixos/`, `tests/nixos/lib.nix` | Executable VM contracts and shared VM topology. |
+| `nix/checks/nixos/`, `tests/nixos/` | Executable VM contracts and shared fixtures. `tests/nixos/lib.nix` exports constructors; `common.nix`, `ingress.nix`, `static-ssh.nix`, `nomad.nix`, and `recovery.nix` own their topologies and setup. |
 | `deploy/` | Restricted SSH ingress and Nix-daemon container entrypoints. |
 | `examples/nomad/` | Commented, operator-configured Nomad deployment example. |
 | `scripts/`, `.github/workflows/`, `security/`, `deny.toml` | Fixtures, release tooling, CI, dependency/image policy and advisory exceptions. |

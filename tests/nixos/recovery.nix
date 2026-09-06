@@ -76,6 +76,8 @@ let
 
 in
 {
+  # The caller seeds durable states, kills the owner, and verifies lease takeover
+  # and exact-output reconciliation without creating replacement build attempts.
   mkRestartRecoveryTest =
     {
       name,

@@ -152,6 +152,8 @@ in
 rec {
   inherit restrictedIngressGatewayModule restrictedIngressClientModule;
 
+  # Exercises the pinned Lix client against the same Nix gateway used by stock
+  # clients; compatibility assertions belong to the supplied workload script.
   mkLixRestrictedIngressTest =
     {
       name,
@@ -166,6 +168,8 @@ rec {
       };
     };
 
+  # Full daemon ingress for protocol, output-retention, and local-build contracts,
+  # with separate client/store authority and captured OTLP evidence.
   mkRestrictedIngressTest =
     {
       name,
@@ -177,6 +181,8 @@ rec {
       includeCollector = true;
     };
 
+  # The default gateway runs the CLI smoke path, not a build daemon. Restricted
+  # ingress selects the real daemon; the caller supplies all scenario assertions.
   mkTest =
     {
       name,
