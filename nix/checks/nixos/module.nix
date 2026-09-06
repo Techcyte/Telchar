@@ -109,6 +109,7 @@
       start_all()
       gateway.wait_for_unit("postgresql.service")
       gateway.wait_for_unit("telchar.service")
+      gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
       # The installed daemon must consume protected TLS credentials, not the environment decoy.
       gateway.succeed("sudo -u postgres psql -Atc \"select count(*) from pg_stat_ssl join pg_stat_activity using (pid) where usename = 'telchar' and ssl\" | grep -Eq '^[1-9][0-9]*$'")
       gateway.succeed("test $(stat -c %a /var/lib/telchar/credentials/database-url) = 400")
@@ -122,7 +123,6 @@
       gateway.succeed("sshd -T | grep -qx 'port 22'")
       gateway.succeed("${pkgs.openssh}/bin/sshd -T -f /etc/telchar/sshd_config | grep -qx 'port 2222'")
       gateway.succeed("! grep -q 'telchar-forced-command' /etc/ssh/sshd_config")
-      gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
       gateway.succeed("test $(stat -c %a /run/telchar) = 700")
       gateway.succeed("sudo -u postgres psql -Atc \"select 1 from pg_database where datname = 'telchar'\" | grep -qx 1")
       gateway.succeed("systemctl show telchar.service -p User --value | grep -qx telchar")
