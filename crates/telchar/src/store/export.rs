@@ -824,3 +824,6 @@ fn drain_bounded(mut source: impl Read) -> io::Result<(Vec<u8>, bool)> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sync_tests;
