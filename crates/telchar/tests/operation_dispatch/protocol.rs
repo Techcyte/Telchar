@@ -4,15 +4,15 @@ use super::*;
 
 #[test]
 fn live_set_options_request_returns_terminal_frame() {
-    let otlp_endpoint = std::env::var("TELCHAR_TEST_OTLP_ENDPOINT").ok();
+    let collector = collector::start_collector();
     let mut fixture = FrontendFixture::spawn_configured(
         None,
         None,
-        otlp_endpoint
-            .as_ref()
-            .into_iter()
-            .map(|endpoint| ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()))
-            .chain([("RUST_LOG", "trace".to_owned())]),
+        [
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint()),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc".to_owned()),
+            ("RUST_LOG", "trace".to_owned()),
+        ],
         Some("cancel-running"),
     );
     let child = &mut fixture.frontend;
@@ -65,6 +65,10 @@ fn live_set_options_request_returns_terminal_frame() {
         thread::sleep(Duration::from_millis(10));
     }
     let stderr = fixture.finish();
+    assert!(
+        collector.has_log_event("worker.set_options.completed"),
+        "worker SetOptions event was not exported through OTLP"
+    );
     assert!(
         stderr.contains("worker.set_options.completed"),
         "missing local SetOptions telemetry: {stderr}"

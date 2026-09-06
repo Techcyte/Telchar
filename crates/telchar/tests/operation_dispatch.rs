@@ -17,6 +17,10 @@ use telchar::fixture::nix::{NixFixture, TrustMode};
 
 mod support;
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
 use support::postgres::PostgresFixture;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

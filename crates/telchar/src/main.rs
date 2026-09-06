@@ -2,8 +2,6 @@
 
 mod operator;
 mod runtime;
-#[cfg(test)]
-mod telemetry;
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {

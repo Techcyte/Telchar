@@ -17,3 +17,8 @@ tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 otlp-http-client.workspace = true
 rustls.workspace = true
+
+[dev-dependencies]
+opentelemetry-proto.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true

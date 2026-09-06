@@ -66,7 +66,7 @@ Rust paths below are relative to `crates/telchar/src/`; `deploy/` is repository-
 | Nomad job rendering/submission/adoption | `nomad/backend.rs` |
 | Nomad callback security and transfer | `nomad/{callback_http,callback,authentication,protocol,callback_service}.rs` |
 | Read-only operator commands | `operator.rs`, `operator/report.rs` |
-| Tracing/OTLP composition and metric instruments | `crates/telchar-telemetry/src/` (repository-root-relative), `service/metrics.rs`, `service/activity.rs`; gateway exporter tests in `telemetry.rs`, cache publication in `service/cache_publication.rs` |
+| Tracing/OTLP composition and metric instruments | `crates/telchar-telemetry/src/` (repository-root-relative), `service/metrics.rs`, `service/activity.rs`; gateway exporter tests in `../tests/telemetry.rs`, cache publication in `service/cache_publication.rs` |
 
 `telchar executor` is a separate IPC service composed in `runtime.rs`, with `service/executor_service.rs` and durable `persistence/executor.rs` records. Do not confuse it with the daemon's directly constructed local backend.
 
@@ -105,7 +105,7 @@ nix develop -c cargo test --locked -p telchar --test shared_build_recovery -- --
 nix develop -c cargo test --locked -p telchar-nomad-worker -- --test-threads=1
 ```
 
-Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL/admitted-request helpers live in `tests/support/` inside the gateway crate. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
+Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL/admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
 
 ### Workspace and flake checks
 
