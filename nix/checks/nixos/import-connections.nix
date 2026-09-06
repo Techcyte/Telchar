@@ -18,6 +18,9 @@ pkgs.testers.nixosTest {
     gateway = { ... }: {
       imports = [ telcharModule ];
       environment.systemPackages = pkgs.lib.optionals traceQueries [ pkgs.strace ];
+      systemd.services.telchar-sshd.serviceConfig.ExecStart = pkgs.lib.mkIf traceQueries (
+        pkgs.lib.mkForce "${pkgs.openssh}/bin/sshd -D -e -f /etc/telchar/sshd_config -o SetEnv=RUST_LOG=info,telchar::service=trace,telchar::runtime=trace"
+      );
       networking.firewall.enable = false;
       users.users.telchar.hashedPassword = "*";
       services.openssh.enable = true;
@@ -97,7 +100,7 @@ pkgs.testers.nixosTest {
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
             started = time.monotonic()
-            client.succeed("NIX_SSHOPTS='-4' nix copy --to " + endpoint + " " + " ".join(paths), timeout=120)
+            client.succeed("NIX_SSHOPTS='-4' nix copy --to " + endpoint + " " + " ".join(paths) + (" 2>/tmp/frontend-trace" if tracing_queries else ""), timeout=120)
             elapsed = time.monotonic() - started
             journal = gateway.succeed("journalctl --sync; journalctl -u nix-daemon.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
             connections = journal.count("accepted connection from pid ")
@@ -106,6 +109,10 @@ pkgs.testers.nixosTest {
             if tracing_queries:
                 traces = gateway.succeed("journalctl --sync; journalctl -u telchar.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o short-monotonic")
                 print("QUERY_TIMELINE " + workload + "\n" + traces)
+                frontend_trace = client.succeed("cat /tmp/frontend-trace")
+                print("FRONTEND_TIMELINE " + workload + "\n" + frontend_trace)
+                assert 'event="ipc.frontend.envelope_sent"' in frontend_trace, frontend_trace
+                assert 'event="ipc.relay.first_bytes"' in frontend_trace, frontend_trace
                 assert 'event="store.query.wait"' in traces, traces
                 assert 'event="worker.query_valid_paths.flushed"' in traces, traces
             gateway.succeed("nix-store --verify-path " + " ".join(paths))
@@ -134,7 +141,13 @@ pkgs.testers.nixosTest {
                     assert "not valid" in error, error
                 else:
                     assert status == "0", (status, gateway.succeed("cat /tmp/query-stderr"))
-                    print("QUERY_STDERR " + mode + "\n" + gateway.succeed("cat /tmp/query-stderr"))
+                    error = gateway.succeed("cat /tmp/query-stderr")
+                    assert "don't know how to build these paths" in error, error
+                    if mode == "path-info":
+                        assert "Could not resolve host: cache.nixos.org" in error, error
+                    else:
+                        assert "unable to download" not in error, error
+                    print("QUERY_STDERR " + mode + "\n" + error)
         gateway.succeed("strace -f -ttt -T -o /tmp/query-syscalls runuser -u telchar -- nix path-info --json --json-format 1 --store unix:///nix/var/nix/daemon-socket/socket /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-query-" + uuid.uuid4().hex + " >/tmp/query-stdout 2>/tmp/query-stderr")
         gateway.copy_from_vm("/tmp/query-syscalls")
     print("IMPORT_BENCHMARK_RESULTS " + json.dumps(results))

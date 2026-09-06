@@ -83,6 +83,22 @@ fn real_query_trace_reports_phases_without_paths_or_environment() {
     assert!(!trace.contains("sensitive-"), "{trace}");
     assert!(!trace.contains(&daemon.store_url()), "{trace}");
     assert!(!trace.contains("NIX_CONFIG"), "{trace}");
+    let daemon_trace = capture(tracing::Level::TRACE, || {
+        let endpoint = GatewayStoreEndpoint::parse(&daemon.store_url()).unwrap();
+        telchar::store::GatewayStoreConnection::connect(&endpoint).unwrap();
+    });
+    assert!(
+        daemon_trace.contains("store.daemon.connected"),
+        "{daemon_trace}"
+    );
+    assert!(
+        daemon_trace.contains("store.daemon.handshake"),
+        "{daemon_trace}"
+    );
+    assert!(
+        !daemon_trace.contains(&daemon.store_url()),
+        "{daemon_trace}"
+    );
     let filtered = capture(tracing::Level::INFO, || {
         query.query_valid_paths(&[path]).unwrap();
     });
@@ -108,5 +124,43 @@ fn spawn_failure_trace_is_bounded_and_filtered() {
     });
     assert!(trace.contains("store.query.spawn"), "{trace}");
     assert!(trace.contains("success=false"), "{trace}");
+    assert!(!trace.contains("sensitive-"), "{trace}");
+}
+
+#[test]
+fn real_relay_trace_marks_boundaries_not_payload_or_each_buffer() {
+    let input = vec![42; telchar::service::ipc::MAX_FRONTEND_BUFFER_BYTES * 3];
+    let mut output = Vec::new();
+    let trace = capture(tracing::Level::TRACE, || {
+        telchar::service::ipc::copy_bounded(input.as_slice(), &mut output).unwrap();
+    });
+    assert_eq!(output, input);
+    assert_eq!(trace.matches("ipc.relay.first_bytes").count(), 1, "{trace}");
+    assert_eq!(trace.matches("ipc.relay.finished").count(), 1, "{trace}");
+    assert!(trace.contains("elapsed_us="), "{trace}");
+    let filtered = capture(tracing::Level::INFO, || {
+        telchar::service::ipc::copy_bounded(input.as_slice(), std::io::sink()).unwrap();
+    });
+    assert!(filtered.is_empty(), "{filtered}");
+}
+
+#[test]
+fn real_nix_failure_does_not_export_subprocess_stderr() {
+    let mut query = GatewayStoreQuery::new(
+        "nix",
+        GatewayStoreEndpoint::parse("unix:///nonexistent/sensitive-socket-marker").unwrap(),
+    );
+    let trace = capture(tracing::Level::TRACE, || {
+        assert!(
+            query
+                .query_valid_paths(&[
+                    b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sensitive-path-marker".to_vec()
+                ])
+                .is_err()
+        );
+    });
+    assert!(trace.contains("store.query.wait"), "{trace}");
+    assert!(trace.contains("success=false"), "{trace}");
+    assert!(trace.contains("stderr_bytes="), "{trace}");
     assert!(!trace.contains("sensitive-"), "{trace}");
 }

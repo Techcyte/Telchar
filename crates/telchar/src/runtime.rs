@@ -285,7 +285,7 @@ fn run_frontend() -> io::Result<()> {
     let _session =
         tracing::trace_span!("ipc.frontend.session", session_id = %envelope.session_id).entered();
     IpcListener::send_envelope(&mut daemon, &envelope)?;
-    tracing::trace!(event = "ipc.frontend.envelope_sent");
+    tracing::trace!(event = "ipc.frontend.envelope_sent", session_id = %envelope.session_id);
 
     let mut request = daemon.try_clone()?;
     let parent = tracing::Span::current();

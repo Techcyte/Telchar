@@ -200,6 +200,48 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
 
 Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail startup. Telchar exposes no Prometheus endpoint. Telemetry is bounded and omits protocol bodies, NAR contents, secrets, raw authentication material, request identities, derivation paths, and execution identities from metric attributes.
 
+### Upload latency traces
+
+Operation-level TRACE spans and events cover frontend connection/envelope/relay boundaries,
+worker opcode reception, QueryValidPaths decoding, subprocess spawn/wait/drain/parse,
+daemon connection/handshake, and response write/flush. Enable selected targets in the
+**server process** environment, not just the calling Nix client:
+
+```bash
+RUST_LOG=info,telchar::store=trace,telchar::service=trace,telchar::runtime=trace
+journalctl -u telchar.service -o short-monotonic > query-trace.log
+```
+
+For NixOS, set `services.telchar.environment.RUST_LOG` to that filter. The SSH
+frontend is a separate process: its server-owned forced-command environment or
+sshd `SetEnv` must also set the filter. Frontend stderr travels over SSH to the
+client; capture `nix copy ... 2>frontend-trace.log`. Never redirect frontend
+stdout, which carries the Nix protocol, into diagnostic output.
+
+Events carry monotonic `elapsed_us` durations. Opcode-read duration includes client
+idle time; subprocess wait includes Nix work and subprocess shutdown; response
+flush duration is cumulative since response writing began. Console timestamps have
+second resolution; use journal timestamps plus duration fields rather than
+subtracting console timestamps. The frontend envelope event supplies `session_id`
+to correlate with the daemon session. Frontend and daemon OTLP trace IDs are
+separate: the IPC envelope does not propagate an OpenTelemetry parent context.
+
+The same spans export through the configured OTLP endpoint. An operator-owned
+OpenTelemetry Collector can route `traces` to its `debug` exporter for console
+inspection or a trace backend for duration queries. Local journal capture requires
+no collector; absent collectors may produce exporter diagnostics. TRACE adds work
+when enabled, so compare timings with logging disabled before claiming throughput
+improvements. Events omit payloads, paths, argv, environment values, and subprocess
+stderr; counts and bounded status fields remain available. Relay events occur at
+first bytes and completion, not per buffer.
+
+`checks.x86_64-linux.nixos-query-trace` captures fresh one-path and 100-derivation
+uploads plus independent missing-path CLI comparisons in an isolated NixOS VM.
+Its diagnostic output includes intentionally captured and checked Nix DNS/cache
+failure messages, and its output directory retains `query-syscalls`. Missing-path
+`nix path-info` can probe configured substituters even though Telchar only needs
+local validity; cache failures can therefore dominate the subprocess wait phase.
+
 See [OTLP metrics](metrics.md) for instrument names, dimensions, autoscaling signals, and interpretation.
 
 ## TLS and callbacks
