@@ -1,5 +1,6 @@
 //! Exposes daemon configuration, ingress, session, lifecycle, and resource-policy services.
 
+pub(crate) mod activity;
 pub mod cache_publication;
 pub mod config;
 pub mod config_reload;
