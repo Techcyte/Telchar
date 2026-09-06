@@ -1,5 +1,8 @@
 //! Renders, submits, monitors, adopts, and cancels exact deterministic Nomad batch jobs.
 
+#[cfg(test)]
+mod tests;
+
 use std::fs;
 use std::io::{self, Read};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +23,32 @@ use crate::service::config::{NomadBackendConfig, NomadConstraint, NomadTransferA
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 const NOMAD_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 const NOMAD_RETRY_MAXIMUM_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+struct StatusPoll {
+    next: Instant,
+    interval: std::time::Duration,
+}
+
+impl StatusPoll {
+    fn new(now: Instant, interval: std::time::Duration) -> Self {
+        Self {
+            next: now,
+            interval,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now >= self.next
+    }
+
+    fn completed(&mut self, now: Instant) {
+        self.next = now + self.interval;
+    }
+
+    fn wait(&self, now: Instant, deadline: Instant) -> std::time::Duration {
+        self.next.min(deadline).saturating_duration_since(now)
+    }
+}
 
 pub struct NomadClient {
     config: NomadBackendConfig,
@@ -455,6 +484,7 @@ impl NomadClient {
         let attempt_started = Instant::now();
         let result = (|| {
             let mut placement_recorded = false;
+            let mut status_poll = StatusPoll::new(Instant::now(), self.config.poll_interval());
             loop {
                 for chunk in live_logs.drain() {
                     logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
@@ -511,28 +541,31 @@ impl NomadClient {
                     | crate::persistence::SharedBuildState::Running
                     | crate::persistence::SharedBuildState::Collecting => {}
                 }
-                match self
-                    .status(submission.job_id())
-                    .map_err(NomadAttemptFailure::Retryable)?
-                {
-                    NomadExecutionState::Pending => {}
-                    NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
-                        if !placement_recorded {
-                            crate::service::metrics::nomad_placed(
-                                self.config.target().name(),
-                                attempt_started.elapsed(),
-                            );
-                            placement_recorded = true;
+                if status_poll.due(Instant::now()) {
+                    match self
+                        .status(submission.job_id())
+                        .map_err(NomadAttemptFailure::Retryable)?
+                    {
+                        NomadExecutionState::Pending => {}
+                        NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
+                            if !placement_recorded {
+                                crate::service::metrics::nomad_placed(
+                                    self.config.target().name(),
+                                    attempt_started.elapsed(),
+                                );
+                                placement_recorded = true;
+                            }
+                        }
+                        NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                            return Err(NomadAttemptFailure::Retryable(io::Error::other(
+                                "Nomad job execution failed",
+                            )));
                         }
                     }
-                    NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                        return Err(NomadAttemptFailure::Retryable(io::Error::other(
-                            "Nomad job execution failed",
-                        )));
-                    }
+                    status_poll.completed(Instant::now());
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                for chunk in live_logs.wait_and_drain(self.config.poll_interval().min(remaining)) {
+                let wait = status_poll.wait(Instant::now(), deadline);
+                for chunk in live_logs.wait_and_drain(wait) {
                     logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
                 }
             }
