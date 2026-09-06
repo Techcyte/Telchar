@@ -10,10 +10,11 @@ let
   exportTests = telchar.overrideAttrs (previous: {
     postInstall = (previous.postInstall or "") + ''
       for executable in target/release/deps/telchar-*; do
-        if test -f "$executable" && test -x "$executable"; then
+        if test -f "$executable" && test -x "$executable" && "$executable" --list | grep -q "store::export::tests::verified_export_failure_discards_connection: test"; then
           install -Dm755 "$executable" "$out/bin/telchar-export-tests"
         fi
       done
+      test -x "$out/bin/telchar-export-tests"
     '';
   });
 in
@@ -126,8 +127,10 @@ pkgs.testers.nixosTest {
         expected = 3 if result["frontend"] == "telchar" and result["paths"] == 1 else 1
         assert result["connections"] == expected, result
     expression = 'builtins.derivation { name = "export-verification"; system = "${system}"; builder = "/bin/sh"; seed = "' + uuid.uuid4().hex + '"; }'
-    path = gateway.succeed("nix-instantiate --expr " + shlex.quote(expression)).strip()
-    gateway.succeed("TELCHAR_EXPORT_TEST_STORE=unix:///nix/var/nix/daemon-socket/socket TELCHAR_EXPORT_TEST_PATH=" + path + " telchar-export-tests store::export::tests::verified_export_failure_discards_connection --ignored --nocapture")
+    path = gateway.succeed("nix-instantiate --add-root /tmp/export-verification-root --indirect --expr " + shlex.quote(expression)).strip()
+    report = gateway.succeed("TELCHAR_EXPORT_TEST_STORE=unix:///nix/var/nix/daemon-socket/socket TELCHAR_EXPORT_TEST_PATH=" + path + " telchar-export-tests store::export::tests::verified_export_failure_discards_connection --ignored --nocapture")
+    print("EXPORT_FAILURE_TEST " + report)
+    assert "1 passed; 0 failed" in report, report
     gateway.succeed("nix-store --verify-path " + path)
   '';
 }
