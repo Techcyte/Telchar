@@ -49,7 +49,9 @@ class PrepareReleaseTest(unittest.TestCase):
         manifest = tomllib.loads(destination.read_text())
         self.assertEqual(manifest["package"]["version"], RELEASE_VERSION)
         lockfile = tomllib.loads((root / "Cargo.lock").read_text())
-        package = next(p for p in lockfile["package"] if p["name"] == "telchar-telemetry")
+        package = next(
+            p for p in lockfile["package"] if p["name"] == "telchar-telemetry"
+        )
         self.assertEqual(package["version"], RELEASE_VERSION)
 
     def test_release_preserves_runtime_check(self) -> None:
