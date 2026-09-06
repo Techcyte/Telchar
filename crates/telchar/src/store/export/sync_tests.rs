@@ -48,12 +48,14 @@ fn transfer(
     usize,
 ) {
     let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
     let reader = ExportReader {
         receiver,
+        acknowledgement,
         pending: None,
         offset: 0,
     };
-    let mut writer = ExportWriter { sender };
+    let mut writer = ExportWriter { sender, result };
     std::thread::scope(|scope| {
         let producer = scope.spawn(move || {
             ALLOCATIONS.set(Some(0));
@@ -115,10 +117,17 @@ fn transport_joins_after_invalid_nar_and_sink_failure() {
     malformed[8] ^= 1;
     let mut trailing = nar.clone();
     trailing.extend_from_slice(b"trailing");
-    for invalid in [&malformed[..], &nar[..nar.len() - 1], &trailing[..]] {
+    for (index, invalid) in [&malformed[..], &nar[..nar.len() - 1], &trailing[..]]
+        .into_iter()
+        .enumerate()
+    {
         let (parsed, produced, _, _) = transfer(invalid, &mut io::sink());
         assert!(parsed.is_err());
-        assert!(produced.is_err());
+        if index == 1 {
+            produced.expect("producer sent complete truncated input before parser detects EOF");
+        } else {
+            assert!(produced.is_err());
+        }
     }
     let mut full = std::fs::OpenOptions::new()
         .write(true)
@@ -157,4 +166,65 @@ fn measure_export_transport() {
             );
         }
     }
+}
+
+#[test]
+fn acknowledgements_do_not_cross_write_boundaries() {
+    use std::io::Read;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
+    let mut reader = ExportReader {
+        receiver,
+        acknowledgement,
+        pending: None,
+        offset: 0,
+    };
+    let mut writer = ExportWriter { sender, result };
+    std::thread::scope(|scope| {
+        let producer = scope.spawn(move || {
+            writer
+                .write_all(b"first")
+                .expect("first write acknowledged");
+            let error = writer
+                .write_all(b"second")
+                .expect_err("reader drops during second write");
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+            let error = writer
+                .write_all(b"third")
+                .expect_err("closed reader cannot acknowledge another write");
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        });
+        assert_eq!(reader.read(&mut []).unwrap(), 0);
+        let mut first = [0; 5];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(&first, b"first");
+        let mut second = [0; 1];
+        reader.read_exact(&mut second).unwrap();
+        assert_eq!(&second, b"s");
+        drop(reader);
+        producer.join().unwrap();
+    });
+}
+
+#[test]
+fn empty_message_releases_waiting_writer_when_reader_stops() {
+    use std::io::Read;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
+    let mut reader = ExportReader {
+        receiver,
+        acknowledgement,
+        pending: None,
+        offset: 0,
+    };
+    let mut writer = ExportWriter { sender, result };
+    std::thread::scope(|scope| {
+        let producer = scope.spawn(move || writer.write(&[]));
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        drop(reader);
+        assert_eq!(
+            producer.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    });
 }

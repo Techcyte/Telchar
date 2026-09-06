@@ -453,12 +453,14 @@ fn load_stored_derivation_inner(
         path: path.to_path_buf(),
     };
     let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
     let reader = ExportReader {
         receiver,
+        acknowledgement,
         pending: None,
         offset: 0,
     };
-    let mut writer = ExportWriter { sender };
+    let mut writer = ExportWriter { sender, result };
     let contents = std::thread::scope(|scope| {
         let export =
             scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
@@ -583,12 +585,14 @@ fn verify_exported_nar_inner(
         path: path.to_path_buf(),
     };
     let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+    let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
     let reader = ExportReader {
         receiver,
+        acknowledgement,
         pending: None,
         offset: 0,
     };
-    let mut writer = ExportWriter { sender };
+    let mut writer = ExportWriter { sender, result };
     let fingerprint = std::thread::scope(|scope| {
         let export =
             scope.spawn(move || backend.export_nar(&request, metadata.nar_size, &mut writer));
@@ -625,10 +629,10 @@ fn verify_exported_nar_inner(
 
 struct ExportMessage {
     bytes: Vec<u8>,
-    acknowledgement: std::sync::mpsc::SyncSender<io::Result<()>>,
 }
 
 struct ExportReader {
+    acknowledgement: std::sync::mpsc::SyncSender<io::Result<()>>,
     receiver: std::sync::mpsc::Receiver<ExportMessage>,
     pending: Option<ExportMessage>,
     offset: usize,
@@ -644,12 +648,10 @@ impl Read for ExportReader {
             .as_ref()
             .is_some_and(|message| self.offset == message.bytes.len())
         {
-            let message = self
-                .pending
+            self.pending
                 .take()
                 .ok_or_else(|| io::Error::other("export message missing"))?;
-            message
-                .acknowledgement
+            self.acknowledgement
                 .send(Ok(()))
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
         }
@@ -674,8 +676,8 @@ impl Read for ExportReader {
 
 impl Drop for ExportReader {
     fn drop(&mut self) {
-        if let Some(message) = self.pending.take() {
-            let _ = message.acknowledgement.send(Err(io::Error::new(
+        if self.pending.take().is_some() {
+            let _ = self.acknowledgement.send(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "export parser stopped",
             )));
@@ -684,19 +686,18 @@ impl Drop for ExportReader {
 }
 
 struct ExportWriter {
+    result: std::sync::mpsc::Receiver<io::Result<()>>,
     sender: std::sync::mpsc::SyncSender<ExportMessage>,
 }
 
 impl Write for ExportWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
         self.sender
             .send(ExportMessage {
                 bytes: buffer.to_vec(),
-                acknowledgement,
             })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))?;
-        result
+        self.result
             .recv()
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "export parser stopped"))??;
         Ok(buffer.len())
