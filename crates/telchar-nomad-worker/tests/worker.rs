@@ -76,11 +76,17 @@ fn worker_reports_configuration_failure_without_environment_values() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(
-        stderr.contains("event=worker.phase.started phase=configuration"),
+        stderr.contains("event=\"worker.phase.started\" phase=\"configuration\""),
         "{stderr}"
     );
     assert!(
-        stderr.contains("event=worker.phase.failed phase=configuration"),
+        stderr.contains("event=\"worker.phase.failed\" phase=\"configuration\""),
+        "{stderr}"
+    );
+    assert!(stderr.contains(" INFO "), "{stderr}");
+    assert!(stderr.contains(" ERROR "), "{stderr}");
+    assert!(
+        stderr.contains("worker callback endpoint is invalid"),
         "{stderr}"
     );
     assert!(stderr.contains("error_kind=InvalidInput"), "{stderr}");
@@ -130,22 +136,30 @@ fn worker_reports_manifest_and_store_failure_without_payloads() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(
-        stderr.contains("event=worker.phase.completed phase=configuration"),
+        stderr.contains("event=\"worker.phase.completed\" phase=\"configuration\""),
         "{stderr}"
     );
     assert!(
-        stderr.contains("event=worker.phase.completed phase=manifest"),
+        stderr.contains("event=\"worker.phase.completed\" phase=\"manifest\""),
         "{stderr}"
     );
     assert!(
-        stderr.contains("event=worker.manifest.received input_count=1 output_count=1"),
+        stderr.contains("event=\"worker.manifest.received\" input_count=1 output_count=1"),
         "{stderr}"
     );
     assert!(
-        stderr.contains("event=worker.phase.failed phase=resolve-inputs"),
+        stderr.contains("event=\"worker.phase.failed\" phase=\"resolve-inputs\""),
         "{stderr}"
     );
     assert!(stderr.contains("elapsed_ms="), "{stderr}");
+    assert!(
+        stderr.contains("event=\"worker.callback.connected\""),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("event=\"worker.store.connecting\" operation=\"resolve-inputs\""),
+        "{stderr}"
+    );
     for secret in [
         "private-marker",
         "private-token-marker",

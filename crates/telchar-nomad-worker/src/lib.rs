@@ -50,10 +50,16 @@ impl WorkerSession {
         self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
-        eprintln!("event=worker.store.connecting operation=resolve-inputs");
+        tracing::info!(
+            event = "worker.store.connecting",
+            operation = "resolve-inputs"
+        );
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        eprintln!("event=worker.store.connected operation=resolve-inputs");
+        tracing::info!(
+            event = "worker.store.connected",
+            operation = "resolve-inputs"
+        );
         let mut valid = Vec::new();
         for entry in &self.manifest.paths {
             if store
@@ -103,10 +109,10 @@ impl WorkerSession {
         self.ensure_connection_active()?;
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
-        eprintln!("event=worker.store.connecting operation=build");
+        tracing::info!(event = "worker.store.connecting", operation = "build");
         let mut store = GatewayStoreConnection::connect_for_build(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        eprintln!("event=worker.store.connected operation=build");
+        tracing::info!(event = "worker.store.connected", operation = "build");
         let specification = self.manifest.build.clone();
         let derivation_path = self.manifest.derivation_path.clone();
         self.send_metadata(FrameKind::BuildStarted, &BuildStarted { derivation_path })?;
@@ -155,7 +161,7 @@ impl WorkerSession {
             }
             Ok(())
         });
-        eprintln!("event=worker.build.log_summary chunk_count={sequence}");
+        tracing::info!(event = "worker.build.log_summary", chunk_count = sequence);
         result
     }
 
@@ -232,10 +238,7 @@ impl WorkerSession {
                     })
                     .transpose()?,
             };
-            eprintln!(
-                "event=worker.output.exporting index={index} nar_size={}",
-                metadata.nar_size
-            );
+            tracing::debug!(event = "worker.output.exporting", index, path = %metadata.path, nar_size = metadata.nar_size, references = ?metadata.references);
             self.send_metadata(FrameKind::OutputMetadata, &metadata)?;
             let mut sink = OutputNarWriter::new(
                 &mut self.socket,
@@ -251,7 +254,7 @@ impl WorkerSession {
             if receipt.path != metadata.path || !receipt.accepted {
                 return Err(invalid("gateway rejected worker output"));
             }
-            eprintln!("event=worker.output.accepted index={index}");
+            tracing::debug!(event = "worker.output.accepted", index, path = %metadata.path);
         }
         self.send_metadata(
             FrameKind::BuildResult,
@@ -299,12 +302,7 @@ impl WorkerSession {
                 signatures: &[],
                 content_address: None,
             };
-            eprintln!(
-                "event=worker.input.importing index={} nar_size={} reference_count={}",
-                index,
-                entry.nar_size,
-                entry.references.len()
-            );
+            tracing::debug!(event = "worker.input.importing", index, path = %entry.path, nar_size = entry.nar_size, references = ?entry.references);
             let mut source = InputNarReader::new(
                 &mut self.socket,
                 &mut self.protocol,
@@ -312,21 +310,14 @@ impl WorkerSession {
                 entry,
             );
             if let Err(error) = store.add_to_store_nar(&info, &mut source, false, true) {
-                eprintln!(
-                    "event=worker.input.failed index={} reader_stage={:?}",
-                    index,
-                    source.failure_stage()
-                );
+                tracing::error!(event = "worker.input.failed", index, reader_stage = ?source.failure_stage());
                 return Err(io::Error::other(format!(
                     "worker input import failed for {}: {error}",
                     entry.path
                 )));
             }
             source.finish()?;
-            eprintln!(
-                "event=worker.input.imported index={index} nar_size={}",
-                entry.nar_size
-            );
+            tracing::debug!(event = "worker.input.imported", index, path = %entry.path, nar_size = entry.nar_size);
         }
         self.inputs.ready_to_build()
     }
@@ -689,16 +680,13 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         attempt = attempt.saturating_add(1);
         match connect_once(config) {
             Ok(socket) => {
-                eprintln!("event=worker.callback.connected attempt={attempt}");
+                tracing::info!(event = "worker.callback.connected", attempt);
                 return Ok(socket);
             }
             Err(error) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if attempt == 1 || attempt.is_multiple_of(10) {
-                    eprintln!(
-                        "event=worker.callback.retry attempt={attempt} error_kind={:?}",
-                        error.kind()
-                    );
+                    tracing::warn!(event = "worker.callback.retry", attempt, error_kind = ?error.kind());
                 }
             }
             Err(error) => return Err(error),
@@ -795,12 +783,12 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
     let mut socket = connect(config).map_err(|error| startup_error("connect", error))?;
-    eprintln!("event=worker.manifest.waiting");
+    tracing::info!(event = "worker.manifest.waiting");
     let message =
         read_binary_message(&mut socket).map_err(|error| startup_error("receive", error))?;
-    eprintln!(
-        "event=worker.manifest.received_bytes bytes={}",
-        message.len()
+    tracing::debug!(
+        event = "worker.manifest.received_bytes",
+        bytes = message.len()
     );
     let mut input = message.as_slice();
     let frame = read_frame(
@@ -1063,10 +1051,7 @@ impl io::Read for InputNarReader<'_> {
 }
 
 fn startup_error(stage: &'static str, error: io::Error) -> io::Error {
-    eprintln!(
-        "event=worker.startup.failed stage={stage} error_kind={:?}",
-        error.kind()
-    );
+    tracing::error!(event = "worker.startup.failed", stage, error_kind = ?error.kind());
     io::Error::other(format!("worker startup failed at {stage}"))
 }
 
