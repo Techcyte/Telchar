@@ -8,12 +8,10 @@ homepage.workspace = true
 
 [dependencies]
 nix-worker-protocol = { path = "../nix-worker-protocol" }
+telchar-telemetry = { path = "../telchar-telemetry" }
 serde.workspace = true
 serde_json.workspace = true
 opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry-appender-tracing.workspace = true
 tokio.workspace = true
 rustix = { version = "1.1.4", features = [
   "event",
@@ -23,8 +21,6 @@ rustix = { version = "1.1.4", features = [
   "time",
 ] }
 tracing.workspace = true
-tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
@@ -36,7 +32,6 @@ rustls-native-certs = "0.8"
 url = "2"
 toml = "0.8"
 reqwest.workspace = true
-otlp-http-client.workspace = true
 rustls.workspace = true
 tungstenite.workspace = true
 jsonwebtoken = "9.3.1"
@@ -45,6 +40,9 @@ signal-hook = "0.3"
 libc = "0.2"
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
 opentelemetry-proto.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true

@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::telemetry;
 use telchar::service::identity::{IdentityInput, normalize_requester};
 use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+use telchar_telemetry::Telemetry;
 
 #[path = "runtime/daemon.rs"]
 mod daemon_runtime;
@@ -37,7 +37,7 @@ pub(crate) fn validate_database_tls() -> Result<(), Box<dyn std::error::Error + 
 }
 
 pub(crate) fn executor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let telemetry = telemetry::Telemetry::initialize()?;
+    let telemetry = Telemetry::initialize("telchar", env!("CARGO_PKG_VERSION"))?;
     let result = run_executor();
     telemetry.shutdown();
     result.map_err(Into::into)
@@ -188,7 +188,7 @@ fn run_executor() -> io::Result<()> {
 }
 
 pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let telemetry = telemetry::Telemetry::initialize()?;
+    let telemetry = Telemetry::initialize("telchar", env!("CARGO_PKG_VERSION"))?;
 
     tracing::info!(event = "application.started", "application started");
     if let Some(request_id) = std::env::var_os("TELCHAR_SMOKE_REQUEST_ID") {
@@ -216,7 +216,7 @@ pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let telemetry = telemetry::Telemetry::initialize()?;
+    let telemetry = Telemetry::initialize("telchar", env!("CARGO_PKG_VERSION"))?;
     let frontend = tracing::info_span!("ipc.frontend");
     let _entered = frontend.enter();
     let result = run_frontend();
@@ -308,7 +308,7 @@ fn run_frontend() -> io::Result<()> {
 }
 
 pub(crate) fn daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let telemetry = telemetry::Telemetry::initialize()?;
+    let telemetry = Telemetry::initialize("telchar", env!("CARGO_PKG_VERSION"))?;
     let result = run_daemon();
     if let Err(error) = &result {
         tracing::error!(

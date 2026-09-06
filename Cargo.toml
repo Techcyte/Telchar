@@ -3,6 +3,7 @@ members = [
   "crates/nix-worker-protocol",
   "crates/telchar",
   "crates/telchar-nomad-worker",
+  "crates/telchar-telemetry",
 ]
 resolver = "2"
 

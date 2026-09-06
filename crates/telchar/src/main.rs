@@ -2,6 +2,7 @@
 
 mod operator;
 mod runtime;
+#[cfg(test)]
 mod telemetry;
 
 fn main() -> std::process::ExitCode {
