@@ -564,7 +564,7 @@ enum InputState {
 #[derive(Debug)]
 pub struct InputTransferSession {
     manifest: InputManifest,
-    states: std::collections::BTreeMap<String, InputState>,
+    states: std::collections::BTreeMap<String, (usize, InputState)>,
     maximum_paths: usize,
     maximum_nar_bytes: u64,
     maximum_total_bytes: u64,
@@ -588,7 +588,8 @@ impl InputTransferSession {
         let states = manifest
             .paths
             .iter()
-            .map(|entry| (entry.path.clone(), InputState::AwaitingResolution))
+            .enumerate()
+            .map(|(index, entry)| (entry.path.clone(), (index, InputState::AwaitingResolution)))
             .collect();
         Ok(Self {
             manifest,
@@ -608,7 +609,7 @@ impl InputTransferSession {
         let admitted = self.states.keys().cloned().collect::<Vec<_>>();
         paths.validate_against(&admitted, self.maximum_paths)?;
         for path in paths.paths {
-            let state = self
+            let (_, state) = self
                 .states
                 .get_mut(&path)
                 .ok_or_else(|| invalid_data("Nomad input path is not admitted"))?;
@@ -626,7 +627,11 @@ impl InputTransferSession {
             .manifest
             .paths
             .iter()
-            .filter(|entry| self.states.get(&entry.path) == Some(&InputState::AwaitingResolution))
+            .filter(|entry| {
+                self.states
+                    .get(&entry.path)
+                    .is_some_and(|(_, state)| *state == InputState::AwaitingResolution)
+            })
             .collect::<Vec<_>>();
         unresolved.iter().try_fold(0_u64, |total, entry| {
             total
@@ -639,8 +644,11 @@ impl InputTransferSession {
             .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
         for path in &paths {
-            self.states
-                .insert(path.clone(), InputState::Requested { received_bytes: 0 });
+            let (_, state) = self
+                .states
+                .get_mut(path)
+                .ok_or_else(|| invalid_data("Nomad input path is not admitted"))?;
+            *state = InputState::Requested { received_bytes: 0 };
         }
         self.request_created = true;
         Ok(PathSet { paths })
@@ -654,19 +662,15 @@ impl InputTransferSession {
         if !self.request_created {
             return Err(invalid_data("Nomad input NAR is out of order"));
         }
-        let entry = self
-            .manifest
-            .paths
-            .iter()
-            .find(|entry| entry.path == metadata.path)
+        let (index, state) = self
+            .states
+            .get_mut(&metadata.path)
             .ok_or_else(|| invalid_data("Nomad input path is not admitted"))?;
-        metadata.validate_against(
-            &self.states.keys().cloned().collect::<Vec<_>>(),
-            self.maximum_nar_bytes,
-        )?;
-        let Some(InputState::Requested {
+        let entry = &self.manifest.paths[*index];
+        metadata.validate_against(std::slice::from_ref(&entry.path), self.maximum_nar_bytes)?;
+        let InputState::Requested {
             received_bytes: prior_bytes,
-        }) = self.states.get(&metadata.path).copied()
+        } = *state
         else {
             return Err(invalid_data("Nomad input NAR does not match manifest"));
         };
@@ -682,16 +686,13 @@ impl InputTransferSession {
         {
             return Err(invalid_data("Nomad input NAR does not match manifest"));
         }
-        self.states.insert(
-            metadata.path,
-            if metadata.final_chunk {
-                InputState::Received
-            } else {
-                InputState::Requested {
-                    received_bytes: total_bytes,
-                }
-            },
-        );
+        *state = if metadata.final_chunk {
+            InputState::Received
+        } else {
+            InputState::Requested {
+                received_bytes: total_bytes,
+            }
+        };
         Ok(())
     }
 
@@ -701,7 +702,7 @@ impl InputTransferSession {
             || !self
                 .states
                 .values()
-                .all(|state| matches!(state, InputState::Available | InputState::Received))
+                .all(|(_, state)| matches!(state, InputState::Available | InputState::Received))
         {
             return Err(invalid_data("Nomad inputs are unresolved"));
         }
