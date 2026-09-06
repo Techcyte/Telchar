@@ -31,7 +31,7 @@ The default module paths are:
 
 ## NixOS module
 
-Minimal local-backend configuration:
+Minimal local-backend service configuration, assuming PostgreSQL, gateway-store permissions, and the GC-root directory are provisioned separately:
 
 ```nix
 {
@@ -52,9 +52,18 @@ Minimal local-backend configuration:
 }
 ```
 
-The module enables local PostgreSQL, gateway Nix-daemon access, and OpenSSH ingress unless their `enable` options are disabled. `services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
+The low-level module manages only the Telchar daemon by default. Infrastructure management is explicitly opt-in:
 
-The module enables OpenSSH authentication metadata. Public keys produce fingerprint-based credential IDs. Certificates produce `ssh-cert:<CA-byte-length>:<CA-fingerprint>:<key-ID-byte-length>:<key-ID>` credential IDs, with certificate principals retained as metadata. NixOS and OCI ingress use the same extraction and normalization. Explicit identity mappings override audit and quota subjects; otherwise the first certificate principal supplies the audit subject and the credential ID supplies the quota subject. Keep authentication files operator-owned and restricted to the Telchar account.
+- `services.telchar.database.manage = true` provisions local PostgreSQL coordination.
+- `services.telchar.gatewayStore.manageTrustedUser = true` adds the service user to the host Nix trusted-users list.
+- `services.telchar.gatewayStore.manageGcRootDirectory = true` creates the configured GC-root directory.
+- `services.telchar.ingress.openssh.enable = true` enables dedicated restricted SSH ingress without altering the host's regular OpenSSH service.
+
+The `nixosModules.standalone` profile enables Telchar, trusted-user and GC-root directory management, and SSH ingress. It does not enable local PostgreSQL management; configure an external database or opt into `database.manage` separately.
+
+`services.telchar.settings` is rendered as strict TOML. Backend helper programs can be added with `services.telchar.backendPackages`.
+
+When SSH ingress is enabled, the module enables OpenSSH authentication metadata. Public keys produce fingerprint-based credential IDs. Certificates produce `ssh-cert:<CA-byte-length>:<CA-fingerprint>:<key-ID-byte-length>:<key-ID>` credential IDs, with certificate principals retained as metadata. NixOS and OCI ingress use the same extraction and normalization. Explicit identity mappings override audit and quota subjects; otherwise the first certificate principal supplies the audit subject and the credential ID supplies the quota subject. Keep authentication files operator-owned and restricted to the Telchar account.
 
 Server identity and client authentication are independent. `ingress.openssh.hostCertificateFile` adds a server certificate without requiring client certificates. `trustedUserCAKeysFile` enables client certificates with or without a server certificate; `authorizedPrincipalsFile` optionally restricts principals. `authorizedKeysFile` remains available alongside the client CA.
 
