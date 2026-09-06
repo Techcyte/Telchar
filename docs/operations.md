@@ -200,6 +200,34 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
 
 Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail startup. Telchar exposes no Prometheus endpoint. Telemetry is bounded and omits protocol bodies, NAR contents, secrets, raw authentication material, request identities, derivation paths, and execution identities from metric attributes.
 
+### Worker telemetry
+
+The gateway and allocation worker link `telchar-telemetry`. Their resource service names
+are `telchar` and `telchar-nomad-worker`; each reports its binary package version.
+Both use the OTLP protocol and endpoint settings above, defaulting to gRPC on
+`http://127.0.0.1:4317` (HTTP/protobuf defaults to port 4318). Local events go to
+stderr, independently of the collector. Export queues and shutdown are bounded;
+collector unavailability does not change a build result.
+
+Worker INFO reports lifecycle phases, input/output summaries, counts and durations.
+A phase still running after ten seconds emits periodic `worker.phase.running`
+events. These indicate liveness, not a percentage of build work completed.
+The reporter stops before its phase completion event. Phase duration metrics use
+only phase and outcome dimensions, never paths or allocation IDs.
+
+```bash
+RUST_LOG=info,telchar_nomad_worker=debug
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+```
+
+Worker DEBUG includes full store paths, per-path transfer details and builder
+output, without a separate opt-in. Builder output is arbitrary build-script text;
+DEBUG copies it into local and exported diagnostics. Authentication credentials
+and environment dumps are not added by worker instrumentation. Existing client
+build-log delivery is independent of the tracing filter and remains live-only.
+These variables must be set in the worker process environment, not only on the gateway.
+
 ### Upload latency traces
 
 Operation-level TRACE spans and events cover frontend connection/envelope/relay boundaries,

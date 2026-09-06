@@ -86,6 +86,18 @@ Queue depth and wait duration are primary subject-admission autoscaling and over
 
 Backend attributes are `backend.name`, `backend.kind`, and bounded `outcome` or `failure_class`. Configured backend names are operator-bounded. Permit utilization and wait duration are primary backend autoscaling signals. A selection failure with `failure_class=no_compatible_backend` distinguishes missing compatible capacity from saturation; `backend_unavailable` means compatible static SSH capacity exists in configuration but is not currently ready. Static SSH health gauges intentionally have no host labels and therefore retain bounded cardinality.
 
+## Allocation worker
+
+| Instrument | Kind | Unit | Meaning |
+| --- | --- | --- | --- |
+| `telchar.worker.phase.duration` | histogram | `s` | Completed worker phase duration, including failed phases. |
+
+The `telchar-nomad-worker` service records `phase` (`configuration`, `manifest`,
+`resolve-inputs`, `import-inputs`, `build`, `return-outputs`, `report-failure`) and
+`outcome` (`success`, `failure`). Worker phases are local operation boundaries;
+a successful build phase means its daemon call completed, not that the derivation
+necessarily built successfully. No metric attributes identify individual builds.
+
 ## Configuration reload
 
 | Instrument | Kind | Unit | Meaning |
