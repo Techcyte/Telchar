@@ -96,6 +96,12 @@ fn worker_reports_configuration_failure_without_environment_values() {
 
 #[test]
 fn worker_reports_manifest_and_store_failure_without_payloads() {
+    for level in ["info", "debug"] {
+        check_manifest_failure(level);
+    }
+}
+
+fn check_manifest_failure(level: &str) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let endpoint = format!("ws://{}/callback", listener.local_addr().expect("address"));
     let mut environment = workload_environment(&endpoint);
@@ -130,6 +136,7 @@ fn worker_reports_manifest_and_store_failure_without_payloads() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar-nomad-worker"))
         .env_clear()
         .envs(environment)
+        .env("RUST_LOG", format!("info,telchar_nomad_worker={level}"))
         .output()
         .expect("worker runs");
     server.join().expect("server joins");
@@ -164,11 +171,11 @@ fn worker_reports_manifest_and_store_failure_without_payloads() {
         "private-marker",
         "private-token-marker",
         "private-build-marker",
-        "/nix/store/",
     ] {
         assert!(!stderr.contains(secret), "{stderr}");
     }
-    assert!(!stderr.contains("phase=build"), "{stderr}");
+    assert!(!stderr.contains("phase=\"build\""), "{stderr}");
+    assert_eq!(stderr.contains("/nix/store/"), level == "debug", "{stderr}");
 }
 
 #[test]

@@ -520,6 +520,39 @@ mod tests {
     }
 
     #[test]
+    fn worker_flushes_failure_telemetry_before_exit() {
+        let collector = start_collector();
+        let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .args(["run", "--quiet", "--locked", "-p", "telchar-nomad-worker"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            .env("TELCHAR_TRANSFER_ENDPOINT", "private-marker://secret")
+            .env("RUST_LOG", "info")
+            .output()
+            .expect("worker runs");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("worker.configuration.failed"), "{stderr}");
+        assert!(!stderr.contains("private-marker"), "{stderr}");
+        assert!(
+            collector.has_all_signals(),
+            "worker must flush logs, spans and phase metrics"
+        );
+        assert!(collector.has_log_event("worker.failed"));
+        for request in collector.log_requests.lock().expect("logs").iter() {
+            for resource in &request.resource_logs {
+                assert!(Collector::has_service_name(
+                    resource.resource.as_ref(),
+                    "telchar-nomad-worker"
+                ));
+            }
+        }
+        collector.assert_metric_attributes_are_bounded();
+    }
+
+    #[test]
     fn exports_set_options_event_to_otlp() {
         let _guard = telemetry_tests()
             .lock()

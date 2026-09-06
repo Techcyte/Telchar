@@ -1,13 +1,34 @@
 //! Loads allocation-worker configuration, connects to Telchar, and reports a bounded terminal diagnostic.
 
+mod progress;
+
 fn phase<T>(
     name: &'static str,
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let started = std::time::Instant::now();
     tracing::info!(event = "worker.phase.started", phase = name);
+    let progress = progress::Progress::start(name).map_err(|error| {
+        tracing::warn!(event = "worker.progress.unavailable", phase = name, error_kind = ?error.kind());
+        error
+    }).ok();
     let result = operation();
+    drop(progress);
     let elapsed_ms = started.elapsed().as_millis();
+    opentelemetry::global::meter("telchar-nomad-worker")
+        .f64_histogram("telchar.worker.phase.duration")
+        .with_unit("s")
+        .build()
+        .record(
+            started.elapsed().as_secs_f64(),
+            &[
+                opentelemetry::KeyValue::new("phase", name),
+                opentelemetry::KeyValue::new(
+                    "outcome",
+                    if result.is_ok() { "success" } else { "failure" },
+                ),
+            ],
+        );
     match &result {
         Ok(_) => tracing::info!(
             event = "worker.phase.completed",
@@ -59,6 +80,7 @@ fn run() -> std::process::ExitCode {
             input_count = session.manifest().paths.len(),
             output_count = session.manifest().outputs.len()
         );
+        tracing::debug!(event = "worker.derivation.received", path = %session.manifest().derivation_path);
         let requested = phase("resolve-inputs", || session.resolve_inputs(&store_uri))?;
         tracing::info!(
             event = "worker.inputs.resolved",
