@@ -4,6 +4,12 @@ use super::*;
 
 #[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
+    for level in ["info", "debug", "trace"] {
+        check_build_logs(level);
+    }
+}
+
+fn check_build_logs(level: &str) {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",
         std::process::id(),
@@ -26,7 +32,7 @@ fn build_derivation_streams_helper_logs_before_success_result() {
         "unix:///fixed-gateway.sock",
         [
             ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
-            ("RUST_LOG", "trace".to_owned()),
+            ("RUST_LOG", format!("info,telchar={level}")),
         ],
     );
     let child = &mut fixture.frontend;
@@ -76,19 +82,35 @@ fn build_derivation_streams_helper_logs_before_success_result() {
         stderr.contains("worker.build_derivation.completed"),
         "{stderr}"
     );
-    assert!(
-        stderr.contains("event=\"backend.routing.selected\"")
-            && stderr.contains("event=\"backend.execution.started\"")
-            && stderr.contains("event=\"backend.execution.completed\""),
-        "missing backend lifecycle telemetry: {stderr}"
-    );
+    if level != "info" {
+        assert!(
+            stderr.contains("event=\"backend.routing.selected\"")
+                && stderr.contains("event=\"backend.execution.started\"")
+                && stderr.contains("event=\"backend.execution.completed\""),
+            "missing backend lifecycle telemetry: {stderr}"
+        );
+    }
     assert!(
         stderr.contains("event=\"shared_build.coalescing.leader\"")
             && stderr.contains("event=\"shared_build.queue.enqueued\"")
-            && stderr.contains("event=\"shared_build.scheduler.admitted\"")
             && stderr.contains("event=\"shared_build.queue.admitted\""),
         "missing shared-build scheduling telemetry: {stderr}"
     );
-    assert!(!stderr.contains("build-log-line"), "{stderr}");
+    if level != "info" {
+        assert!(
+            stderr.contains("event=\"shared_build.scheduler.admitted\""),
+            "{stderr}"
+        );
+    }
+    assert_eq!(
+        stderr.contains("event=\"server.build.output\""),
+        level != "info",
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.contains("build-log-line"),
+        level != "info",
+        "{stderr}"
+    );
     fs::remove_dir_all(root).expect("fixture cleans");
 }
