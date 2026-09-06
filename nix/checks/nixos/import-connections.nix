@@ -101,18 +101,9 @@ pkgs.testers.nixosTest {
             gateway.succeed(" && ".join("test ! -e " + shlex.quote(path) for path in paths))
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
-            if tracing_queries:
-                gateway.succeed("pid=$(systemctl show -p MainPID --value telchar); systemd-run --unit=query-exec-trace --service-type=exec --property=StandardError=file:/tmp/strace-status strace -f -e trace=execve -o /tmp/gateway-exec -p $pid")
-                gateway.wait_until_succeeds("grep -q 'attached' /tmp/strace-status")
             started = time.monotonic()
             client.succeed("NIX_SSHOPTS='-4' nix copy --to " + endpoint + " " + " ".join(paths) + (" 2>/tmp/frontend-trace" if tracing_queries else ""), timeout=120)
             elapsed = time.monotonic() - started
-            if tracing_queries:
-                gateway.succeed("systemctl stop query-exec-trace.service")
-                gateway.succeed("! systemctl is-active --quiet query-exec-trace.service")
-                executions = gateway.succeed("cat /tmp/gateway-exec")
-                assert "execve(" not in executions, executions
-                print("GATEWAY_EXEC_TRACE " + workload + "\n" + executions)
             journal = gateway.succeed("journalctl --sync; journalctl -u nix-daemon.service --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
             connections = journal.count("accepted connection from pid ")
             results.append(dict(workload=workload, repetition=repetition if tracing_queries else repetition // 2, frontend=frontend, references=references, paths=len(paths), nar_bytes=sum(info["narSize"] for info in source_info.values()), seconds=elapsed, connections=connections))
@@ -144,10 +135,19 @@ pkgs.testers.nixosTest {
         gateway.succeed("nix copy --to file:///var/lib/query-cache " + cached_path)
         gateway.succeed("nix-store --delete " + cached_path)
         gateway.succeed("test ! -e " + cached_path)
+        if tracing_queries:
+            gateway.succeed("pid=$(systemctl show -p MainPID --value telchar); systemd-run --unit=query-exec-trace --service-type=exec --property=StandardError=file:/tmp/strace-status strace -f -e trace=execve -o /tmp/gateway-exec -p $pid")
+            gateway.wait_until_succeeds("grep -q 'attached' /tmp/strace-status")
         if transport == "daemon":
             report = gateway.succeed("runuser -u telchar -- python3 /etc/query-valid-paths.py /nix/var/nix/daemon-socket/socket " + cached_path)
         else:
             report = client.succeed("python3 /etc/query-valid-paths.py ssh " + cached_path)
+        if tracing_queries:
+            gateway.succeed("systemctl stop query-exec-trace.service")
+            gateway.succeed("! systemctl is-active --quiet query-exec-trace.service")
+            executions = gateway.succeed("cat /tmp/gateway-exec")
+            assert "execve(" not in executions, executions
+            print("GATEWAY_EXEC_TRACE " + transport + "\n" + executions)
         print("CACHE_VALIDITY " + report)
         gateway.succeed("test $(cat " + cached_path + ") = " + shlex.quote(nonce))
         gateway.succeed("nix-store --verify-path " + cached_path)
