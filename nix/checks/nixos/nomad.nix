@@ -34,6 +34,7 @@
         inherit pkgs;
         telchar = telchar;
       };
+      callbackProbe = import ../../../tests/nixos/callback-probe.nix { inherit pkgs; };
       nomadDerivation = pkgs.writeText "telchar-nomad-gateway.nix" ''
         derivation {
           name = "telchar-nomad-gateway";
@@ -47,6 +48,9 @@
       name = "telchar-nixos-nomad-gateway";
       worker = nomadWorker;
       testScript = ''
+        # Unauthenticated peers must be rejected without preventing an authenticated build.
+        stock_client.succeed("${pkgs.python3}/bin/python3 ${callbackProbe} invalid")
+        stock_client.succeed("${pkgs.python3}/bin/python3 ${callbackProbe} missing")
         stock_client.succeed("cp ${nomadDerivation} /tmp/telchar-nomad-gateway.nix")
         derivation_path = stock_client.succeed("nix-instantiate /tmp/telchar-nomad-gateway.nix").strip()
         stock_client.succeed("ln -s '" + derivation_path + "' /tmp/nomad-drv-root")

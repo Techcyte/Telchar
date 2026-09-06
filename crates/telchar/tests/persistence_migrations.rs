@@ -52,6 +52,50 @@ fn untrusted_tls_database_fails_to_migrate() {
 }
 
 #[test]
+fn malformed_tls_authority_fails_to_migrate() {
+    let fixture = PostgresFixture::start_tls();
+    let authority = tempfile::NamedTempFile::new().expect("authority file creates");
+    std::fs::write(authority.path(), "invalid-ca").expect("invalid authority writes");
+    let mut url = url::Url::parse(fixture.url()).expect("fixture URL parses");
+    url.set_query(Some("sslmode=verify-full"));
+    url.query_pairs_mut().append_pair(
+        "sslrootcert",
+        authority.path().to_str().expect("UTF-8 path"),
+    );
+
+    let error =
+        telchar::persistence::migrate(url.as_str()).expect_err("malformed authority rejects");
+
+    assert_eq!(
+        error.failure(),
+        telchar::persistence::MigrationFailure::Connection
+    );
+}
+
+#[test]
+fn unrelated_tls_authority_fails_to_migrate() {
+    let fixture = PostgresFixture::start_tls();
+    let unrelated = PostgresFixture::start_tls();
+    let unrelated_url = url::Url::parse(unrelated.url()).expect("fixture URL parses");
+    let authority = unrelated_url
+        .query_pairs()
+        .find(|(name, _)| name == "sslrootcert")
+        .expect("fixture URL has authority")
+        .1;
+    let mut url = url::Url::parse(fixture.url()).expect("fixture URL parses");
+    url.set_query(Some("sslmode=verify-full"));
+    url.query_pairs_mut().append_pair("sslrootcert", &authority);
+
+    let error =
+        telchar::persistence::migrate(url.as_str()).expect_err("unrelated authority rejects");
+
+    assert_eq!(
+        error.failure(),
+        telchar::persistence::MigrationFailure::Connection
+    );
+}
+
+#[test]
 fn latest_migration_version_matches_resulting_schema() {
     let fixture = PostgresFixture::start();
 

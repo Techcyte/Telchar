@@ -107,6 +107,21 @@
             };
         };
 
+      # Fixture diagnostics are opt-in and do not belong to product acceptance checks.
+      legacyPackages.${system}.fixtureChecks =
+        let
+          args = {
+            inherit pkgs;
+            telchar = self.packages.${system}.telchar;
+            nomadWorker = self.packages.${system}.telchar-nomad-worker;
+          };
+        in
+        {
+          inherit (import ./nix/checks/nixos/nomad.nix args) nixos-nomad-fixture;
+          inherit (import ./nix/checks/nixos/static-ssh.nix args) nixos-static-ssh-fixture;
+          inherit (import ./nix/checks/nixos/artifacts.nix args) nixos-artifacts;
+        };
+
       devShells.${system}.default = pkgs.mkShell {
         TELCHAR_NIX = "${pkgs.nix}/bin/nix";
         TELCHAR_NIX_BIN = "${pkgs.nix}/bin/nix";

@@ -4,11 +4,12 @@ This guide maps Telchar's source tree to stable architectural boundaries. Read [
 
 ## Fast orientation
 
-Telchar has three Rust crates:
+Telchar has four Rust crates:
 
 - `crates/nix-worker-protocol` provides bounded, typed Nix worker-protocol I/O without Telchar policy.
 - `crates/telchar` provides ingress, daemon composition, durable coordination, store access, and backend execution.
 - `crates/telchar-nomad-worker` provides the allocation-side Nomad worker.
+- `crates/telchar-telemetry` provides shared local tracing, bounded OTLP exporters, and phase progress reporting.
 
 PostgreSQL migrations live in `crates/telchar/migrations/`. Nix packaging and executable system tests live under `nix/` and `tests/nixos/`.
 
@@ -58,7 +59,7 @@ The public crate API is grouped by domain rather than mirroring every source fil
 - `telchar::fixture`: real-Nix and trace test infrastructure;
 - `telchar::persistence`: durable domain operations.
 
-`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity; `build/derivation.rs` parses bounded stored derivations. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/config_reload.rs` validates and publishes transactional static SSH inventory and Nomad credential reloads. `service/metrics.rs` defines bounded-cardinality OTLP instruments used across scheduling, backends, cache, transfer, retention, and Nomad, while top-level `telemetry.rs` composes local tracing and OTLP exporters. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target, rejects ambiguous Nomad resource-profile selectors, and constructs its exact executor.
+`build/mod.rs` validates `BuildDerivation` shape, preserves fixed-output authority, and computes semantic identity; `build/derivation.rs` parses bounded stored derivations. `service/config/` separates the public model, raw TOML, helpers, and validation. `service/config_reload.rs` validates and publishes transactional static SSH inventory and Nomad credential reloads. `service/metrics.rs` defines bounded-cardinality OTLP instruments used across scheduling, backends, cache, transfer, retention, and Nomad, while `crates/telchar-telemetry/src/lib.rs` composes local tracing and OTLP exporters. Gateway `telemetry.rs` contains exporter tests; `service/activity.rs` reports server phase boundaries. `service/cache_publication.rs` owns the bounded post-success executable hook. `backend/routing.rs` selects a compatible operator-configured target, rejects ambiguous Nomad resource-profile selectors, and constructs its exact executor.
 
 ### 4. Gateway store
 
