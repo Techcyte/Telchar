@@ -14,6 +14,8 @@ use tracing_subscriber::prelude::*;
 
 static TELEMETRY_TESTS: Mutex<()> = Mutex::new(());
 
+#[path = "persistence_leases/batch.rs"]
+mod batch;
 #[path = "persistence_leases/input.rs"]
 mod input;
 #[path = "persistence_leases/output.rs"]
