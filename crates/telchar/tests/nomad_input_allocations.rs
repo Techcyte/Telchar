@@ -229,3 +229,54 @@ fn measure_input_chunk_validation() {
         }
     }
 }
+
+#[test]
+fn rejects_invalid_chunk_metadata_without_advancing_input() {
+    for case in [
+        "foreign",
+        "hash",
+        "hash-syntax",
+        "size",
+        "limit",
+        "offset",
+        "empty",
+        "oversize",
+        "final",
+        "available",
+    ] {
+        let manifest = manifest(3);
+        let available = manifest.paths[0].path.clone();
+        let (mut session, path) = requested(manifest);
+        let mut chunk = metadata(&path, 0);
+        let mut length = CHUNK_BYTES as u64;
+        match case {
+            "foreign" => chunk.path.push_str("-foreign"),
+            "hash" => chunk.nar_hash = "a".repeat(64),
+            "hash-syntax" => chunk.nar_hash = "z".repeat(64),
+            "size" => chunk.nar_size -= 1,
+            "limit" => chunk.nar_size += 1,
+            "offset" => chunk.offset = 1,
+            "empty" => length = 0,
+            "oversize" => length = NAR_BYTES + 1,
+            "final" => chunk.final_chunk = true,
+            "available" => chunk.path = available,
+            _ => unreachable!(),
+        }
+        let error = session.receive_nar_chunk(chunk, length).expect_err(case);
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{case}");
+        assert!(session.ready_to_build().is_err(), "{case}");
+        let complete = NarMetadata {
+            offset: 0,
+            final_chunk: true,
+            ..metadata(&path, 0)
+        };
+        session
+            .receive_nar_chunk(complete.clone(), NAR_BYTES)
+            .unwrap();
+        session.ready_to_build().unwrap();
+        assert!(
+            session.receive_nar_chunk(complete, NAR_BYTES).is_err(),
+            "duplicate after {case}"
+        );
+    }
+}
