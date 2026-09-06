@@ -54,7 +54,7 @@ harness.mkNomadGatewayTest {
         data = stock_client.succeed("nix-store --export " + shlex.quote(drv) + " | ${pkgs.coreutils}/bin/base64 -w0").strip()
         gateway.succeed("printf %s " + shlex.quote(data) + " | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
         build = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' nix --extra-experimental-features nix-command build -L --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' " + shlex.quote(drv + "^*")
-        client_log = stock_client.succeed(build, timeout=120)
+        client_log = stock_client.succeed(build + " 2>&1", timeout=120)
         for marker in ["WORKER_BUILD_BEGIN", "WORKER_BUILD_END"]:
             assert marker in client_log, client_log
         gateway.succeed("nix-store --verify-path " + shlex.quote(output) + "; test $(cat " + shlex.quote(output) + ") = " + nonce)
