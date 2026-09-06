@@ -17,13 +17,13 @@ harness.mkNomadGatewayTest {
     results = []
     for mode in ["quiet", "chatty"]:
         nonce = uuid.uuid4().hex
-        script = "export PATH=${pkgs.coreutils}/bin; echo POLL_STARTED >&2; "
+        script = "set -eu; export PATH=$tools/bin; echo POLL_STARTED >&2; "
         if mode == "chatty":
-            script += "for i in $(seq 1 80); do echo POLL_CHUNK_$i >&2; sleep 0.1; done; "
+            script += "for i in $(seq 1 80); do echo POLL_CHUNK_$i $(date +%s%N) >&2; sleep 0.1; done; "
         else:
             script += "sleep 8; "
         script += "echo POLL_FINISHED >&2; printf " + nonce + " > $out"
-        expression = 'derivation { name = "poll-' + nonce + '"; system = "${pkgs.stdenv.hostPlatform.system}"; builder = builtins.storePath "${pkgs.runtimeShell}"; args = [ "-c" ' + json.dumps(script) + ' ]; }'
+        expression = 'derivation { name = "poll-' + nonce + '"; system = "${pkgs.stdenv.hostPlatform.system}"; builder = builtins.storePath "${pkgs.runtimeShell}"; tools = builtins.storePath "${pkgs.coreutils}"; args = [ "-c" ' + json.dumps(script) + ' ]; }'
         drv = stock_client.succeed("nix-instantiate --expr " + shlex.quote(expression)).strip()
         output = stock_client.succeed("nix-store -q --outputs " + shlex.quote(drv)).strip()
         gateway.succeed("test ! -e " + shlex.quote(output))
@@ -31,11 +31,16 @@ harness.mkNomadGatewayTest {
         gateway.succeed("printf %s " + shlex.quote(exported) + " | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
         cursor = gateway.succeed("journalctl -u telchar-daemon -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
         build = "PATH=/run/current-system/sw/bin HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' nix --extra-experimental-features nix-command build -L --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' " + shlex.quote(drv + "^*")
-        stock_client.succeed("systemd-run --unit=poll-build --wait --collect --pipe " + "${pkgs.bash}/bin/bash -c " + shlex.quote(build), timeout=120)
+        stock_client.succeed("systemd-run --unit=poll-" + mode + " --wait --collect ${pkgs.bash}/bin/bash -c " + shlex.quote(build), timeout=120)
+        build_events = [json.loads(line) for line in stock_client.succeed("journalctl --sync; journalctl -u poll-" + mode + " --no-pager -o json").splitlines() if line.startswith("{")]
+        chunks = [e for e in build_events if e.get("MESSAGE", "").startswith("POLL_CHUNK_")]
+        assert len(chunks) == (80 if mode == "chatty" else 0), build_events
+        assert any(e.get("MESSAGE") == "POLL_FINISHED" for e in build_events), build_events
+        latency_us = [int(e["__REALTIME_TIMESTAMP"]) - int(e["MESSAGE"].split()[1]) // 1000 for e in chunks]
         journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o json")
         events = [json.loads(line) for line in journal.splitlines() if line.startswith("{")]
         polls = [e for e in events if 'event="nomad.api.request.started"' in e.get("MESSAGE", "") and 'operation="status"' in e["MESSAGE"]]
-        results.append(dict(mode=mode, status_polls=len(polls), status_http_gets=2 * len(polls), poll_timestamps_us=[int(e["__REALTIME_TIMESTAMP"]) for e in polls]))
+        results.append(dict(mode=mode, log_delivery_us=latency_us, status_polls=len(polls), status_http_gets=2 * len(polls), poll_timestamps_us=[int(e["__REALTIME_TIMESTAMP"]) for e in polls]))
         print("NOMAD_POLL_BENCHMARK " + json.dumps(results[-1]))
         gateway.succeed("test $(cat " + shlex.quote(output) + ") = " + nonce + "; nix-store --verify-path " + shlex.quote(output))
     print("NOMAD_POLL_RESULTS " + json.dumps(results))
