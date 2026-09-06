@@ -1,5 +1,8 @@
 //! Initializes bounded structured logs and OTLP exporters without retaining sensitive request data.
 
+mod progress;
+pub use progress::Progress;
+
 use std::error::Error;
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

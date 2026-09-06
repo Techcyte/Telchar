@@ -413,6 +413,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         })
                     })
                     .collect::<io::Result<Vec<_>>>()?;
+                tracing::debug!(event = "server.build.paths", derivation_path, outputs = ?expected_outputs);
                 let required_features = admitted
                     .required_system_features()
                     .iter()
@@ -426,7 +427,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let shared_result = match shared_builds.acquire(&shared_build_key) {
                     crate::shared_build::SharedBuildAccess::Leader(leader) => {
                         crate::service::metrics::shared_build_leader();
-                        tracing::debug!(
+                        tracing::info!(
                             event = "shared_build.coalescing.leader",
                             backend_name = selected_target.name(),
                             backend_kind = selected_target.kind().as_str(),
@@ -463,7 +464,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             match durable_claim.build.state {
                                 crate::persistence::SharedBuildState::Succeeded => {
                                     crate::service::metrics::shared_build_reused_result();
-                                    tracing::debug!(
+                                    tracing::info!(
                                         event = "shared_build.result.reused",
                                         backend_name = selected_target.name(),
                                         backend_kind = selected_target.kind().as_str(),
@@ -546,7 +547,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             durable_execution_owned.set(true);
                             let queue_started = std::time::Instant::now();
                             crate::service::metrics::shared_build_enqueued();
-                            tracing::debug!(
+                            tracing::info!(
                                 event = "shared_build.queue.enqueued",
                                 backend_name = selected_target.name(),
                                 backend_kind = selected_target.kind().as_str(),
@@ -568,8 +569,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 io::Error::other(shared_build_error_message(&error))
                             })
                             .and_then(|_| {
-                                shared_build_scheduler
-                                    .wait_for_admission(derivation_path)
+                                crate::service::activity::run("queue", || shared_build_scheduler
+                                    .wait_for_admission(derivation_path))
                                     .map_err(|error| {
                                         tracing::warn!(
                                             event = "shared_build.scheduling.operation_failed",
@@ -603,7 +604,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 );
                             }
                             crate::service::metrics::shared_build_admitted(queue_started.elapsed());
-                            tracing::debug!(
+                            tracing::info!(
                                 event = "shared_build.queue.admitted",
                                 backend_name = selected_target.name(),
                                 backend_kind = selected_target.kind().as_str(),
@@ -611,10 +612,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 "shared build left queue for execution"
                             );
                             let substitution_started = std::time::Instant::now();
-                            let result = match substitute_build_outputs(
+                            let result = match crate::service::activity::run("substitute", || Ok(substitute_build_outputs(
                                 store_substitution,
                                 admitted.expected_outputs(),
-                            ) {
+                            )))? {
                                 Some(result) => {
                                     crate::service::metrics::cache_substitution_finished(
                                         substitution_started.elapsed(),
@@ -632,9 +633,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         substitution_started.elapsed(),
                                         "miss",
                                     );
-                                    build_executor.execute_with_logs(
+                                    crate::service::activity::run("execute", || build_executor.execute_with_logs(
                             &execution,
                             &mut |chunk| {
+                                if selected_target.kind() != crate::backend::BackendKind::Nomad {
+                                    tracing::debug!(event = "server.build.output", output = %String::from_utf8_lossy(chunk));
+                                }
                                 if requester_detached.get() {
                                     return Ok(());
                                 }
@@ -673,7 +677,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                                 Ok(disconnected)
                             },
-                        )
+                        ))
                                 }
                             };
                             match result {
@@ -720,7 +724,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             build_executor.live_log_queue_bytes(&selected_target);
                         let mut live_logs = follower.subscribe_logs(live_log_queue_bytes);
                         crate::service::metrics::shared_build_follower();
-                        tracing::debug!(
+                        tracing::info!(
                             event = "shared_build.coalescing.follower",
                             backend_name = selected_target.name(),
                             backend_kind = selected_target.kind().as_str(),
@@ -733,7 +737,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             },
                         )?;
                         output.flush()?;
-                        let result = follower
+                        let result = crate::service::activity::run("follow", || follower
                             .wait_timeout_with_logs(
                                 execution.timeout(),
                                 &mut live_logs,
@@ -760,7 +764,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         Err(error) => Err(error),
                                     }
                                 },
-                            )?
+                            ))?
                             .ok_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::TimedOut,
@@ -841,7 +845,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 let validation_started = std::time::Instant::now();
-                let output_paths = validate_build_outputs(&result, &admitted, store_export);
+                let output_paths = crate::service::activity::run("validate-outputs", || validate_build_outputs(&result, &admitted, store_export));
                 crate::service::metrics::store_validation_finished(
                     validation_started.elapsed(),
                     if output_paths.is_ok() {
@@ -1875,28 +1879,30 @@ fn wait_for_shared_build_terminal(
     database: &crate::persistence::Database,
     derivation_path: &str,
 ) -> io::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let build = crate::persistence::read_shared_build(database, derivation_path)
-            .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
-            .ok_or_else(|| io::Error::other("shared build is missing"))?;
-        match build.state {
-            crate::persistence::SharedBuildState::Succeeded => return Ok(()),
-            crate::persistence::SharedBuildState::Failed => {
-                return Err(io::Error::other("shared BuildDerivation execution failed"));
+    crate::service::activity::run("await-terminal", || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let build = crate::persistence::read_shared_build(database, derivation_path)
+                .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
+                .ok_or_else(|| io::Error::other("shared build is missing"))?;
+            match build.state {
+                crate::persistence::SharedBuildState::Succeeded => return Ok(()),
+                crate::persistence::SharedBuildState::Failed => {
+                    return Err(io::Error::other("shared BuildDerivation execution failed"));
+                }
+                crate::persistence::SharedBuildState::Claimed
+                | crate::persistence::SharedBuildState::Running
+                | crate::persistence::SharedBuildState::Collecting => {}
             }
-            crate::persistence::SharedBuildState::Claimed
-            | crate::persistence::SharedBuildState::Running
-            | crate::persistence::SharedBuildState::Collecting => {}
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "shared build completion timed out",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        if std::time::Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "shared build completion timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    })
 }
 
 fn substitute_build_outputs(

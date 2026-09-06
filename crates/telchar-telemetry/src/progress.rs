@@ -32,12 +32,14 @@ pub struct Progress {
 }
 
 impl Progress {
-    pub fn start(phase: &'static str) -> std::io::Result<Self> {
+    pub fn start(report: impl Fn(u64) + Send + 'static) -> std::io::Result<Self> {
         let (stop, receiver) = mpsc::channel();
         let span = tracing::Span::current();
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
         let reporter = std::thread::Builder::new()
-            .name("worker-progress".to_owned())
+            .name("telemetry-progress".to_owned())
             .spawn(move || {
+                let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let _entered = span.enter();
                 let started = Instant::now();
                 let mut cadence = Cadence::new(started);
@@ -48,12 +50,7 @@ impl Progress {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             if cadence.due(Instant::now()) {
-                                tracing::info!(
-                                    event = "worker.phase.running",
-                                    phase,
-                                    elapsed_ms = started.elapsed().as_millis() as u64,
-                                    "worker phase still running"
-                                );
+                                report(started.elapsed().as_millis() as u64);
                             }
                         }
                     }
@@ -96,7 +93,7 @@ mod tests {
 
     #[test]
     fn finishing_phase_joins_reporter_without_waiting_for_interval() {
-        let mut progress = Progress::start("test").expect("reporter starts");
+        let mut progress = Progress::start(|_| {}).expect("reporter starts");
         let reporter = progress.reporter.take().expect("reporter exists");
         drop(progress);
         reporter.join().expect("stopping releases reporter");

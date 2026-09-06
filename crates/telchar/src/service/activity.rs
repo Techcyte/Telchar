@@ -1,13 +1,31 @@
 //! Describes server operation boundaries without changing their results or client transport.
 
-pub(crate) fn run<T>(phase: &'static str, operation: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+pub(crate) fn run<T>(
+    phase: &'static str,
+    operation: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
     let started = std::time::Instant::now();
     tracing::info!(event = "server.phase.started", phase);
+    let progress = telchar_telemetry::Progress::start(move |elapsed_ms| {
+        tracing::info!(
+            event = "server.phase.running",
+            phase,
+            elapsed_ms,
+            "server phase still running"
+        );
+    })
+    .inspect_err(|error| {
+        tracing::warn!(event = "server.progress.unavailable", phase, error_kind = ?error.kind());
+    })
+    .ok();
     let result = operation();
+    drop(progress);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     match &result {
         Ok(_) => tracing::info!(event = "server.phase.completed", phase, elapsed_ms),
-        Err(error) => tracing::warn!(event = "server.phase.failed", phase, elapsed_ms, error_kind = ?error.kind()),
+        Err(error) => {
+            tracing::warn!(event = "server.phase.failed", phase, elapsed_ms, error_kind = ?error.kind())
+        }
     }
     result
 }
@@ -26,7 +44,9 @@ mod tests {
             self.0.lock().unwrap().extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn capture(operation: impl FnOnce()) -> String {
@@ -57,7 +77,13 @@ mod tests {
     #[test]
     fn operation_failure_preserves_error_without_logging_private_text() {
         let logs = capture(|| {
-            let error = run::<()>("execute", || Err(io::Error::new(io::ErrorKind::BrokenPipe, "private-error-marker"))).unwrap_err();
+            let error = run::<()>("execute", || {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "private-error-marker",
+                ))
+            })
+            .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert_eq!(error.to_string(), "private-error-marker");
         });

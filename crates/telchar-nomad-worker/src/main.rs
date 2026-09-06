@@ -1,6 +1,6 @@
 //! Loads allocation-worker configuration, connects to Telchar, and reports a bounded terminal diagnostic.
 
-mod progress;
+use telchar_telemetry::Progress;
 
 fn phase<T>(
     name: &'static str,
@@ -8,7 +8,9 @@ fn phase<T>(
 ) -> std::io::Result<T> {
     let started = std::time::Instant::now();
     tracing::info!(event = "worker.phase.started", phase = name);
-    let progress = progress::Progress::start(name).inspect_err(|error| {
+    let progress = Progress::start(move |elapsed_ms| {
+        tracing::info!(event = "worker.phase.running", phase = name, elapsed_ms, "worker phase still running");
+    }).inspect_err(|error| {
         tracing::warn!(event = "worker.progress.unavailable", phase = name, error_kind = ?error.kind());
     }).ok();
     let result = operation();

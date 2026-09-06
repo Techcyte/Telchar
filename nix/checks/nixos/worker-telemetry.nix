@@ -84,7 +84,8 @@ harness.mkNomadGatewayTest {
             assert 'event="server.phase.started" phase="' + phase + '"' in server_logs, server_logs
             assert 'event="server.phase.completed" phase="' + phase + '"' in server_logs, server_logs
         assert 'event="server.phase.running" phase="execute"' in server_logs, server_logs
-        assert ' INFO event="shared_build.coalescing.leader"' in server_logs, server_logs
+        assert not any('event="server.phase.running" phase="execute"' in line for line in server_logs.split('event="server.phase.completed" phase="execute"', 1)[1].splitlines()), server_logs
+        assert any(' INFO ' in line and 'event="shared_build.coalescing.leader"' in line for line in server_logs.splitlines()), server_logs
         assert ('event="server.build.output"' in server_logs) == (level == "debug"), server_logs
         assert ('event="server.build.paths"' in server_logs) == (level == "debug"), server_logs
         assert ("WORKER_BUILD_BEGIN" in server_logs) == (level == "debug"), server_logs

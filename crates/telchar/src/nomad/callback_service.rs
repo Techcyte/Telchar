@@ -592,6 +592,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
             }
             FrameKind::LogChunk => {
                 session.accept(Direction::WorkerToGateway, frame.clone())?;
+                tracing::debug!(event = "server.build.output", derivation_path, output = %String::from_utf8_lossy(frame.payload()));
                 if publish_live_log(shared_builds, shared_build_key, frame.payload()) == 0 {
                     tracing::debug!(
                         event = "nomad.callback.log.unattached",
