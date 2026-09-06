@@ -59,7 +59,7 @@ fn failed_export_operation_discards_stream_without_replay() {
 #[test]
 #[ignore = "requires TELCHAR_EXPORT_TEST_STORE and TELCHAR_EXPORT_TEST_PATH for a real canonical store"]
 fn verified_export_failure_discards_connection() {
-    use super::{GatewayStoreEndpoint, GatewayStoreExportBackend, export_verified_nar};
+    use super::{export_verified_nar, GatewayStoreEndpoint, GatewayStoreExportBackend};
     use std::io::Read;
 
     let endpoint =
