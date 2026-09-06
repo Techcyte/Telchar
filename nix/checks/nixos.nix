@@ -59,6 +59,7 @@ import ./nixos/oci.nix {
   nixos-callback-authentication = import ./nixos/callback-authentication.nix {
     inherit pkgs telchar nomadWorker;
   };
+  nixos-nomad-polling = import ./nixos/nomad-polling.nix checkArgs;
   nixos-nomad-credential = import ./nixos/nomad-credential.nix {
     inherit
       pkgs
