@@ -319,8 +319,9 @@ in
       runtime.succeed("test \"$(docker run --rm --entrypoint /bin/telchar ${telcharImageReference})\" = 'Nix worker protocol'")
       runtime.succeed("test \"$(docker run --rm --entrypoint /bin/ssh ${telcharImageReference} -V 2>&1; echo $?)\" != 127")
       runtime.succeed("set +e; docker run --rm ${nomadWorkerImageReference} >/tmp/worker.out 2>/tmp/worker.err; status=$?; set -e; test $status -eq 1")
-      runtime.succeed("grep -Ex 'event=worker.phase.failed phase=configuration elapsed_ms=[0-9]+ error_kind=InvalidInput' /tmp/worker.err")
-      runtime.succeed("grep -Fx 'event=worker.failed error_kind=InvalidInput' /tmp/worker.err")
+      worker_errors = runtime.succeed("cat /tmp/worker.err")
+      assert ' ERROR event="worker.phase.failed" phase="configuration"' in worker_errors, worker_errors
+      assert ' ERROR event="worker.failed" error_kind=InvalidInput' in worker_errors, worker_errors
       runtime.succeed("set +e; docker run --rm -e TELCHAR_DATABASE_URL=postgresql://unreachable/telchar -e TELCHAR_CONFIG=/missing/telchar.toml ${telcharImageReference} >/tmp/gateway.out 2>/tmp/gateway.err; status=$?; set -e; test $status -eq 1")
       runtime.succeed("grep -Fx 'telchar: service configuration could not be read' /tmp/gateway.err")
       runtime.succeed("mkdir -p /etc/telchar-container /run/telchar-container /var/lib/telchar-container/import /var/lib/telchar-container/gc-roots && chmod 0700 /run/telchar-container")
