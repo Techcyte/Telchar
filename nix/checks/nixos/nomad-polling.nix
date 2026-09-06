@@ -17,7 +17,7 @@ harness.mkNomadGatewayTest {
     results = []
     for mode in ["quiet", "chatty"]:
         nonce = uuid.uuid4().hex
-        script = "echo POLL_STARTED >&2; "
+        script = "export PATH=${pkgs.coreutils}/bin; echo POLL_STARTED >&2; "
         if mode == "chatty":
             script += "for i in $(seq 1 80); do echo POLL_CHUNK_$i >&2; sleep 0.1; done; "
         else:
@@ -30,7 +30,7 @@ harness.mkNomadGatewayTest {
         exported = stock_client.succeed("nix-store --export " + shlex.quote(drv) + " | ${pkgs.coreutils}/bin/base64 -w0").strip()
         gateway.succeed("printf %s " + shlex.quote(exported) + " | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
         cursor = gateway.succeed("journalctl -u telchar-daemon -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
-        build = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' nix --extra-experimental-features nix-command build -L --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' " + shlex.quote(drv + "^*")
+        build = "PATH=/run/current-system/sw/bin HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' nix --extra-experimental-features nix-command build -L --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' " + shlex.quote(drv + "^*")
         stock_client.succeed("systemd-run --unit=poll-build --wait --collect --pipe " + "${pkgs.bash}/bin/bash -c " + shlex.quote(build), timeout=120)
         journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o json")
         events = [json.loads(line) for line in journal.splitlines() if line.startswith("{")]
