@@ -44,13 +44,41 @@ harness.mkNomadGatewayTest {
             allocations = json.loads(nomad_server.succeed("nomad job allocs -namespace telchar -json " + shlex.quote(job_id)))
             assert len(allocations) == 1 and allocations[0]["ClientStatus"] == "running", allocations
             allocation_id = allocations[0]["ID"]
+            find_worker = """
+    import json, pathlib, sys
+    matches = []
+    for proc in pathlib.Path('/proc').glob('[0-9]*'):
+        try:
+            environment = (proc / 'environ').read_bytes().split(b'\\0')
+            executable = pathlib.Path((proc / 'exe').readlink()).name
+            if ('NOMAD_ALLOC_ID=' + sys.argv[1]).encode() in environment and executable == 'telchar-nomad-worker':
+                start = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+                matches.append(dict(pid=int(proc.name), start=start))
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass
+    assert len(matches) == 1, matches
+    pathlib.Path('/tmp/cancel-worker.json').write_text(json.dumps(matches[0]))
+    print(json.dumps(matches[0]))
+    """
+            worker_identity = nomad_client.succeed("${pkgs.python3}/bin/python3 -c " + shlex.quote(find_worker) + " " + shlex.quote(allocation_id)).strip()
             stock_client.succeed("systemctl stop poll-cancel")
             gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc " + shlex.quote("select state from shared_builds where derivation_path = '" + drv + "'") + " | grep -qx failed", timeout=30)
             cancel_journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
             assert any('event="nomad.api.request.completed"' in line and 'operation="stop"' in line and 'result="succeeded"' in line for line in cancel_journal.splitlines()), cancel_journal
-            allocation_query = "${pkgs.curl}/bin/curl --fail --silent --show-error " + shlex.quote("http://192.168.1.1:4646/v1/allocation/" + allocation_id + "?namespace=telchar")
-            nomad_server.wait_until_succeeds(allocation_query + " | ${pkgs.jq}/bin/jq -e '.DesiredStatus == \"stop\" and (.ClientStatus == \"complete\" or .ClientStatus == \"failed\") and (.TaskStates | length > 0) and (.TaskStates | all(.State == \"dead\"))'", timeout=30)
-            print("NOMAD_POLL_ALLOCATION " + nomad_server.succeed(allocation_query + " | ${pkgs.jq}/bin/jq -c '{ID, DesiredStatus, ClientStatus, TaskStates: (.TaskStates | map_values(.State))}'").strip())
+            for resource in ["allocation/" + allocation_id, "job/" + job_id]:
+                query = "${pkgs.curl}/bin/curl --silent --show-error -o /dev/null -w '%{http_code}' " + shlex.quote("http://192.168.1.1:4646/v1/" + resource + "?namespace=telchar")
+                nomad_server.wait_until_succeeds("test $(" + query + ") = 404", timeout=30)
+            worker_gone = """
+    import json, pathlib
+    identity = json.loads(pathlib.Path('/tmp/cancel-worker.json').read_text())
+    try:
+        start = pathlib.Path('/proc', str(identity['pid']), 'stat').read_text().rsplit(')', 1)[1].split()[19]
+    except (FileNotFoundError, ProcessLookupError):
+        start = None
+    assert start != identity['start'], identity
+    """
+            nomad_client.wait_until_succeeds("${pkgs.python3}/bin/python3 -c " + shlex.quote(worker_gone), timeout=30)
+            print("NOMAD_POLL_ALLOCATION_PURGED worker_terminated " + worker_identity)
             gateway.succeed("test ! -e " + shlex.quote(output))
             print("NOMAD_POLL_CANCELLATION verified real allocation stop after requester disconnect")
             continue
