@@ -24,7 +24,11 @@ let
     inherit version;
     TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
     cargoExtraArgs = "-p telchar";
-    nativeBuildInputs = [ pkgs.postgresql ];
+    nativeBuildInputs = [
+      pkgs.postgresql
+      pkgs.nix
+      pkgs.openssh
+    ];
     cargoTestExtraArgs = "--lib";
   };
 
