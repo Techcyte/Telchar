@@ -59,25 +59,37 @@ fn failed_export_operation_discards_stream_without_replay() {
 #[test]
 #[ignore = "requires TELCHAR_EXPORT_TEST_STORE and TELCHAR_EXPORT_TEST_PATH for a real canonical store"]
 fn verified_export_failure_discards_connection() {
-    use super::{GatewayStoreExportBackend, GatewayStoreEndpoint, export_verified_nar};
+    use super::{GatewayStoreEndpoint, GatewayStoreExportBackend, export_verified_nar};
     use std::io::Read;
 
-    let endpoint = GatewayStoreEndpoint::parse(&std::env::var("TELCHAR_EXPORT_TEST_STORE").unwrap())
-        .unwrap();
+    let endpoint =
+        GatewayStoreEndpoint::parse(&std::env::var("TELCHAR_EXPORT_TEST_STORE").unwrap()).unwrap();
     let path = std::path::PathBuf::from(std::env::var("TELCHAR_EXPORT_TEST_PATH").unwrap());
     let mut backend = GatewayStoreExportBackend::new(endpoint);
     let mut bytes = Vec::new();
     let first = export_verified_nar(&path, &mut bytes, &mut backend).unwrap();
-    let mut handle = backend.connection.as_ref().unwrap().shutdown_handle().unwrap();
+    let mut handle = backend
+        .connection
+        .as_ref()
+        .unwrap()
+        .shutdown_handle()
+        .unwrap();
     let second = export_verified_nar(&path, &mut std::io::sink(), &mut backend).unwrap();
     assert_eq!(first, second);
     assert_eq!(first.nar_size, bytes.len() as u64);
-    let mut full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+    let mut full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
     let error = export_verified_nar(&path, &mut full, &mut backend)
         .expect_err("real destination write failure propagates");
     assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
     assert!(backend.connection.is_none());
-    assert_eq!(handle.read(&mut [0]).unwrap(), 0, "discard shuts cloned handles");
+    assert_eq!(
+        handle.read(&mut [0]).unwrap(),
+        0,
+        "discard shuts cloned handles"
+    );
     let recovered = export_verified_nar(&path, &mut std::io::sink(), &mut backend).unwrap();
     assert_eq!(first, recovered);
     assert!(backend.connection.is_some());

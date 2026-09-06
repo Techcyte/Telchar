@@ -72,6 +72,8 @@ pub struct VerifiedStoreExport {
 
 pub trait StoreExportBackend: Send {
     fn store_uri(&self) -> &str;
+    /// Stateless backends have no transport to discard. Stateful backends release it here.
+    fn discard_connection(&mut self) {}
     fn build_paths_with_results(&mut self, _targets: &[Vec<u8>]) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -141,15 +143,37 @@ pub fn backend_from_environment() -> io::Result<Box<dyn StoreExportBackend>> {
 
 pub struct GatewayStoreExportBackend {
     endpoint: GatewayStoreEndpoint,
+    connection: Option<GatewayStoreConnection>,
 }
 
 impl GatewayStoreExportBackend {
     pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
-        Self { endpoint }
+        Self {
+            endpoint,
+            connection: None,
+        }
+    }
+
+    fn with_connection<T>(
+        &mut self,
+        operation: impl FnOnce(&mut GatewayStoreConnection) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut connection = match self.connection.take() {
+            Some(connection) => connection,
+            None => GatewayStoreConnection::connect(&self.endpoint)?,
+        };
+        // Failed operations cannot leave a reusable protocol stream and are never replayed.
+        let value = operation(&mut connection)?;
+        self.connection = Some(connection);
+        Ok(value)
     }
 }
 
 impl StoreExportBackend for GatewayStoreExportBackend {
+    fn discard_connection(&mut self) {
+        self.connection = None;
+    }
+
     fn store_uri(&self) -> &str {
         "configured-gateway-daemon"
     }
@@ -159,25 +183,28 @@ impl StoreExportBackend for GatewayStoreExportBackend {
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
-        let info = connection
-            .query_path_info(path.as_os_str().as_encoded_bytes())?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "registered path omitted"))?;
-        Ok(RegisteredPathInfo {
-            path: path.to_path_buf(),
-            nar_hash: parse_sha256_hex(info.nar_hash_hex())?,
-            nar_size: info.nar_size(),
-            references: info
-                .references()
-                .iter()
-                .map(|reference| PathBuf::from(String::from_utf8_lossy(reference).into_owned()))
-                .collect(),
-            deriver: info
-                .deriver()
-                .map(|deriver| PathBuf::from(String::from_utf8_lossy(deriver).into_owned())),
-            content_address: info
-                .content_address()
-                .map(|address| String::from_utf8_lossy(address).into_owned()),
+        self.with_connection(|connection| {
+            let info = connection
+                .query_path_info(path.as_os_str().as_encoded_bytes())?
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "registered path omitted")
+                })?;
+            Ok(RegisteredPathInfo {
+                path: path.to_path_buf(),
+                nar_hash: parse_sha256_hex(info.nar_hash_hex())?,
+                nar_size: info.nar_size(),
+                references: info
+                    .references()
+                    .iter()
+                    .map(|reference| PathBuf::from(String::from_utf8_lossy(reference).into_owned()))
+                    .collect(),
+                deriver: info
+                    .deriver()
+                    .map(|deriver| PathBuf::from(String::from_utf8_lossy(deriver).into_owned())),
+                content_address: info
+                    .content_address()
+                    .map(|address| String::from_utf8_lossy(address).into_owned()),
+            })
         })
     }
 
@@ -187,8 +214,9 @@ impl StoreExportBackend for GatewayStoreExportBackend {
         nar_size: u64,
         sink: &mut dyn Write,
     ) -> io::Result<()> {
-        let mut connection = GatewayStoreConnection::connect(&self.endpoint)?;
-        connection.nar_from_path(request.path.as_os_str().as_encoded_bytes(), nar_size, sink)
+        self.with_connection(|connection| {
+            connection.nar_from_path(request.path.as_os_str().as_encoded_bytes(), nar_size, sink)
+        })
     }
 }
 
@@ -398,6 +426,18 @@ pub fn load_stored_derivation(
     maximum_contents: u64,
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<Vec<u8>> {
+    let result = load_stored_derivation_inner(path, maximum_contents, backend);
+    if result.is_err() {
+        backend.discard_connection();
+    }
+    result
+}
+
+fn load_stored_derivation_inner(
+    path: &Path,
+    maximum_contents: u64,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+) -> io::Result<Vec<u8>> {
     if path.extension().and_then(std::ffi::OsStr::to_str) != Some("drv") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -518,6 +558,18 @@ pub fn validate_store_output(
 }
 
 fn verify_exported_nar(
+    path: &Path,
+    sink: &mut impl Write,
+    backend: &mut (impl StoreExportBackend + ?Sized),
+) -> io::Result<VerifiedStoreExport> {
+    let result = verify_exported_nar_inner(path, sink, backend);
+    if result.is_err() {
+        backend.discard_connection();
+    }
+    result
+}
+
+fn verify_exported_nar_inner(
     path: &Path,
     sink: &mut impl Write,
     backend: &mut (impl StoreExportBackend + ?Sized),
