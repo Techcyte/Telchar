@@ -483,7 +483,6 @@ fn malformed_handshake_closes_socket_and_redacts_peer_bytes() {
         assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
         assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
         integer(&mut stream, 0xdead_beef);
-        integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
         stream.flush().expect("malformed greeting flushes");
         let mut byte = [0; 1];
         let closed = match stream.read(&mut byte) {
