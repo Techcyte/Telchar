@@ -48,8 +48,9 @@ harness.mkNomadGatewayTest {
             gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc " + shlex.quote("select state from shared_builds where derivation_path = '" + drv + "'") + " | grep -qx failed", timeout=30)
             cancel_journal = gateway.succeed("journalctl --sync; journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " --no-pager -o cat")
             assert any('event="nomad.api.request.completed"' in line and 'operation="stop"' in line and 'result="succeeded"' in line for line in cancel_journal.splitlines()), cancel_journal
-            nomad_server.wait_until_succeeds("nomad alloc status -namespace telchar -json " + shlex.quote(allocation_id) + " | ${pkgs.jq}/bin/jq -e '.DesiredStatus == \"stop\" and (.ClientStatus == \"complete\" or .ClientStatus == \"failed\") and (.TaskStates | length > 0) and (.TaskStates | all(.State == \"dead\"))'", timeout=30)
-            print("NOMAD_POLL_ALLOCATION " + nomad_server.succeed("nomad alloc status -namespace telchar -json " + shlex.quote(allocation_id) + " | ${pkgs.jq}/bin/jq -c '{ID, DesiredStatus, ClientStatus, TaskStates: (.TaskStates | map_values(.State))}'").strip())
+            allocation_query = "${pkgs.curl}/bin/curl --fail --silent --show-error " + shlex.quote("http://192.168.1.1:4646/v1/allocation/" + allocation_id + "?namespace=telchar")
+            nomad_server.wait_until_succeeds(allocation_query + " | ${pkgs.jq}/bin/jq -e '.DesiredStatus == \"stop\" and (.ClientStatus == \"complete\" or .ClientStatus == \"failed\") and (.TaskStates | length > 0) and (.TaskStates | all(.State == \"dead\"))'", timeout=30)
+            print("NOMAD_POLL_ALLOCATION " + nomad_server.succeed(allocation_query + " | ${pkgs.jq}/bin/jq -c '{ID, DesiredStatus, ClientStatus, TaskStates: (.TaskStates | map_values(.State))}'").strip())
             gateway.succeed("test ! -e " + shlex.quote(output))
             print("NOMAD_POLL_CANCELLATION verified real allocation stop after requester disconnect")
             continue
