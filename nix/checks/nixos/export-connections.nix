@@ -44,7 +44,6 @@ pkgs.testers.nixosTest {
           TELCHAR_GATEWAY_DISK_RESERVE_BYTES = "1048576";
         };
       };
-      };
       virtualisation.memorySize = 2048;
       system.stateVersion = "26.05";
     };
