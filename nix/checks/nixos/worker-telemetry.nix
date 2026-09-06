@@ -1,5 +1,10 @@
 # Verifies worker telemetry and client build logs using real Nomad, Nix and OTLP services.
-{ pkgs, telchar, nomadWorker, ... }:
+{
+  pkgs,
+  telchar,
+  nomadWorker,
+  ...
+}:
 let
   harness = import ../../../tests/nixos/lib.nix { inherit pkgs telchar; };
   worker = pkgs.writeShellScriptBin "telchar-nomad-worker" ''
@@ -71,6 +76,14 @@ harness.mkNomadGatewayTest {
         assert ("WORKER_BUILD_END" in logs) == (level == "debug"), logs
         assert logs.index("worker.phase.running") < logs.index("worker.completed"), logs
         print("WORKER_TELEMETRY_LOGS " + level + " " + logs)
+    for protocol, port in [("grpc", 4317), ("http/protobuf", 4318)]:
+        command = "env RUST_LOG=info OTEL_EXPORTER_OTLP_PROTOCOL=" + shlex.quote(protocol) + " OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:" + str(port) + " TELCHAR_TRANSFER_ENDPOINT=private-marker://secret ${nomadWorker}/bin/telchar-nomad-worker >/tmp/failure.out 2>/tmp/failure.err"
+        status, _ = nomad_client.execute(command, timeout=10)
+        assert status == 1, status
+        nomad_client.succeed("test ! -s /tmp/failure.out")
+        errors = nomad_client.succeed("cat /tmp/failure.err")
+        assert "worker.configuration.failed" in errors and "worker.failed" in errors, errors
+        assert "private-marker" not in errors and "secret" not in errors, errors
     nomad_client.succeed("systemctl stop worker-collector")
     records = [json.loads(line) for line in nomad_client.succeed("cat /tmp/worker-telemetry.json").splitlines() if line.strip()]
     signals = {key: [resource for record in records for resource in record.get(key, [])] for key in ["resourceSpans", "resourceLogs", "resourceMetrics"]}
@@ -81,9 +94,11 @@ harness.mkNomadGatewayTest {
     def attributes(item):
         return {a["key"]: a["value"] for a in item.get("attributes", [])}
     completed = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.completed"]
+    failures = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.failed"]
+    assert len(failures) == 2, failures
     assert len(completed) == 2, completed
     assert len({item["traceId"] for item in completed}) == 2, completed
-    for item in completed:
+    for item in completed + failures:
         assert any(span["traceId"] == item["traceId"] and span["name"] == "worker.execution" for resource in signals["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]), item
     output_logs = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.build.output"]
     assert output_logs and all(item["severityText"] == "DEBUG" for item in output_logs), output_logs
