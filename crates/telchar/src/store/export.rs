@@ -427,9 +427,6 @@ pub fn load_stored_derivation(
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<Vec<u8>> {
     let result = load_stored_derivation_inner(path, maximum_contents, backend);
-    if result.is_err() {
-        backend.discard_connection();
-    }
     result
 }
 
@@ -563,9 +560,6 @@ fn verify_exported_nar(
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<VerifiedStoreExport> {
     let result = verify_exported_nar_inner(path, sink, backend);
-    if result.is_err() {
-        backend.discard_connection();
-    }
     result
 }
 
