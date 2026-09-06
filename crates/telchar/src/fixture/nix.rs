@@ -185,6 +185,17 @@ impl NixFixture {
             fs::read_to_string(&self.config_path)?
         );
         let environment = self.daemon_environment(config);
+        // Initialize SQLite before connection handlers can open the store concurrently.
+        let initialized = Command::new("nix-store")
+            .envs(&environment)
+            .args(["--store", "local", "--init"])
+            .output()?;
+        if !initialized.status.success() {
+            return Err(io::Error::other(format!(
+                "fixture store initialization failed: {}",
+                String::from_utf8_lossy(&initialized.stderr).trim()
+            )));
+        }
         let mut command = Command::new("nix-daemon");
         command
             .envs(&environment)

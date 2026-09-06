@@ -5,6 +5,12 @@ use std::net::Shutdown;
 
 #[test]
 fn failed_import_operation_discards_stream_without_replay() {
+    for _ in 0..50 {
+        check_operation();
+    }
+}
+
+fn check_operation() {
     let fixture = NixFixture::create().expect("fixture creates");
     let mut daemon = fixture
         .start_daemon(TrustMode::Trusted)
