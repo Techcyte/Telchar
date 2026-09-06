@@ -372,17 +372,34 @@ fn create_request_retained_leases_inner(
     {
         return Err(StoreLeaseError(StoreLeaseFailure::Capacity));
     }
-    let mut records = Vec::with_capacity(leases.len());
-    for (lease_id, store_path, nar_size) in leases {
-        let nar_size = *nar_size as i64;
-        let row = transaction
-            .query_one(
-                "INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size) VALUES ($1, 'request', $2, $3, $4, 'active', transaction_timestamp(), NULL, NULL, $5) RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size",
-                &[&lease_id, &request_id, &store_path, &purpose.as_str(), &nar_size],
-            )
-            .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
-        records.push(decode_store_lease(&row).map_err(StoreLeaseError)?);
-    }
+    let lease_ids = leases
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect::<Vec<_>>();
+    let store_paths = leases
+        .iter()
+        .map(|(_, path, _)| path.as_str())
+        .collect::<Vec<_>>();
+    let nar_sizes = leases
+        .iter()
+        .map(|(_, _, size)| *size as i64)
+        .collect::<Vec<_>>();
+    let rows = transaction
+        .query(
+            "WITH inputs AS (
+                SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]) WITH ORDINALITY AS input(lease_id, store_path, nar_size, ordinal)
+             ), inserted AS (
+                INSERT INTO store_leases (lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size)
+                SELECT lease_id, 'request', $4, store_path, $5, 'active', transaction_timestamp(), NULL, NULL, nar_size FROM inputs
+                RETURNING lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size
+             ) SELECT inserted.* FROM inserted JOIN inputs USING (lease_id) ORDER BY inputs.ordinal",
+            &[&lease_ids, &store_paths, &nar_sizes, &request_id, &purpose.as_str()],
+        )
+        .map_err(|error| StoreLeaseError(if error.as_db_error().is_some_and(|database| database.code() == &postgres::error::SqlState::UNIQUE_VIOLATION) { StoreLeaseFailure::Conflict } else { StoreLeaseFailure::Query }))?;
+    let records = rows
+        .iter()
+        .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
+        .collect::<Result<Vec<_>, _>>()?;
     transaction
         .commit()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
