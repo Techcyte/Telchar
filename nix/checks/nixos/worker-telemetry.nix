@@ -50,6 +50,9 @@ harness.mkNomadGatewayTest {
     stock_client.succeed("ssh-keyscan -t ed25519 gateway > /root/.ssh/known_hosts 2>/dev/null")
     for level, protocol, port in [("info", "grpc", 4317), ("debug", "http/protobuf", 4318), ("info", "grpc", 9)]:
         nomad_client.succeed("printf %s " + shlex.quote(level) + " > /run/worker-level; printf %s " + shlex.quote(protocol) + " > /run/worker-protocol; echo " + str(port) + " > /run/worker-port")
+        gateway.succeed("mkdir -p /run/systemd/system/telchar-daemon.service.d; printf '[Service]\\nEnvironment=RUST_LOG=info,telchar=%s\\n' " + shlex.quote(level) + " > /run/systemd/system/telchar-daemon.service.d/logging.conf; systemctl daemon-reload; systemctl restart telchar-daemon")
+        gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")
+        cursor = json.loads(gateway.succeed("journalctl -u telchar-daemon -n1 -o json"))["__CURSOR"]
         nonce = uuid.uuid4().hex
         script = "echo WORKER_BUILD_BEGIN >&2; $tools/bin/sleep 12; echo WORKER_BUILD_END >&2; printf " + nonce + " > $out"
         expr = 'derivation { name = "telemetry-' + nonce + '"; system = "${pkgs.stdenv.hostPlatform.system}"; builder = builtins.storePath "${pkgs.runtimeShell}"; tools = builtins.storePath "${pkgs.coreutils}"; args = [ "-c" ' + json.dumps(script) + ' ]; }'
@@ -76,6 +79,17 @@ harness.mkNomadGatewayTest {
         assert ("WORKER_BUILD_END" in logs) == (level == "debug"), logs
         assert logs.index("worker.phase.running") < logs.index("worker.completed"), logs
         print("WORKER_TELEMETRY_LOGS " + level + " " + logs)
+        server_logs = gateway.succeed("journalctl -u telchar-daemon --after-cursor=" + shlex.quote(cursor) + " -o cat")
+        for phase in ["queue", "substitute", "execute", "validate-outputs"]:
+            assert 'event="server.phase.started" phase="' + phase + '"' in server_logs, server_logs
+            assert 'event="server.phase.completed" phase="' + phase + '"' in server_logs, server_logs
+        assert 'event="server.phase.running" phase="execute"' in server_logs, server_logs
+        assert ' INFO event="shared_build.coalescing.leader"' in server_logs, server_logs
+        assert ('event="server.build.output"' in server_logs) == (level == "debug"), server_logs
+        assert ('event="server.build.paths"' in server_logs) == (level == "debug"), server_logs
+        assert ("WORKER_BUILD_BEGIN" in server_logs) == (level == "debug"), server_logs
+        assert ("WORKER_BUILD_END" in server_logs) == (level == "debug"), server_logs
+        print("SERVER_TELEMETRY_LOGS " + level + " " + server_logs)
     for protocol, port in [("grpc", 4317), ("http/protobuf", 4318)]:
         command = "env RUST_LOG=info OTEL_EXPORTER_OTLP_PROTOCOL=" + shlex.quote(protocol) + " OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:" + str(port) + " TELCHAR_TRANSFER_ENDPOINT=private-marker://secret ${nomadWorker}/bin/telchar-nomad-worker >/tmp/failure.out 2>/tmp/failure.err"
         status, _ = nomad_client.execute(command, timeout=10)
