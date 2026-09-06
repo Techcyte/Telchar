@@ -88,6 +88,8 @@ harness.mkNomadGatewayTest {
         assert any(' INFO ' in line and 'event="shared_build.coalescing.leader"' in line for line in server_logs.splitlines()), server_logs
         assert ('event="server.build.output"' in server_logs) == (level == "debug"), server_logs
         assert ('event="server.build.paths"' in server_logs) == (level == "debug"), server_logs
+        for event in ["nomad.callback.build.started", "nomad.callback.outputs.collecting", "nomad.callback.output_collection.completed"]:
+            assert any(' INFO ' in line and 'event="' + event + '"' in line for line in server_logs.splitlines()), server_logs
         assert ("WORKER_BUILD_BEGIN" in server_logs) == (level == "debug"), server_logs
         assert ("WORKER_BUILD_END" in server_logs) == (level == "debug"), server_logs
         print("SERVER_TELEMETRY_LOGS " + level + " " + server_logs)
