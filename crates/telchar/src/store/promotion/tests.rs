@@ -100,7 +100,10 @@ fn staging_reports_pending_write_failure() {
         .write(true)
         .open("/dev/full")
         .unwrap();
+    let before = write_syscalls();
     let error = super::stage_nar_to_file(nar.as_slice(), &mut file)
         .expect_err("failed staging write cannot report success");
+    let writes = write_syscalls() - before;
     assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
+    assert_eq!(writes, 1, "failed write must not be retried during drop");
 }

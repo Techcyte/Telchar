@@ -512,9 +512,13 @@ fn stage_nar_to_file(
     file: &mut std::fs::File,
 ) -> io::Result<crate::store::nar::NarFingerprint> {
     let mut staged = io::BufWriter::new(file);
-    let fingerprint = stage_nar(source, &mut staged)?;
-    staged.flush()?;
-    Ok(fingerprint)
+    let result = stage_nar(source, &mut staged).and_then(|fingerprint| {
+        staged.flush()?;
+        Ok(fingerprint)
+    });
+    // Discard pending bytes without another write when staging or flushing fails.
+    let _ = staged.into_parts();
+    result
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {

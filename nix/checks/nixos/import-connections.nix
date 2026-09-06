@@ -85,7 +85,7 @@ pkgs.testers.nixosTest {
                 path = client.succeed("nix-store --add " + shlex.quote(source)).strip()
                 client.succeed("nix-store --realise --add-root /tmp/import-root --indirect " + shlex.quote(path) + " >/dev/null")
                 paths = [path]
-            source_info = json.loads(client.succeed("nix path-info --json " + " ".join(paths)))
+            source_info = json.loads(client.succeed("nix path-info --json --json-format 1 " + " ".join(paths)))
             gateway.succeed(" && ".join("test ! -e " + shlex.quote(path) for path in paths))
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
@@ -97,7 +97,7 @@ pkgs.testers.nixosTest {
             results.append(dict(workload=workload, repetition=repetition // 2, frontend=frontend, references=references, paths=len(paths), nar_bytes=sum(info["narSize"] for info in source_info.values()), seconds=elapsed, connections=connections))
             print("IMPORT_BENCHMARK " + json.dumps(results[-1]))
             gateway.succeed("nix-store --verify-path " + " ".join(paths))
-            destination_info = json.loads(gateway.succeed("nix path-info --json " + " ".join(paths)))
+            destination_info = json.loads(gateway.succeed("nix path-info --json --json-format 1 " + " ".join(paths)))
             assert source_info.keys() == destination_info.keys()
             for path in paths:
                 for field in ["narHash", "narSize", "references"]:
