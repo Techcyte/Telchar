@@ -102,14 +102,14 @@ pkgs.testers.nixosTest {
             cursor = gateway.succeed("journalctl -u nix-daemon.service -n 0 --show-cursor --no-pager").strip().split("-- cursor: ")[1]
             endpoint = "'ssh-ng://root@gateway?remote-store=daemon'" if frontend == "plain" else "ssh-ng://telchar@gateway:2222"
             if tracing_queries:
-                gateway.succeed("pid=$(systemctl show -p MainPID --value telchar); strace -f -e trace=execve -o /tmp/gateway-exec -p $pid 2>/tmp/strace-status & echo $! >/tmp/strace-pid")
+                gateway.succeed("pid=$(systemctl show -p MainPID --value telchar); systemd-run --unit=query-exec-trace --service-type=exec --property=StandardError=file:/tmp/strace-status strace -f -e trace=execve -o /tmp/gateway-exec -p $pid")
                 gateway.wait_until_succeeds("grep -q 'attached' /tmp/strace-status")
             started = time.monotonic()
             client.succeed("NIX_SSHOPTS='-4' nix copy --to " + endpoint + " " + " ".join(paths) + (" 2>/tmp/frontend-trace" if tracing_queries else ""), timeout=120)
             elapsed = time.monotonic() - started
             if tracing_queries:
-                gateway.succeed("kill -INT $(cat /tmp/strace-pid)")
-                gateway.wait_until_succeeds("! kill -0 $(cat /tmp/strace-pid) 2>/dev/null")
+                gateway.succeed("systemctl stop query-exec-trace.service")
+                gateway.succeed("! systemctl is-active --quiet query-exec-trace.service")
                 executions = gateway.succeed("cat /tmp/gateway-exec")
                 assert "execve(" not in executions, executions
                 print("GATEWAY_EXEC_TRACE " + workload + "\n" + executions)
