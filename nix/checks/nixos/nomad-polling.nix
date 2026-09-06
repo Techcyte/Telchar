@@ -1,5 +1,10 @@
 # Measures status requests and live log delivery against a real Nomad allocation.
-{ pkgs, telchar, nomadWorker, ... }:
+{
+  pkgs,
+  telchar,
+  nomadWorker,
+  ...
+}:
 let
   harness = import ../../../tests/nixos/lib.nix { inherit pkgs telchar; };
 in
