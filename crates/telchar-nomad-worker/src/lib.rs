@@ -102,7 +102,12 @@ impl WorkerSession {
             return Err(invalid("worker unresolved input set is inconsistent"));
         }
         self.send_metadata(FrameKind::InputRequest, &requested)?;
-        tracing::info!(event = "worker.inputs.summary", input_count = self.manifest.paths.len(), valid_count = valid.paths.len(), requested_count = requested.paths.len());
+        tracing::info!(
+            event = "worker.inputs.summary",
+            input_count = self.manifest.paths.len(),
+            valid_count = valid.paths.len(),
+            requested_count = requested.paths.len()
+        );
         Ok(requested)
     }
 
@@ -258,7 +263,10 @@ impl WorkerSession {
             }
             tracing::debug!(event = "worker.output.accepted", index, path = %metadata.path);
         }
-        tracing::info!(event = "worker.outputs.summary", accepted_count = result.outputs().len());
+        tracing::info!(
+            event = "worker.outputs.summary",
+            accepted_count = result.outputs().len()
+        );
         self.send_metadata(
             FrameKind::BuildResult,
             &BuildResultMetadata {

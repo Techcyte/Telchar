@@ -8,9 +8,8 @@ fn phase<T>(
 ) -> std::io::Result<T> {
     let started = std::time::Instant::now();
     tracing::info!(event = "worker.phase.started", phase = name);
-    let progress = progress::Progress::start(name).map_err(|error| {
+    let progress = progress::Progress::start(name).inspect_err(|error| {
         tracing::warn!(event = "worker.progress.unavailable", phase = name, error_kind = ?error.kind());
-        error
     }).ok();
     let result = operation();
     drop(progress);
