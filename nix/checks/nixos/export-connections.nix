@@ -128,6 +128,7 @@ pkgs.testers.nixosTest {
         assert result["connections"] == expected, result
     expression = 'builtins.derivation { name = "export-verification"; system = "${system}"; builder = "/bin/sh"; seed = "' + uuid.uuid4().hex + '"; }'
     path = gateway.succeed("nix-instantiate --add-root /tmp/export-verification-root --indirect --expr " + shlex.quote(expression)).strip()
+    path = gateway.succeed("readlink -f " + path).strip()
     report = gateway.succeed("TELCHAR_EXPORT_TEST_STORE=unix:///nix/var/nix/daemon-socket/socket TELCHAR_EXPORT_TEST_PATH=" + path + " telchar-export-tests store::export::tests::verified_export_failure_discards_connection --ignored --nocapture")
     print("EXPORT_FAILURE_TEST " + report)
     assert "1 passed; 0 failed" in report, report
