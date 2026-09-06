@@ -102,6 +102,7 @@ impl WorkerSession {
             return Err(invalid("worker unresolved input set is inconsistent"));
         }
         self.send_metadata(FrameKind::InputRequest, &requested)?;
+        tracing::info!(event = "worker.inputs.summary", input_count = self.manifest.paths.len(), valid_count = valid.paths.len(), requested_count = requested.paths.len());
         Ok(requested)
     }
 
@@ -140,6 +141,7 @@ impl WorkerSession {
         let mut sequence = 0_u64;
         let result = store.build_derivation(&request, &mut |message| {
             for chunk in message.chunks(MAXIMUM_AUTHENTICATION_METADATA_BYTES) {
+                tracing::debug!(event = "worker.build.output", sequence, output = %String::from_utf8_lossy(chunk));
                 let frame = Frame::new(
                     FrameKind::LogChunk,
                     encode_metadata(&LogChunk { sequence }, MAXIMUM_MANIFEST_METADATA_BYTES)?,
@@ -256,6 +258,7 @@ impl WorkerSession {
             }
             tracing::debug!(event = "worker.output.accepted", index, path = %metadata.path);
         }
+        tracing::info!(event = "worker.outputs.summary", accepted_count = result.outputs().len());
         self.send_metadata(
             FrameKind::BuildResult,
             &BuildResultMetadata {
