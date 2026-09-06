@@ -115,14 +115,16 @@ pkgs.testers.nixosTest {
                 for field in ["narHash", "narSize", "references"]:
                     assert source_info[path][field] == destination_info[path][field], (path, field)
     if tracing_queries:
-        for mode in ["path-info", "check-validity"]:
+        for mode in ["path-info", "path-info-offline", "check-validity"]:
             for repetition in range(3):
                 nonce = uuid.uuid4().hex
                 path = "/nix/store/" + "a" * 32 + "-query-" + nonce
                 gateway.succeed("test ! -e " + shlex.quote(path))
-                command = ["nix", "path-info", "--json", "--json-format", "1"] if mode == "path-info" else ["nix-store", "--check-validity"]
+                command = ["nix", "path-info", "--json", "--json-format", "1"] if mode.startswith("path-info") else ["nix-store", "--check-validity"]
+                if mode == "path-info-offline":
+                    command += ["--offline"]
                 command += ["--store", "unix:///nix/var/nix/daemon-socket/socket", path]
-                shell = "runuser -u telchar -- " + shlex.join(command) + " > /tmp/query-stdout 2>/tmp/query-stderr; printf '%s' $?"
+                shell = "status=0; runuser -u telchar -- " + shlex.join(command) + " > /tmp/query-stdout 2>/tmp/query-stderr || status=$?; printf '%s' \"$status\""
                 started = time.monotonic()
                 status = gateway.succeed(shell).strip()
                 print("QUERY_COMPARISON " + json.dumps(dict(mode=mode, repetition=repetition, seconds=time.monotonic()-started, status=status)))
@@ -132,6 +134,7 @@ pkgs.testers.nixosTest {
                     assert "not valid" in error, error
                 else:
                     assert status == "0", (status, gateway.succeed("cat /tmp/query-stderr"))
+                    print("QUERY_STDERR " + mode + "\n" + gateway.succeed("cat /tmp/query-stderr"))
         gateway.succeed("strace -f -ttt -T -o /tmp/query-syscalls runuser -u telchar -- nix path-info --json --json-format 1 --store unix:///nix/var/nix/daemon-socket/socket /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-query-" + uuid.uuid4().hex + " >/tmp/query-stdout 2>/tmp/query-stderr")
         gateway.copy_from_vm("/tmp/query-syscalls")
     print("IMPORT_BENCHMARK_RESULTS " + json.dumps(results))
