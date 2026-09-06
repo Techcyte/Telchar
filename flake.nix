@@ -67,7 +67,10 @@
           nomadWorkerImage = self.packages.${system}.telchar-nomad-worker-oci;
           telcharModule = self.nixosModules.telchar;
           exampleModule = {
-            imports = [ self.nixosModules.telchar ./examples/nixos/host.nix ];
+            imports = [
+              self.nixosModules.telchar
+              ./examples/nixos/host.nix
+            ];
             _module.args.telcharSshCommand = self.lib.sshForcedCommand;
           };
         }

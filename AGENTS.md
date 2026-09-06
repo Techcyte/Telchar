@@ -26,10 +26,10 @@ Four Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_64
 | `crates/telchar-nomad-worker/` | Allocation-side worker binary/library: callback authentication, inputs, Nix build, logs, output return. Depends on the gateway, protocol, and telemetry crates. |
 | `crates/telchar-telemetry/` | Shared local tracing, bounded OTLP exporters, and phase progress reporting for the gateway and allocation worker. No scheduling or persistence policy. |
 | `crates/telchar/migrations/` | Numbered PostgreSQL schema migrations, embedded by `persistence/migrations.rs`. |
-| `nix/` | Packages, OCI archives, NixOS modules, credential helpers, flake checks. |
+| `nix/` | Packages, OCI archives, Telchar NixOS service module, SSH identity adapter, product flake checks. |
 | `nix/checks/nixos/`, `tests/nixos/` | Executable VM contracts and shared fixtures. `tests/nixos/lib.nix` exports constructors; `common.nix`, `ingress.nix`, `static-ssh.nix`, `nomad.nix`, and `recovery.nix` own their topologies and setup. |
 | `deploy/` | Restricted SSH ingress and Nix-daemon container entrypoints. |
-| `examples/nomad/` | Commented, operator-configured Nomad deployment example. |
+| `examples/` | Operator-owned NixOS compositions and a commented Nomad deployment example. |
 | `scripts/`, `.github/workflows/`, `security/`, `deny.toml` | Fixtures, release tooling, CI, dependency/image policy and advisory exceptions. |
 
 ### Follow a build
@@ -130,13 +130,13 @@ Important distinctions:
 - Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.
 - CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts. It is not synonymous with building every flake check.
-- Credential helper tests: `nix build --no-link .#checks.x86_64-linux.cache-credentials`. Release tooling tests: `nix develop -c scripts/test-prepare-release.py`.
+- Service boundary: `nix build --no-link .#checks.x86_64-linux.nixos-service-boundary`. Provider credential helper tests belong to telchar-gateway. Release tooling tests: `nix develop -c scripts/test-prepare-release.py`.
 
 ## Deployment and release pitfalls
 
 - Never share a local client workload's Nix store with its Telchar gateway: recursive store locking can deadlock builds. Gateway, PostgreSQL, GC roots, and spool persistence must be considered together for recovery.
 - `TELCHAR_CONFIG` selects explicit service TOML; `TELCHAR_GATEWAY_STORE_URI` selects the operator-owned daemon socket. `store/runtime.rs` captures store configuration once and passes explicit dependencies. Debug-only `TELCHAR_TEST_*` helpers are not deployment APIs.
-- `nixosModules.telchar`/`default` is the low-level service module. Local PostgreSQL management, host trusted-user changes, GC-root directory management, and dedicated SSH ingress are opt-in. `nixosModules.standalone` enables the service, trusted-user/GC-root management, and ingress, but does not itself enable local PostgreSQL management. `vaultAws` is a separate optional module. Consult `nix/nixos-module.nix` and `nix/nixos-standalone.nix` for actual defaults, and `docs/operations.md` for provisioning guidance.
+- `nixosModules.telchar`/`default` is the only service module. PostgreSQL provisioning, host trusted-user changes, retained GC-root directories, SSH ingress, and credential acquisition belong to the deployment. `lib.sshForcedCommand` exposes the authenticated stdio adapter. `examples/nixos/` contains explicit host and AWS/Vault compositions; none are public module exports. Deployment-owned tests live in telchar-gateway. Nomad backend token consumption/reload, submission, callbacks, and recovery remain product tests in Telchar.
 - SIGHUP supports transactional static SSH inventory changes and contents-only rotation of existing Nomad token files, not arbitrary configuration hot reload. Existing executions retain exact selected targets.
 - `telchar operator` is read-only, but not uniformly offline: `config-check` needs no database, other commands need an existing schema, and `backends` actively probes SSH/Nix readiness. Do not use daemon startup as an inspection command; it migrates and acquires ownership.
 - `nix/packages.nix` defines packages and four OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.

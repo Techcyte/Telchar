@@ -1,5 +1,11 @@
 # Configures gateway host infrastructure and credential installation.
-{ config, lib, pkgs, telcharSshCommand, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  telcharSshCommand,
+  ...
+}:
 let
   cfg = config.services.telchar;
   sshRenewalCfg = cfg.sshHostCertificateRenewal;
@@ -302,10 +308,15 @@ in
 
     systemd.services.telchar = {
       unitConfig.Upholds = lib.optional cfg.ingress.openssh.enable "telchar-sshd.service";
-      after = lib.optionals cfg.database.manage [ "postgresql.service" "postgresql-setup.service" ];
-      requires = lib.optionals cfg.database.manage [ "postgresql.service" "postgresql-setup.service" ];
+      after = lib.optionals cfg.database.manage [
+        "postgresql.service"
+        "postgresql-setup.service"
+      ];
+      requires = lib.optionals cfg.database.manage [
+        "postgresql.service"
+        "postgresql-setup.service"
+      ];
     };
-    systemd.tmpfiles.rules = lib.optional cfg.gatewayStore.manageGcRootDirectory
-      "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -";
+    systemd.tmpfiles.rules = lib.optional cfg.gatewayStore.manageGcRootDirectory "d ${cfg.gatewayStore.gcRootDirectory} 0700 ${cfg.user} ${cfg.group} -";
   };
 }

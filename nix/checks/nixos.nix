@@ -12,17 +12,34 @@
 }:
 let
   checkArgs = {
-    inherit pkgs system telchar nomadWorker;
+    inherit
+      pkgs
+      system
+      telchar
+      nomadWorker
+      ;
     telcharModule = exampleModule;
   };
   standaloneModule = {
-    imports = [ exampleModule ../../examples/nixos/standalone.nix ];
+    imports = [
+      exampleModule
+      ../../examples/nixos/standalone.nix
+    ];
   };
 in
 import ./nixos/oci.nix {
-  inherit pkgs system telcharImage nomadWorkerImage;
+  inherit
+    pkgs
+    system
+    telcharImage
+    nomadWorkerImage
+    ;
 }
 // {
+  nixos-examples = import ./nixos/examples.nix {
+    inherit pkgs nixosSystem telcharModule;
+    sshForcedCommand = import ../ssh-forced-command.nix;
+  };
   nixos-service-boundary = import ./nixos/service-boundary.nix {
     inherit pkgs nixosSystem telcharModule;
   };
@@ -37,10 +54,20 @@ import ./nixos/oci.nix {
   nixos-nomad-polling = import ./nixos/nomad-polling.nix checkArgs;
   nixos-worker-telemetry = import ./nixos/worker-telemetry.nix checkArgs;
   nixos-nomad-credential = import ./nixos/nomad-credential.nix {
-    inherit pkgs system telchar standaloneModule;
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
   };
   nixos-nomad-credential-reload = import ./nixos/nomad-credential-reload.nix {
-    inherit pkgs system telchar standaloneModule;
+    inherit
+      pkgs
+      system
+      telchar
+      standaloneModule
+      ;
   };
 }
 // removeAttrs (import ./nixos/static-ssh.nix checkArgs) [ "nixos-static-ssh-fixture" ]

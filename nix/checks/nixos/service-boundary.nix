@@ -1,5 +1,9 @@
 # Evaluates the service module without deployment infrastructure.
-{ pkgs, nixosSystem, telcharModule }:
+{
+  pkgs,
+  nixosSystem,
+  telcharModule,
+}:
 let
   evaluated = nixosSystem {
     system = pkgs.stdenv.hostPlatform.system;

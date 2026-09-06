@@ -17,11 +17,22 @@ in
   services.postgresql = {
     enable = true;
     ensureDatabases = [ cfg.user ];
-    ensureUsers = [{ name = cfg.user; ensureDBOwnership = true; }];
+    ensureUsers = [
+      {
+        name = cfg.user;
+        ensureDBOwnership = true;
+      }
+    ];
   };
   systemd.services.telchar = {
-    after = [ "postgresql.service" "postgresql-setup.service" ];
-    requires = [ "postgresql.service" "postgresql-setup.service" ];
+    after = [
+      "postgresql.service"
+      "postgresql-setup.service"
+    ];
+    requires = [
+      "postgresql.service"
+      "postgresql-setup.service"
+    ];
   };
   nix.settings.trusted-users = [ cfg.user ];
   systemd.tmpfiles.rules = [

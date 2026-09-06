@@ -41,14 +41,7 @@ Telchar is packaged through the flake and includes a NixOS module:
   services.telchar = {
     enable = true;
     package = inputs.telchar.packages.${pkgs.system}.telchar;
-    database.manage = true;
-    gatewayStore.manageTrustedUser = true;
-    gatewayStore.manageGcRootDirectory = true;
-    ingress.openssh = {
-      enable = true;
-      hostKeyFile = "/etc/ssh/ssh_host_ed25519_key";
-      authorizedKeysFile = "/var/lib/telchar/.ssh/authorized_keys";
-    };
+    database.urlFile = "/run/secrets/telchar-database-url";
     settings = {
       backends.local = {
         name = "local";
@@ -60,15 +53,13 @@ Telchar is packaged through the flake and includes a NixOS module:
 }
 ```
 
-The module manages only the Telchar daemon by default. Local PostgreSQL provisioning, host Nix trusted-user configuration, GC-root directory creation, and SSH ingress are explicit options. The optional ingress runs a dedicated `telchar-sshd.service` on port `2222`; it does not alter the host's regular `services.openssh` configuration.
+The module manages the Telchar daemon, account, runtime/state directories, application configuration, and credential inputs. PostgreSQL provisioning, host Nix permissions, retained GC-root directories, SSH ingress, and credential acquisition belong to the deployment. The configuration above assumes those dependencies already exist.
 
-The flake exports three NixOS integration surfaces:
+`nixosModules.telchar` and its `nixosModules.default` alias expose the same service module. `lib.sshForcedCommand` supplies Telchar's authenticated stdio adapter for operator-owned OpenSSH configuration. No standalone-host or Vault module is exported.
 
-- `nixosModules.telchar` and its `nixosModules.default` alias provide the low-level service module;
-- `nixosModules.standalone` provides generic standalone-host defaults and imports the service module;
-- `lib.mkStandaloneSystem` composes the standalone profile with caller-supplied deployment modules and optional `specialArgs`.
+[`examples/nixos`](examples/nixos/README.md) contains explicit compositions for local PostgreSQL and regular OpenSSH, dedicated ingress, and an advanced AWS/Vault/Nomad deployment. Copy the pieces your deployment needs; examples are not automatically enabled service behavior.
 
-Generic behavioral contracts are available as clearly named checks under `checks.x86_64-linux`, including `nixos-standalone-profile`, `nixos-module`, `nixos-nomad-gateway`, `nixos-nomad-credential`, `nixos-nomad-credential-renewal`, `nixos-ssh-ca-authentication`, `nixos-ssh-host-certificate-renewal`, `nixos-vault-aws-auth`, and `nixos-restart-reboot`.
+Product checks under `checks.x86_64-linux` include `nixos-service-boundary`, `nixos-module`, `nixos-nomad-gateway`, `nixos-nomad-credential`, `nixos-nomad-credential-reload`, and `nixos-restart-reconciliation`. Vault and deployment credential-installation checks belong to telchar-gateway.
 
 `nixos-module` covers protected PostgreSQL TLS configuration, service startup, SSH ingress, and delivery to an OTLP collector. Certificate rejection cases also run against real PostgreSQL processes in `crates/telchar/tests/persistence_migrations.rs`. `nixos-nomad-gateway` covers rejection of unauthenticated callbacks alongside authenticated builds.
 

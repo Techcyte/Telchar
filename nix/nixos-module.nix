@@ -232,7 +232,9 @@ in
         TELCHAR_GATEWAY_GC_ROOT_DIRECTORY = cfg.gatewayStore.gcRootDirectory;
         TMPDIR = "/var/lib/telchar/import";
       }
-      // lib.optionalAttrs (!protectedDatabase && cfg.database.url != null) { TELCHAR_DATABASE_URL = cfg.database.url; }
+      // lib.optionalAttrs (!protectedDatabase && cfg.database.url != null) {
+        TELCHAR_DATABASE_URL = cfg.database.url;
+      }
       // daemonEnvironment;
       path = [
         pkgs.nix

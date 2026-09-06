@@ -1,5 +1,11 @@
 # Composes regular OpenSSH with Telchar's authenticated stdio entry point.
-{ config, lib, pkgs, telcharSshCommand, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  telcharSshCommand,
+  ...
+}:
 let
   cfg = config.services.telchar;
   command = telcharSshCommand {
