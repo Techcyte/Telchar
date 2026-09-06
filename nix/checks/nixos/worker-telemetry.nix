@@ -48,7 +48,7 @@ harness.mkNomadGatewayTest {
     nomad_client.succeed("systemd-run --unit=worker-collector ${pkgs.opentelemetry-collector}/bin/otelcol --config ${collectorConfig}")
     nomad_client.wait_for_unit("worker-collector.service")
     stock_client.succeed("ssh-keyscan -t ed25519 gateway > /root/.ssh/known_hosts 2>/dev/null")
-    for level, protocol, port in [("info", "grpc", 4317), ("debug", "http/protobuf", 4318)]:
+    for level, protocol, port in [("info", "grpc", 4317), ("debug", "http/protobuf", 4318), ("info", "grpc", 9)]:
         nomad_client.succeed("printf %s " + shlex.quote(level) + " > /run/worker-level; printf %s " + shlex.quote(protocol) + " > /run/worker-protocol; echo " + str(port) + " > /run/worker-port")
         nonce = uuid.uuid4().hex
         script = "echo WORKER_BUILD_BEGIN >&2; $tools/bin/sleep 12; echo WORKER_BUILD_END >&2; printf " + nonce + " > $out"
@@ -105,6 +105,6 @@ harness.mkNomadGatewayTest {
     assert len({item["traceId"] for item in output_logs}) == 1, output_logs
     metrics = [metric for resource in signals["resourceMetrics"] for scope in resource["scopeMetrics"] for metric in scope["metrics"]]
     assert any(metric["name"] == "telchar.worker.phase.duration" for metric in metrics), metrics
-    print("WORKER_TELEMETRY_VERIFIED grpc http/protobuf info debug client-output-preserved")
+    print("WORKER_TELEMETRY_VERIFIED grpc http/protobuf info debug collector-unavailable success-failure-flush client-output-preserved")
   '';
 }
