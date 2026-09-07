@@ -1747,8 +1747,10 @@ fn return_cached_outputs(
 ) -> io::Result<bool> {
     let derivation_path = std::str::from_utf8(request.derivation_path())
         .map_err(|_| io::Error::other("invalid derivation path"))?;
-    let Some(build) = crate::persistence::read_shared_build(database, derivation_path)
-        .map_err(|_| io::Error::other("cached build lookup failed"))?
+    let Some(build) = crate::service::activity::run("cached-output-lookup", || {
+        crate::persistence::read_shared_build(database, derivation_path)
+            .map_err(|_| io::Error::other("cached build lookup failed"))
+    })?
     else {
         return Ok(false);
     };
@@ -1782,7 +1784,9 @@ fn return_cached_outputs(
         .iter()
         .map(|(_, path)| path.clone())
         .collect::<Vec<_>>();
-    let valid_paths = store_query.query_valid_paths(&expected_paths, false)?;
+    let valid_paths = crate::service::activity::run("cached-output-validity", || {
+        store_query.query_valid_paths(&expected_paths, false)
+    })?;
     if valid_paths.len() != expected_paths.len()
         || expected_paths
             .iter()
@@ -1791,26 +1795,34 @@ fn return_cached_outputs(
         return Ok(false);
     }
     // Roots protect the output closure while it is validated and retained for retrieval.
-    let retained = store_retention.retain(&entries)?;
+    let retained = crate::service::activity::run("cached-output-retention", || {
+        store_retention.retain(&entries)
+    })?;
     let persisted = (|| {
-        validate_build_outputs(&result, request, store_export)?;
+        crate::service::activity::run("cached-output-integrity", || {
+            validate_build_outputs(&result, request, store_export)
+        })?;
         let request_id = build_request_id();
-        crate::persistence::create_build_request(
-            database,
-            &request_id,
-            derivation_path,
-            request.system(),
-            audit_subject,
-            quota_subject,
-        )
-        .map_err(|_| io::Error::other("cached build request persistence failed"))?;
-        crate::persistence::create_request_output_leases(
-            database,
-            &request_id,
-            retention,
-            &output_leases,
-        )
-        .map_err(|_| io::Error::other("cached output retention persistence failed"))?;
+        crate::service::activity::run("cached-output-request", || {
+            crate::persistence::create_build_request(
+                database,
+                &request_id,
+                derivation_path,
+                request.system(),
+                audit_subject,
+                quota_subject,
+            )
+            .map_err(|_| io::Error::other("cached build request persistence failed"))
+        })?;
+        crate::service::activity::run("cached-output-lease", || {
+            crate::persistence::create_request_output_leases(
+                database,
+                &request_id,
+                retention,
+                &output_leases,
+            )
+            .map_err(|_| io::Error::other("cached output retention persistence failed"))
+        })?;
         Ok::<(), io::Error>(())
     })();
     if let Err(error) = persisted {

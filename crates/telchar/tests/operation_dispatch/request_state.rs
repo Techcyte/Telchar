@@ -103,6 +103,19 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         stderr.contains("database.build_request.created"),
         "{stderr}"
     );
+    for phase in [
+        "cached-output-lookup",
+        "cached-output-validity",
+        "cached-output-retention",
+        "cached-output-integrity",
+        "cached-output-request",
+        "cached-output-lease",
+    ] {
+        assert!(
+            stderr.contains(&format!("phase=\"{phase}\"")),
+            "missing {phase}: {stderr}"
+        );
+    }
     store.join().expect("store daemon joins");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
