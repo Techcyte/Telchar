@@ -149,9 +149,18 @@ impl GatewayStoreConnection {
     }
 
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
-        self.client
+        let started = std::time::Instant::now();
+        let result = self
+            .client
             .query_path_info(path)
-            .map_err(|_| connection_error())
+            .map_err(|_| connection_error());
+        tracing::debug!(
+            event = "store.daemon.query_path_info.completed",
+            elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok(),
+            valid = result.as_ref().ok().map(Option::is_some)
+        );
+        result
     }
 
     pub fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<WorkerMissingPaths> {
@@ -216,7 +225,9 @@ impl GatewayStoreConnection {
         nar_size: u64,
         sink: &mut dyn io::Write,
     ) -> io::Result<()> {
-        self.client
+        let started = std::time::Instant::now();
+        let result = self
+            .client
             .nar_from_path(path, nar_size, sink)
             .map_err(|error| {
                 let message = error.to_string();
@@ -224,7 +235,14 @@ impl GatewayStoreConnection {
                     .strip_prefix("Nix daemon NarFromPath ")
                     .unwrap_or("operation failed");
                 io::Error::other(format!("gateway Nix daemon NarFromPath {phase}"))
-            })
+            });
+        tracing::debug!(
+            event = "store.daemon.nar_from_path.completed",
+            nar_size,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok()
+        );
+        result
     }
 
     pub fn add_to_store_nar(

@@ -30,6 +30,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         [
             ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
             ("TELCHAR_TEST_STORE_RETENTION", "filesystem-only".to_owned()),
+            ("RUST_LOG", "debug".to_owned()),
         ],
     );
     let child = &mut fixture.frontend;
@@ -111,8 +112,12 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         "cached-output-request",
         "cached-output-lease",
     ] {
+        assert!(stderr.contains("cached_output.phase.completed"), "{stderr}");
         assert!(
-            stderr.contains(&format!("phase=\"{phase}\"")),
+            stderr.contains(&format!(
+                "phase=\"{}\"",
+                phase.trim_start_matches("cached-output-")
+            )),
             "missing {phase}: {stderr}"
         );
     }

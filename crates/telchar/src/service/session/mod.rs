@@ -1455,7 +1455,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         None,
                     )?;
                 }
+                let flushing = std::time::Instant::now();
                 output.flush()?;
+                tracing::debug!(
+                    event = "worker.query_path_info.response_flushed",
+                    elapsed_us = flushing.elapsed().as_micros() as u64
+                );
                 tracing::info!(
                     event = "worker.query_path_info.completed",
                     valid,
@@ -1486,25 +1491,44 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 object_counts.admit_outbound(transfer_limits.maximum_outbound_session_objects)?;
                 let _permit = object_admission.admit_outbound()?;
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
-                let verified = match crate::store::export::export_verified_nar_with_limits_and_rate(
-                    path,
-                    &mut output,
-                    store_export,
-                    transfer_limits,
-                    &mut outbound_budget,
-                    rate_admission,
-                ) {
-                    Ok(verified) => verified,
-                    Err(error) => {
-                        tracing::error!(
-                            event = "worker.nar_from_path.failed",
-                            reason = execution_error_reason(&error),
-                            "gateway store NarFromPath failed"
-                        );
-                        return Err(error);
-                    }
+                let (verified, first_byte_us, write_elapsed_us, write_call_count) = {
+                    let mut measured_output = NarResponseWriter::new(&mut output);
+                    let verified =
+                        match crate::store::export::export_verified_nar_with_limits_and_rate(
+                            path,
+                            &mut measured_output,
+                            store_export,
+                            transfer_limits,
+                            &mut outbound_budget,
+                            rate_admission,
+                        ) {
+                            Ok(verified) => verified,
+                            Err(error) => {
+                                tracing::error!(
+                                    event = "worker.nar_from_path.failed",
+                                    reason = execution_error_reason(&error),
+                                    "gateway store NarFromPath failed"
+                                );
+                                return Err(error);
+                            }
+                        };
+                    (
+                        verified,
+                        measured_output.first_byte_us(),
+                        measured_output.elapsed_us(),
+                        measured_output.write_call_count(),
+                    )
                 };
+                let flushing = std::time::Instant::now();
                 output.flush()?;
+                tracing::debug!(
+                    event = "worker.nar_from_path.transport.completed",
+                    nar_size = verified.nar_size,
+                    first_byte_us,
+                    write_elapsed_us,
+                    write_call_count,
+                    flush_elapsed_us = flushing.elapsed().as_micros() as u64
+                );
                 tracing::info!(
                     event = "worker.nar_from_path.completed",
                     nar_size = verified.nar_size,
@@ -1734,6 +1758,74 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     }
 }
 
+struct NarResponseWriter<'a, W> {
+    output: &'a mut W,
+    started: std::time::Instant,
+    first_byte_us: Option<u64>,
+    write_elapsed_us: u64,
+    write_call_count: u64,
+}
+
+impl<'a, W> NarResponseWriter<'a, W> {
+    fn new(output: &'a mut W) -> Self {
+        Self {
+            output,
+            started: std::time::Instant::now(),
+            first_byte_us: None,
+            write_elapsed_us: 0,
+            write_call_count: 0,
+        }
+    }
+
+    fn first_byte_us(&self) -> Option<u64> {
+        self.first_byte_us
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        self.write_elapsed_us
+    }
+
+    fn write_call_count(&self) -> u64 {
+        self.write_call_count
+    }
+}
+
+impl<W: Write> Write for NarResponseWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if !buffer.is_empty() && self.first_byte_us.is_none() {
+            self.first_byte_us = Some(self.started.elapsed().as_micros() as u64);
+        }
+        let started = std::time::Instant::now();
+        let written = self.output.write(buffer)?;
+        self.write_elapsed_us += started.elapsed().as_micros() as u64;
+        self.write_call_count += 1;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
+fn run_cached_output_phase<T>(
+    phase: &'static str,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let started = std::time::Instant::now();
+    let result = operation();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(_) => tracing::debug!(event = "cached_output.phase.completed", phase, elapsed_ms),
+        Err(error) => tracing::warn!(
+            event = "cached_output.phase.failed",
+            phase,
+            elapsed_ms,
+            error_kind = ?error.kind()
+        ),
+    }
+    result
+}
+
 #[allow(clippy::too_many_arguments)]
 fn return_cached_outputs(
     request: &BuildRequest,
@@ -1747,7 +1839,7 @@ fn return_cached_outputs(
 ) -> io::Result<bool> {
     let derivation_path = std::str::from_utf8(request.derivation_path())
         .map_err(|_| io::Error::other("invalid derivation path"))?;
-    let Some(build) = crate::service::activity::run("cached-output-lookup", || {
+    let Some(build) = run_cached_output_phase("lookup", || {
         crate::persistence::read_shared_build(database, derivation_path)
             .map_err(|_| io::Error::other("cached build lookup failed"))
     })?
@@ -1784,7 +1876,7 @@ fn return_cached_outputs(
         .iter()
         .map(|(_, path)| path.clone())
         .collect::<Vec<_>>();
-    let valid_paths = crate::service::activity::run("cached-output-validity", || {
+    let valid_paths = run_cached_output_phase("validity", || {
         store_query.query_valid_paths(&expected_paths, false)
     })?;
     if valid_paths.len() != expected_paths.len()
@@ -1795,15 +1887,13 @@ fn return_cached_outputs(
         return Ok(false);
     }
     // Roots protect the output closure while it is validated and retained for retrieval.
-    let retained = crate::service::activity::run("cached-output-retention", || {
-        store_retention.retain(&entries)
-    })?;
+    let retained = run_cached_output_phase("retention", || store_retention.retain(&entries))?;
     let persisted = (|| {
-        crate::service::activity::run("cached-output-integrity", || {
+        run_cached_output_phase("integrity", || {
             validate_build_outputs(&result, request, store_export)
         })?;
         let request_id = build_request_id();
-        crate::service::activity::run("cached-output-request", || {
+        run_cached_output_phase("request", || {
             crate::persistence::create_build_request(
                 database,
                 &request_id,
@@ -1814,7 +1904,7 @@ fn return_cached_outputs(
             )
             .map_err(|_| io::Error::other("cached build request persistence failed"))
         })?;
-        crate::service::activity::run("cached-output-lease", || {
+        run_cached_output_phase("lease", || {
             crate::persistence::create_request_output_leases(
                 database,
                 &request_id,

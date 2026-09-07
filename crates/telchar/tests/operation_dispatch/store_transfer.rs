@@ -237,8 +237,9 @@ fn query_path_info_returns_authoritative_metadata() {
     let valid = store
         .build_classic_derivation()
         .expect("authoritative fixture path builds");
-    let mut frontend =
-        FrontendFixture::spawn_with_store(None, &store.store_url(), fixture.environment());
+    let mut environment = fixture.environment();
+    environment.insert("RUST_LOG", "debug".to_owned());
+    let mut frontend = FrontendFixture::spawn_with_store(None, &store.store_url(), environment);
     let child = &mut frontend.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
@@ -272,6 +273,13 @@ fn query_path_info_returns_authoritative_metadata() {
         stderr.contains("worker.query_path_info.completed"),
         "{stderr}"
     );
+    for event in [
+        "store.export.connection.acquired",
+        "store.export.query_path_info.completed",
+        "worker.query_path_info.response_flushed",
+    ] {
+        assert!(stderr.contains(event), "missing {event}: {stderr}");
+    }
     store.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
 }

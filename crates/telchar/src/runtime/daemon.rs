@@ -133,6 +133,7 @@ pub(super) fn serve_accepted_connection(
         "authenticated frontend session started"
     );
     telchar::service::metrics::session_started();
+    let session_running = std::time::Instant::now();
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = gateway_store.query();
@@ -180,6 +181,11 @@ pub(super) fn serve_accepted_connection(
         .run()
     })();
     telchar::service::metrics::session_finished();
+    tracing::debug!(
+        event = "ipc.daemon.session_run.completed",
+        elapsed_ms = session_running.elapsed().as_millis() as u64,
+        success = result.is_ok()
+    );
     if let Err(error) = &result {
         tracing::warn!(
             event = "ipc.daemon.session_run_failed",
@@ -189,6 +195,7 @@ pub(super) fn serve_accepted_connection(
             "frontend session run failed"
         );
     }
+    let closing = std::time::Instant::now();
     match telchar::persistence::close_protocol_session(database, &session_id) {
         Ok(_) => tracing::info!(
             event = "database.protocol_session.closed",
@@ -208,6 +215,10 @@ pub(super) fn serve_accepted_connection(
             }
         }
     }
+    tracing::debug!(
+        event = "ipc.daemon.session_close.completed",
+        elapsed_us = closing.elapsed().as_micros() as u64
+    );
     result
 }
 

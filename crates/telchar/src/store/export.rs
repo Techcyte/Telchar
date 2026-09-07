@@ -158,10 +158,17 @@ impl GatewayStoreExportBackend {
         &mut self,
         operation: impl FnOnce(&mut GatewayStoreConnection) -> io::Result<T>,
     ) -> io::Result<T> {
+        let started = std::time::Instant::now();
+        let reused = self.connection.is_some();
         let mut connection = match self.connection.take() {
             Some(connection) => connection,
             None => GatewayStoreConnection::connect(&self.endpoint)?,
         };
+        tracing::debug!(
+            event = "store.export.connection.acquired",
+            reused,
+            elapsed_us = started.elapsed().as_micros() as u64
+        );
         // Failed operations cannot leave a reusable protocol stream and are never replayed.
         let value = operation(&mut connection)?;
         self.connection = Some(connection);
@@ -183,7 +190,8 @@ impl StoreExportBackend for GatewayStoreExportBackend {
     }
 
     fn query_path_info(&mut self, path: &Path) -> io::Result<RegisteredPathInfo> {
-        self.with_connection(|connection| {
+        let started = std::time::Instant::now();
+        let result = self.with_connection(|connection| {
             let info = connection
                 .query_path_info(path.as_os_str().as_encoded_bytes())?
                 .ok_or_else(|| {
@@ -205,7 +213,13 @@ impl StoreExportBackend for GatewayStoreExportBackend {
                     .content_address()
                     .map(|address| String::from_utf8_lossy(address).into_owned()),
             })
-        })
+        });
+        tracing::debug!(
+            event = "store.export.query_path_info.completed",
+            elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok()
+        );
+        result
     }
 
     fn export_nar(
@@ -214,9 +228,17 @@ impl StoreExportBackend for GatewayStoreExportBackend {
         nar_size: u64,
         sink: &mut dyn Write,
     ) -> io::Result<()> {
-        self.with_connection(|connection| {
+        let started = std::time::Instant::now();
+        let result = self.with_connection(|connection| {
             connection.nar_from_path(request.path.as_os_str().as_encoded_bytes(), nar_size, sink)
-        })
+        });
+        tracing::debug!(
+            event = "store.export.nar.completed",
+            nar_size,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok()
+        );
+        result
     }
 }
 
