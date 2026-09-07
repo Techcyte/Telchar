@@ -77,6 +77,27 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             let request_started = $request_started;
             let build_mode = $build_mode;
             let requested_system = $requested_system;
+                if return_cached_outputs(
+                    &admitted,
+                    database,
+                    store_query,
+                    store_export,
+                    store_retention,
+                    output_retention.duration(),
+                    audit_subject,
+                    quota_subject,
+                )? {
+                    $write_success(&mut output, negotiated.version, true)?;
+                    crate::service::metrics::build_request_finished(
+                        request_started.elapsed(), "succeeded", None,
+                    );
+                    tracing::info!(
+                        event = "worker.build_derivation.cached",
+                        output_count = admitted.expected_outputs().len(),
+                        "cached BuildDerivation outputs returned"
+                    );
+                    continue;
+                }
                 if let Err(error) = disk_reserve.admit_build(
                     disk_probe,
                     &store_directory,
@@ -1711,6 +1732,92 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn return_cached_outputs(
+    request: &BuildRequest,
+    database: &crate::persistence::Database,
+    store_query: &mut dyn QueryValidPathsStore,
+    store_export: &mut dyn crate::store::export::StoreExportBackend,
+    store_retention: &mut dyn crate::store::retention::StoreRetentionBackend,
+    retention: Duration,
+    audit_subject: &str,
+    quota_subject: &str,
+) -> io::Result<bool> {
+    let derivation_path = std::str::from_utf8(request.derivation_path())
+        .map_err(|_| io::Error::other("invalid derivation path"))?;
+    let Some(build) = crate::persistence::read_shared_build(database, derivation_path)
+        .map_err(|_| io::Error::other("cached build lookup failed"))?
+    else {
+        return Ok(false);
+    };
+    if build.state != crate::persistence::SharedBuildState::Succeeded {
+        return Ok(false);
+    }
+    if build.request_digest != request.shared_build_digest()
+        || build.build_request.as_ref() != Some(request)
+    {
+        return Err(io::Error::other("cached build request identity mismatch"));
+    }
+    let result = durable_shared_build_result(&build)?;
+    if result.outputs() != request.expected_outputs() {
+        return Err(io::Error::other("cached build output identity mismatch"));
+    }
+    let output_leases = result
+        .outputs()
+        .iter()
+        .map(|(_, path)| {
+            std::str::from_utf8(path)
+                .map(|path| (output_lease_id(), path.to_owned()))
+                .map_err(|_| io::Error::other("invalid cached output path"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let entries = output_leases
+        .iter()
+        .map(|(id, path)| crate::store::retention::RetentionEntry::new(id, path))
+        .collect::<Vec<_>>();
+    let expected_paths = request
+        .expected_outputs()
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    let valid_paths = store_query.query_valid_paths(&expected_paths, false)?;
+    if valid_paths.len() != expected_paths.len()
+        || expected_paths
+            .iter()
+            .any(|path| !valid_paths.contains(path))
+    {
+        return Ok(false);
+    }
+    // Roots protect the output closure while it is validated and retained for retrieval.
+    let retained = store_retention.retain(&entries)?;
+    let persisted = (|| {
+        validate_build_outputs(&result, request, store_export)?;
+        let request_id = build_request_id();
+        crate::persistence::create_build_request(
+            database,
+            &request_id,
+            derivation_path,
+            request.system(),
+            audit_subject,
+            quota_subject,
+        )
+        .map_err(|_| io::Error::other("cached build request persistence failed"))?;
+        crate::persistence::create_request_output_leases(
+            database,
+            &request_id,
+            retention,
+            &output_leases,
+        )
+        .map_err(|_| io::Error::other("cached output retention persistence failed"))?;
+        Ok::<(), io::Error>(())
+    })();
+    if let Err(error) = persisted {
+        store_retention.rollback(&retained)?;
+        return Err(error);
+    }
+    Ok(true)
 }
 
 fn build_request_id() -> String {

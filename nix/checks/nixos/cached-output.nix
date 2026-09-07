@@ -39,14 +39,16 @@ harness.mkRestrictedIngressTest {
     assert sql("SELECT count(*) FROM shared_builds WHERE state = 'succeeded'") == "1"
     input_count = sql("SELECT count(*) FROM store_leases WHERE purpose IN ('derivation', 'input')")
     assert int(input_count) > 0, "cache miss retains execution inputs"
+    sql("UPDATE store_leases SET expires_at = transaction_timestamp() WHERE purpose = 'output'")
     stock_client.succeed("nix-store --delete " + shlex.quote(output))
     assert stock_client.succeed(command).strip() == output
     assert sql("SELECT count(*) FROM store_leases WHERE purpose IN ('derivation', 'input')") == input_count, "cached request must not create execution input leases"
     assert sql("SELECT count(*) FROM shared_builds") == "1", "cached request does not create an execution"
     stock_client.succeed("nix-store --delete " + shlex.quote(output))
+    gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"SELECT count(*) FROM store_leases WHERE purpose = 'output' AND state = 'reconciled'\" | grep -qx 1")
     gateway.succeed("nix-store --gc")
     gateway.succeed("nix-store --check-validity " + shlex.quote(output))
-    stock_client.succeed("nix --extra-experimental-features nix-command copy --from ssh-ng://telchar-ingress@gateway " + shlex.quote(output))
+    stock_client.succeed("nix --extra-experimental-features nix-command copy --no-check-sigs --from ssh-ng://telchar-ingress@gateway " + shlex.quote(output))
     assert stock_client.succeed("cat " + shlex.quote(output)) == "cached-output"
   '';
 }

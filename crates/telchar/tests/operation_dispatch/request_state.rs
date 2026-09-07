@@ -22,21 +22,26 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let socket = root.join("store.sock");
+    let store = spawn_cached_output_query_daemon(&socket);
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
-        "unix:///fixed-gateway.sock",
-        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        &format!("unix://{}", socket.display()),
+        [
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ("TELCHAR_TEST_STORE_RETENTION", "filesystem-only".to_owned()),
+        ],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
     let mut output = child.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
 
-    for _ in 0..2 {
+    for expected_status in [0, 2] {
         write_build_derivation_request(&mut input, "x86_64-linux", 0);
         input.flush().expect("BuildDerivation request flushes");
         assert_eq!(read_integer(&mut output), STDERR_LAST);
-        assert_eq!(read_integer(&mut output), 0, "Built status");
+        assert_eq!(read_integer(&mut output), expected_status, "build status");
         assert_eq!(read_string(&mut output), "", "empty build error message");
         for _ in 0..7 {
             read_integer(&mut output);
@@ -87,8 +92,7 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         .map(|lease| (lease.get::<_, String>(0), lease.get::<_, String>(1)))
         .collect::<Vec<_>>();
     leases.sort_by(|left, right| left.1.cmp(&right.1));
-    assert_eq!(leases.len(), 2);
-    assert_ne!(leases[0].0, leases[1].0);
+    assert_eq!(leases.len(), 1, "only execution retains the derivation");
     for (lease_id, request_id) in leases {
         assert!(lease_id.starts_with("lease-"), "{lease_id}");
         assert_ne!(lease_id, request_id);
@@ -99,7 +103,37 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         stderr.contains("database.build_request.created"),
         "{stderr}"
     );
+    store.join().expect("store daemon joins");
     fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+fn spawn_cached_output_query_daemon(socket: &std::path::Path) -> thread::JoinHandle<()> {
+    let listener = UnixListener::bind(socket).expect("store daemon socket binds");
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("store daemon accepts");
+        assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+        assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+        write_integer(&mut stream, SERVER_WORKER_MAGIC);
+        write_integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+        stream.flush().expect("store greeting flushes");
+        assert_eq!(read_integer(&mut stream), 0);
+        write_integer(&mut stream, 0);
+        stream.flush().expect("store features flush");
+        assert_eq!(read_integer(&mut stream), 0);
+        assert_eq!(read_integer(&mut stream), 0);
+        write_string(&mut stream, b"2.34.8");
+        write_integer(&mut stream, 1);
+        write_integer(&mut stream, STDERR_LAST);
+        stream.flush().expect("store handshake flushes");
+        assert_eq!(read_integer(&mut stream), 31, "QueryValidPaths operation");
+        assert_eq!(read_integer(&mut stream), 1, "one expected output");
+        let path = read_string(&mut stream);
+        assert_eq!(read_integer(&mut stream), 0, "substitution disabled");
+        write_integer(&mut stream, STDERR_LAST);
+        write_integer(&mut stream, 1);
+        write_string(&mut stream, path.as_bytes());
+        stream.flush().expect("valid paths response flushes");
+    })
 }
 
 #[test]
