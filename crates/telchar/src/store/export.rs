@@ -606,6 +606,11 @@ fn verify_exported_nar_inner(
         store_uri: backend.store_uri().to_owned(),
         path: path.to_path_buf(),
     };
+    // Keep export and verification synchronized one backend write at a time. A production
+    // ten-session benchmark with 459 cached outputs found that 64 KiB response coalescing reduced
+    // writes by 98.8% but increased the cached wave by 5.7% and total latency by 4.0%; larger writes
+    // held the SSH/client flow-control window longer. The rendezvous also bounds unverified bytes
+    // and propagates parser or destination failures directly to the exporter.
     let (sender, receiver) = std::sync::mpsc::sync_channel(0);
     let (acknowledgement, result) = std::sync::mpsc::sync_channel(1);
     let reader = ExportReader {
