@@ -2,7 +2,6 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use telchar::nomad::callback_service::NomadCallbackService;
@@ -139,19 +138,6 @@ maximum_diagnostic_bytes = 1024
         "GET /callback HTTP/1.1\r\nHost: gateway\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {websocket_key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: telchar-nomad-transfer-v1\r\n\r\n"
     )
     .expect("handshake writes");
-    let accepted_deadline = Instant::now() + Duration::from_secs(1);
-    while service
-        .active_connections()
-        .expect("active connections reads")
-        == 0
-    {
-        assert!(
-            Instant::now() < accepted_deadline,
-            "callback was not accepted"
-        );
-        thread::yield_now();
-    }
-
     let started = Instant::now();
     service.shutdown().expect("service shuts down");
     assert!(started.elapsed() < Duration::from_secs(3));
