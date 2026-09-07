@@ -1523,6 +1523,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 output.flush()?;
                 tracing::debug!(
                     event = "worker.nar_from_path.transport.completed",
+                    path = %path.display(),
                     nar_size = verified.nar_size,
                     first_byte_us,
                     write_elapsed_us,
