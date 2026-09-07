@@ -57,15 +57,7 @@ request_timeout_seconds = 5
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
+    let config = ServiceConfig::load_from_default(&config_path).expect("configuration loads");
     config.static_ssh_consul()[0].clone()
 }
 
@@ -74,15 +66,7 @@ fn merges_discovered_members_with_manual_inventory_without_replacing_it() {
     let root = tempfile::tempdir().expect("fixture creates");
     let config_path = root.path().join("telchar.toml");
     let discovery = discovery_config(root.path(), "http://127.0.0.1:8500");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
+    let config = ServiceConfig::load_from_default(&config_path).expect("configuration loads");
     let discovered = map_fixture_members(&discovery);
 
     let merged = telchar::service::static_ssh_consul::merge_inventory(&config, &discovered)
@@ -106,15 +90,7 @@ fn publishes_merged_inventory_as_a_reloadable_backend_generation() {
     let root = tempfile::tempdir().expect("fixture creates");
     let config_path = root.path().join("telchar.toml");
     let discovery = discovery_config(root.path(), "http://127.0.0.1:8500");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
+    let config = ServiceConfig::load_from_default(&config_path).expect("configuration loads");
     let initial = telchar::backend::routing::ConfiguredBackends::with_health(
         &config,
         None,
