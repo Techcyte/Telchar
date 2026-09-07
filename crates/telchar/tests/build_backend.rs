@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 use telchar::backend::{
-    BackendCapabilities, BackendKind, BackendPool, BackendTarget, BuildBackend, BuildExecution,
-    BuildResult, BuildStatus, CancellationCapability, ExecutionRecovery, LogRecovery, OutputTrust,
-    select_backend,
+    select_backend, BackendCapabilities, BackendKind, BackendPool, BackendTarget, BuildBackend,
+    BuildExecution, BuildResult, BuildStatus, CancellationCapability, ExecutionRecovery,
+    LogRecovery, OutputTrust,
 };
 use telchar::build::BuildRequest;
 
 #[test]
-fn routing_selects_first_backend_with_matching_system_and_features() {
+fn routing_selects_highest_priority_backend_with_matching_system_and_features() {
     let backends = [
         BackendTarget::new("local", BackendKind::Local, "x86_64-linux", ["kvm"])
             .expect("local backend is valid"),
@@ -24,6 +24,7 @@ fn routing_selects_first_backend_with_matching_system_and_features() {
             "x86_64-linux",
             ["big-parallel", "kvm"],
         )
+        .and_then(|target| target.with_selection_priority(10))
         .expect("SSH backend is valid"),
         BackendTarget::new(
             "nomad-fallback",
@@ -38,7 +39,7 @@ fn routing_selects_first_backend_with_matching_system_and_features() {
         select_backend(&backends, "x86_64-linux", &["kvm"])
             .expect("compatible backend exists")
             .name(),
-        "local"
+        "ssh-fast"
     );
     assert_eq!(
         select_backend(&backends, "x86_64-linux", &["big-parallel", "kvm"])
@@ -51,7 +52,7 @@ fn routing_selects_first_backend_with_matching_system_and_features() {
 }
 
 #[test]
-fn backend_pool_waits_for_selected_backend_and_releases_permits() {
+fn backend_pool_falls_back_to_available_capacity_by_priority() {
     let pool = BackendPool::new(
         vec![
             BackendTarget::new("local", BackendKind::Local, "x86_64-linux", ["kvm"])
@@ -62,6 +63,7 @@ fn backend_pool_waits_for_selected_backend_and_releases_permits() {
                 "x86_64-linux",
                 ["kvm", "big-parallel"],
             )
+            .and_then(|target| target.with_selection_priority(10))
             .expect("SSH backend is valid"),
         ],
         vec![1, 1],
@@ -70,7 +72,7 @@ fn backend_pool_waits_for_selected_backend_and_releases_permits() {
     let held = pool
         .acquire("x86_64-linux", &["kvm"], Duration::from_secs(1))
         .expect("first local permit acquires");
-    assert_eq!(held.target().name(), "local");
+    assert_eq!(held.target().name(), "ssh");
 
     let waiting_pool = pool.clone();
     let started = Arc::new(Barrier::new(2));
@@ -79,16 +81,14 @@ fn backend_pool_waits_for_selected_backend_and_releases_permits() {
         waiting_started.wait();
         waiting_pool
             .acquire("x86_64-linux", &["kvm"], Duration::from_secs(1))
-            .expect("released local permit acquires")
+            .expect("fallback permit acquires")
             .target()
             .name()
             .to_owned()
     });
     started.wait();
-    thread::sleep(Duration::from_millis(25));
-    assert!(!waiter.is_finished());
-    drop(held);
     assert_eq!(waiter.join().expect("waiter joins"), "local");
+    drop(held);
 
     let ssh = pool
         .acquire(
@@ -98,6 +98,26 @@ fn backend_pool_waits_for_selected_backend_and_releases_permits() {
         )
         .expect("feature-specific SSH permit acquires");
     assert_eq!(ssh.target().name(), "ssh");
+}
+
+#[test]
+fn backend_pool_preserves_order_for_equal_priorities() {
+    let pool = BackendPool::new(
+        vec![
+            BackendTarget::new("first", BackendKind::Local, "x86_64-linux", ["kvm"])
+                .expect("first backend is valid"),
+            BackendTarget::new("second", BackendKind::Nomad, "x86_64-linux", ["kvm"])
+                .expect("second backend is valid"),
+        ],
+        vec![1, 1],
+    )
+    .expect("backend pool is valid");
+
+    let permit = pool
+        .acquire("x86_64-linux", &["kvm"], Duration::from_secs(1))
+        .expect("permit acquires");
+
+    assert_eq!(permit.target().name(), "first");
 }
 
 #[test]
@@ -153,10 +173,9 @@ fn backend_pool_times_out_and_releases_after_failure_paths() {
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(started.elapsed() >= Duration::from_millis(20));
     drop(held);
-    assert!(
-        pool.acquire("x86_64-linux", &["kvm"], Duration::from_millis(25))
-            .is_ok()
-    );
+    assert!(pool
+        .acquire("x86_64-linux", &["kvm"], Duration::from_millis(25))
+        .is_ok());
     assert_eq!(
         pool.acquire("aarch64-linux", &[], Duration::from_millis(25))
             .expect_err("incompatible backend is unavailable")

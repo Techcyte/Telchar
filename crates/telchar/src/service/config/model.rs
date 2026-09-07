@@ -188,6 +188,7 @@ pub struct StaticSshConsulConfig {
     pub(super) system: String,
     pub(super) supported_features: Vec<String>,
     pub(super) maximum_concurrent_builds_per_instance: usize,
+    pub(super) selection_priority: u32,
     pub(super) endpoint: String,
     pub(super) service: String,
     pub(super) datacenter: Option<String>,
@@ -215,6 +216,9 @@ impl StaticSshConsulConfig {
     }
     pub fn maximum_concurrent_builds_per_instance(&self) -> usize {
         self.maximum_concurrent_builds_per_instance
+    }
+    pub fn selection_priority(&self) -> u32 {
+        self.selection_priority
     }
     pub fn endpoint(&self) -> &str {
         &self.endpoint

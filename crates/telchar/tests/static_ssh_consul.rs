@@ -314,6 +314,7 @@ fn service_metadata_overrides_only_approved_backend_properties() {
                 "telchar_supported_features": "kvm,big-parallel",
                 "telchar_mandatory_features": "kvm",
                 "telchar_maximum_concurrent_builds": "4",
+                "telchar_priority": "8",
                 "telchar_ssh_user": "attacker"
             }
         },
@@ -327,6 +328,7 @@ fn service_metadata_overrides_only_approved_backend_properties() {
     assert_eq!(backends[0].target().features(), ["kvm", "big-parallel"]);
     assert_eq!(backends[0].target().mandatory_features(), ["kvm"]);
     assert_eq!(backends[0].maximum_concurrent_builds(), 4);
+    assert_eq!(backends[0].target().selection_priority(), 8);
     assert_eq!(backends[0].destination(), "telchar@10.0.1.1");
 }
 

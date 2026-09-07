@@ -36,6 +36,7 @@ supported_features = ["kvm"]
 
 [backends.ssh.consul.host_1]
 address = "builder-1.example"
+selection_priority = 9
 
 [backends.ssh.consul.host_2]
 address = "builder-2.example"
@@ -65,10 +66,12 @@ address = "builder-3.example"
     assert_eq!(backends[0].target().features(), ["kvm"]);
     assert_eq!(backends[0].destination(), "telchar@builder-1.example");
     assert_eq!(backends[0].maximum_concurrent_builds(), 1);
+    assert_eq!(backends[0].target().selection_priority(), 9);
     assert_eq!(backends[1].target().name(), "consul.host_2");
     assert_eq!(backends[1].target().system(), "aarch64-linux");
     assert_eq!(backends[1].port(), 2222);
     assert_eq!(backends[1].maximum_concurrent_builds(), 4);
+    assert_eq!(backends[1].target().selection_priority(), 1);
     assert_eq!(backends[2].target().name(), "other.host");
 
     restore_environment(saved);

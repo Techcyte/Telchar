@@ -137,6 +137,7 @@ pub(super) struct RawLocalBackendConfig {
     #[serde(default)]
     pub(super) supported_features: Vec<String>,
     pub(super) maximum_concurrent_builds: usize,
+    pub(super) selection_priority: Option<u32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -144,6 +145,7 @@ pub(super) struct RawSshConfig {
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) selection_priority: Option<u32>,
     pub(super) ready_check_interval_seconds: Option<u64>,
     pub(super) unavailable_check_interval_seconds: Option<u64>,
     pub(super) check_timeout_seconds: Option<u64>,
@@ -161,6 +163,7 @@ pub(super) struct RawSshBackendConfig {
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) selection_priority: Option<u32>,
     pub(super) ready_check_interval_seconds: Option<u64>,
     pub(super) unavailable_check_interval_seconds: Option<u64>,
     pub(super) check_timeout_seconds: Option<u64>,
@@ -189,6 +192,7 @@ pub(super) struct RawSshHostConfig {
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) selection_priority: Option<u32>,
     pub(super) ready_check_interval_seconds: Option<u64>,
     pub(super) unavailable_check_interval_seconds: Option<u64>,
     pub(super) check_timeout_seconds: Option<u64>,
@@ -203,6 +207,7 @@ pub(super) struct RawNomadConfig {
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) selection_priority: Option<u32>,
     pub(super) max_retries: Option<usize>,
     pub(super) endpoint: Option<String>,
     pub(super) namespace: Option<String>,
@@ -236,6 +241,7 @@ pub(super) struct RawNomadBackendConfig {
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,
+    pub(super) selection_priority: Option<u32>,
     pub(super) max_retries: Option<usize>,
     pub(super) endpoint: Option<String>,
     pub(super) namespace: Option<String>,

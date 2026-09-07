@@ -118,7 +118,8 @@ pub(super) fn validate_local_backend(raw: RawLocalBackendConfig) -> io::Result<L
             BackendKind::Local,
             &raw.system,
             &raw.supported_features,
-        )?,
+        )?
+        .with_selection_priority(raw.selection_priority.unwrap_or(1))?,
         maximum_concurrent_builds: raw.maximum_concurrent_builds,
     })
 }
@@ -144,6 +145,10 @@ pub(super) fn validate_ssh_backends(
             let capacity = pool
                 .maximum_concurrent_builds
                 .or(group.maximum_concurrent_builds)
+                .unwrap_or(1);
+            let selection_priority = pool
+                .selection_priority
+                .or(group.selection_priority)
                 .unwrap_or(1);
             let ssh_user = pool
                 .ssh_user
@@ -178,6 +183,8 @@ pub(super) fn validate_ssh_backends(
                         let host_features =
                             host.supported_features.unwrap_or_else(|| features.clone());
                         let host_capacity = host.maximum_concurrent_builds.unwrap_or(capacity);
+                        let host_selection_priority =
+                            host.selection_priority.unwrap_or(selection_priority);
                         let host_user = host.ssh_user.unwrap_or_else(|| ssh_user.clone());
                         let host_identity =
                             host.identity_file.unwrap_or_else(|| identity_file.clone());
@@ -219,7 +226,8 @@ pub(super) fn validate_ssh_backends(
                                 BackendKind::StaticSsh,
                                 &host_system,
                                 &host_features,
-                            )?,
+                            )?
+                            .with_selection_priority(host_selection_priority)?,
                             maximum_concurrent_builds: host_capacity,
                             ready_check_interval: Duration::from_secs(ready),
                             unavailable_check_interval: Duration::from_secs(unavailable),
@@ -275,6 +283,7 @@ pub(super) fn validate_ssh_backends(
                         system,
                         supported_features: features,
                         maximum_concurrent_builds_per_instance: capacity,
+                        selection_priority,
                         endpoint,
                         service: validate_subject(service, "Consul SSH service is invalid")?,
                         datacenter: pool.datacenter,
@@ -355,6 +364,10 @@ pub(super) fn validate_nomad_backends(
                 .maximum_concurrent_builds
                 .or(group.maximum_concurrent_builds)
                 .ok_or_else(|| invalid("Nomad concurrency is required"))?;
+            let selection_priority = backend
+                .selection_priority
+                .or(group.selection_priority)
+                .unwrap_or(1);
             let max_retries = backend.max_retries.or(group.max_retries).unwrap_or(0);
             let endpoint = backend
                 .endpoint
@@ -516,7 +529,8 @@ pub(super) fn validate_nomad_backends(
                     BackendKind::Nomad,
                     &system,
                     &supported_features,
-                )?,
+                )?
+                .with_selection_priority(selection_priority)?,
                 maximum_concurrent_builds,
                 max_retries,
                 endpoint,

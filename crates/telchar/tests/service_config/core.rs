@@ -115,6 +115,7 @@ name = "local"
 system = "x86_64-linux"
 supported_features = ["kvm"]
 maximum_concurrent_builds = 2
+selection_priority = 7
 "#,
             database_url_file.display()
         ),
@@ -155,6 +156,7 @@ maximum_concurrent_builds = 2
     let local = config.local_backend().expect("local backend exists");
     assert_eq!(local.target().name(), "local");
     assert_eq!(local.maximum_concurrent_builds(), 2);
+    assert_eq!(local.target().selection_priority(), 7);
     let mapping = config
         .credential_mapping("ssh-pubkey:SHA256:abc")
         .expect("credential mapping exists");

@@ -34,6 +34,7 @@ fn loads_optional_consul_static_ssh_discovery_without_static_inventory() {
 system = "x86_64-linux"
 supported_features = ["ephemeral"]
 maximum_concurrent_builds = 2
+selection_priority = 6
 ssh_user = "telchar"
 identity_file = "{}"
 known_hosts_file = "{}"
@@ -67,6 +68,7 @@ ca_certificate_file = "{}"
     assert_eq!(discovery.system(), "x86_64-linux");
     assert_eq!(discovery.supported_features(), ["ephemeral"]);
     assert_eq!(discovery.maximum_concurrent_builds_per_instance(), 2);
+    assert_eq!(discovery.selection_priority(), 6);
     assert_eq!(discovery.endpoint(), "https://consul.example:8501");
     assert_eq!(discovery.service(), "telchar-ssh-builder");
     assert_eq!(discovery.datacenter(), Some("dc1"));

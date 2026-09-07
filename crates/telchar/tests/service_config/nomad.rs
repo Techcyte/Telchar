@@ -246,6 +246,7 @@ transfer_endpoint = "ws://telchar.example:7443"
 system = "x86_64-linux"
 supported_features = ["docker"]
 maximum_concurrent_builds = 8
+selection_priority = 3
 max_retries = 3
 endpoint = "https://nomad-a.example:4646"
 namespace = "telchar-a"
@@ -370,6 +371,7 @@ args = ["--stdio"]
     assert_eq!(backends.len(), 2);
     assert_eq!(backends[0].target().name(), "nomad-docker");
     assert_eq!(backends[0].target().kind(), BackendKind::Nomad);
+    assert_eq!(backends[0].target().selection_priority(), 3);
     assert_eq!(backends[0].endpoint(), "https://nomad-a.example:4646");
     assert_eq!(backends[0].namespace(), "telchar-a");
     assert_eq!(backends[0].node_pool(), "builders");
@@ -402,6 +404,7 @@ args = ["--stdio"]
     );
     assert_eq!(backends[0].driver_config()["privileged"], false);
     assert_eq!(backends[1].target().name(), "nomad-raw");
+    assert_eq!(backends[1].target().selection_priority(), 1);
     assert_eq!(backends[1].node_pool(), "default");
     assert_eq!(backends[1].max_retries(), 0);
     assert_eq!(backends[1].driver(), "raw_exec");

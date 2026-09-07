@@ -106,6 +106,7 @@ pub struct BackendTarget {
     system: String,
     features: Vec<String>,
     mandatory_features: Vec<String>,
+    selection_priority: u32,
 }
 
 impl BackendTarget {
@@ -142,7 +143,19 @@ impl BackendTarget {
             system: system.to_owned(),
             features: normalized,
             mandatory_features: Vec::new(),
+            selection_priority: 1,
         })
+    }
+
+    pub fn with_selection_priority(mut self, priority: u32) -> io::Result<Self> {
+        if priority == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend target priority is invalid",
+            ));
+        }
+        self.selection_priority = priority;
+        Ok(self)
     }
 
     pub fn with_mandatory_features<I, S>(mut self, features: I) -> io::Result<Self>
@@ -191,6 +204,10 @@ impl BackendTarget {
 
     pub fn mandatory_features(&self) -> &[String] {
         &self.mandatory_features
+    }
+
+    pub fn selection_priority(&self) -> u32 {
+        self.selection_priority
     }
 
     pub(crate) fn supports(&self, system: &str, required_features: &[&str]) -> bool {
@@ -304,12 +321,12 @@ impl BackendPool {
                 "compatible backend is unavailable",
             ));
         }
-        let index = self
+        let ready = self
             .inner
             .targets
             .iter()
-            .position(|target| target.supports(system, required_features) && available(target));
-        let Some(index) = index else {
+            .any(|target| target.supports(system, required_features) && available(target));
+        if !ready {
             crate::service::metrics::backend_selection(
                 None,
                 None,
@@ -320,8 +337,113 @@ impl BackendPool {
                 io::ErrorKind::NotConnected,
                 "compatible backend is not ready",
             ));
-        };
-        self.acquire_index(index, timeout)
+        }
+        let preferred = self
+            .inner
+            .targets
+            .iter()
+            .filter(|target| target.supports(system, required_features) && available(target))
+            .fold(None::<&BackendTarget>, |selected, target| match selected {
+                Some(current) if current.selection_priority() >= target.selection_priority() => {
+                    selected
+                }
+                _ => Some(target),
+            })
+            .ok_or_else(|| io::Error::other("compatible backend readiness changed"))?;
+        let wait_target_name = preferred.name().to_owned();
+        let wait_target_kind = preferred.kind().as_str();
+        let started = Instant::now();
+        crate::service::metrics::backend_permit_wait_started(&wait_target_name, wait_target_kind);
+        let deadline = started.checked_add(timeout).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend permit wait is invalid",
+            )
+        })?;
+        let mut permits = self
+            .inner
+            .permits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            let index = self
+                .inner
+                .targets
+                .iter()
+                .enumerate()
+                .filter(|(index, target)| {
+                    target.supports(system, required_features)
+                        && available(target)
+                        && permits[*index].active < permits[*index].maximum
+                })
+                .fold(None, |selected, (index, target)| match selected {
+                    Some((_, priority)) if priority >= target.selection_priority() => selected,
+                    _ => Some((index, target.selection_priority())),
+                })
+                .map(|(index, _)| index);
+            if let Some(index) = index {
+                permits[index].active += 1;
+                let target = &self.inner.targets[index];
+                crate::service::metrics::backend_selection(
+                    Some(target.name()),
+                    Some(target.kind().as_str()),
+                    "selected",
+                    None,
+                );
+                crate::service::metrics::backend_permit_wait_finished(
+                    &wait_target_name,
+                    wait_target_kind,
+                );
+                crate::service::metrics::backend_permit_acquired(
+                    target.name(),
+                    target.kind().as_str(),
+                    started.elapsed(),
+                );
+                return Ok(BackendPermit {
+                    pool: Arc::clone(&self.inner),
+                    index,
+                });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                crate::service::metrics::backend_selection(
+                    None,
+                    None,
+                    "failed",
+                    Some("capacity_timeout"),
+                );
+                crate::service::metrics::backend_permit_wait_finished(
+                    &wait_target_name,
+                    wait_target_kind,
+                );
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "backend permit wait timed out",
+                ));
+            }
+            let (next, result) = self
+                .inner
+                .changed
+                .wait_timeout(permits, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            permits = next;
+            if result.timed_out() {
+                crate::service::metrics::backend_selection(
+                    None,
+                    None,
+                    "failed",
+                    Some("capacity_timeout"),
+                );
+                crate::service::metrics::backend_permit_wait_finished(
+                    &wait_target_name,
+                    wait_target_kind,
+                );
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "backend permit wait timed out",
+                ));
+            }
+        }
     }
 
     fn acquire_index(&self, index: usize, timeout: Duration) -> io::Result<BackendPermit> {
@@ -432,7 +554,13 @@ pub fn select_backend<'a>(
 ) -> Option<&'a BackendTarget> {
     backends
         .iter()
-        .find(|backend| backend.supports(system, required_features))
+        .filter(|backend| backend.supports(system, required_features))
+        .fold(None::<&BackendTarget>, |selected, backend| match selected {
+            Some(current) if current.selection_priority() >= backend.selection_priority() => {
+                selected
+            }
+            _ => Some(backend),
+        })
 }
 
 fn valid_component(value: &str, maximum_bytes: usize) -> bool {

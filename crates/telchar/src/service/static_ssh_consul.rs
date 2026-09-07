@@ -342,9 +342,23 @@ pub fn map_members(
             })
             .transpose()?
             .unwrap_or_else(|| config.maximum_concurrent_builds_per_instance());
+        let selection_priority = entry
+            .service
+            .metadata
+            .get("telchar_priority")
+            .map(|value| {
+                value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| invalid("Consul SSH membership metadata is invalid"))
+            })
+            .transpose()?
+            .unwrap_or_else(|| config.selection_priority());
         let destination = format!("{}@{address}", config.ssh_user());
         backends.push(StaticSshBackendConfig::discovered(
             BackendTarget::new(&name, BackendKind::StaticSsh, system, &supported_features)?
+                .with_selection_priority(selection_priority)?
                 .with_mandatory_features(&mandatory_features)?,
             maximum_concurrent_builds,
             destination,
