@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use telchar::nomad::callback_service::NomadCallbackService;
@@ -118,7 +119,7 @@ maximum_diagnostic_bytes = 1024
             .expect("Nomad callback is configured")
             .clone(),
         telchar::persistence::Database::connect(database.url()).expect("database connects"),
-        vec![],
+        config.nomad_backends().to_vec(),
         telchar::store::daemon::GatewayStoreEndpoint::parse(
             "unix:///definitely-missing/telchar-gateway.sock",
         )
@@ -138,6 +139,19 @@ maximum_diagnostic_bytes = 1024
         "GET /callback HTTP/1.1\r\nHost: gateway\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {websocket_key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: telchar-nomad-transfer-v1\r\n\r\n"
     )
     .expect("handshake writes");
+    let accepted_deadline = Instant::now() + Duration::from_secs(1);
+    while service
+        .active_connections()
+        .expect("active connections reads")
+        == 0
+    {
+        assert!(
+            Instant::now() < accepted_deadline,
+            "callback was not accepted"
+        );
+        thread::yield_now();
+    }
+
     let started = Instant::now();
     service.shutdown().expect("service shuts down");
     assert!(started.elapsed() < Duration::from_secs(3));
@@ -145,12 +159,17 @@ maximum_diagnostic_bytes = 1024
     client
         .set_read_timeout(Some(Duration::from_secs(1)))
         .expect("timeout sets");
-    let mut byte = [0_u8; 1];
-    match client.read(&mut byte) {
-        Ok(0) => {}
+    let mut response = Vec::new();
+    match client.read_to_end(&mut response) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
         result => panic!("socket remained open: {result:?}"),
     }
+    assert!(
+        response.starts_with(b"HTTP/1.1 101"),
+        "callback upgrade was not accepted: {}",
+        String::from_utf8_lossy(&response)
+    );
     assert!(TcpStream::connect(address).is_err());
     let _ = client.shutdown(Shutdown::Both);
     std::fs::remove_dir_all(root).expect("fixture removes");
