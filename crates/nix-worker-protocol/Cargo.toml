@@ -1,6 +1,6 @@
 [package]
 name = "nix-worker-protocol"
-version = "2026.8.1"
+version = "2026.9.0"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
