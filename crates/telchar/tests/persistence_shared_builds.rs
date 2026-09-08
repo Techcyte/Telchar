@@ -296,6 +296,92 @@ fn equivalent_shared_build_claims_have_one_owner() {
 }
 
 #[test]
+fn running_shared_build_reassigns_exact_backend_before_execution() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/33333333333333333333333333333333-reassigned.drv";
+    let output_path = "/nix/store/44444444444444444444444444444444-reassigned";
+    let output_only = BackendKind::StaticSsh.capabilities();
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[8_u8; 32],
+        "ssh-primary",
+        BackendKind::StaticSsh,
+        output_only,
+        None,
+        &[output_path],
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(fixture.url(), derivation_path)
+        .expect("shared build starts");
+
+    let reassigned = telchar::persistence::reassign_running_shared_build(
+        fixture.url(),
+        derivation_path,
+        "nomad-burst",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("telchar-build-reassigned"),
+    )
+    .expect("running build reassigns");
+
+    assert_eq!(reassigned.backend_name, "nomad-burst");
+    assert_eq!(reassigned.backend_kind, BackendKind::Nomad);
+    assert_eq!(
+        reassigned.backend_execution_id.as_deref(),
+        Some("telchar-build-reassigned")
+    );
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation_path)
+        .expect("attempt reads")
+        .expect("attempt exists");
+    assert_eq!(attempt.backend_name, "nomad-burst");
+    assert_eq!(attempt.backend_kind, BackendKind::Nomad);
+    assert_eq!(
+        attempt.backend_execution_id.as_deref(),
+        Some("telchar-build-reassigned")
+    );
+}
+
+#[test]
+fn equivalent_claims_join_despite_provisional_backend_difference() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/55555555555555555555555555555555-provisional.drv";
+    let output_path = "/nix/store/66666666666666666666666666666666-provisional";
+
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[9_u8; 32],
+        "ssh-primary",
+        BackendKind::StaticSsh,
+        BackendKind::StaticSsh.capabilities(),
+        None,
+        &[output_path],
+    )
+    .expect("first claim succeeds");
+    let joined = telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation_path,
+        &[9_u8; 32],
+        "nomad-burst",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("telchar-build-provisional"),
+        &[output_path],
+    )
+    .expect("equivalent claim joins");
+
+    assert_eq!(
+        joined.ownership,
+        telchar::persistence::SharedBuildOwnership::Joined
+    );
+    assert_eq!(joined.build.backend_name, "ssh-primary");
+}
+
+#[test]
 fn shared_build_claim_rejects_digest_conflict_and_requires_adoptable_identity() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

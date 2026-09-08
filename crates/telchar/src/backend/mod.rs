@@ -694,6 +694,18 @@ pub trait BuildBackend: Send {
         1
     }
 
+    fn compatible_live_log_queue_bytes(&self, _system: &str, _required_features: &[&str]) -> usize {
+        1
+    }
+
+    fn reserve_target(
+        &self,
+        _system: &str,
+        _required_features: &[&str],
+    ) -> io::Result<Option<BackendPermit>> {
+        Ok(None)
+    }
+
     fn selected_target(
         &self,
         _system: &str,
@@ -711,6 +723,17 @@ pub trait BuildBackend: Send {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult>;
+
+    fn execute_reserved(
+        &mut self,
+        execution: &BuildExecution<'_>,
+        permit: BackendPermit,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
+        drop(permit);
+        self.execute_with_logs(execution, logs, cancelled)
+    }
 
     fn execute(&mut self, execution: &BuildExecution<'_>) -> io::Result<BuildResult> {
         self.execute_with_logs(execution, &mut |_| Ok(()), &mut || Ok(false))

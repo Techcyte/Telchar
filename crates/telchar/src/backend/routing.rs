@@ -275,6 +275,17 @@ pub struct BackendExecutor {
 }
 
 impl BuildBackend for BackendExecutor {
+    fn compatible_live_log_queue_bytes(&self, system: &str, required_features: &[&str]) -> usize {
+        self.backends
+            .inner
+            .pool
+            .targets()
+            .filter(|target| target.supports(system, required_features))
+            .map(|target| self.live_log_queue_bytes(target))
+            .max()
+            .unwrap_or(1)
+    }
+
     fn live_log_queue_bytes(&self, target: &crate::backend::BackendTarget) -> usize {
         if target.kind() != BackendKind::Nomad {
             return 1;
@@ -311,6 +322,37 @@ impl BuildBackend for BackendExecutor {
         }
     }
 
+    fn reserve_target(
+        &self,
+        system: &str,
+        required_features: &[&str],
+    ) -> io::Result<Option<crate::backend::BackendPermit>> {
+        self.backends
+            .inner
+            .pool
+            .acquire_where(
+                system,
+                required_features,
+                self.backends.inner.permit_wait,
+                |target| {
+                    target.kind() != BackendKind::StaticSsh
+                        || (self
+                            .backends
+                            .inner
+                            .schedulable_static_ssh
+                            .read()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .contains(target.name())
+                            && self
+                                .backends
+                                .inner
+                                .static_ssh_health
+                                .is_ready(target.name()))
+                },
+            )
+            .map(Some)
+    }
+
     fn selected_target(
         &self,
         system: &str,
@@ -321,7 +363,7 @@ impl BuildBackend for BackendExecutor {
             .inner
             .pool
             .targets()
-            .find(|target| {
+            .filter(|target| {
                 target.supports(system, required_features)
                     && (target.kind() != BackendKind::StaticSsh
                         || (self
@@ -337,6 +379,17 @@ impl BuildBackend for BackendExecutor {
                                 .static_ssh_health
                                 .is_ready(target.name())))
             })
+            .fold(
+                None::<&crate::backend::BackendTarget>,
+                |selected, target| match selected {
+                    Some(current)
+                        if current.selection_priority() >= target.selection_priority() =>
+                    {
+                        selected
+                    }
+                    _ => Some(target),
+                },
+            )
             .cloned();
         match selected {
             Some(target) => {
@@ -396,6 +449,16 @@ impl BuildBackend for BackendExecutor {
             .inner
             .pool
             .acquire_target(target_name, self.backends.inner.permit_wait)?;
+        self.execute_reserved(execution, permit, logs, cancelled)
+    }
+
+    fn execute_reserved(
+        &mut self,
+        execution: &BuildExecution<'_>,
+        permit: crate::backend::BackendPermit,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();
         let started = std::time::Instant::now();

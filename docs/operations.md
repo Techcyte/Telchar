@@ -104,15 +104,18 @@ source = "static"
 
 [backends.ssh.fixed-builders.builder-1]
 address = "builder-1.example"
+selection_priority = 10
 ```
 
-All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged.
+`selection_priority` is optional and defaults to `1`. Higher values receive compatible builds first. When every compatible backend at a higher priority is at capacity, selection falls through to available lower-priority local, SSH, or Nomad capacity. Equal priorities preserve configuration order. This setting is distinct from Nomad's allocation `priority` range. Consul-discovered SSH services may override their pool default with scalar service metadata `telchar_priority`.
+
+All values must be positive and bounded. A failed check covers network, host-key, authentication, remote-command, and Nix protocol failure as one `unavailable` state. Telchar does not retry or migrate work after dispatch; a host can still disappear between its successful check and build execution. Exact-target recovery is unchanged after capacity assignment.
 
 Send `SIGHUP` to the daemon after atomically replacing its configuration file to add static SSH leaves or after replacing the contents of an unchanged Nomad `token_file`. Reload parses and validates the complete file, rereads Nomad credential files while assembling replacement clients, immediately probes the resulting static SSH inventory, and publishes one immutable backend generation for subsequently accepted sessions. Existing sessions and in-flight builds retain their previous generation.
 
 Nomad token rotation changes only the protected file contents, not the configured path or backend definition. A Nomad template may render a short-lived Vault-issued token to that path with `change_mode = "signal"` and `change_signal = "SIGHUP"`. Invalid or unreadable replacement credentials reject the reload and leave the active generation serving work.
 
-Reload treats the static SSH list as desired inventory. Added hosts are probed immediately. Omitted hosts are immediately excluded from every new selection, including requests on sessions accepted before the reload; work already assigned to an omitted host retains its exact immutable backend generation and may finish or fail normally. Backend permit acquisition uses that exact selected target rather than choosing another compatible host. Once those sessions finish, the omitted configuration disappears with the retired generation. Drain state is process-local and is not restored after daemon restart.
+Reload treats the static SSH list as desired inventory. Added hosts are probed immediately. Omitted hosts are immediately excluded from every new selection, including requests on sessions accepted before the reload; work already assigned to an omitted host retains its exact immutable backend generation and may finish or fail normally. Backend capacity is selected after subject-fair queue admission; once selected, execution and recovery remain bound to that exact target. Once those sessions finish, the omitted configuration disappears with the retired generation. Drain state is process-local and is not restored after daemon restart.
 
 Changing an existing host under the same backend name, changing local or Nomad backends, or changing any non-backend setting remains unsupported. Such a reload is rejected while the active configuration continues serving work. Newly added but unavailable hosts are accepted in degraded state and remain excluded from scheduling until a readiness check succeeds.
 

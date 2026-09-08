@@ -595,11 +595,7 @@ fn claim_shared_build_inner(
         return Err(SharedBuildError(SharedBuildFailure::Conflict));
     }
     if !inserted
-        && (build.backend_name != backend_name
-            || build.backend_kind != backend_kind
-            || build.capabilities != capabilities
-            || build.backend_execution_id.as_deref() != backend_execution_id
-            || build.expected_outputs != expected_outputs
+        && (build.expected_outputs != expected_outputs
             || build.build_request.as_ref() != build_request)
     {
         return Err(SharedBuildError(SharedBuildFailure::Conflict));
@@ -773,6 +769,91 @@ pub fn start_shared_build(
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
     crate::service::metrics::shared_build_started();
+    Ok(build)
+}
+
+pub fn reassign_running_shared_build(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    backend_name: &str,
+    backend_kind: BackendKind,
+    capabilities: BackendCapabilities,
+    backend_execution_id: Option<&str>,
+) -> Result<SharedBuild, SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(reassign_running_shared_build));
+    validate_shared_build_identity(database, derivation_path)?;
+    let valid_execution_id = backend_execution_id.is_none_or(|execution_id| {
+        !execution_id.is_empty()
+            && execution_id.len() <= nix_worker_protocol::MAXIMUM_WORKER_STORE_PATH_BYTES
+            && !execution_id.contains('\0')
+    });
+    if backend_name.is_empty()
+        || backend_name.len() > MAX_IPC_COMPONENT_BYTES
+        || backend_name.contains('\0')
+        || capabilities != backend_kind.capabilities()
+        || !valid_execution_id
+        || (capabilities.execution_recovery() == ExecutionRecovery::Adoptable
+            && backend_execution_id.is_none())
+    {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let backend_kind_value = backend_kind_name(backend_kind);
+    let execution_recovery = execution_recovery_name(capabilities.execution_recovery());
+    let cancellation = cancellation_name(capabilities.cancellation());
+    let log_recovery = log_recovery_name(capabilities.log_recovery());
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let row = transaction
+        .query_opt(
+            "UPDATE shared_builds
+             SET backend_name = $2,
+                 backend_kind = $3,
+                 execution_recovery = $4,
+                 cancellation = $5,
+                 log_recovery = $6,
+                 backend_execution_id = $7
+             WHERE derivation_path = $1 AND state = 'running'
+             RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
+                       execution_recovery, cancellation, log_recovery,
+                       backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
+                       failure_classification, created_at, started_at, collecting_at,
+                       completed_at, expires_at",
+            &[
+                &derivation_path,
+                &backend_name,
+                &backend_kind_value,
+                &execution_recovery,
+                &cancellation,
+                &log_recovery,
+                &backend_execution_id,
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    let reassigned_attempts = transaction
+        .execute(
+            "UPDATE shared_build_attempts
+             SET backend_name = $2, backend_kind = $3, backend_execution_id = $4
+             WHERE derivation_path = $1 AND state = 'running'",
+            &[
+                &derivation_path,
+                &backend_name,
+                &backend_kind_value,
+                &backend_execution_id,
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if reassigned_attempts != 1 {
+        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+    }
+    let build = decode_shared_build(&row).map_err(SharedBuildError)?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
     Ok(build)
 }
 

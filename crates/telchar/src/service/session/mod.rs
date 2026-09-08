@@ -654,8 +654,39 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         substitution_started.elapsed(),
                                         "miss",
                                     );
-                                    crate::service::activity::run("execute", || build_executor.execute_with_logs(
+                                    let permit = build_executor
+                                        .reserve_target(admitted.system(), &required_features)?
+                                        .ok_or_else(|| io::Error::other(
+                                            "backend capacity reservation is unavailable",
+                                        ))?;
+                                    let selected_target = permit.target().clone();
+                                    execution.set_target_name(selected_target.name())?;
+                                    let backend_execution_id = build_executor.execution_id(
+                                        &selected_target,
+                                        shared_build_key.as_bytes(),
+                                    )?;
+                                    crate::persistence::reassign_running_shared_build(
+                                        database,
+                                        derivation_path,
+                                        selected_target.name(),
+                                        selected_target.kind(),
+                                        selected_target.capabilities(),
+                                        backend_execution_id.as_deref(),
+                                    )
+                                    .map_err(|error| io::Error::other(format!(
+                                        "shared build backend assignment failed: {:?}",
+                                        error.failure(),
+                                    )))?;
+                                    tracing::info!(
+                                        event = "shared_build.backend.assigned",
+                                        backend_name = selected_target.name(),
+                                        backend_kind = selected_target.kind().as_str(),
+                                        selection_priority = selected_target.selection_priority(),
+                                        "shared build assigned available backend capacity"
+                                    );
+                                    crate::service::activity::run("execute", || build_executor.execute_reserved(
                             &execution,
+                            permit,
                             &mut |chunk| {
                                 if selected_target.kind() != crate::backend::BackendKind::Nomad {
                                     tracing::debug!(event = "server.build.output", output = %String::from_utf8_lossy(chunk));
@@ -741,8 +772,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         }
                     }
                     crate::shared_build::SharedBuildAccess::Follower(follower) => {
-                        let live_log_queue_bytes =
-                            build_executor.live_log_queue_bytes(&selected_target);
+                        let live_log_queue_bytes = build_executor.compatible_live_log_queue_bytes(
+                            admitted.system(),
+                            &required_features,
+                        );
                         let mut live_logs = follower.subscribe_logs(live_log_queue_bytes);
                         crate::service::metrics::shared_build_follower();
                         tracing::info!(
