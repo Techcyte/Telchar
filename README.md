@@ -1,8 +1,8 @@
 # Telchar
 
-Telchar is a self-hosted Nix build gateway. Stock Nix clients connect over `ssh-ng`; Telchar validates each build, coalesces duplicate requests, queues work fairly, and runs it on a compatible local, SSH, or Nomad backend.
+Telchar dispatches Nix builds across a changing pool of local, SSH, and Nomad workers. It matches each build to compatible capacity, shares duplicate work, and keeps requests queued when workers are busy or unavailable.
 
-Clients need no plugin or patched Nix installation.
+Stock Nix clients connect over `ssh-ng` without plugins or patches.
 
 ```text
 stock Nix client
