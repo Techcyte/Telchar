@@ -15,7 +15,7 @@ stock Nix client
 
 ## Status
 
-Telchar uses SemVer-compatible calendar versions in `YYYY.M.PATCH` form. OCI archives always carry the package version; only manually approved releases are published.
+Telchar uses SemVer-compatible calendar versions in `YYYY.M.PATCH` form. OCI archives always carry the package version. Every successful `main` build publishes the moving `main` image tag; manually approved releases publish exact version tags.
 
 The MVP supports classic input-addressed and fixed-output derivations in normal build mode. It includes durable PostgreSQL coordination, duplicate suppression, gateway cache substitution, per-subject queue limits, exact-target restart recovery, bounded transfers, and client-independent execution.
 
@@ -159,7 +159,9 @@ nix build .#telchar-nomad-worker-oci
 nix build .#telchar-ssh-ingress-oci
 ```
 
-Releases use two manual GitHub Actions workflows. **Prepare release** increments the patch when the package is already versioned for the current month, otherwise starts the month at `YYYY.M.0`; it updates all Cargo/Nix version authorities and opens a reviewable pull request. After that pull request is merged, **Publish release** verifies the prepared revision, publishes all four archives to `ghcr.io/techcyte`, and creates the matching GitHub Release and `vYYYY.M.PATCH` tag. Images receive only the exact version tag; no moving `latest` tag is published.
+Every successful CI run on `main` publishes all four archives to `ghcr.io/techcyte` with the moving `main` tag. This tag identifies the latest main-branch revision that passed the regular CI suite, not a manually approved release. No `latest` tag is published.
+
+Releases use two manual GitHub Actions workflows. **Prepare release** increments the patch when the package is already versioned for the current month, otherwise starts the month at `YYYY.M.0`; it updates all Cargo/Nix version authorities and opens a reviewable pull request. After that pull request is merged, **Publish release** verifies the prepared revision, publishes all four archives with the exact version tag, and creates the matching GitHub Release and `vYYYY.M.PATCH` tag.
 
 The gateway and worker images are the application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. Load or publish the exact archives with your container tooling.
 

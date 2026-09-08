@@ -65,7 +65,7 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          IMAGE_TAG: ${{ inputs.version }}
         run: scripts/publish-oci-images.sh
 
       - name: Publish GitHub release

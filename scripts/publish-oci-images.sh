@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Publishes the four exact-version release OCI archives to GitHub Container Registry.
+# Publishes the four approved OCI image tags to GitHub Container Registry.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-: "${RELEASE_VERSION:?RELEASE_VERSION is required}"
-if [[ ! $RELEASE_VERSION =~ ^[1-9][0-9]{3}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
-  echo "release version must match YYYY.M.PATCH" >&2
-  exit 1
-fi
-
-manifest_version=$(nix eval --raw .#packages.x86_64-linux.telchar.version)
-if [[ $RELEASE_VERSION != "$manifest_version" ]]; then
-  echo "release version $RELEASE_VERSION does not match package version $manifest_version" >&2
+: "${IMAGE_TAG:?IMAGE_TAG is required}"
+if [[ $IMAGE_TAG == main ]]; then
+  :
+elif [[ $IMAGE_TAG =~ ^[1-9][0-9]{3}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
+  manifest_version=$(nix eval --raw .#packages.x86_64-linux.telchar.version)
+  if [[ $IMAGE_TAG != "$manifest_version" ]]; then
+    echo "image tag $IMAGE_TAG does not match package version $manifest_version" >&2
+    exit 1
+  fi
+else
+  echo "image tag must be main or match YYYY.M.PATCH" >&2
   exit 1
 fi
 
@@ -31,5 +33,5 @@ for specification in \
   archive=$(nix build --no-link --print-out-paths ".#$package")
   nix develop --command skopeo copy \
     "docker-archive:$archive" \
-    "docker://$registry/$image:$RELEASE_VERSION"
+    "docker://$registry/$image:$IMAGE_TAG"
 done

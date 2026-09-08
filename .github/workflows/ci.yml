@@ -52,7 +52,11 @@ jobs:
 
   nix:
     name: Nix build and evaluation
+    needs: rust
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 60
     env:
       NIXPKGS_ALLOW_UNFREE: "1"
@@ -76,8 +80,19 @@ jobs:
       - name: Build Nomad worker
         run: nix build --impure --no-link .#telchar-nomad-worker
 
+      - name: Test OCI publication contracts
+        run: nix develop -c python scripts/test-publish-oci-images.py
+
       - name: Build OCI image contracts
         run: nix build --impure --no-link .#checks.x86_64-linux.oci-images
 
       - name: Scan OCI images
         run: scripts/check-oci-images.sh
+
+      - name: Publish main images
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: main
+        run: scripts/publish-oci-images.sh
