@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct SessionInput {
     input: std::os::unix::net::UnixStream,
     idle_timeout: Duration,
-    deadline: Option<std::time::Instant>,
+    message_in_progress: bool,
 }
 
 impl SessionInput {
@@ -11,7 +11,7 @@ impl SessionInput {
         Self {
             input,
             idle_timeout,
-            deadline: None,
+            message_in_progress: false,
         }
     }
 }
@@ -50,15 +50,7 @@ pub(super) fn requester_disconnected(
 
 impl io::Read for SessionInput {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let timeout = self
-            .deadline
-            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-        if timeout == Some(Duration::ZERO) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "worker protocol input timed out",
-            ));
-        }
+        let timeout = self.message_in_progress.then_some(self.idle_timeout);
         self.input.set_read_timeout(timeout)?;
         let received = self.input.read(buffer).map_err(|error| {
             if matches!(
@@ -71,7 +63,7 @@ impl io::Read for SessionInput {
             }
         })?;
         if received > 0 {
-            self.deadline = Some(std::time::Instant::now() + self.idle_timeout);
+            self.message_in_progress = true;
         }
         Ok(received)
     }
@@ -79,7 +71,7 @@ impl io::Read for SessionInput {
 
 impl WorkerInput for SessionInput {
     fn complete_message(&mut self) {
-        self.deadline = None;
+        self.message_in_progress = false;
         let _ = self.input.set_read_timeout(None);
     }
 }
@@ -89,6 +81,21 @@ mod tests {
     use std::io::Read as _;
 
     use super::*;
+
+    #[test]
+    fn processing_time_between_reads_does_not_consume_idle_timeout() {
+        let (input, mut writer) = std::os::unix::net::UnixStream::pair().expect("stream pair");
+        writer.write_all(b"a").expect("initial byte");
+
+        let mut input = SessionInput::new(input, Duration::from_millis(20));
+        let mut byte = [0; 1];
+        assert_eq!(input.read(&mut byte).expect("initial read"), 1);
+        std::thread::sleep(Duration::from_millis(30));
+        writer.write_all(b"b").expect("following byte");
+
+        assert_eq!(input.read(&mut byte).expect("following read"), 1);
+        assert_eq!(byte, [b'b']);
+    }
 
     #[test]
     fn expired_partial_message_returns_timeout() {
