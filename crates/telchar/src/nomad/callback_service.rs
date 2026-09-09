@@ -1087,8 +1087,7 @@ fn input_manifest(
     closure: &mut dyn StoreClosureBackend,
 ) -> io::Result<InputManifest> {
     build_request.validate_for_execution()?;
-    let mut roots = build_request.input_sources().to_vec();
-    roots.push(build_request.derivation_path().to_vec());
+    let roots = build_request.input_sources().to_vec();
     let closure_paths = closure.input_closure(&roots)?;
     let closure_identities = closure_paths
         .iter()

@@ -147,7 +147,21 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 );
                 let derivation_info =
                     match store_export.query_path_info(std::path::Path::new(derivation_path)) {
-                        Ok(info) if info.nar_size > 0 => info,
+                        Ok(info) if info.nar_size > 0 => Some(info),
+                        Ok(info) => {
+                            tracing::error!(
+                                event = "gateway.store_retention.failed",
+                                operation = "query-derivation-path-info",
+                                nar_size = info.nar_size,
+                                "gateway store returned invalid derivation metadata"
+                            );
+                            return reject(
+                                &mut output,
+                                "gateway-store-retention",
+                                "gateway store retention failed",
+                            );
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                         result => {
                             tracing::error!(
                                 event = "gateway.store_retention.failed",
@@ -162,54 +176,62 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             );
                         }
                     };
-                let lease_id = derivation_lease_id();
-                let derivation_entries = [crate::store::retention::RetentionEntry::new(
-                    lease_id.clone(),
-                    derivation_path,
-                )];
-                let retained_derivation = match store_retention.retain(&derivation_entries) {
-                    Ok(retained) => {
-                        retention_batch_event("retain", "derivation", 1, "succeeded", None);
-                        retained
-                    }
-                    Err(_) => {
-                        retention_batch_event("retain", "derivation", 1, "failed", Some("helper"));
+                if let Some(derivation_info) = derivation_info {
+                    let lease_id = derivation_lease_id();
+                    let derivation_entries = [crate::store::retention::RetentionEntry::new(
+                        lease_id.clone(),
+                        derivation_path,
+                    )];
+                    let retained_derivation = match store_retention.retain(&derivation_entries) {
+                        Ok(retained) => {
+                            retention_batch_event("retain", "derivation", 1, "succeeded", None);
+                            retained
+                        }
+                        Err(_) => {
+                            retention_batch_event(
+                                "retain",
+                                "derivation",
+                                1,
+                                "failed",
+                                Some("helper"),
+                            );
+                            return reject(
+                                &mut output,
+                                "gateway-store-retention",
+                                "gateway store retention failed",
+                            );
+                        }
+                    };
+                    if let Err(_error) = crate::persistence::create_request_retained_lease(
+                        database,
+                        &lease_id,
+                        &request_id,
+                        derivation_path,
+                        crate::persistence::StoreLeasePurpose::Derivation,
+                        derivation_info.nar_size,
+                        maximum_retained_input_bytes,
+                    ) {
+                        if store_retention.rollback(&retained_derivation).is_err() {
+                            retention_batch_event(
+                                "rollback",
+                                "derivation",
+                                1,
+                                "failed",
+                                Some("rollback"),
+                            );
+                            return reject(
+                                &mut output,
+                                "gateway-store-retention",
+                                "gateway store retention failed",
+                            );
+                        }
+                        retention_batch_event("rollback", "derivation", 1, "succeeded", None);
                         return reject(
                             &mut output,
-                            "gateway-store-retention",
-                            "gateway store retention failed",
+                            "store-lease-state",
+                            "store lease state operation failed",
                         );
                     }
-                };
-                if let Err(_error) = crate::persistence::create_request_retained_lease(
-                    database,
-                    &lease_id,
-                    &request_id,
-                    derivation_path,
-                    crate::persistence::StoreLeasePurpose::Derivation,
-                    derivation_info.nar_size,
-                    maximum_retained_input_bytes,
-                ) {
-                    if store_retention.rollback(&retained_derivation).is_err() {
-                        retention_batch_event(
-                            "rollback",
-                            "derivation",
-                            1,
-                            "failed",
-                            Some("rollback"),
-                        );
-                        return reject(
-                            &mut output,
-                            "gateway-store-retention",
-                            "gateway store retention failed",
-                        );
-                    }
-                    retention_batch_event("rollback", "derivation", 1, "succeeded", None);
-                    return reject(
-                        &mut output,
-                        "store-lease-state",
-                        "store lease state operation failed",
-                    );
                 }
                 let closure = match store_closure.input_closure(admitted.input_sources()) {
                     Ok(closure) => closure,

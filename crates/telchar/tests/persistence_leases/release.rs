@@ -3,7 +3,80 @@
 use super::*;
 
 #[test]
-fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_mutation() {
+fn request_lease_release_accepts_input_and_output_leases_without_derivation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "release-no-derivation-session",
+        requester,
+        "ssh-pubkey:SHA256:test",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "release-no-derivation-request",
+        "/nix/store/11111111111111111111111111111111-release-no-derivation.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::attach_request(
+        fixture.url(),
+        "release-no-derivation-session",
+        "release-no-derivation-request",
+    )
+    .expect("request attaches");
+    for (lease_id, store_path, purpose) in [
+        (
+            "release-no-derivation-input",
+            "/nix/store/22222222222222222222222222222222-release-no-derivation-input",
+            telchar::persistence::StoreLeasePurpose::Input,
+        ),
+        (
+            "release-no-derivation-output",
+            "/nix/store/33333333333333333333333333333333-release-no-derivation-output",
+            telchar::persistence::StoreLeasePurpose::Output,
+        ),
+    ] {
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            lease_id,
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            "release-no-derivation-request",
+            store_path,
+            purpose,
+        )
+        .expect("lease persists");
+    }
+
+    let released = telchar::persistence::detach_request_and_release_leases(
+        fixture.url(),
+        "release-no-derivation-session",
+        "release-no-derivation-request",
+    )
+    .expect("request detaches and input lease releases");
+
+    assert_eq!(released.leases.len(), 1);
+    assert_eq!(
+        released.leases[0].purpose,
+        telchar::persistence::StoreLeasePurpose::Input
+    );
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "release-no-derivation-output")
+            .expect("output lease reads")
+            .expect("output lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+}
+
+#[test]
+fn request_lease_release_rejects_mixed_state_without_mutation() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
@@ -16,18 +89,10 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
         "test-quota",
     )
     .expect("session opens");
-    for (request_id, derivation_lease, input_lease) in [
-        (
-            "release-missing-derivation",
-            None,
-            Some("release-missing-input"),
-        ),
-        (
-            "release-mixed-state",
-            Some("release-mixed-derivation"),
-            Some("release-mixed-input"),
-        ),
-    ] {
+    let request_id = "release-mixed-state";
+    let derivation_lease = "release-mixed-derivation";
+    let input_lease = "release-mixed-input";
+    {
         telchar::persistence::create_build_request(
             fixture.url(),
             request_id,
@@ -39,55 +104,49 @@ fn request_lease_release_rejects_missing_derivation_and_mixed_state_without_muta
         .expect("request persists");
         telchar::persistence::attach_request(fixture.url(), "release-invalid-session", request_id)
             .expect("request attaches");
-        if let Some(derivation_lease) = derivation_lease {
-            telchar::persistence::create_store_lease(
-                fixture.url(),
-                derivation_lease,
-                telchar::persistence::StoreLeaseOwnerKind::Request,
-                request_id,
-                "/nix/store/11111111111111111111111111111111-release-invalid.drv",
-                telchar::persistence::StoreLeasePurpose::Derivation,
-            )
-            .expect("derivation persists");
-        }
-        if let Some(input_lease) = input_lease {
-            telchar::persistence::create_store_lease(
-                fixture.url(),
-                input_lease,
-                telchar::persistence::StoreLeaseOwnerKind::Request,
-                request_id,
-                "/nix/store/22222222222222222222222222222222-release-invalid-input",
-                telchar::persistence::StoreLeasePurpose::Input,
-            )
-            .expect("input persists");
-        }
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            derivation_lease,
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            request_id,
+            "/nix/store/11111111111111111111111111111111-release-invalid.drv",
+            telchar::persistence::StoreLeasePurpose::Derivation,
+        )
+        .expect("derivation persists");
+        telchar::persistence::create_store_lease(
+            fixture.url(),
+            input_lease,
+            telchar::persistence::StoreLeaseOwnerKind::Request,
+            request_id,
+            "/nix/store/22222222222222222222222222222222-release-invalid-input",
+            telchar::persistence::StoreLeasePurpose::Input,
+        )
+        .expect("input persists");
     }
     telchar::persistence::release_store_lease(fixture.url(), "release-mixed-input")
         .expect("input changes to released");
 
-    for request_id in ["release-missing-derivation", "release-mixed-state"] {
-        assert_eq!(
-            telchar::persistence::detach_request_and_release_leases(
-                fixture.url(),
-                "release-invalid-session",
-                request_id,
-            )
-            .expect_err("invalid request lease set rejects")
-            .failure(),
-            telchar::persistence::StoreLeaseFailure::Query
-        );
-        assert_eq!(
-            telchar::persistence::read_request_attachment(
-                fixture.url(),
-                "release-invalid-session",
-                request_id,
-            )
-            .expect("attachment reads")
-            .expect("attachment exists")
-            .state,
-            telchar::persistence::RequestAttachmentState::Attached
-        );
-    }
+    assert_eq!(
+        telchar::persistence::detach_request_and_release_leases(
+            fixture.url(),
+            "release-invalid-session",
+            request_id,
+        )
+        .expect_err("invalid request lease set rejects")
+        .failure(),
+        telchar::persistence::StoreLeaseFailure::Query
+    );
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "release-invalid-session",
+            request_id,
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Attached
+    );
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.url(), "release-mixed-derivation")
             .expect("derivation reads")

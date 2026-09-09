@@ -273,9 +273,7 @@ fn execute_remote_build(
         duration_ms = connected_started.elapsed().as_millis(),
         "static SSH worker protocol connected"
     );
-    let mut roots = Vec::with_capacity(build.input_sources().len() + 1);
-    roots.push(build.derivation_path().to_vec());
-    roots.extend_from_slice(build.input_sources());
+    let roots = build.input_sources().to_vec();
     let mut closure = GatewayStoreClosureBackend::new(gateway.clone());
     let closure_started = Instant::now();
     tracing::trace!(
