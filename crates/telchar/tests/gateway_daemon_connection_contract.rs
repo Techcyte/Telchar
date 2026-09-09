@@ -358,6 +358,106 @@ fn add_to_store_nar_uses_transfer_timeout() {
 }
 
 #[test]
+fn nar_from_path_upgrades_generic_connection_to_transfer_timeout() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+
+        assert_eq!(read_integer(&mut stream), 38);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        integer(&mut stream, STDERR_LAST);
+        stream.write_all(b"body").expect("NAR writes");
+        stream.flush().expect("NAR flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+
+    connection
+        .nar_from_path(STORE_PATH, 4, &mut Vec::new())
+        .expect("NAR exports");
+
+    let stream = connection
+        .shutdown_handle()
+        .expect("shutdown handle clones");
+    assert_eq!(
+        stream.read_timeout().expect("read timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    assert_eq!(
+        stream.write_timeout().expect("write timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    server.join().expect("server exits");
+}
+
+#[test]
+fn add_to_store_nar_upgrades_generic_connection_to_transfer_timeout() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+
+        assert_eq!(read_integer(&mut stream), 39);
+        let _path = read_byte_string(&mut stream);
+        let _deriver = read_byte_string(&mut stream);
+        let _nar_hash = read_byte_string(&mut stream);
+        let reference_count = read_integer(&mut stream);
+        for _ in 0..reference_count {
+            let _reference = read_byte_string(&mut stream);
+        }
+        let _registration_time = read_integer(&mut stream);
+        let _nar_size = read_integer(&mut stream);
+        let _ultimate = read_integer(&mut stream);
+        let signature_count = read_integer(&mut stream);
+        for _ in 0..signature_count {
+            let _signature = read_byte_string(&mut stream);
+        }
+        let _content_address = read_byte_string(&mut stream);
+        let _repair = read_integer(&mut stream);
+        let _dont_check_signatures = read_integer(&mut stream);
+        while read_integer(&mut stream) != 0 {
+            let mut body = [0_u8; 4];
+            stream.read_exact(&mut body).expect("framed NAR body reads");
+        }
+        integer(&mut stream, STDERR_LAST);
+        stream.flush().expect("operation response flushes");
+    });
+    let mut connection = GatewayStoreConnection::connect(&fixture.endpoint())
+        .expect("gateway connection establishes");
+    let info = AddToStoreNarInfo {
+        path: STORE_PATH,
+        deriver: None,
+        nar_hash_hex: std::str::from_utf8(NAR_HASH).unwrap(),
+        references: &[],
+        registration_time: 0,
+        nar_size: 4,
+        ultimate: false,
+        signatures: &[],
+        content_address: None,
+    };
+
+    connection
+        .add_to_store_nar(&info, &mut b"body".as_slice(), false, true)
+        .expect("NAR imports");
+
+    let stream = connection
+        .shutdown_handle()
+        .expect("shutdown handle clones");
+    assert_eq!(
+        stream.read_timeout().expect("read timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    assert_eq!(
+        stream.write_timeout().expect("write timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    server.join().expect("server exits");
+}
+
+#[test]
 fn add_to_store_nar_preserves_sanitized_operation_failure() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");

@@ -230,6 +230,7 @@ impl GatewayStoreConnection {
         nar_size: u64,
         sink: &mut dyn io::Write,
     ) -> io::Result<()> {
+        self.set_operation_timeout(TRANSFER_OPERATION_TIMEOUT)?;
         let started = std::time::Instant::now();
         let result = self
             .client
@@ -257,6 +258,7 @@ impl GatewayStoreConnection {
         repair: bool,
         dont_check_signatures: bool,
     ) -> io::Result<()> {
+        self.set_operation_timeout(TRANSFER_OPERATION_TIMEOUT)?;
         self.client
             .add_to_store_nar(info, source, repair, dont_check_signatures)
             .map_err(|error| {
@@ -266,6 +268,15 @@ impl GatewayStoreConnection {
                     .unwrap_or("operation failed");
                 io::Error::other(format!("gateway Nix daemon AddToStoreNar {phase}"))
             })
+    }
+
+    fn set_operation_timeout(&self, timeout: Duration) -> io::Result<()> {
+        self.shutdown_stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|_| connection_error())?;
+        self.shutdown_stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|_| connection_error())
     }
 }
 
