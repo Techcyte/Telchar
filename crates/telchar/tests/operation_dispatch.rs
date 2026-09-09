@@ -716,7 +716,10 @@ fn write_add_multiple_to_store_metadata(output: &mut impl Write, nar_size: u64) 
         b"/nix/store/11111111111111111111111111111111-telchar-disk-reserve",
     );
     write_string(&mut metadata, b"");
-    write_string(&mut metadata, b"");
+    write_string(
+        &mut metadata,
+        b"0000000000000000000000000000000000000000000000000000000000000000",
+    );
     write_integer(&mut metadata, 0);
     write_integer(&mut metadata, 0);
     write_integer(&mut metadata, nar_size);

@@ -83,7 +83,7 @@ impl GatewayStorePromotionBackend {
     ) -> io::Result<T> {
         let mut connection = match self.connection.take() {
             Some(connection) => connection,
-            None => GatewayStoreConnection::connect(&self.endpoint)?,
+            None => GatewayStoreConnection::connect_for_transfer(&self.endpoint)?,
         };
         // Only completed operations leave a reusable protocol stream. A failed
         // operation is not replayed, because the daemon may have committed it.

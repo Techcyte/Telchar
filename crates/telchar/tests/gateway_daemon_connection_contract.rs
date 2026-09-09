@@ -332,6 +332,32 @@ fn nar_from_path_preserves_sanitized_sink_failure() {
 }
 
 #[test]
+fn add_to_store_nar_uses_transfer_timeout() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+    });
+
+    let connection = GatewayStoreConnection::connect_for_transfer(&fixture.endpoint())
+        .expect("gateway connection establishes");
+
+    let stream = connection
+        .shutdown_handle()
+        .expect("shutdown handle clones");
+    assert_eq!(
+        stream.read_timeout().expect("read timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    assert_eq!(
+        stream.write_timeout().expect("write timeout reads"),
+        Some(std::time::Duration::from_secs(30 * 60))
+    );
+    server.join().expect("server exits");
+}
+
+#[test]
 fn add_to_store_nar_preserves_sanitized_operation_failure() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");

@@ -15,6 +15,7 @@ use nix_worker_protocol::{
 };
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const TRANSFER_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const CONNECTION_ERROR: &str = "gateway Nix daemon connection failed";
 
@@ -69,6 +70,10 @@ pub struct GatewayStoreConnection {
 impl GatewayStoreConnection {
     pub fn connect(endpoint: &GatewayStoreEndpoint) -> io::Result<Self> {
         Self::connect_with_timeout(endpoint, OPERATION_TIMEOUT)
+    }
+
+    pub fn connect_for_transfer(endpoint: &GatewayStoreEndpoint) -> io::Result<Self> {
+        Self::connect_with_timeout(endpoint, TRANSFER_OPERATION_TIMEOUT)
     }
 
     pub fn connect_for_build(endpoint: &GatewayStoreEndpoint) -> io::Result<Self> {

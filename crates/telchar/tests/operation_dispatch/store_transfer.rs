@@ -426,6 +426,59 @@ fn incomplete_nonempty_add_multiple_to_store_fails_before_first_item_body() {
 }
 
 #[test]
+fn truncated_add_multiple_to_store_reports_promotion_read_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "telchar-operation-upload-truncation-{}-{}",
+        std::process::id(),
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).expect("fixture root creates");
+    let helper = root.join("promote-helper");
+    fs::write(&helper, "#!/bin/sh\nexit 1\n").expect("helper writes");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
+    let staging_root = root.join("staging");
+    fs::create_dir(&staging_root).expect("staging root creates");
+    let mut fixture = FrontendFixture::spawn_with_store(
+        None,
+        "unix:///fixed-gateway.sock",
+        [
+            ("TELCHAR_TEST_PROMOTE_HELPER", helper.display().to_string()),
+            ("TMPDIR", staging_root.display().to_string()),
+        ],
+    );
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_add_multiple_to_store_metadata(&mut input, 1024);
+    input.write_all(b"partial-nar").expect("partial NAR writes");
+    input.flush().expect("partial upload flushes");
+    drop(input);
+    drop(output);
+
+    assert!(!child.wait().expect("Telchar exits").success());
+    let mut frontend_stderr = String::new();
+    fixture
+        .frontend
+        .stderr
+        .take()
+        .expect("frontend stderr")
+        .read_to_string(&mut frontend_stderr)
+        .expect("frontend stderr reads");
+    let daemon_output = fixture.daemon.wait_with_output().expect("daemon exits");
+    let stderr = format!(
+        "{frontend_stderr}{}",
+        String::from_utf8_lossy(&daemon_output.stderr)
+    );
+    assert!(
+        stderr.contains("store input promotion failed: failed to fill whole buffer"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
 fn partial_add_multiple_to_store_failure_removes_staging_state() {
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-upload-disconnect-{}-{}",
