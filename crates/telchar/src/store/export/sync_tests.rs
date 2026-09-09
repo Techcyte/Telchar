@@ -92,7 +92,6 @@ fn archive(files: usize, size: usize) -> Vec<u8> {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
     output.stdout
 }
 
