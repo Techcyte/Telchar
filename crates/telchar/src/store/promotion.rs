@@ -522,9 +522,6 @@ fn stage_nar_to_file(
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
-    if declared.ultimate {
-        return Err(invalid("unsupported classic path metadata"));
-    }
     if declared
         .content_address
         .as_deref()

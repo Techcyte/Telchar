@@ -168,30 +168,22 @@ fn preserves_signatures_during_promotion() {
 }
 
 #[test]
-fn rejects_ultimate_metadata_before_staging() {
+fn ignores_imported_ultimate_metadata() {
     let staging = TestDirectory::create();
     let mut declared = declared_path_info();
     declared.ultimate = true;
     let mut backend = RecordingBackend::accepting(registered_path_info());
 
-    let error = validate_and_promote_nar(
+    validate_and_promote_nar(
         Cursor::new(regular_nar(CONTENT)),
         staging.path(),
         Path::new(STORE_DIRECTORY),
         &declared,
         &mut backend,
     )
-    .unwrap_err();
+    .expect("ultimate metadata is local trust and does not prevent import");
 
-    assert!(error.to_string().contains("unsupported"), "{error}");
-    assert!(
-        backend.request.is_none(),
-        "ultimate metadata invoked helper"
-    );
-    assert!(
-        backend.queried_paths.is_empty(),
-        "ultimate metadata queried store"
-    );
+    assert!(backend.request.is_some(), "promotion was not invoked");
     assert_directory_empty(staging.path());
 }
 
