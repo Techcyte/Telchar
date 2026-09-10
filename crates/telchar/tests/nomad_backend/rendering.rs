@@ -130,7 +130,16 @@ args = ["--stdio"]
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
     let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    let saved_otlp_endpoint = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT");
+    let saved_otlp_protocol = std::env::var_os("OTEL_EXPORTER_OTLP_PROTOCOL");
+    unsafe {
+        std::env::set_var("TELCHAR_CONFIG", &config_path);
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "https://otel-http.example.test",
+        );
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
+    }
     let config = ServiceConfig::load().expect("configuration loads");
     let backend = &config.nomad_backends()[0];
 
@@ -273,6 +282,11 @@ args = ["--stdio"]
         "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     );
     assert_eq!(environment["TRACESTATE"], "vendor=value");
+    assert_eq!(
+        environment["OTEL_EXPORTER_OTLP_ENDPOINT"],
+        "https://otel-http.example.test"
+    );
+    assert_eq!(environment["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
     assert_eq!(environment["TELCHAR_BACKEND"], "nomad-arm");
     assert_eq!(environment["TELCHAR_NAMESPACE"], "telchar");
     assert_eq!(environment["TELCHAR_JOB_ID"], first);
@@ -331,9 +345,15 @@ args = ["--stdio"]
     }
 
     unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
+        for (name, value) in [
+            ("TELCHAR_CONFIG", saved),
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", saved_otlp_endpoint),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", saved_otlp_protocol),
+        ] {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
         }
     }
     fs::remove_dir_all(root).expect("fixture removes");

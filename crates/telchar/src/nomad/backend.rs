@@ -1042,6 +1042,8 @@ fn render_job_at<S: AsRef<str>>(
     if let Some(tracestate) = trace_context.tracestate() {
         task["Env"]["TRACESTATE"] = Value::from(tracestate);
     }
+    copy_environment_variable(&mut task, "OTEL_EXPORTER_OTLP_ENDPOINT");
+    copy_environment_variable(&mut task, "OTEL_EXPORTER_OTLP_PROTOCOL");
     match config.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity { .. } => {
             task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");
@@ -1165,6 +1167,12 @@ fn render_job_at<S: AsRef<str>>(
             },
         }
     }))
+}
+
+fn copy_environment_variable(task: &mut Value, name: &str) {
+    if let Some(value) = std::env::var_os(name).and_then(|value| value.into_string().ok()) {
+        task["Env"][name] = Value::from(value);
+    }
 }
 
 fn render_constraint(constraint: &NomadConstraint) -> Value {
