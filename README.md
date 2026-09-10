@@ -67,12 +67,6 @@ Obtain the gateway's SSH hostname, port, login user, client credentials, and tru
 
 For multi-user Nix, remote-builder SSH connections normally originate from the **requesting machine's root-owned Nix daemon**, not your interactive user. Install credentials and SSH configuration for that account. A successful connection as your user does not prove the daemon can connect. Single-user installations use the account running Nix instead.
 
-For a root-owned daemon, create a private directory for SSH control sockets:
-
-```bash
-sudo install -d -m 0700 /root/.ssh/control
-```
-
 Add a host-specific entry to `/root/.ssh/config` (preserving other host entries):
 
 ```sshconfig
@@ -85,21 +79,20 @@ Host build.example.com
     BatchMode yes
     StrictHostKeyChecking yes
     UserKnownHostsFile /root/.ssh/telchar-known-hosts
-    ControlMaster auto
-    ControlPath /root/.ssh/control/%C
-    ControlPersist 60
 ```
 
 Use the credential paths supplied by your operator. Omit `CertificateFile` only when the deployment accepts ordinary authorized keys rather than client certificates. Protect the private key and SSH configuration from other users; populate the known-hosts file with the operator-verified host key or host CA. Do not disable host verification to make a connection succeed.
 
-Connection sharing is recommended for workloads containing many small derivations. See the [OpenSSH connection-sharing documentation](https://man.openbsd.org/ssh_config#ControlMaster).
+Let Nix manage connection sharing for `ssh-ng`. Setting the store's `max-connections` parameter above one makes Nix establish and reuse its own SSH master for concurrent connections from that store object. Do not add independent `ControlMaster`, `ControlPath`, or `ControlPersist` settings for the Telchar host.
 
 Check store access using the same account and configuration as the daemon:
 
 ```bash
 sudo nix --extra-experimental-features nix-command store info \
-  --store ssh-ng://telchar@build.example.com:2222
+  --store 'ssh-ng://telchar@build.example.com:2222?max-connections=5'
 ```
+
+See the [Nix SSH store documentation](https://nix.dev/manual/nix/stable/store/types/experimental-ssh-store) for the supported store parameters.
 
 ### Submit a build
 
@@ -108,11 +101,11 @@ From a flake project with a default package:
 ```bash
 nix build .#default \
   --max-jobs 0 \
-  --builders 'ssh-ng://telchar@build.example.com:2222 x86_64-linux /root/.ssh/telchar-client 5 1' \
+  --builders 'ssh-ng://telchar@build.example.com:2222?max-connections=5 x86_64-linux /root/.ssh/telchar-client 5 1' \
   --option builders-use-substitutes true
 ```
 
-Replace `.#default` with your package attribute and `x86_64-linux` with a system supported by the gateway. Choose a remote slot count appropriate for deployment capacity. `--max-jobs 0` prevents local builds but still allows the client to fetch cached outputs. For persistent configuration and builder-field details, see the [Nix remote-build guide](https://nix.dev/manual/nix/stable/advanced-topics/distributed-builds).
+Replace `.#default` with your package attribute and `x86_64-linux` with a system supported by the gateway. Choose the builder's remote slot count and the store's `max-connections` value for the deployment's capacity; they are separate settings and commonly use the same bound. `--max-jobs 0` prevents local builds but still allows the client to fetch cached outputs. For persistent configuration and builder-field details, see the [Nix remote-build guide](https://nix.dev/manual/nix/stable/advanced-topics/distributed-builds).
 
 Keep the gateway store separate from the requesting client's store. **Execution workers must not delegate their Nix builds back to the same Telchar gateway**: a worker can otherwise join its own in-progress build and wait on itself. In particular, inspect the host daemon's remote-builder configuration when a Nomad worker mounts its Nix daemon socket.
 
