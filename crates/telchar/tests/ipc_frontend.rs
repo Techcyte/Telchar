@@ -172,6 +172,7 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> std::process::Out
 }
 
 fn authenticated_envelope(session_id: &str) -> IpcEnvelope {
+trace_context: telchar_telemetry::TraceContext::default(),
     IpcEnvelope {
         version: IPC_VERSION,
         requester: RequesterMetadata {
@@ -180,6 +181,7 @@ fn authenticated_envelope(session_id: &str) -> IpcEnvelope {
             quota_subject: "ssh-pubkey:fixture".into(),
         },
         session_id: session_id.into(),
+        trace_context: telchar_telemetry::TraceContext::default(),
         error: None,
     }
 }

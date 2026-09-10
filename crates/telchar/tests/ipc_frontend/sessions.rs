@@ -17,6 +17,7 @@ fn daemon_persists_authenticated_session_before_worker_handshake_and_closes_it_a
                 quota_subject: "ssh-pubkey:fixture".into(),
             },
             session_id: session_id.into(),
+            trace_context: telchar_telemetry::TraceContext::default(),
             error: None,
         },
     )
@@ -65,6 +66,7 @@ fn daemon_closes_authenticated_session_after_worker_protocol_failure() {
                 quota_subject: "ssh-pubkey:fixture".into(),
             },
             session_id: session_id.into(),
+            trace_context: telchar_telemetry::TraceContext::default(),
             error: None,
         },
     )
@@ -139,6 +141,7 @@ fn daemon_closes_authenticated_session_after_requester_disconnect() {
                 quota_subject: "ssh-pubkey:fixture".into(),
             },
             session_id: session_id.into(),
+            trace_context: telchar_telemetry::TraceContext::default(),
             error: None,
         },
     )
@@ -234,6 +237,7 @@ fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
                 quota_subject: "ssh-pubkey:fixture".into(),
             },
             session_id: "failed-session".into(),
+            trace_context: telchar_telemetry::TraceContext::default(),
             error: Some(IpcError {
                 code: "identity-unavailable".into(),
                 message: "frontend could not attach requester".into(),

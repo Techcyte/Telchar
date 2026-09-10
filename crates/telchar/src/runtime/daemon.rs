@@ -102,6 +102,7 @@ pub(super) fn serve_accepted_connection(
     }
     let session_id = connection.envelope().session_id.clone();
     let session = tracing::info_span!("ipc.daemon.session", session_id = %session_id);
+    connection.envelope().trace_context.set_parent(&session)?;
     let _entered = session.enter();
     tracing::trace!(event = "ipc.daemon.session_received", session_id = %session_id);
     let requester_reference =

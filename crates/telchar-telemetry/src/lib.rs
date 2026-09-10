@@ -1,7 +1,9 @@
 //! Initializes bounded structured logs and OTLP exporters without retaining sensitive request data.
 
 mod progress;
+mod trace_context;
 pub use progress::Progress;
+pub use trace_context::{MAXIMUM_TRACEPARENT_BYTES, MAXIMUM_TRACESTATE_BYTES, TraceContext};
 
 use std::error::Error;
 use std::fmt;

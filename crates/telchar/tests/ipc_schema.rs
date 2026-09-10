@@ -2,6 +2,7 @@
 
 use telchar::service::identity::{IdentityInput, normalize_requester};
 use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, RequesterMetadata};
+use telchar_telemetry::TraceContext;
 
 #[test]
 fn envelope_round_trips_authenticated_metadata_and_session() {
@@ -13,6 +14,11 @@ fn envelope_round_trips_authenticated_metadata_and_session() {
             quota_subject: "team-build".into(),
         },
         session_id: "session-001".into(),
+        trace_context: TraceContext::new(
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+            Some("vendor=value".into()),
+        )
+        .expect("trace context validates"),
         error: Some(IpcError {
             code: "protocol-rejected".into(),
             message: "unsupported operation".into(),
@@ -40,6 +46,7 @@ fn maximum_normalized_requester_fits_the_ipc_envelope() {
         version: IPC_VERSION,
         requester: metadata,
         session_id: "session".into(),
+        trace_context: telchar_telemetry::TraceContext::default(),
         error: None,
     };
 
@@ -57,6 +64,7 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
             quota_subject: "quota".into(),
         },
         session_id: "session".into(),
+        trace_context: telchar_telemetry::TraceContext::default(),
         error: None,
     }
     .encode()
@@ -72,6 +80,7 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
             quota_subject: "quota".into(),
         },
         session_id: "session".into(),
+        trace_context: telchar_telemetry::TraceContext::default(),
         error: Some(IpcError {
             code: "error".into(),
             message: "x".repeat(4097),

@@ -206,7 +206,7 @@ pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()>
     Ok(())
 }
 
-pub const IPC_VERSION: u16 = 1;
+pub const IPC_VERSION: u16 = 2;
 const MAGIC: &[u8; 4] = b"TIPC";
 pub const MAX_IPC_COMPONENT_BYTES: usize = 256;
 pub const MAX_IPC_CREDENTIAL_ID_BYTES: usize = 1024;
@@ -246,6 +246,7 @@ pub struct IpcEnvelope {
     pub version: u16,
     pub requester: RequesterMetadata,
     pub session_id: String,
+    pub trace_context: telchar_telemetry::TraceContext,
     pub error: Option<IpcError>,
 }
 
@@ -274,6 +275,16 @@ impl IpcEnvelope {
             MAX_IPC_CREDENTIAL_ID_BYTES,
         )?;
         write_string(&mut output, &self.session_id, MAX_IPC_COMPONENT_BYTES)?;
+        write_optional_string(
+            &mut output,
+            self.trace_context.traceparent(),
+            telchar_telemetry::MAXIMUM_TRACEPARENT_BYTES,
+        )?;
+        write_optional_string(
+            &mut output,
+            self.trace_context.tracestate(),
+            telchar_telemetry::MAXIMUM_TRACESTATE_BYTES,
+        )?;
         match &self.error {
             Some(error) => {
                 output.push(1);
@@ -307,6 +318,11 @@ impl IpcEnvelope {
             quota_subject: reader.string(MAX_IPC_CREDENTIAL_ID_BYTES)?,
         };
         let session_id = reader.string(MAX_IPC_COMPONENT_BYTES)?;
+        let trace_context = telchar_telemetry::TraceContext::new(
+            reader.optional_string(telchar_telemetry::MAXIMUM_TRACEPARENT_BYTES)?,
+            reader.optional_string(telchar_telemetry::MAXIMUM_TRACESTATE_BYTES)?,
+        )
+        .map_err(|_| invalid("IPC trace context is invalid"))?;
         let error = match reader.byte()? {
             0 => None,
             1 => Some(IpcError {
@@ -322,8 +338,26 @@ impl IpcEnvelope {
             version,
             requester,
             session_id,
+            trace_context,
             error,
         })
+    }
+}
+
+fn write_optional_string(
+    output: &mut Vec<u8>,
+    value: Option<&str>,
+    maximum: usize,
+) -> io::Result<()> {
+    match value {
+        Some(value) => {
+            output.push(1);
+            write_string(output, value, maximum)
+        }
+        None => {
+            output.push(0);
+            Ok(())
+        }
     }
 }
 
@@ -369,6 +403,14 @@ impl<'a> Reader<'a> {
         Ok(u16::from_le_bytes(
             self.take(2)?.try_into().expect("length checked"),
         ))
+    }
+
+    fn optional_string(&mut self, maximum: usize) -> io::Result<Option<String>> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => self.string(maximum).map(Some),
+            _ => Err(invalid("invalid IPC optional string flag")),
+        }
     }
 
     fn string(&mut self, maximum: usize) -> io::Result<String> {

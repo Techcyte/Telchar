@@ -280,6 +280,7 @@ fn run_frontend() -> io::Result<()> {
         version: IPC_VERSION,
         requester: RequesterMetadata::try_from(&requester)?,
         session_id: session_id(),
+        trace_context: telchar_telemetry::TraceContext::capture_current(),
         error: None,
     };
     let _session =
