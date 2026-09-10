@@ -207,6 +207,7 @@ pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()>
 }
 
 pub const IPC_VERSION: u16 = 2;
+const MINIMUM_IPC_VERSION: u16 = 1;
 const MAGIC: &[u8; 4] = b"TIPC";
 pub const MAX_IPC_COMPONENT_BYTES: usize = 256;
 pub const MAX_IPC_CREDENTIAL_ID_BYTES: usize = 1024;
@@ -309,7 +310,7 @@ impl IpcEnvelope {
             return Err(invalid("invalid IPC envelope magic"));
         }
         let version = reader.u16()?;
-        if version != IPC_VERSION {
+        if !(MINIMUM_IPC_VERSION..=IPC_VERSION).contains(&version) {
             return Err(invalid("unsupported IPC version"));
         }
         let requester = RequesterMetadata {
@@ -318,11 +319,15 @@ impl IpcEnvelope {
             quota_subject: reader.string(MAX_IPC_CREDENTIAL_ID_BYTES)?,
         };
         let session_id = reader.string(MAX_IPC_COMPONENT_BYTES)?;
-        let trace_context = telchar_telemetry::TraceContext::new(
-            reader.optional_string(telchar_telemetry::MAXIMUM_TRACEPARENT_BYTES)?,
-            reader.optional_string(telchar_telemetry::MAXIMUM_TRACESTATE_BYTES)?,
-        )
-        .map_err(|_| invalid("IPC trace context is invalid"))?;
+        let trace_context = if version >= 2 {
+            telchar_telemetry::TraceContext::new(
+                reader.optional_string(telchar_telemetry::MAXIMUM_TRACEPARENT_BYTES)?,
+                reader.optional_string(telchar_telemetry::MAXIMUM_TRACESTATE_BYTES)?,
+            )
+            .map_err(|_| invalid("IPC trace context is invalid"))?
+        } else {
+            telchar_telemetry::TraceContext::default()
+        };
         let error = match reader.byte()? {
             0 => None,
             1 => Some(IpcError {

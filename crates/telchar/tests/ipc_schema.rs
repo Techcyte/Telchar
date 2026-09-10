@@ -55,6 +55,41 @@ fn maximum_normalized_requester_fits_the_ipc_envelope() {
 }
 
 #[test]
+fn daemon_decodes_version_one_envelopes_without_trace_context() {
+    let envelope = IpcEnvelope {
+        version: IPC_VERSION,
+        requester: RequesterMetadata {
+            credential_id: "credential".into(),
+            audit_subject: "audit".into(),
+            quota_subject: "quota".into(),
+        },
+        session_id: "session".into(),
+        trace_context: TraceContext::default(),
+        error: None,
+    };
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(b"TIPC");
+    encoded.extend_from_slice(&1_u16.to_le_bytes());
+    for value in [
+        envelope.requester.credential_id.as_str(),
+        envelope.requester.audit_subject.as_str(),
+        envelope.requester.quota_subject.as_str(),
+        envelope.session_id.as_str(),
+    ] {
+        encoded.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(value.as_bytes());
+    }
+    encoded.push(0);
+
+    let decoded = IpcEnvelope::decode(&encoded).expect("version one envelope decodes");
+    assert_eq!(decoded.version, 1);
+    assert_eq!(decoded.requester, envelope.requester);
+    assert_eq!(decoded.session_id, envelope.session_id);
+    assert_eq!(decoded.trace_context, TraceContext::default());
+    assert_eq!(decoded.error, envelope.error);
+}
+
+#[test]
 fn envelope_rejects_unsupported_version_and_oversized_error() {
     let mut unsupported = IpcEnvelope {
         version: IPC_VERSION,
