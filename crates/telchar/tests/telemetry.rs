@@ -17,6 +17,7 @@ fn run_smoke(endpoint: String, protocol: &str) -> std::process::Output {
         .env("TELCHAR_SMOKE_REQUEST_ID", "request-smoke-001")
         .env("TELCHAR_SMOKE_ERROR", "1")
         .env("TELCHAR_SMOKE_OPERATIONAL_METRICS", "1")
+        .env("TELCHAR_SMOKE_TRACE_PARENT", "1")
         .output()
         .expect("Telchar process starts")
 }
@@ -59,6 +60,7 @@ fn assert_grpc_signals(collector: &Collector, stderr: &str) {
     }
 
     let trace_id = collector.assert_correlated("request-smoke-001", SERVICE_NAME);
+    collector.assert_span_parent("smoke.parent", "smoke.child");
     assert!(stderr.contains(&format!("trace_id={trace_id}")));
     let names = collector.metric_names();
     for expected in [

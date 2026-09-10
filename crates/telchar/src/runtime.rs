@@ -197,6 +197,12 @@ pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request = tracing::info_span!("request", request_id = %request_id);
         let _entered = request.enter();
         tracing::info!(event = "request.started", request_id = %request_id, "request started");
+        if std::env::var_os("TELCHAR_SMOKE_TRACE_PARENT").is_some() {
+            let parent = tracing::info_span!("smoke.parent");
+            let _parent_entered = parent.enter();
+            let child = tracing::info_span!("smoke.child");
+            let _child_entered = child.enter();
+        }
         drop(_entered);
         drop(request);
         opentelemetry::global::meter("telchar")

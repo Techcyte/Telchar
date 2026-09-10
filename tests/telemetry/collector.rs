@@ -50,6 +50,26 @@ impl Collector {
             .any(|record| Self::has_attribute(&record.attributes, "event", event))
     }
 
+    pub fn assert_span_parent(&self, parent_name: &str, child_name: &str) {
+        let trace_requests = self.trace_requests.lock().expect("trace requests");
+        let spans = trace_requests
+            .iter()
+            .flat_map(|request| &request.resource_spans)
+            .flat_map(|resource| &resource.scope_spans)
+            .flat_map(|scope| &scope.spans)
+            .collect::<Vec<_>>();
+        let parent = spans
+            .iter()
+            .find(|span| span.name == parent_name)
+            .unwrap_or_else(|| panic!("missing parent span {parent_name}"));
+        let child = spans
+            .iter()
+            .find(|span| span.name == child_name)
+            .unwrap_or_else(|| panic!("missing child span {child_name}"));
+        assert_eq!(parent.trace_id, child.trace_id);
+        assert_eq!(parent.span_id, child.parent_span_id);
+    }
+
     pub fn metric_names(&self) -> std::collections::BTreeSet<String> {
         self.metric_requests
             .lock()
