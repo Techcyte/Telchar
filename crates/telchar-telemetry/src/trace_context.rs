@@ -65,6 +65,14 @@ impl TraceContext {
         }
     }
 
+    pub fn add_link(&self, span: &tracing::Span) {
+        let context = self.extract();
+        let span_context = context.span();
+        if span_context.span_context().is_valid() {
+            span.add_link(span_context.span_context().clone());
+        }
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         if self
             .traceparent
@@ -173,5 +181,10 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn absent_trace_context_can_be_linked() {
+        TraceContext::default().add_link(&tracing::Span::none());
     }
 }

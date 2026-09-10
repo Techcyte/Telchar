@@ -795,6 +795,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         }
                     }
                     crate::shared_build::SharedBuildAccess::Follower(follower) => {
+                        if let Ok(Some(attempt)) = crate::persistence::read_shared_build_attempt(
+                            database,
+                            derivation_path,
+                        ) {
+                            attempt.trace_context.add_link(&tracing::Span::current());
+                        }
                         let live_log_queue_bytes = build_executor.compatible_live_log_queue_bytes(
                             admitted.system(),
                             &required_features,
