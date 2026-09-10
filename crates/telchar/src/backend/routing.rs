@@ -466,8 +466,14 @@ impl BuildBackend for BackendExecutor {
             backend_name = target_name,
             backend_kind = target_kind.as_str()
         );
-        execution.trace_context().set_parent(&execution_span)?;
+        execution.trace_context().set_parent(&execution_span);
         let _execution_entered = execution_span.enter();
+        let mut execution = execution.clone();
+        let routed_trace_context = telchar_telemetry::TraceContext::capture_current();
+        if routed_trace_context.trace_id().is_some() {
+            execution.set_trace_context(routed_trace_context);
+        }
+        let execution = &execution;
         let started = std::time::Instant::now();
         tracing::debug!(
             event = "backend.execution.started",

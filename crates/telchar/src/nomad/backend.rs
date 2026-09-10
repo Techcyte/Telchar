@@ -544,6 +544,26 @@ impl NomadClient {
             )));
         }
         let submission_started = Instant::now();
+        let execution_id =
+            deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)
+                .map_err(NomadAttemptFailure::Terminal)?;
+        if execution.trace_context().trace_id().is_some() {
+            crate::persistence::record_shared_build_attempt_trace_context(
+                database,
+                std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
+                    NomadAttemptFailure::Terminal(io::Error::other(
+                        "Nomad derivation path is invalid",
+                    ))
+                })?,
+                &execution_id,
+                execution.trace_context(),
+            )
+            .map_err(|_| {
+                NomadAttemptFailure::Terminal(io::Error::other(
+                    "Nomad shared build trace context could not be recorded",
+                ))
+            })?;
+        }
         let submission = self
             .submit_for_features_with_trace_context_at_attempt(
                 shared_build_key,
@@ -564,23 +584,6 @@ impl NomadClient {
             },
         );
         let submission = submission?;
-        if execution.trace_context().trace_id().is_some() {
-            crate::persistence::record_shared_build_attempt_trace_context(
-                database,
-                std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
-                    NomadAttemptFailure::Terminal(io::Error::other(
-                        "Nomad derivation path is invalid",
-                    ))
-                })?,
-                submission.job_id(),
-                execution.trace_context(),
-            )
-            .map_err(|_| {
-                NomadAttemptFailure::Terminal(io::Error::other(
-                    "Nomad shared build trace context could not be recorded",
-                ))
-            })?;
-        }
         let derivation_path =
             std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
                 NomadAttemptFailure::Terminal(io::Error::other("Nomad derivation path is invalid"))

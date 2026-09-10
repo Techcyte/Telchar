@@ -543,6 +543,13 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
     execution
         .set_target_name("nomad-test")
         .expect("selected target records");
+    execution.set_trace_context(
+        telchar_telemetry::TraceContext::new(
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+            None,
+        )
+        .expect("trace context validates"),
+    );
     let database = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let request = &admitted;
@@ -606,6 +613,17 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         .expect("Nomad execution completes");
     assert_eq!(result.status(), BuildStatus::Built);
     assert_eq!(result.output_trust(), OutputTrust::TrustedExecutor);
+    assert!(
+        telchar::persistence::read_shared_build_attempt(
+            database.url(),
+            std::str::from_utf8(request.derivation_path()).expect("derivation path is UTF-8"),
+        )
+        .expect("attempt reads")
+        .expect("attempt exists")
+        .trace_context
+        .trace_id()
+        .is_some()
+    );
     drop(live_leader);
     completion.join().expect("completion joins");
     server.join().expect("HTTP fixture joins");

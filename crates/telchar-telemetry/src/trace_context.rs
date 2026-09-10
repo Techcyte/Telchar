@@ -59,12 +59,10 @@ impl TraceContext {
             .then(|| context.span().span_context().trace_id())
     }
 
-    pub fn set_parent(&self, span: &tracing::Span) -> io::Result<()> {
-        if self.traceparent.is_none() {
-            return Ok(());
+    pub fn set_parent(&self, span: &tracing::Span) {
+        if self.traceparent.is_some() {
+            let _ = span.set_parent(self.extract());
         }
-        span.set_parent(self.extract())
-            .map_err(|_| io::Error::other("trace context parent could not be set"))
     }
 
     pub fn validate(&self) -> io::Result<()> {

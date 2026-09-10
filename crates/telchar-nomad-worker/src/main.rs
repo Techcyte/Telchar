@@ -76,10 +76,7 @@ fn run() -> std::process::ExitCode {
         }
     };
     let execution = tracing::info_span!("worker.execution");
-    if let Err(error) = config.trace_context().set_parent(&execution) {
-        tracing::error!(event = "worker.configuration.failed", reason = %error);
-        return std::process::ExitCode::FAILURE;
-    }
+    config.trace_context().set_parent(&execution);
     let _entered = execution.enter();
     tracing::info!(
         event = "worker.started",

@@ -304,7 +304,7 @@ pub fn serve_connection(
         ));
     }
     let callback_span = tracing::info_span!("nomad.callback.execution");
-    socket.trace_context().set_parent(&callback_span)?;
+    socket.trace_context().set_parent(&callback_span);
     let _callback_entered = callback_span.enter();
     let derivation_path = execution
         .derivation_path()
