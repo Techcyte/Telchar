@@ -577,6 +577,7 @@ pub struct BuildExecution<'a> {
     build: &'a BuildRequest,
     timeout: Duration,
     target_name: Option<String>,
+    trace_context: telchar_telemetry::TraceContext,
 }
 
 impl<'a> BuildExecution<'a> {
@@ -600,6 +601,7 @@ impl<'a> BuildExecution<'a> {
             build,
             timeout,
             target_name: None,
+            trace_context: telchar_telemetry::TraceContext::default(),
         })
     }
 
@@ -628,6 +630,14 @@ impl<'a> BuildExecution<'a> {
 
     pub fn target_name(&self) -> Option<&str> {
         self.target_name.as_deref()
+    }
+
+    pub fn set_trace_context(&mut self, trace_context: telchar_telemetry::TraceContext) {
+        self.trace_context = trace_context;
+    }
+
+    pub fn trace_context(&self) -> &telchar_telemetry::TraceContext {
+        &self.trace_context
     }
 }
 

@@ -60,9 +60,21 @@ fn handshake(path: &str, protocol: &str) -> String {
 
 #[test]
 fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
-    let stream = FragmentedStream::new(handshake("/callback", "telchar-nomad-transfer-v1"), 128);
+    let request = handshake("/callback", "telchar-nomad-transfer-v1").replace(
+        "\r\n\r\n",
+        "\r\ntraceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\ntracestate: vendor=value\r\n\r\n",
+    );
+    let stream = FragmentedStream::new(request, 128);
     let mut socket =
         accept_connection(stream, CallbackHttpLimits::new(1024, 4096)).expect("WebSocket accepts");
+    assert_eq!(
+        socket
+            .trace_context()
+            .trace_id()
+            .expect("trace ID exists")
+            .to_string(),
+        "4bf92f3577b34da6a3ce929d0e0e4736"
+    );
     socket.set_maximum_message_bytes(8192);
     let stream = socket.into_inner();
     assert!(

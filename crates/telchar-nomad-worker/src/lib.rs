@@ -513,6 +513,7 @@ pub struct WorkerConfig {
     maximum_connection_lifetime: std::time::Duration,
     maximum_diagnostic_bytes: usize,
     authentication: Authentication,
+    trace_context: telchar_telemetry::TraceContext,
 }
 
 impl WorkerConfig {
@@ -577,6 +578,9 @@ impl WorkerConfig {
             .ok()
             .filter(|value| *value > 0 && *value <= MAXIMUM_MANIFEST_METADATA_BYTES)
             .ok_or_else(|| invalid("worker diagnostic limit is invalid"))?;
+        let trace_context =
+            telchar_telemetry::TraceContext::new(lookup("TRACEPARENT"), lookup("TRACESTATE"))
+                .map_err(|_| invalid("worker trace context is invalid"))?;
         let mode = required(&mut lookup, "TELCHAR_TRANSFER_AUTHENTICATION")?;
         let allocation_id = required(&mut lookup, "NOMAD_ALLOC_ID")?;
         let nomad_namespace = required(&mut lookup, "NOMAD_NAMESPACE")?;
@@ -673,6 +677,7 @@ impl WorkerConfig {
                 shared_build_digest,
                 proof,
             },
+            trace_context,
         })
     }
 
@@ -715,6 +720,10 @@ impl WorkerConfig {
     pub fn authentication(&self) -> &Authentication {
         &self.authentication
     }
+
+    pub fn trace_context(&self) -> &telchar_telemetry::TraceContext {
+        &self.trace_context
+    }
 }
 
 pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
@@ -756,6 +765,20 @@ fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         .as_str()
         .into_client_request()
         .map_err(|_| io::Error::other("worker callback request could not be created"))?;
+    if let Some(traceparent) = config.trace_context().traceparent() {
+        request.headers_mut().insert(
+            "traceparent",
+            tungstenite::http::HeaderValue::from_str(traceparent)
+                .map_err(|_| invalid("worker trace context is invalid"))?,
+        );
+    }
+    if let Some(tracestate) = config.trace_context().tracestate() {
+        request.headers_mut().insert(
+            "tracestate",
+            tungstenite::http::HeaderValue::from_str(tracestate)
+                .map_err(|_| invalid("worker trace context is invalid"))?,
+        );
+    }
     request.headers_mut().insert(
         "sec-websocket-protocol",
         tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),

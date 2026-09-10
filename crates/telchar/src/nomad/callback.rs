@@ -26,6 +26,7 @@ pub struct CallbackExecution {
     task: String,
     derivation_path: Option<String>,
     build_request: Option<crate::build::BuildRequest>,
+    trace_context: telchar_telemetry::TraceContext,
 }
 
 impl CallbackExecution {
@@ -52,6 +53,7 @@ impl CallbackExecution {
             task,
             derivation_path: None,
             build_request: None,
+            trace_context: telchar_telemetry::TraceContext::default(),
         })
     }
 
@@ -61,6 +63,10 @@ impl CallbackExecution {
 
     pub fn build_request(&self) -> Option<&crate::build::BuildRequest> {
         self.build_request.as_ref()
+    }
+
+    pub fn trace_context(&self) -> &telchar_telemetry::TraceContext {
+        &self.trace_context
     }
 
     pub fn matches(&self, authentication: &Authentication) -> bool {
@@ -174,6 +180,14 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
             shared_build_digest,
             "build".to_owned(),
         )?;
+        let attempt =
+            crate::persistence::read_shared_build_attempt(&self.database, &build.derivation_path)
+                .map_err(|_| io::Error::other("Nomad callback attempt lookup failed"))?
+                .ok_or_else(|| io::Error::other("Nomad callback attempt is unavailable"))?;
+        if attempt.backend_execution_id.as_deref() != Some(authentication.job_id.as_str()) {
+            return Ok(None);
+        }
+        execution.trace_context = attempt.trace_context;
         execution.derivation_path = Some(build.derivation_path);
         execution.build_request = build.build_request;
         Ok(Some(execution))

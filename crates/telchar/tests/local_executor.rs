@@ -37,6 +37,17 @@ fn build_execution_retains_only_the_admitted_build_and_control_metadata() {
     assert_eq!(request.request_id(), "request-1");
     assert_eq!(request.build(), &build);
     assert_eq!(request.timeout(), Duration::from_secs(30));
+    assert_eq!(
+        request.trace_context(),
+        &telchar_telemetry::TraceContext::default()
+    );
+    let trace_context = telchar_telemetry::TraceContext::new(
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        None,
+    )
+    .expect("trace context validates");
+    request.set_trace_context(trace_context.clone());
+    assert_eq!(request.trace_context(), &trace_context);
     assert_eq!(request.target_name(), None);
     request
         .set_target_name("builder-a")

@@ -24,6 +24,7 @@ impl CallbackHttpLimits {
 
 pub struct CallbackSocket<S> {
     inner: WebSocket<HeaderLimitedStream<S>>,
+    trace_context: telchar_telemetry::TraceContext,
     maximum_message_bytes: usize,
     keepalive: Option<Keepalive>,
 }
@@ -62,8 +63,32 @@ pub fn accept_connection<S: Read + Write>(
         );
         Ok(response)
     }
+    let trace_context = std::sync::Mutex::new(telchar_telemetry::TraceContext::default());
+    let capture_upgrade = |request: &Request, response: Response| {
+        let parsed = telchar_telemetry::TraceContext::new(
+            request
+                .headers()
+                .get("traceparent")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            request
+                .headers()
+                .get("tracestate")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        )
+        .map_err(|_| {
+            let mut error = tungstenite::handshake::server::ErrorResponse::new(Some(
+                "WebSocket request rejected".to_owned(),
+            ));
+            *error.status_mut() = StatusCode::BAD_REQUEST;
+            error
+        })?;
+        *trace_context.lock().expect("trace context lock holds") = parsed;
+        validate_upgrade(request, response)
+    };
     let mut stream = HeaderLimitedStream::new(stream, limits.maximum_header_bytes);
-    match tungstenite::accept_hdr(&mut stream, validate_upgrade) {
+    match tungstenite::accept_hdr(&mut stream, capture_upgrade) {
         Ok(socket) => {
             socket.into_inner();
         }
@@ -88,12 +113,19 @@ pub fn accept_connection<S: Read + Write>(
         tungstenite::WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
     Ok(CallbackSocket {
         inner,
+        trace_context: trace_context
+            .into_inner()
+            .expect("trace context lock holds"),
         maximum_message_bytes: limits.maximum_message_bytes,
         keepalive: None,
     })
 }
 
 impl<S: Read + Write> CallbackSocket<S> {
+    pub fn trace_context(&self) -> &telchar_telemetry::TraceContext {
+        &self.trace_context
+    }
+
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.inner.get_mut().inner
     }

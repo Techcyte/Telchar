@@ -440,6 +440,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             return Err(error);
                         }
                     };
+                execution.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();

@@ -60,18 +60,25 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> std::process::ExitCode {
+    let config = match phase("configuration", || {
+        telchar_nomad_worker::WorkerConfig::from_environment().inspect_err(|error| {
+            tracing::error!(event = "worker.configuration.failed", reason = %error);
+        })
+    }) {
+        Ok(config) => config,
+        Err(_) => return std::process::ExitCode::FAILURE,
+    };
     let execution = tracing::info_span!("worker.execution");
+    if let Err(error) = config.trace_context().set_parent(&execution) {
+        tracing::error!(event = "worker.configuration.failed", reason = %error);
+        return std::process::ExitCode::FAILURE;
+    }
     let _entered = execution.enter();
     tracing::info!(
         event = "worker.started",
         version = env!("CARGO_PKG_VERSION")
     );
-    match phase("configuration", || {
-        telchar_nomad_worker::WorkerConfig::from_environment().inspect_err(|error| {
-            tracing::error!(event = "worker.configuration.failed", reason = %error);
-        })
-    })
-    .and_then(|config| {
+    match (|| {
         let store_uri = config.store_uri().to_owned();
         let mut session = phase("manifest", || {
             telchar_nomad_worker::receive_manifest(&config)
@@ -102,7 +109,7 @@ fn run() -> std::process::ExitCode {
         phase("return-outputs", || {
             session.return_outputs(&store_uri, &result)
         })
-    }) {
+    })() {
         Ok(()) => {
             tracing::info!(event = "worker.completed");
             std::process::ExitCode::SUCCESS

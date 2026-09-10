@@ -150,7 +150,17 @@ args = ["--stdio"]
     assert!(retry.ends_with("-2"));
     assert!(first.starts_with("telchar-prod-"));
 
-    let job = render_job(backend, b"shared-build-key").expect("job renders");
+    let trace_context = telchar_telemetry::TraceContext::new(
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        Some("vendor=value".into()),
+    )
+    .expect("trace context validates");
+    let job = telchar::nomad::backend::render_job_with_trace_context(
+        backend,
+        b"shared-build-key",
+        &trace_context,
+    )
+    .expect("job renders");
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"],
         "workload-identity"
@@ -258,6 +268,11 @@ args = ["--stdio"]
         false
     );
     let environment = &job["Job"]["TaskGroups"][0]["Tasks"][1]["Env"];
+    assert_eq!(
+        environment["TRACEPARENT"],
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    );
+    assert_eq!(environment["TRACESTATE"], "vendor=value");
     assert_eq!(environment["TELCHAR_BACKEND"], "nomad-arm");
     assert_eq!(environment["TELCHAR_NAMESPACE"], "telchar");
     assert_eq!(environment["TELCHAR_JOB_ID"], first);

@@ -115,6 +115,7 @@ pub struct SharedBuildAttempt {
     pub backend_kind: BackendKind,
     pub backend_execution_id: Option<String>,
     pub state: SharedBuildAttemptState,
+    pub trace_context: telchar_telemetry::TraceContext,
     pub created_at: SystemTime,
     pub started_at: Option<SystemTime>,
     pub collecting_at: Option<SystemTime>,
@@ -1027,22 +1028,25 @@ fn create_shared_build_attempt(
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .try_get(0)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let trace_context = telchar_telemetry::TraceContext::capture_current();
     let row = transaction
         .query_one(
             "INSERT INTO shared_build_attempts (
                  derivation_path, ordinal, backend_name, backend_kind,
-                 backend_execution_id, state, started_at
+                 backend_execution_id, state, started_at, traceparent, tracestate
              )
-             VALUES ($1, $2, $3, $4, $5, 'running', transaction_timestamp())
+             VALUES ($1, $2, $3, $4, $5, 'running', transaction_timestamp(), $6, $7)
              RETURNING attempt_id, derivation_path, ordinal, backend_name, backend_kind,
-                       backend_execution_id, state, created_at, started_at, collecting_at,
-                       completed_at",
+                       backend_execution_id, state, traceparent, tracestate, created_at, started_at,
+                       collecting_at, completed_at",
             &[
                 &build.derivation_path,
                 &ordinal,
                 &build.backend_name,
                 &backend_kind_name(build.backend_kind),
                 &build.backend_execution_id,
+                &trace_context.traceparent(),
+                &trace_context.tracestate(),
             ],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
@@ -1061,8 +1065,8 @@ pub fn read_shared_build_attempt(
     client
         .query_opt(
             "SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind,
-                    backend_execution_id, state, created_at, started_at, collecting_at,
-                    completed_at
+                    backend_execution_id, state, traceparent, tracestate, created_at, started_at,
+                    collecting_at, completed_at
              FROM shared_build_attempts
              WHERE derivation_path = $1
              ORDER BY ordinal DESC
@@ -1099,6 +1103,11 @@ pub fn read_shared_build_attempt_outcome(
 fn decode_shared_build_attempt(row: &Row) -> Result<SharedBuildAttempt, SharedBuildFailure> {
     let backend_kind: String = row.try_get(4).map_err(|_| SharedBuildFailure::Query)?;
     let state: String = row.try_get(6).map_err(|_| SharedBuildFailure::Query)?;
+    let trace_context = telchar_telemetry::TraceContext::new(
+        row.try_get(7).map_err(|_| SharedBuildFailure::Query)?,
+        row.try_get(8).map_err(|_| SharedBuildFailure::Query)?,
+    )
+    .map_err(|_| SharedBuildFailure::Query)?;
     Ok(SharedBuildAttempt {
         attempt_id: row.try_get(0).map_err(|_| SharedBuildFailure::Query)?,
         derivation_path: row.try_get(1).map_err(|_| SharedBuildFailure::Query)?,
@@ -1113,10 +1122,11 @@ fn decode_shared_build_attempt(row: &Row) -> Result<SharedBuildAttempt, SharedBu
             "failed" => SharedBuildAttemptState::Failed,
             _ => return Err(SharedBuildFailure::Query),
         },
-        created_at: row.try_get(7).map_err(|_| SharedBuildFailure::Query)?,
-        started_at: row.try_get(8).map_err(|_| SharedBuildFailure::Query)?,
-        collecting_at: row.try_get(9).map_err(|_| SharedBuildFailure::Query)?,
-        completed_at: row.try_get(10).map_err(|_| SharedBuildFailure::Query)?,
+        trace_context,
+        created_at: row.try_get(9).map_err(|_| SharedBuildFailure::Query)?,
+        started_at: row.try_get(10).map_err(|_| SharedBuildFailure::Query)?,
+        collecting_at: row.try_get(11).map_err(|_| SharedBuildFailure::Query)?,
+        completed_at: row.try_get(12).map_err(|_| SharedBuildFailure::Query)?,
     })
 }
 

@@ -297,6 +297,15 @@ pub fn serve_connection(
             "Nomad callback execution identity is inconsistent",
         ));
     }
+    if socket.trace_context().trace_id() != execution.trace_context().trace_id() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Nomad callback trace context is inconsistent",
+        ));
+    }
+    let callback_span = tracing::info_span!("nomad.callback.execution");
+    execution.trace_context().set_parent(&callback_span)?;
+    let _callback_entered = callback_span.enter();
     let derivation_path = execution
         .derivation_path()
         .ok_or_else(|| io::Error::other("Nomad callback derivation identity is unavailable"))?;

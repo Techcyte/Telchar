@@ -111,13 +111,14 @@ fn run_executor() -> io::Result<()> {
                     {
                         return;
                     }
-                    let Ok(request) = telchar::backend::BuildExecution::new(
+                    let Ok(mut request) = telchar::backend::BuildExecution::new(
                         &specification.request_id,
                         &specification.build,
                         Duration::from_secs(specification.timeout_seconds),
                     ) else {
                         return;
                     };
+                    request.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                     let Ok(mut executor) = executor.lock() else {
                         return;
                     };

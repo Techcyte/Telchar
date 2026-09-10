@@ -63,6 +63,11 @@ fn workload_environment(endpoint: &str) -> BTreeMap<String, String> {
         ("NOMAD_ALLOC_ID".to_owned(), "allocation-1".to_owned()),
         ("NOMAD_TASK_NAME".to_owned(), "build".to_owned()),
         ("NOMAD_TOKEN_telchar_transfer".to_owned(), "jwt".to_owned()),
+        (
+            "TRACEPARENT".to_owned(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+        ),
+        ("TRACESTATE".to_owned(), "vendor=value".to_owned()),
     ])
 }
 
@@ -204,6 +209,14 @@ fn parses_exact_workload_identity_environment() {
         std::time::Duration::from_secs(3600)
     );
     assert_eq!(config.endpoint().as_str(), "ws://127.0.0.1:1234/callback");
+    assert_eq!(
+        config
+            .trace_context()
+            .trace_id()
+            .expect("trace ID exists")
+            .to_string(),
+        "4bf92f3577b34da6a3ce929d0e0e4736"
+    );
     assert_eq!(
         config.authentication(),
         &Authentication {

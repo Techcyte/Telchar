@@ -545,10 +545,11 @@ impl NomadClient {
         }
         let submission_started = Instant::now();
         let submission = self
-            .submit_for_features_at_attempt(
+            .submit_for_features_with_trace_context_at_attempt(
                 shared_build_key,
                 execution.build().required_system_features(),
                 attempt_ordinal,
+                execution.trace_context(),
             )
             .map_err(NomadAttemptFailure::Retryable);
         crate::service::metrics::nomad_submission_finished(
@@ -739,6 +740,21 @@ impl NomadClient {
         required_features: &[S],
         attempt_ordinal: usize,
     ) -> io::Result<NomadSubmission> {
+        self.submit_for_features_with_trace_context_at_attempt(
+            shared_build_key,
+            required_features,
+            attempt_ordinal,
+            &telchar_telemetry::TraceContext::default(),
+        )
+    }
+
+    fn submit_for_features_with_trace_context_at_attempt<S: AsRef<str>>(
+        &self,
+        shared_build_key: &[u8],
+        required_features: &[S],
+        attempt_ordinal: usize,
+        trace_context: &telchar_telemetry::TraceContext,
+    ) -> io::Result<NomadSubmission> {
         let started = Instant::now();
         tracing::trace!(
             event = "nomad.api.request.started",
@@ -752,11 +768,12 @@ impl NomadClient {
             .client
             .post(format!("{}/v1/jobs", self.config.endpoint()))
             .query(&[("namespace", self.config.namespace())])
-            .json(&render_job_for_features_at_attempt(
+            .json(&render_job_for_features_with_trace_context_at_attempt(
                 &self.config,
                 shared_build_key,
                 required_features,
                 attempt_ordinal,
+                trace_context,
             )?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
@@ -905,11 +922,41 @@ pub fn render_job_for_features<S: AsRef<str>>(
     render_job_for_features_at_attempt(config, shared_build_key, required_features, 1)
 }
 
+pub fn render_job_with_trace_context(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    trace_context: &telchar_telemetry::TraceContext,
+) -> io::Result<Value> {
+    render_job_for_features_with_trace_context_at_attempt(
+        config,
+        shared_build_key,
+        &[] as &[&str],
+        1,
+        trace_context,
+    )
+}
+
 pub fn render_job_for_features_at_attempt<S: AsRef<str>>(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
     required_features: &[S],
     attempt_ordinal: usize,
+) -> io::Result<Value> {
+    render_job_for_features_with_trace_context_at_attempt(
+        config,
+        shared_build_key,
+        required_features,
+        attempt_ordinal,
+        &telchar_telemetry::TraceContext::default(),
+    )
+}
+
+fn render_job_for_features_with_trace_context_at_attempt<S: AsRef<str>>(
+    config: &NomadBackendConfig,
+    shared_build_key: &[u8],
+    required_features: &[S],
+    attempt_ordinal: usize,
+    trace_context: &telchar_telemetry::TraceContext,
 ) -> io::Result<Value> {
     render_job_at(
         config,
@@ -917,6 +964,7 @@ pub fn render_job_for_features_at_attempt<S: AsRef<str>>(
         required_features,
         attempt_ordinal,
         SystemTime::now(),
+        trace_context,
     )
 }
 
@@ -926,6 +974,7 @@ fn render_job_at<S: AsRef<str>>(
     required_features: &[S],
     attempt_ordinal: usize,
     issued_at: SystemTime,
+    trace_context: &telchar_telemetry::TraceContext,
 ) -> io::Result<Value> {
     let job_id = deterministic_job_name_for_attempt(config, shared_build_key, attempt_ordinal)?;
     let profile = config
@@ -967,6 +1016,12 @@ fn render_job_at<S: AsRef<str>>(
             "TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES": config.transfer_limits().maximum_diagnostic_bytes().to_string(),
         },
     });
+    if let Some(traceparent) = trace_context.traceparent() {
+        task["Env"]["TRACEPARENT"] = Value::from(traceparent);
+    }
+    if let Some(tracestate) = trace_context.tracestate() {
+        task["Env"]["TRACESTATE"] = Value::from(tracestate);
+    }
     match config.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity { .. } => {
             task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");

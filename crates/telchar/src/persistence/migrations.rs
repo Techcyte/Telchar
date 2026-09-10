@@ -100,6 +100,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "reconciled_store_leases",
         sql: include_str!("../../migrations/0017_reconciled_store_leases.sql"),
     },
+    Migration {
+        version: 18,
+        name: "shared_build_attempt_trace_context",
+        sql: include_str!("../../migrations/0018_shared_build_attempt_trace_context.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
