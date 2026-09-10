@@ -18,7 +18,9 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::backend::{BuildExecution, BuildResult, BuildStatus, OutputTrust};
-use crate::service::config::{NomadBackendConfig, NomadConstraint, NomadTransferAuthentication};
+use crate::service::config::{
+    NomadBackendConfig, NomadConstraint, NomadResources, NomadTransferAuthentication,
+};
 
 const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 const NOMAD_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
@@ -988,6 +990,18 @@ fn render_job_for_features_with_trace_context_at_attempt<S: AsRef<str>>(
     )
 }
 
+fn render_resources(resources: NomadResources) -> Value {
+    let mut rendered = json!({
+        "CPU": resources.cpu_mhz(),
+        "MemoryMB": resources.memory_mb(),
+        "DiskMB": resources.disk_mb(),
+    });
+    if let Some(memory_max_mb) = resources.memory_max_mb() {
+        rendered["MemoryMaxMB"] = Value::from(memory_max_mb);
+    }
+    rendered
+}
+
 fn render_job_at<S: AsRef<str>>(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
@@ -1012,6 +1026,7 @@ fn render_job_at<S: AsRef<str>>(
         priority = profile.priority().default(),
         cpu_mhz = profile.resources().cpu_mhz(),
         memory_mb = profile.resources().memory_mb(),
+        memory_max_mb = profile.resources().memory_max_mb(),
         disk_mb = profile.resources().disk_mb(),
         "Nomad resource profile selected"
     );
@@ -1019,11 +1034,7 @@ fn render_job_at<S: AsRef<str>>(
         "Name": "build",
         "Driver": config.driver(),
         "Config": Value::Object(config.driver_config().clone()),
-        "Resources": {
-            "CPU": profile.resources().cpu_mhz(),
-            "MemoryMB": profile.resources().memory_mb(),
-            "DiskMB": profile.resources().disk_mb(),
-        },
+        "Resources": render_resources(profile.resources()),
         "Env": {
             "TELCHAR_TRANSFER_ENDPOINT": config.transfer_endpoint(),
             "TELCHAR_NIX_STORE_URI": config.store().uri(),
@@ -1084,11 +1095,7 @@ fn render_job_at<S: AsRef<str>>(
             "Name": "prestart",
             "Driver": prestart.driver(),
             "Config": Value::Object(prestart.driver_config().clone()),
-            "Resources": {
-                "CPU": prestart.resources().cpu_mhz(),
-                "MemoryMB": prestart.resources().memory_mb(),
-                "DiskMB": prestart.resources().disk_mb(),
-            },
+            "Resources": render_resources(prestart.resources()),
             "Lifecycle": {
                 "Hook": "prestart",
                 "Sidecar": false,

@@ -391,6 +391,7 @@ readonly = false
 [backends.nomad.nomad-linux-amd64.resources]
 cpu_mhz = 2000
 memory_mb = 4096
+memory_max_mb = 8192
 disk_mb = 16384
 
 # OPERATOR POLICY: default Nomad job priority. Priority controls preemption when
@@ -409,6 +410,7 @@ name = "overflow"
 required_feature = "overflow-aws"
 cpu_mhz = 4000
 memory_mb = 8192
+memory_max_mb = 16384
 disk_mb = 32768
 priority_minimum = 50
 priority_default = 60

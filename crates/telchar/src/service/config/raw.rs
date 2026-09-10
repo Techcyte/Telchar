@@ -346,6 +346,7 @@ pub(super) struct RawNomadPrestartConfig {
 pub(super) struct RawNomadResources {
     pub(super) cpu_mhz: u64,
     pub(super) memory_mb: u64,
+    pub(super) memory_max_mb: Option<u64>,
     pub(super) disk_mb: u64,
 }
 
@@ -364,6 +365,7 @@ pub(super) struct RawNomadResourceProfile {
     pub(super) required_feature: String,
     pub(super) cpu_mhz: u64,
     pub(super) memory_mb: u64,
+    pub(super) memory_max_mb: Option<u64>,
     pub(super) disk_mb: u64,
     pub(super) priority_minimum: u8,
     pub(super) priority_default: u8,

@@ -151,6 +151,7 @@ The required `[backends.nomad.<name>.resources]` table is the default resource p
 [backends.nomad.primary.resources]
 cpu_mhz = 2000
 memory_mb = 4096
+memory_max_mb = 8192
 disk_mb = 16384
 
 [backends.nomad.primary.priority]
@@ -170,6 +171,7 @@ name = "overflow"
 required_feature = "overflow-aws"
 cpu_mhz = 4000
 memory_mb = 8192
+memory_max_mb = 16384
 disk_mb = 32768
 priority_minimum = 50
 priority_default = 60
@@ -180,6 +182,8 @@ attribute = "${node.class}"
 operator = "="
 value = "aws-overflow"
 ```
+
+`memory_max_mb` is optional and maps to Nomad's maximum memory limit. When present it must be greater than or equal to `memory_mb`; omitting it preserves Nomad's standard hard-memory behavior. The field is accepted in default, resource-profile, and prestart resource tables.
 
 Selection is deterministic: no mapped feature selects `default`, exactly one mapped feature selects that profile, and multiple mapped profile features fail as ambiguous. Unrecognized required features remain ordinary backend incompatibility. Base backend constraints always remain in force; selected profile constraints are appended. A requested feature is workload placement input, not authenticated authorization. Operators retain authority through explicit feature advertisement, mappings, hard resource and priority bounds, placement constraints, and queue/concurrency limits.
 

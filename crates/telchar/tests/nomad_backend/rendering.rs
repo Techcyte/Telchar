@@ -80,6 +80,7 @@ timeout_seconds = 120
 [backends.nomad.nomad-arm.prestart.resources]
 cpu_mhz = 100
 memory_mb = 128
+memory_max_mb = 256
 disk_mb = 256
 
 [backends.nomad.nomad-arm.prestart.driver_config]
@@ -89,6 +90,7 @@ args = ["/alloc/data/nix"]
 [backends.nomad.nomad-arm.resources]
 cpu_mhz = 2000
 memory_mb = 4096
+memory_max_mb = 8192
 disk_mb = 16384
 
 [backends.nomad.nomad-arm.priority]
@@ -101,6 +103,7 @@ name = "ci"
 required_feature = "telchar-ci"
 cpu_mhz = 4000
 memory_mb = 8192
+memory_max_mb = 16384
 disk_mb = 32768
 priority_minimum = 55
 priority_default = 60
@@ -186,8 +189,13 @@ args = ["--stdio"]
         "/opt/telchar/bin/worker"
     );
     assert_eq!(
-        job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"]["CPU"],
-        2000
+        job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"],
+        serde_json::json!({
+            "CPU": 2000,
+            "MemoryMB": 4096,
+            "MemoryMaxMB": 8192,
+            "DiskMB": 16384,
+        })
     );
     assert_eq!(job["Job"]["Priority"], 50);
     assert_eq!(job["Job"]["Meta"]["telchar_resource_profile"], "default");
@@ -197,7 +205,12 @@ args = ["--stdio"]
             .expect("CI job renders");
     assert_eq!(
         ci_job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"],
-        serde_json::json!({"CPU": 4000, "MemoryMB": 8192, "DiskMB": 32768})
+        serde_json::json!({
+            "CPU": 4000,
+            "MemoryMB": 8192,
+            "MemoryMaxMB": 16384,
+            "DiskMB": 32768,
+        })
     );
     assert_eq!(ci_job["Job"]["Priority"], 60);
     assert_eq!(ci_job["Job"]["Meta"]["telchar_resource_profile"], "ci");
@@ -208,6 +221,17 @@ args = ["--stdio"]
             "Operand": "=",
             "RTarget": "overflow-aws",
         })
+    );
+
+    let memory_job = telchar::nomad::backend::render_job_for_features(
+        backend,
+        b"memory-build-key",
+        &["telchar-memory"],
+    )
+    .expect("memory job renders");
+    assert_eq!(
+        memory_job["Job"]["TaskGroups"][0]["Tasks"][1]["Resources"],
+        serde_json::json!({"CPU": 2000, "MemoryMB": 32768, "DiskMB": 16384})
     );
 
     assert!(
@@ -237,6 +261,15 @@ args = ["--stdio"]
         ])
     );
     assert_eq!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Name"], "prestart");
+    assert_eq!(
+        job["Job"]["TaskGroups"][0]["Tasks"][0]["Resources"],
+        serde_json::json!({
+            "CPU": 100,
+            "MemoryMB": 128,
+            "MemoryMaxMB": 256,
+            "DiskMB": 256,
+        })
+    );
     assert_eq!(
         job["Job"]["TaskGroups"][0]["Tasks"][0]["Lifecycle"]["Hook"],
         "prestart"

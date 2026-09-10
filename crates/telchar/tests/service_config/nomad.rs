@@ -302,6 +302,7 @@ maximum_diagnostic_bytes = 65536
 [backends.nomad.nomad-docker.resources]
 cpu_mhz = 2000
 memory_mb = 4096
+memory_max_mb = 8192
 disk_mb = 16384
 
 [backends.nomad.nomad-docker.driver_config]
@@ -387,6 +388,7 @@ args = ["--stdio"]
     assert_eq!(backends[0].runtime_limit().as_secs(), 3600);
     assert_eq!(backends[0].resources().cpu_mhz(), 2000);
     assert_eq!(backends[0].resources().memory_mb(), 4096);
+    assert_eq!(backends[0].resources().memory_max_mb(), Some(8192));
     assert_eq!(backends[0].resources().disk_mb(), 16384);
     assert_eq!(backends[0].priority().minimum(), 50);
     assert_eq!(backends[0].priority().default(), 50);
@@ -549,6 +551,7 @@ timeout_seconds = 120
 [backends.nomad.nomad.prestart.resources]
 cpu_mhz = 100
 memory_mb = 128
+memory_max_mb = 256
 disk_mb = 256
 
 [backends.nomad.nomad.prestart.driver_config]
@@ -693,6 +696,7 @@ args = ["/alloc/data/nix"]
     assert_eq!(prestart.driver(), "raw_exec");
     assert_eq!(prestart.timeout().as_secs(), 120);
     assert_eq!(prestart.resources().memory_mb(), 128);
+    assert_eq!(prestart.resources().memory_max_mb(), Some(256));
     assert_eq!(
         prestart.driver_config()["command"],
         "/opt/operator/bin/configure-nix"
@@ -804,6 +808,82 @@ maximum_diagnostic_bytes = 65536
             .expect_err("unknown transfer limit rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
+    );
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn nomad_backend_rejects_memory_maximum_below_reserved_memory() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("invalid-nomad-memory-maximum");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[[backends.nomad]]
+[backends.nomad.nomad]
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.example:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "prod"
+poll_interval_seconds = 2
+runtime_limit_seconds = 60
+transfer_endpoint = "ws://telchar.example:7443"
+
+[backends.nomad.nomad.resources]
+cpu_mhz = 1000
+memory_mb = 2048
+memory_max_mb = 1024
+disk_mb = 4096
+
+[backends.nomad.nomad.driver_config]
+command = "/opt/telchar/bin/telchar-nomad-worker"
+
+[backends.nomad.nomad.transfer_authentication]
+mode = "workload-identity"
+issuer = "http://nomad.example:4646"
+jwks_url = "http://nomad.example:4646/.well-known/jwks.json"
+audience = "telchar-transfer"
+
+[backends.nomad.nomad.store]
+mode = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+[backends.nomad.nomad.transfer_limits]
+maximum_manifest_paths = 1024
+maximum_manifest_bytes = 1048576
+maximum_input_nar_bytes = 1073741824
+maximum_total_input_bytes = 8589934592
+maximum_output_nar_bytes = 1073741824
+maximum_total_output_bytes = 8589934592
+maximum_frame_metadata_bytes = 65536
+stream_buffer_bytes = 262144
+maximum_live_log_chunk_bytes = 65536
+live_log_queue_bytes = 1048576
+transfer_idle_timeout_seconds = 30
+setup_timeout_seconds = 300
+output_collection_timeout_seconds = 300
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 300
+clock_skew_seconds = 30
+nonce_retention_seconds = 600
+reconnect_timeout_seconds = 30
+maximum_diagnostic_bytes = 65536
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    assert_eq!(
+        ServiceConfig::load()
+            .expect_err("memory maximum below reservation rejects")
+            .to_string(),
+        "Nomad resources are invalid"
     );
 
     restore_environment(saved);

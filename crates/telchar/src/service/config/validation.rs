@@ -833,6 +833,7 @@ pub(super) fn validate_nomad_resource_profiles(
         let resources = validate_nomad_resources(RawNomadResources {
             cpu_mhz: profile.cpu_mhz,
             memory_mb: profile.memory_mb,
+            memory_max_mb: profile.memory_max_mb,
             disk_mb: profile.disk_mb,
         })?;
         let priority = validate_nomad_priority_values(
@@ -874,6 +875,9 @@ pub(super) fn validate_nomad_resources(raw: RawNomadResources) -> io::Result<Nom
         || raw.cpu_mhz > MAXIMUM_NOMAD_RESOURCE
         || raw.memory_mb == 0
         || raw.memory_mb > MAXIMUM_NOMAD_RESOURCE
+        || raw.memory_max_mb.is_some_and(|memory_max_mb| {
+            memory_max_mb < raw.memory_mb || memory_max_mb > MAXIMUM_NOMAD_RESOURCE
+        })
         || raw.disk_mb == 0
         || raw.disk_mb > MAXIMUM_NOMAD_RESOURCE
     {
@@ -882,6 +886,7 @@ pub(super) fn validate_nomad_resources(raw: RawNomadResources) -> io::Result<Nom
     Ok(NomadResources {
         cpu_mhz: raw.cpu_mhz,
         memory_mb: raw.memory_mb,
+        memory_max_mb: raw.memory_max_mb,
         disk_mb: raw.disk_mb,
     })
 }

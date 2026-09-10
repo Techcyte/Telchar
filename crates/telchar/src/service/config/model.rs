@@ -265,6 +265,7 @@ impl StaticSshConsulConfig {
 pub struct NomadResources {
     pub(super) cpu_mhz: u64,
     pub(super) memory_mb: u64,
+    pub(super) memory_max_mb: Option<u64>,
     pub(super) disk_mb: u64,
 }
 
@@ -275,6 +276,10 @@ impl NomadResources {
 
     pub fn memory_mb(self) -> u64 {
         self.memory_mb
+    }
+
+    pub fn memory_max_mb(self) -> Option<u64> {
+        self.memory_max_mb
     }
 
     pub fn disk_mb(self) -> u64 {
