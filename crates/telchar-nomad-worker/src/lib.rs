@@ -207,16 +207,25 @@ impl WorkerSession {
         if actual_outputs != expected_outputs {
             return Err(invalid("worker build output set is inconsistent"));
         }
+        let expected_paths = expected_outputs
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         let endpoint = GatewayStoreEndpoint::parse(store_uri)
             .map_err(|_| invalid("worker Nix store URI is invalid"))?;
         let mut store = GatewayStoreConnection::connect(&endpoint)
             .map_err(|_| io::Error::other("worker Nix store connection failed"))?;
-        for (index, (_, path)) in expected_outputs.into_iter().enumerate() {
-            self.ensure_connection_active()?;
+        let mut outputs = Vec::with_capacity(expected_outputs.len());
+        for (name, path) in expected_outputs {
             let info = store
                 .query_path_info(&path)
                 .map_err(|_| io::Error::other("worker output metadata query failed"))?
                 .ok_or_else(|| invalid("worker build output is unavailable"))?;
+            outputs.push((name, path, info));
+        }
+        let outputs = order_outputs_by_references(outputs, &expected_paths)?;
+        for (index, (_, path, info)) in outputs.into_iter().enumerate() {
+            self.ensure_connection_active()?;
             let metadata = PathManifestEntry {
                 path: String::from_utf8(path.clone())
                     .map_err(|_| invalid("worker build output path is invalid"))?,
@@ -372,6 +381,32 @@ impl WorkerSession {
             .send(tungstenite::Message::Binary(body.into()))
             .map_err(|_| io::Error::other("worker input resolution send failed"))
     }
+}
+
+type BuildOutput = (Vec<u8>, Vec<u8>, nix_worker_protocol::WorkerPathInfo);
+
+fn order_outputs_by_references(
+    outputs: Vec<BuildOutput>,
+    expected_paths: &std::collections::BTreeSet<Vec<u8>>,
+) -> io::Result<Vec<BuildOutput>> {
+    let mut pending = outputs;
+    let mut ordered = Vec::with_capacity(pending.len());
+    let mut emitted = std::collections::BTreeSet::new();
+    while !pending.is_empty() {
+        let Some(index) = pending.iter().position(|(_, path, info)| {
+            info.references().iter().all(|reference| {
+                reference == path
+                    || !expected_paths.contains(reference)
+                    || emitted.contains(reference)
+            })
+        }) else {
+            return Err(invalid("worker build outputs contain a reference cycle"));
+        };
+        let output = pending.remove(index);
+        emitted.insert(output.1.clone());
+        ordered.push(output);
+    }
+    Ok(ordered)
 }
 
 struct OutputNarWriter<'a> {
@@ -1148,6 +1183,49 @@ mod tests {
             .accept(Direction::WorkerToGateway, FrameKind::InputRequest)
             .expect("request records");
         protocol
+    }
+
+    #[test]
+    fn output_dependencies_are_returned_before_referrers() {
+        let output = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output".to_vec();
+        let dependency = b"/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-dependency".to_vec();
+        let outputs = vec![
+            (
+                b"out".to_vec(),
+                output.clone(),
+                nix_worker_protocol::WorkerPathInfo::new(
+                    None,
+                    "0".repeat(64),
+                    vec![output.clone(), dependency.clone()],
+                    0,
+                    1,
+                    false,
+                    vec![],
+                    None,
+                ),
+            ),
+            (
+                b"lib".to_vec(),
+                dependency.clone(),
+                nix_worker_protocol::WorkerPathInfo::new(
+                    None,
+                    "0".repeat(64),
+                    vec![dependency.clone()],
+                    0,
+                    1,
+                    false,
+                    vec![],
+                    None,
+                ),
+            ),
+        ];
+        let expected_paths = [output.clone(), dependency.clone()].into_iter().collect();
+
+        let ordered =
+            order_outputs_by_references(outputs, &expected_paths).expect("output order resolves");
+
+        assert_eq!(ordered[0].1, dependency);
+        assert_eq!(ordered[1].1, output);
     }
 
     #[test]

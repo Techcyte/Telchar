@@ -1,11 +1,16 @@
 //! Tests static ssh backend contracts and failure boundaries, including load config.
 
+use std::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use tracing::field::{Field, Visit};
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::prelude::*;
 
 use telchar::backend::static_ssh::{StaticSshBackend, StaticSshHealth, StaticSshHealthState};
 use telchar::backend::{BuildBackend, BuildExecution};
@@ -18,6 +23,37 @@ mod build_request_support;
 use build_request_support::admitted_request;
 
 static CONFIG_ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Default)]
+struct EventCapture(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+impl<S> Layer<S> for EventCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        let mut fields = EventFields::default();
+        event.record(&mut fields);
+        self.0
+            .lock()
+            .expect("events lock")
+            .push((*event.metadata().level(), fields.0));
+    }
+}
+
+#[derive(Default)]
+struct EventFields(String);
+
+impl Visit for EventFields {
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if !self.0.is_empty() {
+            self.0.push(' ');
+        }
+        self.0.push_str(field.name());
+        self.0.push('=');
+        self.0.push_str(&format!("{value:?}"));
+    }
+}
 
 fn load_config<T>(path: &Path, select: impl FnOnce(ServiceConfig) -> T) -> T {
     let _guard = CONFIG_ENVIRONMENT
@@ -132,16 +168,52 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
         .expect("execution is valid");
     let mut logs = Vec::new();
 
-    backend
-        .execute_with_logs(
-            &execution,
-            &mut |chunk| {
-                logs.extend_from_slice(chunk);
-                Ok(())
-            },
-            &mut || Ok(false),
-        )
-        .expect_err("hostile transport fails");
+    let captured = EventCapture::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+    tracing::dispatcher::with_default(&dispatch, || {
+        backend
+            .execute_with_logs(
+                &execution,
+                &mut |chunk| {
+                    logs.extend_from_slice(chunk);
+                    Ok(())
+                },
+                &mut || Ok(false),
+            )
+            .expect_err("hostile transport fails");
+    });
+
+    let events = captured.0.lock().expect("events lock");
+    let dispatched = events
+        .iter()
+        .find(|(_, fields)| fields.contains("event=\"static_ssh.build.dispatched\""))
+        .expect("dispatch event exists");
+    assert_eq!(dispatched.0, tracing::Level::INFO);
+    for field in [
+        "derivation_path=/nix/store/00000000000000000000000000000000-static-ssh.drv",
+        "backend=\"pool.builder\"",
+        "destination=\"telchar-builder@builder\"",
+        "system=\"x86_64-linux\"",
+        "required_features=[]",
+    ] {
+        assert!(
+            dispatched.1.contains(field),
+            "missing {field}: {}",
+            dispatched.1
+        );
+    }
+    let completed = events
+        .iter()
+        .find(|(_, fields)| fields.contains("event=\"static_ssh.build.completed\""))
+        .expect("completion event exists");
+    assert_eq!(completed.0, tracing::Level::WARN);
+    assert!(completed.1.contains("result=\"failed\""));
+    assert!(
+        completed
+            .1
+            .contains("destination=\"telchar-builder@builder\"")
+    );
+    drop(events);
 
     let logs = String::from_utf8(logs).expect("logs are UTF-8");
     assert_eq!(logs, "static SSH transport diagnostic\n");

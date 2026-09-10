@@ -304,17 +304,19 @@ pub fn serve_connection(
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
     let limits = backend.transfer_limits();
-    tracing::debug!(
-        event = "nomad.callback.authentication.accepted",
+    tracing::info!(
+        event = "nomad.build.connected",
+        derivation_path,
         backend = authentication.backend,
         job_id = authentication.job_id,
         allocation_id = authentication.allocation_id,
+        namespace = backend.namespace(),
         task = authentication.task,
         maximum_manifest_paths = limits.maximum_manifest_paths(),
         maximum_manifest_bytes = limits.maximum_manifest_bytes(),
         maximum_frame_metadata_bytes = limits.maximum_frame_metadata_bytes(),
         stream_buffer_bytes = limits.stream_buffer_bytes(),
-        "Nomad callback authentication accepted"
+        "Nomad build callback connected"
     );
     socket.set_maximum_message_bytes(
         (limits.maximum_manifest_bytes() as usize)
@@ -591,6 +593,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 session.accept(Direction::WorkerToGateway, frame)?;
                 tracing::info!(
                     event = "nomad.callback.build.started",
+                    derivation_path,
                     "worker began daemon build request"
                 );
             }
@@ -619,6 +622,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     collecting = true;
                     tracing::info!(
                         event = "nomad.callback.outputs.collecting",
+                        derivation_path,
                         expected_output_count = build_request.expected_outputs().len(),
                         "worker output transfer began"
                     );

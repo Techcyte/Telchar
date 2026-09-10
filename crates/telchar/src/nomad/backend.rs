@@ -24,6 +24,56 @@ const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 const NOMAD_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 const NOMAD_RETRY_MAXIMUM_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[allow(clippy::too_many_arguments)]
+fn log_dispatched_build(
+    derivation_path: &str,
+    job_id: &str,
+    evaluation_id: &str,
+    backend: &str,
+    namespace: &str,
+    attempt_ordinal: usize,
+    resource_profile: &str,
+    system: &str,
+    required_features: &[String],
+) {
+    tracing::info!(
+        event = "nomad.build.dispatched",
+        derivation_path,
+        job_id,
+        evaluation_id,
+        backend,
+        namespace,
+        attempt_ordinal,
+        resource_profile,
+        system,
+        required_features = ?required_features,
+        "Nomad build dispatched"
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_placed_build(
+    derivation_path: &str,
+    submission: &NomadSubmission,
+    allocation: &NomadAllocation,
+    backend: &str,
+    namespace: &str,
+    attempt_ordinal: usize,
+) {
+    tracing::info!(
+        event = "nomad.build.placed",
+        derivation_path,
+        job_id = submission.job_id(),
+        evaluation_id = submission.evaluation_id(),
+        allocation_id = allocation.id,
+        node_name = allocation.node_name.as_deref().unwrap_or("unavailable"),
+        backend,
+        namespace,
+        attempt_ordinal,
+        "Nomad build placed"
+    );
+}
+
 struct StatusPoll {
     next: Instant,
     interval: std::time::Duration,
@@ -65,6 +115,18 @@ pub enum NomadExecutionState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct NomadExecutionStatus {
+    state: NomadExecutionState,
+    allocations: Vec<NomadAllocation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NomadAllocation {
+    id: String,
+    node_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NomadSubmission {
     job_id: String,
     evaluation_id: String,
@@ -102,6 +164,10 @@ struct JobResponse {
 
 #[derive(Deserialize)]
 struct AllocationResponse {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "NodeName", default)]
+    node_name: String,
     #[serde(rename = "JobVersion", default)]
     job_version: u64,
     #[serde(rename = "ClientStatus")]
@@ -256,6 +322,10 @@ impl NomadClient {
     }
 
     pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
+        self.execution_status(job_id).map(|status| status.state)
+    }
+
+    fn execution_status(&self, job_id: &str) -> io::Result<NomadExecutionStatus> {
         let started = Instant::now();
         tracing::trace!(
             event = "nomad.api.request.started",
@@ -281,7 +351,10 @@ impl NomadClient {
                 duration_ms = started.elapsed().as_millis(),
                 "Nomad API request completed"
             );
-            return Ok(NomadExecutionState::Missing);
+            return Ok(NomadExecutionStatus {
+                state: NomadExecutionState::Missing,
+                allocations: Vec::new(),
+            });
         }
         let job: JobResponse = bounded_json(
             response
@@ -330,6 +403,13 @@ impl NomadClient {
         } else {
             NomadExecutionState::Placed
         };
+        let allocations = current_allocations
+            .into_iter()
+            .map(|allocation| NomadAllocation {
+                id: allocation.id.clone(),
+                node_name: (!allocation.node_name.is_empty()).then(|| allocation.node_name.clone()),
+            })
+            .collect::<Vec<_>>();
         tracing::trace!(
             event = "nomad.api.request.completed",
             operation = "status",
@@ -339,7 +419,7 @@ impl NomadClient {
             duration_ms = started.elapsed().as_millis(),
             "Nomad API request completed"
         );
-        Ok(state)
+        Ok(NomadExecutionStatus { state, allocations })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -431,10 +511,13 @@ impl NomadClient {
             started.elapsed(),
             result_name,
         );
-        tracing::debug!(
+        tracing::info!(
             event = "nomad.execution.completed",
-            backend_name = self.config.target().name(),
+            derivation_path,
+            backend = self.config.target().name(),
+            namespace = self.config.namespace(),
             result = result_name,
+            attempt_count = attempt_ordinal,
             duration_ms = started.elapsed().as_millis(),
             "Nomad execution completed"
         );
@@ -480,6 +563,21 @@ impl NomadClient {
             },
         );
         let submission = submission?;
+        let derivation_path =
+            std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
+                NomadAttemptFailure::Terminal(io::Error::other("Nomad derivation path is invalid"))
+            })?;
+        log_dispatched_build(
+            derivation_path,
+            submission.job_id(),
+            submission.evaluation_id(),
+            self.config.target().name(),
+            self.config.namespace(),
+            attempt_ordinal,
+            profile.name(),
+            execution.build().system(),
+            execution.build().required_system_features(),
+        );
         crate::service::metrics::nomad_pending_changed(self.config.target().name(), 1);
         let attempt_started = Instant::now();
         let result = (|| {
@@ -542,10 +640,10 @@ impl NomadClient {
                     | crate::persistence::SharedBuildState::Collecting => {}
                 }
                 if status_poll.due(Instant::now()) {
-                    match self
-                        .status(submission.job_id())
-                        .map_err(NomadAttemptFailure::Retryable)?
-                    {
+                    let status = self
+                        .execution_status(submission.job_id())
+                        .map_err(NomadAttemptFailure::Retryable)?;
+                    match status.state {
                         NomadExecutionState::Pending => {}
                         NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
                             if !placement_recorded {
@@ -553,6 +651,16 @@ impl NomadClient {
                                     self.config.target().name(),
                                     attempt_started.elapsed(),
                                 );
+                                for allocation in &status.allocations {
+                                    log_placed_build(
+                                        derivation_path,
+                                        &submission,
+                                        allocation,
+                                        self.config.target().name(),
+                                        self.config.namespace(),
+                                        attempt_ordinal,
+                                    );
+                                }
                                 placement_recorded = true;
                             }
                         }

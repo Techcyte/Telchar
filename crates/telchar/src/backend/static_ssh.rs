@@ -85,14 +85,18 @@ fn recover_remote_outputs(
     outputs: &[String],
 ) -> io::Result<()> {
     let mut remote = WorkerClient::connect(stream)?;
+    let mut remote_outputs = Vec::with_capacity(outputs.len());
     for output in outputs {
-        let path = output.as_bytes();
-        let info = remote.query_path_info(path)?.ok_or_else(|| {
+        let path = output.as_bytes().to_vec();
+        let info = remote.query_path_info(&path)?.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "remote output is unavailable")
         })?;
-        copy_remote_path_to_gateway(&mut remote, gateway, path, &info)?;
+        remote_outputs.push((path, info));
+    }
+    for (path, info) in order_remote_outputs_by_references(remote_outputs)? {
+        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info)?;
         let mut verification = GatewayStoreConnection::connect(gateway)?;
-        if verification.query_path_info(path)?.is_none() {
+        if verification.query_path_info(&path)?.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "build output verification failed",
@@ -161,6 +165,53 @@ impl StaticSshBackend {
     }
 
     fn execute_request(
+        &mut self,
+        execution: &BuildExecution<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
+        let started = Instant::now();
+        let derivation_path = String::from_utf8_lossy(execution.build().derivation_path());
+        tracing::info!(
+            event = "static_ssh.build.dispatched",
+            derivation_path = %derivation_path,
+            backend = self.config.target().name(),
+            destination = self.config.destination(),
+            system = execution.build().system(),
+            required_features = ?execution.build().required_system_features(),
+            "static SSH build dispatched"
+        );
+        let result = self.execute_transport(execution, logs, cancelled);
+        let result_name = if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        match &result {
+            Ok(_) => tracing::info!(
+                event = "static_ssh.build.completed",
+                derivation_path = %derivation_path,
+                backend = self.config.target().name(),
+                destination = self.config.destination(),
+                result = result_name,
+                duration_ms = started.elapsed().as_millis(),
+                "static SSH build completed"
+            ),
+            Err(error) => tracing::warn!(
+                event = "static_ssh.build.completed",
+                derivation_path = %derivation_path,
+                backend = self.config.target().name(),
+                destination = self.config.destination(),
+                result = result_name,
+                reason = error.to_string(),
+                duration_ms = started.elapsed().as_millis(),
+                "static SSH build completed"
+            ),
+        }
+        result
+    }
+
+    fn execute_transport(
         &mut self,
         execution: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
@@ -359,13 +410,17 @@ fn execute_remote_build(
         ));
     }
 
+    let mut remote_outputs = Vec::with_capacity(expected_outputs.len());
     for (_, path) in &expected_outputs {
         let info = remote.query_path_info(path)?.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "remote output is unavailable")
         })?;
-        copy_remote_path_to_gateway(&mut remote, gateway, path, &info)?;
+        remote_outputs.push((path.clone(), info));
+    }
+    for (path, info) in order_remote_outputs_by_references(remote_outputs)? {
+        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info)?;
         let mut verification = GatewayStoreConnection::connect(gateway)?;
-        if verification.query_path_info(path)?.is_none() {
+        if verification.query_path_info(&path)?.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "build output verification failed",
@@ -461,6 +516,38 @@ fn copy_gateway_path_to_remote(
         ),
     }
     result
+}
+
+type RemoteBuildOutput = (Vec<u8>, WorkerPathInfo);
+
+fn order_remote_outputs_by_references(
+    outputs: Vec<RemoteBuildOutput>,
+) -> io::Result<Vec<RemoteBuildOutput>> {
+    let expected_paths = outputs
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut pending = outputs;
+    let mut ordered = Vec::with_capacity(pending.len());
+    let mut imported = std::collections::BTreeSet::new();
+    while !pending.is_empty() {
+        let Some(index) = pending.iter().position(|(path, info)| {
+            info.references().iter().all(|reference| {
+                reference == path
+                    || !expected_paths.contains(reference)
+                    || imported.contains(reference)
+            })
+        }) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "static SSH build outputs contain a reference cycle",
+            ));
+        };
+        let output = pending.remove(index);
+        imported.insert(output.0.clone());
+        ordered.push(output);
+    }
+    Ok(ordered)
 }
 
 fn copy_remote_path_to_gateway(
@@ -728,6 +815,45 @@ mod tests {
             deriver: None,
             content_address: None,
         }
+    }
+
+    #[test]
+    fn orders_remote_output_dependencies_before_referrers() {
+        let output = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output".to_vec();
+        let dependency = b"/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-dependency".to_vec();
+        let outputs = vec![
+            (
+                output.clone(),
+                WorkerPathInfo::new(
+                    None,
+                    "0".repeat(64),
+                    vec![output.clone(), dependency.clone()],
+                    0,
+                    1,
+                    false,
+                    vec![],
+                    None,
+                ),
+            ),
+            (
+                dependency.clone(),
+                WorkerPathInfo::new(
+                    None,
+                    "0".repeat(64),
+                    vec![dependency.clone()],
+                    0,
+                    1,
+                    false,
+                    vec![],
+                    None,
+                ),
+            ),
+        ];
+
+        let ordered = order_remote_outputs_by_references(outputs).expect("output order resolves");
+
+        assert_eq!(ordered[0].0, dependency);
+        assert_eq!(ordered[1].0, output);
     }
 
     #[test]
