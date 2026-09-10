@@ -342,6 +342,23 @@ fn running_shared_build_reassigns_exact_backend_before_execution() {
         attempt.backend_execution_id.as_deref(),
         Some("telchar-build-reassigned")
     );
+    let trace_context = telchar_telemetry::TraceContext::new(
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        Some("vendor=value".into()),
+    )
+    .expect("trace context validates");
+    telchar::persistence::record_shared_build_attempt_trace_context(
+        fixture.url(),
+        derivation_path,
+        "telchar-build-reassigned",
+        &trace_context,
+    )
+    .expect("attempt trace context records");
+    let traced_attempt =
+        telchar::persistence::read_shared_build_attempt(fixture.url(), derivation_path)
+            .expect("traced attempt reads")
+            .expect("traced attempt exists");
+    assert_eq!(traced_attempt.trace_context, trace_context);
 }
 
 #[test]

@@ -64,6 +64,7 @@ pub fn accept_connection<S: Read + Write>(
         Ok(response)
     }
     let trace_context = std::sync::Mutex::new(telchar_telemetry::TraceContext::default());
+    #[allow(clippy::result_large_err)]
     let capture_upgrade = |request: &Request, response: Response| {
         let parsed = telchar_telemetry::TraceContext::new(
             request

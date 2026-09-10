@@ -24,8 +24,12 @@ impl TraceContext {
             &mut MapInjector(&mut fields),
         );
         Self {
-            traceparent: fields.remove("traceparent"),
-            tracestate: fields.remove("tracestate"),
+            traceparent: fields
+                .remove("traceparent")
+                .filter(|value| !value.is_empty()),
+            tracestate: fields
+                .remove("tracestate")
+                .filter(|value| !value.is_empty()),
         }
     }
 
@@ -72,6 +76,14 @@ impl TraceContext {
                 .tracestate
                 .as_ref()
                 .is_some_and(|value| value.len() > MAXIMUM_TRACESTATE_BYTES || value.contains('\0'))
+            || self
+                .traceparent
+                .as_ref()
+                .is_some_and(|value| value.is_empty())
+            || self
+                .tracestate
+                .as_ref()
+                .is_some_and(|value| value.is_empty())
             || self.traceparent.is_none() && self.tracestate.is_some()
         {
             return Err(io::Error::new(

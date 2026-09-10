@@ -1053,6 +1053,44 @@ fn create_shared_build_attempt(
     decode_shared_build_attempt(&row).map_err(SharedBuildError)
 }
 
+pub fn record_shared_build_attempt_trace_context(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    backend_execution_id: &str,
+    trace_context: &telchar_telemetry::TraceContext,
+) -> Result<(), SharedBuildError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(record_shared_build_attempt_trace_context));
+    validate_shared_build_identity(database, derivation_path)?;
+    trace_context
+        .validate()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
+    if backend_execution_id.is_empty() || backend_execution_id.len() > 4096 {
+        return Err(SharedBuildError(SharedBuildFailure::Configuration));
+    }
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let updated = client
+        .execute(
+            "UPDATE shared_build_attempts
+             SET traceparent = $3, tracestate = $4
+             WHERE derivation_path = $1
+               AND backend_execution_id = $2
+               AND state IN ('running', 'collecting')",
+            &[
+                &derivation_path,
+                &backend_execution_id,
+                &trace_context.traceparent(),
+                &trace_context.tracestate(),
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if updated != 1 {
+        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+    }
+    Ok(())
+}
+
 pub fn read_shared_build_attempt(
     database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,

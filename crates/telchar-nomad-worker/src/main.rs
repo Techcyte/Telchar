@@ -60,13 +60,20 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> std::process::ExitCode {
-    let config = match phase("configuration", || {
-        telchar_nomad_worker::WorkerConfig::from_environment().inspect_err(|error| {
-            tracing::error!(event = "worker.configuration.failed", reason = %error);
-        })
-    }) {
-        Ok(config) => config,
-        Err(_) => return std::process::ExitCode::FAILURE,
+    let configuration = tracing::info_span!("worker.configuration");
+    let config = {
+        let _entered = configuration.enter();
+        match phase("configuration", || {
+            telchar_nomad_worker::WorkerConfig::from_environment().inspect_err(|error| {
+                tracing::error!(event = "worker.configuration.failed", reason = %error);
+            })
+        }) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(event = "worker.failed", error_kind = ?error.kind());
+                return std::process::ExitCode::FAILURE;
+            }
+        }
     };
     let execution = tracing::info_span!("worker.execution");
     if let Err(error) = config.trace_context().set_parent(&execution) {
