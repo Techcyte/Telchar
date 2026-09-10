@@ -215,6 +215,18 @@ fn retry_transition_closes_active_attempt_and_starts_next_identity_atomically() 
     let first = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("first attempt reads")
         .expect("first attempt exists");
+    let trace_context = telchar_telemetry::TraceContext::new(
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        Some("vendor=value".into()),
+    )
+    .expect("trace context validates");
+    telchar::persistence::record_shared_build_attempt_trace_context(
+        fixture.url(),
+        derivation,
+        "nomad-attempt-1",
+        &trace_context,
+    )
+    .expect("first attempt trace context records");
 
     let second = telchar::persistence::retry_shared_build(
         fixture.url(),
@@ -235,6 +247,7 @@ fn retry_transition_closes_active_attempt_and_starts_next_identity_atomically() 
         second.state,
         telchar::persistence::SharedBuildAttemptState::Running
     );
+    assert_eq!(second.trace_context, trace_context);
     let first_outcome =
         telchar::persistence::read_shared_build_attempt_outcome(fixture.url(), &first.attempt_id)
             .expect("first outcome reads")

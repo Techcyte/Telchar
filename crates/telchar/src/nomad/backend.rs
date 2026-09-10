@@ -564,19 +564,23 @@ impl NomadClient {
             },
         );
         let submission = submission?;
-        crate::persistence::record_shared_build_attempt_trace_context(
-            database,
-            std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
-                NomadAttemptFailure::Terminal(io::Error::other("Nomad derivation path is invalid"))
-            })?,
-            submission.job_id(),
-            execution.trace_context(),
-        )
-        .map_err(|_| {
-            NomadAttemptFailure::Terminal(io::Error::other(
-                "Nomad shared build trace context could not be recorded",
-            ))
-        })?;
+        if execution.trace_context().trace_id().is_some() {
+            crate::persistence::record_shared_build_attempt_trace_context(
+                database,
+                std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
+                    NomadAttemptFailure::Terminal(io::Error::other(
+                        "Nomad derivation path is invalid",
+                    ))
+                })?,
+                submission.job_id(),
+                execution.trace_context(),
+            )
+            .map_err(|_| {
+                NomadAttemptFailure::Terminal(io::Error::other(
+                    "Nomad shared build trace context could not be recorded",
+                ))
+            })?;
+        }
         let derivation_path =
             std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
                 NomadAttemptFailure::Terminal(io::Error::other("Nomad derivation path is invalid"))

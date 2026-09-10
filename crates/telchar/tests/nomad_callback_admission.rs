@@ -221,11 +221,21 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
         &["/nix/store/11111111111111111111111111111111-output"],
     )
     .expect("shared build claims");
-    telchar::persistence::start_shared_build(
-        database.url(),
-        "/nix/store/00000000000000000000000000000000-callback.drv",
+    let derivation_path = "/nix/store/00000000000000000000000000000000-callback.drv";
+    telchar::persistence::start_shared_build(database.url(), derivation_path)
+        .expect("shared build runs");
+    let trace_context = telchar_telemetry::TraceContext::new(
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        Some("vendor=value".into()),
     )
-    .expect("shared build runs");
+    .expect("trace context validates");
+    telchar::persistence::record_shared_build_attempt_trace_context(
+        database.url(),
+        derivation_path,
+        "job-1",
+        &trace_context,
+    )
+    .expect("attempt trace context records");
     let resolver = PostgresCallbackExecutionResolver::new(
         telchar::persistence::Database::connect(database.url()).expect("database connects"),
         vec![("nomad-primary".to_owned(), "telchar".to_owned())],
@@ -244,10 +254,8 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
         .resolve(&exact)
         .expect("active execution resolves")
         .expect("active execution exists");
-    assert_eq!(
-        execution.derivation_path(),
-        Some("/nix/store/00000000000000000000000000000000-callback.drv")
-    );
+    assert_eq!(execution.derivation_path(), Some(derivation_path));
+    assert_eq!(execution.trace_context(), &trace_context);
     let mut foreign = exact.clone();
     foreign.shared_build_digest = "foreign".to_owned();
     assert!(

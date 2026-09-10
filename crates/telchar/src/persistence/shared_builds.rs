@@ -905,20 +905,30 @@ pub fn retry_shared_build(
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
-    let attempt_id: i64 = transaction
+    let completed_attempt = transaction
         .query_opt(
             "UPDATE shared_build_attempts
              SET state = 'failed', completed_at = transaction_timestamp()
              WHERE derivation_path = $1
                AND backend_execution_id = $2
                AND state = 'running'
-             RETURNING attempt_id",
+             RETURNING attempt_id, traceparent, tracestate",
             &[&derivation_path, &current_execution_id],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
-        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    let attempt_id: i64 = completed_attempt
         .try_get(0)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let trace_context = telchar_telemetry::TraceContext::new(
+        completed_attempt
+            .try_get(1)
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?,
+        completed_attempt
+            .try_get(2)
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?,
+    )
+    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     transaction
         .execute(
             "INSERT INTO shared_build_attempt_outcomes (
@@ -928,7 +938,19 @@ pub fn retry_shared_build(
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     let build = decode_shared_build(&row).map_err(SharedBuildError)?;
-    let attempt = create_shared_build_attempt(&mut transaction, &build)?;
+    let mut attempt = create_shared_build_attempt(&mut transaction, &build)?;
+    transaction
+        .execute(
+            "UPDATE shared_build_attempts SET traceparent = $2, tracestate = $3
+             WHERE attempt_id = $1",
+            &[
+                &attempt.attempt_id,
+                &trace_context.traceparent(),
+                &trace_context.tracestate(),
+            ],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    attempt.trace_context = trace_context;
     transaction
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;

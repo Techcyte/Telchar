@@ -765,14 +765,20 @@ fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         .as_str()
         .into_client_request()
         .map_err(|_| io::Error::other("worker callback request could not be created"))?;
-    if let Some(traceparent) = config.trace_context().traceparent() {
+    let current_trace_context = telchar_telemetry::TraceContext::capture_current();
+    let callback_trace_context = if current_trace_context.trace_id().is_some() {
+        &current_trace_context
+    } else {
+        config.trace_context()
+    };
+    if let Some(traceparent) = callback_trace_context.traceparent() {
         request.headers_mut().insert(
             "traceparent",
             tungstenite::http::HeaderValue::from_str(traceparent)
                 .map_err(|_| invalid("worker trace context is invalid"))?,
         );
     }
-    if let Some(tracestate) = config.trace_context().tracestate() {
+    if let Some(tracestate) = callback_trace_context.tracestate() {
         request.headers_mut().insert(
             "tracestate",
             tungstenite::http::HeaderValue::from_str(tracestate)

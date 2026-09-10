@@ -461,6 +461,13 @@ impl BuildBackend for BackendExecutor {
     ) -> io::Result<BuildResult> {
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();
+        let execution_span = tracing::info_span!(
+            "backend.execution",
+            backend_name = target_name,
+            backend_kind = target_kind.as_str()
+        );
+        execution.trace_context().set_parent(&execution_span)?;
+        let _execution_entered = execution_span.enter();
         let started = std::time::Instant::now();
         tracing::debug!(
             event = "backend.execution.started",

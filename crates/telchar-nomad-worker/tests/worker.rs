@@ -423,7 +423,29 @@ fn receives_exact_bounded_manifest_after_authentication() {
     let sent = expected.clone();
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("callback accepted");
-        let mut socket = tungstenite::accept_hdr(stream, select_protocol).expect("socket accepts");
+        let observed_traceparent = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_traceparent = std::sync::Arc::clone(&observed_traceparent);
+        #[allow(clippy::result_large_err)]
+        let capture_trace_context = move |request: &tungstenite::handshake::server::Request,
+                                          response| {
+            *captured_traceparent
+                .lock()
+                .expect("trace header lock holds") = request
+                .headers()
+                .get("traceparent")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            select_protocol(request, response)
+        };
+        let mut socket =
+            tungstenite::accept_hdr(stream, capture_trace_context).expect("socket accepts");
+        assert_eq!(
+            observed_traceparent
+                .lock()
+                .expect("trace header lock holds")
+                .as_deref(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        );
         let _ = socket.read().expect("authentication reads");
         let metadata = encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes");
         let mut body = Vec::new();
