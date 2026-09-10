@@ -3,6 +3,262 @@
 use super::*;
 
 #[test]
+fn reconciliation_releases_leases_abandoned_by_closed_sessions() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "abandoned-session",
+        requester,
+        "ssh-pubkey:SHA256:test",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "abandoned-request",
+        "/nix/store/11111111111111111111111111111111-abandoned.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "abandoned-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "abandoned-request",
+        "/nix/store/11111111111111111111111111111111-abandoned.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("derivation lease persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "abandoned-input",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "abandoned-request",
+        "/nix/store/22222222222222222222222222222222-abandoned-input",
+        telchar::persistence::StoreLeasePurpose::Input,
+    )
+    .expect("input lease persists");
+    telchar::persistence::attach_request(fixture.url(), "abandoned-session", "abandoned-request")
+        .expect("request attaches");
+    telchar::persistence::close_protocol_session(fixture.url(), "abandoned-session")
+        .expect("session closes");
+    let root_directory = std::env::temp_dir().join(format!(
+        "telchar-retention-abandoned-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    for (lease_id, store_path) in [
+        (
+            "abandoned-derivation",
+            "/nix/store/11111111111111111111111111111111-abandoned.drv",
+        ),
+        (
+            "abandoned-input",
+            "/nix/store/22222222222222222222222222222222-abandoned-input",
+        ),
+    ] {
+        std::os::unix::fs::symlink(store_path, root_directory.join(lease_id))
+            .expect("retention root creates");
+    }
+    let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
+        .expect("retention backend configures");
+
+    telchar::store::retention::reconcile_startup_retention(
+        fixture.url(),
+        &mut backend,
+        SystemTime::now(),
+    )
+    .expect("abandoned request reconciles");
+
+    for lease_id in ["abandoned-derivation", "abandoned-input"] {
+        assert!(fs::symlink_metadata(root_directory.join(lease_id)).is_err());
+        assert_eq!(
+            telchar::persistence::read_store_lease(fixture.url(), lease_id)
+                .expect("lease reads")
+                .expect("lease exists")
+                .state,
+            telchar::persistence::StoreLeaseState::Reconciled
+        );
+    }
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "abandoned-session",
+            "abandoned-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+
+    fs::remove_dir_all(root_directory).expect("root directory cleans");
+}
+
+#[test]
+fn reconciliation_releases_leases_abandoned_by_interrupted_sessions() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "interrupted-session",
+        requester,
+        "ssh-pubkey:SHA256:test",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "interrupted-request",
+        "/nix/store/11111111111111111111111111111111-interrupted.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "interrupted-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "interrupted-request",
+        "/nix/store/11111111111111111111111111111111-interrupted.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+    telchar::persistence::attach_request(
+        fixture.url(),
+        "interrupted-session",
+        "interrupted-request",
+    )
+    .expect("request attaches");
+    let root_directory = std::env::temp_dir().join(format!(
+        "telchar-retention-interrupted-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    std::os::unix::fs::symlink(
+        "/nix/store/11111111111111111111111111111111-interrupted.drv",
+        root_directory.join("interrupted-derivation"),
+    )
+    .expect("retention root creates");
+    let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
+        .expect("retention backend configures");
+
+    telchar::store::retention::reconcile_startup_retention(
+        fixture.url(),
+        &mut backend,
+        SystemTime::now(),
+    )
+    .expect("interrupted request reconciles");
+
+    assert!(fs::symlink_metadata(root_directory.join("interrupted-derivation")).is_err());
+    assert_eq!(
+        telchar::persistence::read_protocol_session(fixture.url(), "interrupted-session")
+            .expect("session reads")
+            .expect("session exists")
+            .state,
+        telchar::persistence::ProtocolSessionState::Closed
+    );
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "interrupted-session",
+            "interrupted-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Detached
+    );
+
+    fs::remove_dir_all(root_directory).expect("root directory cleans");
+}
+
+#[test]
+fn reconciliation_preserves_attached_requests_for_open_sessions() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
+    telchar::persistence::open_protocol_session(
+        fixture.url(),
+        "active-session",
+        requester,
+        "ssh-pubkey:SHA256:test",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("session opens");
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "active-request",
+        "/nix/store/11111111111111111111111111111111-active.drv",
+        "x86_64-linux",
+        "test-audit",
+        "test-quota",
+    )
+    .expect("request persists");
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "active-derivation",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "active-request",
+        "/nix/store/11111111111111111111111111111111-active.drv",
+        telchar::persistence::StoreLeasePurpose::Derivation,
+    )
+    .expect("lease persists");
+    telchar::persistence::attach_request(fixture.url(), "active-session", "active-request")
+        .expect("request attaches");
+    let root_directory =
+        std::env::temp_dir().join(format!("telchar-retention-active-{}", std::process::id()));
+    fs::create_dir(&root_directory).expect("root directory creates");
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700))
+        .expect("root directory permissions set");
+    std::os::unix::fs::symlink(
+        "/nix/store/11111111111111111111111111111111-active.drv",
+        root_directory.join("active-derivation"),
+    )
+    .expect("retention root creates");
+    let mut backend = NixStoreRetentionBackend::new("unix:///missing", &root_directory)
+        .expect("retention backend configures");
+
+    telchar::store::retention::reconcile_released_request_leases(fixture.url(), &mut backend)
+        .expect("active request reconciliation succeeds");
+
+    assert!(fs::symlink_metadata(root_directory.join("active-derivation")).is_ok());
+    assert_eq!(
+        telchar::persistence::read_store_lease(fixture.url(), "active-derivation")
+            .expect("lease reads")
+            .expect("lease exists")
+            .state,
+        telchar::persistence::StoreLeaseState::Active
+    );
+    assert_eq!(
+        telchar::persistence::read_request_attachment(
+            fixture.url(),
+            "active-session",
+            "active-request",
+        )
+        .expect("attachment reads")
+        .expect("attachment exists")
+        .state,
+        telchar::persistence::RequestAttachmentState::Attached
+    );
+
+    fs::remove_dir_all(root_directory).expect("root directory cleans");
+}
+
+#[test]
 fn reconciliation_removes_only_durable_released_roots() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

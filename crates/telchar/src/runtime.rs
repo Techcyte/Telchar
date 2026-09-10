@@ -408,7 +408,7 @@ fn run_daemon() -> io::Result<()> {
     let mut store_retention = gateway_store.retention()?;
     singleton_ownership
         .maintain_during(config.ownership_renewal_interval(), || {
-            telchar::store::retention::reconcile_output_retention(
+            telchar::store::retention::reconcile_startup_retention(
                 &database,
                 store_retention.as_mut(),
                 SystemTime::now(),

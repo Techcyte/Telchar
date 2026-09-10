@@ -684,6 +684,81 @@ fn detach_request_and_release_leases_inner(
     Ok(ReleasedRequestLeases { leases: released })
 }
 
+pub fn release_abandoned_request_leases(
+    database: &(impl DatabaseSource + ?Sized),
+    maximum_leases: usize,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(release_abandoned_request_leases));
+    if !database.is_configured() || maximum_leases == 0 {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let mut client =
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let abandoned = transaction
+        .query(
+            "SELECT ra.session_id, ra.request_id
+             FROM request_attachments ra
+             JOIN protocol_sessions ps USING (session_id)
+             WHERE ra.state = 'attached' AND ps.state = 'closed'
+             ORDER BY ra.request_id
+             FOR UPDATE OF ra SKIP LOCKED",
+            &[],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let mut released = Vec::new();
+    for row in abandoned {
+        let session_id = row
+            .try_get::<_, String>(0)
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+        let request_id = row
+            .try_get::<_, String>(1)
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+        validate_request_lease_release_inputs(database, &session_id, &request_id)?;
+        let locked = lock_active_request_leases(&mut transaction, &request_id)?;
+        if !released.is_empty() && released.len().saturating_add(locked.len()) > maximum_leases {
+            break;
+        }
+        let attachment = transaction
+            .query_one(
+                "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
+                &[&session_id, &request_id],
+            )
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+        match attachments::decode_request_attachment(&attachment) {
+            Ok(RequestAttachment {
+                state: RequestAttachmentState::Detached,
+                ..
+            }) => {}
+            _ => return Err(StoreLeaseError(StoreLeaseFailure::Query)),
+        }
+        released.extend(release_locked_request_leases(
+            &mut transaction,
+            &request_id,
+            &locked,
+        )?);
+        if released.len() >= maximum_leases {
+            break;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    tracing::info!(
+        event = "database.request_lease_release.completed",
+        operation = "abandoned-release",
+        owner_kind = "request",
+        state = "released",
+        path_count = released.len(),
+        result = "success",
+        "abandoned request leases released"
+    );
+    Ok(released)
+}
+
 pub fn release_unattached_request_leases(
     database: &(impl DatabaseSource + ?Sized),
     request_id: &str,

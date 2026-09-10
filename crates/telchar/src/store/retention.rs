@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const ABANDONED_LEASE_PAGE_SIZE: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_INPUT_SOURCES
+    + nix_worker_protocol::MAXIMUM_BUILD_DERIVATION_OUTPUTS
+    + 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionEntry {
@@ -82,6 +85,36 @@ pub fn reconcile_released_request_leases(
         }
         after_lease_id = leases.last().map(|lease| lease.lease_id.clone());
     }
+}
+
+pub fn reconcile_startup_retention(
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
+    backend: &mut dyn StoreRetentionBackend,
+    now: SystemTime,
+) -> io::Result<()> {
+    crate::persistence::close_open_protocol_sessions(database).map_err(|_| retention_error())?;
+    loop {
+        let released = crate::persistence::release_abandoned_request_leases(
+            database,
+            ABANDONED_LEASE_PAGE_SIZE,
+        )
+        .map_err(|_| retention_error())?;
+        if released.is_empty() {
+            break;
+        }
+        let entries = released
+            .iter()
+            .map(|lease| ReleasedRetentionEntry::new(&lease.lease_id, &lease.store_path))
+            .collect::<Vec<_>>();
+        backend.release(&entries)?;
+        let lease_ids = released
+            .iter()
+            .map(|lease| lease.lease_id.clone())
+            .collect::<Vec<_>>();
+        crate::persistence::reconcile_store_leases(database, &lease_ids)
+            .map_err(|_| retention_error())?;
+    }
+    reconcile_output_retention(database, backend, now)
 }
 
 pub fn reconcile_output_retention(

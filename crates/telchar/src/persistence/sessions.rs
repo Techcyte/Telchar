@@ -128,6 +128,25 @@ pub fn open_protocol_session(
     Ok(session)
 }
 
+pub fn close_open_protocol_sessions(
+    database: &(impl DatabaseSource + ?Sized),
+) -> Result<usize, ProtocolSessionError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(close_open_protocol_sessions));
+    if !database.is_configured() {
+        return Err(ProtocolSessionError(ProtocolSessionFailure::Configuration));
+    }
+    let mut client =
+        connect(database).map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Connection))?;
+    let updated = client
+        .execute(
+            "UPDATE protocol_sessions SET state = 'closed', closed_at = transaction_timestamp() WHERE state = 'open'",
+            &[],
+        )
+        .map_err(|_| ProtocolSessionError(ProtocolSessionFailure::Query))?;
+    Ok(updated as usize)
+}
+
 pub fn close_protocol_session(
     database: &(impl DatabaseSource + ?Sized),
     session_id: &str,
