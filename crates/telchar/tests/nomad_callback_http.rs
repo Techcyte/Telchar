@@ -85,6 +85,15 @@ fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
 }
 
 #[test]
+fn rejects_invalid_trace_context_during_upgrade() {
+    let request = handshake("/callback", "telchar-nomad-transfer-v1")
+        .replace("\r\n\r\n", "\r\ntraceparent: invalid\r\n\r\n");
+    let stream = FragmentedStream::new(request, 128);
+
+    assert!(accept_connection(stream, CallbackHttpLimits::new(1024, 4096)).is_err());
+}
+
+#[test]
 fn sends_ping_during_quiet_transfer_and_accepts_matching_pong() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let address = listener.local_addr().expect("address reads");
