@@ -718,8 +718,19 @@ pub fn release_abandoned_request_leases(
             .try_get::<_, String>(1)
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
         validate_request_lease_release_inputs(database, &session_id, &request_id)?;
-        let locked = lock_active_request_leases(&mut transaction, &request_id)?;
-        if !released.is_empty() && released.len().saturating_add(locked.len()) > maximum_leases {
+        let locked = lock_active_request_leases_for_reconciliation(&mut transaction, &request_id)?;
+        let releasable_count = locked
+            .iter()
+            .filter(|lease| {
+                lease.state == StoreLeaseState::Active
+                    && matches!(
+                        lease.purpose,
+                        StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+                    )
+            })
+            .count();
+        if !released.is_empty() && released.len().saturating_add(releasable_count) > maximum_leases
+        {
             break;
         }
         let attachment = transaction
@@ -818,9 +829,24 @@ fn lock_active_request_leases(
     transaction: &mut postgres::Transaction<'_>,
     request_id: &str,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    lock_request_leases(transaction, request_id, false)
+}
+
+fn lock_active_request_leases_for_reconciliation(
+    transaction: &mut postgres::Transaction<'_>,
+    request_id: &str,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    lock_request_leases(transaction, request_id, true)
+}
+
+fn lock_request_leases(
+    transaction: &mut postgres::Transaction<'_>,
+    request_id: &str,
+    allow_terminal_outputs: bool,
+) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     let rows = transaction
         .query(
-            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 ORDER BY lease_id FOR UPDATE",
+            "SELECT lease_id, owner_kind, owner_id, store_path, purpose, state, created_at, released_at, expires_at, nar_size, reconciled_at FROM store_leases WHERE owner_kind = 'request' AND owner_id = $1 ORDER BY lease_id FOR UPDATE",
             &[&request_id],
         )
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -831,19 +857,28 @@ fn lock_active_request_leases(
     if leases.is_empty()
         || leases
             .iter()
-            .filter(|lease| lease.purpose == StoreLeasePurpose::Derivation)
+            .filter(|lease| {
+                lease.state == StoreLeaseState::Active
+                    && lease.purpose == StoreLeasePurpose::Derivation
+            })
             .count()
             > 1
         || leases.iter().any(|lease| {
             lease.owner_kind != StoreLeaseOwnerKind::Request
                 || lease.owner_id != request_id
-                || lease.state != StoreLeaseState::Active
                 || !matches!(
                     lease.purpose,
                     StoreLeasePurpose::Derivation
                         | StoreLeasePurpose::Input
                         | StoreLeasePurpose::Output
                 )
+                || (lease.state != StoreLeaseState::Active
+                    && !(allow_terminal_outputs
+                        && lease.purpose == StoreLeasePurpose::Output
+                        && matches!(
+                            lease.state,
+                            StoreLeaseState::Released | StoreLeaseState::Reconciled
+                        )))
         })
     {
         return Err(StoreLeaseError(StoreLeaseFailure::Query));
@@ -859,10 +894,11 @@ fn release_locked_request_leases(
     let releasable = locked
         .iter()
         .filter(|lease| {
-            matches!(
-                lease.purpose,
-                StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
-            )
+            lease.state == StoreLeaseState::Active
+                && matches!(
+                    lease.purpose,
+                    StoreLeasePurpose::Derivation | StoreLeasePurpose::Input
+                )
         })
         .collect::<Vec<_>>();
     let rows = transaction
