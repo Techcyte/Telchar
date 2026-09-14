@@ -23,7 +23,11 @@ pub fn requester_reference(requester: &RequesterMetadata) -> String {
     digest.update(requester.audit_subject.as_bytes());
     digest.update(b"\0");
     digest.update(requester.quota_subject.as_bytes());
-    format!("{:x}", digest.finalize())
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 mod attachments;
