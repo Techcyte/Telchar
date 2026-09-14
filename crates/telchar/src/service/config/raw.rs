@@ -27,7 +27,17 @@ pub(super) struct CachePublicationSection {
 impl RawServiceConfig {
     pub(super) fn parse(raw: &str) -> io::Result<Self> {
         toml::from_str(raw).map_err(|error: toml::de::Error| {
-            if let Some(prefix) = error.span().and_then(|span| raw.get(..span.start)) {
+            if let Some(offset) = error.span().map(|span| {
+                let offset = span.start;
+                if raw.as_bytes().get(offset) == Some(&b'\n')
+                    && raw.as_bytes().get(offset.saturating_sub(1)) != Some(&b'\n')
+                {
+                    offset.saturating_sub(1)
+                } else {
+                    offset
+                }
+            }) && let Some(prefix) = raw.get(..offset)
+            {
                 let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
                 let column = prefix
                     .rsplit('\n')

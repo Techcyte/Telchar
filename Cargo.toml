@@ -56,7 +56,8 @@ tonic = { version = "0.14", features = ["transport"] }
 reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
   "json",
-  "rustls-tls",
+  "query",
+  "rustls",
 ] }
 otlp-http-client = { package = "reqwest", version = "0.13", default-features = false, features = [
   "blocking",
