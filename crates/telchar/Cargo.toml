@@ -34,7 +34,7 @@ toml = "1.0"
 reqwest.workspace = true
 rustls.workspace = true
 tungstenite.workspace = true
-jsonwebtoken = "11.0.0"
+jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 tempfile = "3.27.0"
 signal-hook = "0.4"
 libc = "0.2"
