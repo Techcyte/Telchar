@@ -21,22 +21,22 @@ rustix = { version = "1.1.4", features = [
   "time",
 ] }
 tracing.workspace = true
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
+sha2 = "0.11"
+hmac = "0.13"
+base64 = "0.23"
 postgres = "0.19"
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
 tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
-toml = "0.8"
+toml = "0.9"
 reqwest.workspace = true
 rustls.workspace = true
 tungstenite.workspace = true
 jsonwebtoken = "9.3.1"
 tempfile = "3.27.0"
-signal-hook = "0.3"
+signal-hook = "0.4"
 libc = "0.2"
 
 [dev-dependencies]

@@ -12,13 +12,13 @@ telchar-telemetry = { path = "../telchar-telemetry" }
 tracing.workspace = true
 opentelemetry.workspace = true
 nix-worker-protocol = { path = "../nix-worker-protocol" }
-base64 = "0.22"
+base64 = "0.23"
 reqwest.workspace = true
 tungstenite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
 url = "2"
 
 [dev-dependencies]
