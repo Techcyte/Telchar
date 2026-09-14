@@ -21,7 +21,7 @@ rustix = { version = "1.1.4", features = [
   "time",
 ] }
 tracing.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 base64 = "0.23"
 postgres = "0.19"
