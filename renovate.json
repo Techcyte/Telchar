@@ -1,23 +1,25 @@
- {
-     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-     "extends": [
-       "config:recommended"
-     ],
-     "nix": {
-       "enabled": true
-     },
-     "packageRules": [
-       {
-         "description": "Automerge non-breaking dependency updates",
-         "matchUpdateTypes": [
-           "digest",
-           "pin",
-           "patch",
-           "minor",
-           "lockFileMaintenance"
-         ],
-         "automerge": true,
-         "automergeType": "pr"
-       }
-     ]
-   }
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Automerge mature non-breaking dependency updates",
+      "matchUpdateTypes": [
+        "digest",
+        "pin",
+        "patch",
+        "minor",
+        "lockFileMaintenance"
+      ],
+      "minimumReleaseAge": "14 days",
+      "internalChecksFilter": "strict",
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ]
+}
