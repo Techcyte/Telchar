@@ -54,12 +54,17 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           tag="v$RELEASE_VERSION"
+          notes=$(printf 'OCI images:\n- ghcr.io/techcyte/telchar:%s\n- ghcr.io/techcyte/telchar-nomad-worker:%s\n- ghcr.io/techcyte/telchar-nix-daemon:%s\n- ghcr.io/techcyte/telchar-ssh-ingress:%s' \
+            "$RELEASE_VERSION" \
+            "$RELEASE_VERSION" \
+            "$RELEASE_VERSION" \
+            "$RELEASE_VERSION")
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --title "$tag" \
             --generate-notes \
             --draft \
-            --notes "OCI images:\n- ghcr.io/techcyte/telchar:$RELEASE_VERSION\n- ghcr.io/techcyte/telchar-nomad-worker:$RELEASE_VERSION\n- ghcr.io/techcyte/telchar-nix-daemon:$RELEASE_VERSION\n- ghcr.io/techcyte/telchar-ssh-ingress:$RELEASE_VERSION"
+            --notes "$notes"
 
       - name: Publish release images
         env:
