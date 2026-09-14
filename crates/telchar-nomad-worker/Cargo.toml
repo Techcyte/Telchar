@@ -18,7 +18,7 @@ tungstenite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
-hmac = "0.12"
+hmac = "0.13"
 url = "2"
 
 [dev-dependencies]
