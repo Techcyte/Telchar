@@ -7,7 +7,7 @@
   gid ? uid,
 }:
 let
-  version = "2026.9.0";
+  version = "2026.9.1";
   uidString = toString uid;
   gidString = toString gid;
 
