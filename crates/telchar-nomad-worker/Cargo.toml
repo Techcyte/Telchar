@@ -12,7 +12,7 @@ telchar-telemetry = { path = "../telchar-telemetry" }
 tracing.workspace = true
 opentelemetry.workspace = true
 nix-worker-protocol = { path = "../nix-worker-protocol" }
-base64 = "0.22"
+base64 = "0.23"
 reqwest.workspace = true
 tungstenite.workspace = true
 serde.workspace = true

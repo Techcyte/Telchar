@@ -2131,7 +2131,7 @@ dependencies = [
 name = "telchar"
 version = "2026.9.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "hmac 0.12.1",
  "jsonwebtoken",
  "libc",
@@ -2168,7 +2168,7 @@ dependencies = [
 name = "telchar-nomad-worker"
 version = "2026.9.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "hmac 0.12.1",
  "nix-worker-protocol",
  "opentelemetry",
