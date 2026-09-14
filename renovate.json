@@ -1,0 +1,23 @@
+ {
+     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+     "extends": [
+       "config:recommended"
+     ],
+     "nix": {
+       "enabled": true
+     },
+     "packageRules": [
+       {
+         "description": "Automerge non-breaking dependency updates",
+         "matchUpdateTypes": [
+           "digest",
+           "pin",
+           "patch",
+           "minor",
+           "lockFileMaintenance"
+         ],
+         "automerge": true,
+         "automergeType": "pr"
+       }
+     ]
+   }
