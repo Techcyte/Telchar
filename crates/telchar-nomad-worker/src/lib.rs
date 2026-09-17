@@ -354,7 +354,7 @@ impl WorkerSession {
 
     fn read_metadata<T: serde::de::DeserializeOwned>(&mut self, kind: FrameKind) -> io::Result<T> {
         self.ensure_connection_active()?;
-        let frame = read_transfer_frame(&mut self.socket, kind)?;
+        let frame = read_transfer_frame(&mut self.socket, kind, self.connection_deadline)?;
         self.protocol.accept(Direction::GatewayToWorker, kind)?;
         decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)
     }
@@ -825,14 +825,7 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
     loop {
         let message = match socket.read() {
             Ok(message) => message,
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
+            Err(tungstenite::Error::Io(error)) => return Err(error),
             Err(error) => {
                 return Err(io::Error::other(format!(
                     "worker transfer receive failed: {error}"
@@ -861,8 +854,30 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
     }
 }
 
-fn read_transfer_frame(socket: &mut WorkerSocket, kind: FrameKind) -> io::Result<Frame> {
-    let body = read_binary_message(socket)?;
+fn read_transfer_frame(
+    socket: &mut WorkerSocket,
+    kind: FrameKind,
+    connection_deadline: Instant,
+) -> io::Result<Frame> {
+    let body = loop {
+        match read_binary_message(socket) {
+            Ok(body) => break body,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if Instant::now() >= connection_deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "worker connection lifetime exceeded",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let mut input = body.as_slice();
     let frame = read_frame(
         &mut input,
@@ -1200,8 +1215,12 @@ mod tests {
             None,
         );
 
-        let frame = read_transfer_frame(&mut socket, FrameKind::OutputReceipt)
-            .expect("receipt reads after timeout");
+        let frame = read_transfer_frame(
+            &mut socket,
+            FrameKind::OutputReceipt,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("receipt reads after timeout");
         let receipt: OutputReceipt =
             decode_metadata(frame.metadata(), 1024).expect("receipt decodes");
 
