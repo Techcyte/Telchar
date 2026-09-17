@@ -354,15 +354,7 @@ impl WorkerSession {
 
     fn read_metadata<T: serde::de::DeserializeOwned>(&mut self, kind: FrameKind) -> io::Result<T> {
         self.ensure_connection_active()?;
-        let body = read_binary_message(&mut self.socket)?;
-        let mut input = body.as_slice();
-        let frame = read_frame(
-            &mut input,
-            ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
-        )?;
-        if !input.is_empty() || frame.kind() != kind || !frame.payload().is_empty() {
-            return Err(invalid("worker received invalid transfer metadata"));
-        }
+        let frame = read_transfer_frame(&mut self.socket, kind)?;
         self.protocol.accept(Direction::GatewayToWorker, kind)?;
         decode_metadata(frame.metadata(), MAXIMUM_MANIFEST_METADATA_BYTES)
     }
@@ -831,10 +823,23 @@ fn set_socket_timeouts(socket: &mut WorkerSocket, timeout: std::time::Duration) 
 
 fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
     loop {
-        match socket
-            .read()
-            .map_err(|error| io::Error::other(format!("worker transfer receive failed: {error}")))?
-        {
+        let message = match socket.read() {
+            Ok(message) => message,
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "worker transfer receive failed: {error}"
+                )));
+            }
+        };
+        match message {
             tungstenite::Message::Binary(body) => return Ok(body.to_vec()),
             tungstenite::Message::Ping(payload) => socket
                 .send(tungstenite::Message::Pong(payload))
@@ -854,6 +859,19 @@ fn read_binary_message(socket: &mut WorkerSocket) -> io::Result<Vec<u8>> {
             }
         }
     }
+}
+
+fn read_transfer_frame(socket: &mut WorkerSocket, kind: FrameKind) -> io::Result<Frame> {
+    let body = read_binary_message(socket)?;
+    let mut input = body.as_slice();
+    let frame = read_frame(
+        &mut input,
+        ProtocolLimits::new(MAXIMUM_MANIFEST_METADATA_BYTES, 0),
+    )?;
+    if !input.is_empty() || frame.kind() != kind || !frame.payload().is_empty() {
+        return Err(invalid("worker received invalid transfer metadata"));
+    }
+    Ok(frame)
 }
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
@@ -1137,6 +1155,59 @@ pub fn authenticate(config: &WorkerConfig) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn transfer_metadata_wait_survives_idle_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection accepted");
+            let mut socket = tungstenite::WebSocket::from_raw_socket(
+                stream,
+                tungstenite::protocol::Role::Server,
+                None,
+            );
+            thread::sleep(Duration::from_millis(150));
+            let metadata = encode_metadata(
+                &OutputReceipt {
+                    path: "/nix/store/00000000000000000000000000000000-output".to_owned(),
+                    accepted: true,
+                },
+                1024,
+            )
+            .expect("receipt encodes");
+            let mut body = Vec::new();
+            write_frame(
+                &mut body,
+                &Frame::new(FrameKind::OutputReceipt, metadata, Vec::new()),
+                ProtocolLimits::new(1024, 0),
+            )
+            .expect("receipt frame writes");
+            socket
+                .send(tungstenite::Message::Binary(body.into()))
+                .expect("receipt sends");
+        });
+        let stream = TcpStream::connect(address).expect("connection opens");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("read timeout sets");
+        let mut socket = tungstenite::WebSocket::from_raw_socket(
+            tungstenite::stream::MaybeTlsStream::Plain(stream),
+            tungstenite::protocol::Role::Client,
+            None,
+        );
+
+        let frame = read_transfer_frame(&mut socket, FrameKind::OutputReceipt)
+            .expect("receipt reads after timeout");
+        let receipt: OutputReceipt =
+            decode_metadata(frame.metadata(), 1024).expect("receipt decodes");
+
+        assert!(receipt.accepted);
+        server.join().expect("server joins");
+    }
 
     fn entry(path: &str, references: &[&str]) -> PathManifestEntry {
         PathManifestEntry {
