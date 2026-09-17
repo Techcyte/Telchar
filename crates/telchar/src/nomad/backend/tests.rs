@@ -1,6 +1,6 @@
 //! Checks monitoring deadlines independently of log notifications and HTTP duration.
 
-use super::{NomadAllocation, NomadSubmission, StatusPoll};
+use super::{NomadAllocation, NomadSubmission, StatusPoll, nomad_failure_diagnostic};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,6 +37,19 @@ impl Visit for EventFields {
         self.0.push('=');
         self.0.push_str(&format!("{value:?}"));
     }
+}
+
+#[test]
+fn exposes_only_bounded_nomad_callback_diagnostics() {
+    for diagnostic in [
+        "Nomad transfer setup timed out",
+        "Nomad output collection timed out",
+        "Nomad connection lifetime exceeded",
+        "Nomad WebSocket read failed",
+    ] {
+        assert_eq!(nomad_failure_diagnostic(diagnostic), Some(diagnostic));
+    }
+    assert_eq!(nomad_failure_diagnostic("private backend detail"), None);
 }
 
 #[test]

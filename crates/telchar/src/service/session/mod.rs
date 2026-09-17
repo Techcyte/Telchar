@@ -922,7 +922,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             if unavailable {
                                 "BuildDerivation execution is unavailable"
                             } else {
-                                "BuildDerivation execution failed"
+                                execution_failure_message(&error)
                             },
                         );
                     }
@@ -2294,6 +2294,17 @@ fn release_error_message(error: &io::Error) -> &'static str {
     }
 }
 
+fn execution_failure_message(error: &io::Error) -> &'static str {
+    match error.to_string().as_str() {
+        "Nomad transfer setup timed out" => "Nomad transfer setup timed out",
+        "Nomad output collection timed out" => "Nomad output collection timed out",
+        "Nomad connection lifetime exceeded" => "Nomad connection lifetime exceeded",
+        "Nomad WebSocket read failed" => "Nomad WebSocket read failed",
+        "Nomad build transfer failed" => "Nomad build transfer failed",
+        _ => "BuildDerivation execution failed",
+    }
+}
+
 fn execution_error_reason(error: &io::Error) -> &'static str {
     match error.kind() {
         io::ErrorKind::TimedOut => "timeout",
@@ -2333,6 +2344,24 @@ fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result
 #[cfg(test)]
 mod timeout_diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn preserves_bounded_nomad_failure_diagnostics() {
+        for message in [
+            "Nomad transfer setup timed out",
+            "Nomad output collection timed out",
+            "Nomad connection lifetime exceeded",
+            "Nomad WebSocket read failed",
+            "Nomad build transfer failed",
+        ] {
+            let error = io::Error::other(message);
+            assert_eq!(execution_failure_message(&error), message);
+        }
+        assert_eq!(
+            execution_failure_message(&io::Error::other("private backend detail")),
+            "BuildDerivation execution failed"
+        );
+    }
 
     #[test]
     fn classifies_backend_capacity_timeout() {

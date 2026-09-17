@@ -26,6 +26,16 @@ const MAXIMUM_NOMAD_RESPONSE_BYTES: u64 = 1024 * 1024;
 const NOMAD_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 const NOMAD_RETRY_MAXIMUM_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn nomad_failure_diagnostic(diagnostic: &str) -> Option<&'static str> {
+    match diagnostic {
+        "Nomad transfer setup timed out" => Some("Nomad transfer setup timed out"),
+        "Nomad output collection timed out" => Some("Nomad output collection timed out"),
+        "Nomad connection lifetime exceeded" => Some("Nomad connection lifetime exceeded"),
+        "Nomad WebSocket read failed" => Some("Nomad WebSocket read failed"),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn log_dispatched_build(
     derivation_path: &str,
@@ -654,9 +664,14 @@ impl NomadClient {
                         .map_err(NomadAttemptFailure::Terminal);
                     }
                     crate::persistence::SharedBuildState::Failed => {
-                        return Err(NomadAttemptFailure::Terminal(io::Error::other(
-                            "Nomad build transfer failed",
-                        )));
+                        let message = build
+                            .result_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("diagnostic"))
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(nomad_failure_diagnostic)
+                            .unwrap_or("Nomad build transfer failed");
+                        return Err(NomadAttemptFailure::Terminal(io::Error::other(message)));
                     }
                     crate::persistence::SharedBuildState::Claimed
                     | crate::persistence::SharedBuildState::Running
