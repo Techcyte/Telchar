@@ -439,9 +439,8 @@ audience = "telchar-transfer"
 mode = "daemon"
 uri = "unix:///nix/var/nix/daemon-socket/socket"
 
-# REQUIRED BOUNDS: Nomad backends intentionally have no implicit transfer-limit
-# defaults. Values below are production-shaped examples; reduce or increase them
-# only after considering memory, disk, expected closure, and expected output size.
+# OPTIONAL BOUNDS: These are the built-in transfer defaults. Override only the
+# values that differ after considering memory, disk, expected closure, and output size.
 [backends.nomad.nomad-linux-amd64.transfer_limits]
 maximum_manifest_paths = 65536
 maximum_manifest_bytes = 8388608
@@ -455,7 +454,7 @@ maximum_live_log_chunk_bytes = 65536
 live_log_queue_bytes = 1048576
 transfer_idle_timeout_seconds = 30
 setup_timeout_seconds = 300
-output_collection_timeout_seconds = 300
+output_collection_timeout_seconds = 1800
 maximum_connection_lifetime_seconds = 3600
 authentication_lifetime_seconds = 300
 clock_skew_seconds = 30

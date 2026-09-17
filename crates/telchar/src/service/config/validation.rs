@@ -513,10 +513,8 @@ pub(super) fn validate_nomad_backends(
                     .ok_or_else(|| invalid("Nomad store is required"))?,
             )?;
             let transfer_limits = validate_nomad_transfer_limits(
-                backend
-                    .transfer_limits
-                    .or_else(|| group.transfer_limits.clone())
-                    .ok_or_else(|| invalid("Nomad transfer limits are required"))?,
+                backend.transfer_limits,
+                group.transfer_limits.clone(),
             )?;
             let prestart = backend
                 .prestart
@@ -628,58 +626,137 @@ pub(super) fn validate_nomad_store(raw: RawNomadStoreConfig) -> io::Result<Nomad
 }
 
 pub(super) fn validate_nomad_transfer_limits(
-    raw: RawNomadTransferLimits,
+    backend: Option<RawNomadTransferLimits>,
+    group: Option<RawNomadTransferLimits>,
 ) -> io::Result<NomadTransferLimits> {
-    if raw.maximum_manifest_paths == 0
-        || raw.maximum_manifest_paths > MAXIMUM_NOMAD_TRANSFER_PATHS
-        || !valid_transfer_bytes(raw.maximum_manifest_bytes)
-        || !valid_transfer_bytes(raw.maximum_input_nar_bytes)
-        || !valid_transfer_bytes(raw.maximum_total_input_bytes)
-        || !valid_transfer_bytes(raw.maximum_output_nar_bytes)
-        || !valid_transfer_bytes(raw.maximum_total_output_bytes)
-        || raw.maximum_input_nar_bytes > raw.maximum_total_input_bytes
-        || raw.maximum_output_nar_bytes > raw.maximum_total_output_bytes
-        || !valid_transfer_memory(raw.maximum_frame_metadata_bytes)
-        || !valid_transfer_memory(raw.stream_buffer_bytes)
-        || !valid_transfer_memory(raw.maximum_live_log_chunk_bytes)
-        || !valid_transfer_memory(raw.live_log_queue_bytes)
-        || raw.maximum_live_log_chunk_bytes > raw.live_log_queue_bytes
-        || !valid_transfer_timeout(raw.transfer_idle_timeout_seconds)
-        || !valid_transfer_timeout(raw.setup_timeout_seconds)
-        || !valid_transfer_timeout(raw.output_collection_timeout_seconds)
-        || !valid_transfer_timeout(raw.maximum_connection_lifetime_seconds)
-        || raw.authentication_lifetime_seconds == 0
-        || raw.authentication_lifetime_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
-        || raw.clock_skew_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
-        || raw.nonce_retention_seconds == 0
-        || raw.nonce_retention_seconds > MAXIMUM_NOMAD_NONCE_RETENTION_SECONDS
-        || raw.nonce_retention_seconds
-            < raw.authentication_lifetime_seconds + raw.clock_skew_seconds
-        || !valid_transfer_timeout(raw.reconnect_timeout_seconds)
-        || !valid_transfer_memory(raw.maximum_diagnostic_bytes)
+    let backend = backend.unwrap_or_default();
+    let group = group.unwrap_or_default();
+    let maximum_manifest_paths = backend
+        .maximum_manifest_paths
+        .or(group.maximum_manifest_paths)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_MANIFEST_PATHS);
+    let maximum_manifest_bytes = backend
+        .maximum_manifest_bytes
+        .or(group.maximum_manifest_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_MANIFEST_BYTES);
+    let maximum_input_nar_bytes = backend
+        .maximum_input_nar_bytes
+        .or(group.maximum_input_nar_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_INPUT_NAR_BYTES);
+    let maximum_total_input_bytes = backend
+        .maximum_total_input_bytes
+        .or(group.maximum_total_input_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_TOTAL_INPUT_BYTES);
+    let maximum_output_nar_bytes = backend
+        .maximum_output_nar_bytes
+        .or(group.maximum_output_nar_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_OUTPUT_NAR_BYTES);
+    let maximum_total_output_bytes = backend
+        .maximum_total_output_bytes
+        .or(group.maximum_total_output_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_TOTAL_OUTPUT_BYTES);
+    let maximum_frame_metadata_bytes = backend
+        .maximum_frame_metadata_bytes
+        .or(group.maximum_frame_metadata_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_FRAME_METADATA_BYTES);
+    let stream_buffer_bytes = backend
+        .stream_buffer_bytes
+        .or(group.stream_buffer_bytes)
+        .unwrap_or(DEFAULT_NOMAD_STREAM_BUFFER_BYTES);
+    let maximum_live_log_chunk_bytes = backend
+        .maximum_live_log_chunk_bytes
+        .or(group.maximum_live_log_chunk_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_LIVE_LOG_CHUNK_BYTES);
+    let live_log_queue_bytes = backend
+        .live_log_queue_bytes
+        .or(group.live_log_queue_bytes)
+        .unwrap_or(DEFAULT_NOMAD_LIVE_LOG_QUEUE_BYTES);
+    let transfer_idle_timeout_seconds = backend
+        .transfer_idle_timeout_seconds
+        .or(group.transfer_idle_timeout_seconds)
+        .unwrap_or(DEFAULT_NOMAD_TRANSFER_IDLE_TIMEOUT_SECONDS);
+    let setup_timeout_seconds = backend
+        .setup_timeout_seconds
+        .or(group.setup_timeout_seconds)
+        .unwrap_or(DEFAULT_NOMAD_SETUP_TIMEOUT_SECONDS);
+    let output_collection_timeout_seconds = backend
+        .output_collection_timeout_seconds
+        .or(group.output_collection_timeout_seconds)
+        .unwrap_or(DEFAULT_NOMAD_OUTPUT_COLLECTION_TIMEOUT_SECONDS);
+    let maximum_connection_lifetime_seconds = backend
+        .maximum_connection_lifetime_seconds
+        .or(group.maximum_connection_lifetime_seconds)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_CONNECTION_LIFETIME_SECONDS);
+    let authentication_lifetime_seconds = backend
+        .authentication_lifetime_seconds
+        .or(group.authentication_lifetime_seconds)
+        .unwrap_or(DEFAULT_NOMAD_AUTHENTICATION_LIFETIME_SECONDS);
+    let clock_skew_seconds = backend
+        .clock_skew_seconds
+        .or(group.clock_skew_seconds)
+        .unwrap_or(DEFAULT_NOMAD_CLOCK_SKEW_SECONDS);
+    let nonce_retention_seconds = backend
+        .nonce_retention_seconds
+        .or(group.nonce_retention_seconds)
+        .unwrap_or(DEFAULT_NOMAD_NONCE_RETENTION_SECONDS);
+    let reconnect_timeout_seconds = backend
+        .reconnect_timeout_seconds
+        .or(group.reconnect_timeout_seconds)
+        .unwrap_or(DEFAULT_NOMAD_RECONNECT_TIMEOUT_SECONDS);
+    let maximum_diagnostic_bytes = backend
+        .maximum_diagnostic_bytes
+        .or(group.maximum_diagnostic_bytes)
+        .unwrap_or(DEFAULT_NOMAD_MAXIMUM_DIAGNOSTIC_BYTES);
+
+    if maximum_manifest_paths == 0
+        || maximum_manifest_paths > MAXIMUM_NOMAD_TRANSFER_PATHS
+        || !valid_transfer_bytes(maximum_manifest_bytes)
+        || !valid_transfer_bytes(maximum_input_nar_bytes)
+        || !valid_transfer_bytes(maximum_total_input_bytes)
+        || !valid_transfer_bytes(maximum_output_nar_bytes)
+        || !valid_transfer_bytes(maximum_total_output_bytes)
+        || maximum_input_nar_bytes > maximum_total_input_bytes
+        || maximum_output_nar_bytes > maximum_total_output_bytes
+        || !valid_transfer_memory(maximum_frame_metadata_bytes)
+        || !valid_transfer_memory(stream_buffer_bytes)
+        || !valid_transfer_memory(maximum_live_log_chunk_bytes)
+        || !valid_transfer_memory(live_log_queue_bytes)
+        || maximum_live_log_chunk_bytes > live_log_queue_bytes
+        || !valid_transfer_timeout(transfer_idle_timeout_seconds)
+        || !valid_transfer_timeout(setup_timeout_seconds)
+        || !valid_transfer_timeout(output_collection_timeout_seconds)
+        || !valid_transfer_timeout(maximum_connection_lifetime_seconds)
+        || authentication_lifetime_seconds == 0
+        || authentication_lifetime_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
+        || clock_skew_seconds > MAXIMUM_NOMAD_AUTHENTICATION_SECONDS
+        || nonce_retention_seconds == 0
+        || nonce_retention_seconds > MAXIMUM_NOMAD_NONCE_RETENTION_SECONDS
+        || nonce_retention_seconds < authentication_lifetime_seconds + clock_skew_seconds
+        || !valid_transfer_timeout(reconnect_timeout_seconds)
+        || !valid_transfer_memory(maximum_diagnostic_bytes)
     {
         return Err(invalid("Nomad transfer limits are invalid"));
     }
     Ok(NomadTransferLimits {
-        maximum_manifest_paths: raw.maximum_manifest_paths,
-        maximum_manifest_bytes: raw.maximum_manifest_bytes,
-        maximum_input_nar_bytes: raw.maximum_input_nar_bytes,
-        maximum_total_input_bytes: raw.maximum_total_input_bytes,
-        maximum_output_nar_bytes: raw.maximum_output_nar_bytes,
-        maximum_total_output_bytes: raw.maximum_total_output_bytes,
-        maximum_frame_metadata_bytes: raw.maximum_frame_metadata_bytes,
-        stream_buffer_bytes: raw.stream_buffer_bytes,
-        maximum_live_log_chunk_bytes: raw.maximum_live_log_chunk_bytes,
-        live_log_queue_bytes: raw.live_log_queue_bytes,
-        transfer_idle_timeout: Duration::from_secs(raw.transfer_idle_timeout_seconds),
-        setup_timeout: Duration::from_secs(raw.setup_timeout_seconds),
-        output_collection_timeout: Duration::from_secs(raw.output_collection_timeout_seconds),
-        maximum_connection_lifetime: Duration::from_secs(raw.maximum_connection_lifetime_seconds),
-        authentication_lifetime: Duration::from_secs(raw.authentication_lifetime_seconds),
-        clock_skew: Duration::from_secs(raw.clock_skew_seconds),
-        nonce_retention: Duration::from_secs(raw.nonce_retention_seconds),
-        reconnect_timeout: Duration::from_secs(raw.reconnect_timeout_seconds),
-        maximum_diagnostic_bytes: raw.maximum_diagnostic_bytes,
+        maximum_manifest_paths,
+        maximum_manifest_bytes,
+        maximum_input_nar_bytes,
+        maximum_total_input_bytes,
+        maximum_output_nar_bytes,
+        maximum_total_output_bytes,
+        maximum_frame_metadata_bytes,
+        stream_buffer_bytes,
+        maximum_live_log_chunk_bytes,
+        live_log_queue_bytes,
+        transfer_idle_timeout: Duration::from_secs(transfer_idle_timeout_seconds),
+        setup_timeout: Duration::from_secs(setup_timeout_seconds),
+        output_collection_timeout: Duration::from_secs(output_collection_timeout_seconds),
+        maximum_connection_lifetime: Duration::from_secs(maximum_connection_lifetime_seconds),
+        authentication_lifetime: Duration::from_secs(authentication_lifetime_seconds),
+        clock_skew: Duration::from_secs(clock_skew_seconds),
+        nonce_retention: Duration::from_secs(nonce_retention_seconds),
+        reconnect_timeout: Duration::from_secs(reconnect_timeout_seconds),
+        maximum_diagnostic_bytes,
     })
 }
 

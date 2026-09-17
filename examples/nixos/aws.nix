@@ -297,7 +297,7 @@ in
                   live_log_queue_bytes = 1048576;
                   transfer_idle_timeout_seconds = 30;
                   setup_timeout_seconds = 300;
-                  output_collection_timeout_seconds = 300;
+                  output_collection_timeout_seconds = 1800;
                   maximum_connection_lifetime_seconds = 3600;
                   authentication_lifetime_seconds = 300;
                   clock_skew_seconds = 30;

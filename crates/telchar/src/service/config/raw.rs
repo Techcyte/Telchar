@@ -317,28 +317,28 @@ pub(super) enum RawNomadStoreConfig {
     Daemon { uri: String },
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawNomadTransferLimits {
-    pub(super) maximum_manifest_paths: usize,
-    pub(super) maximum_manifest_bytes: u64,
-    pub(super) maximum_input_nar_bytes: u64,
-    pub(super) maximum_total_input_bytes: u64,
-    pub(super) maximum_output_nar_bytes: u64,
-    pub(super) maximum_total_output_bytes: u64,
-    pub(super) maximum_frame_metadata_bytes: usize,
-    pub(super) stream_buffer_bytes: usize,
-    pub(super) maximum_live_log_chunk_bytes: usize,
-    pub(super) live_log_queue_bytes: usize,
-    pub(super) transfer_idle_timeout_seconds: u64,
-    pub(super) setup_timeout_seconds: u64,
-    pub(super) output_collection_timeout_seconds: u64,
-    pub(super) maximum_connection_lifetime_seconds: u64,
-    pub(super) authentication_lifetime_seconds: u64,
-    pub(super) clock_skew_seconds: u64,
-    pub(super) nonce_retention_seconds: u64,
-    pub(super) reconnect_timeout_seconds: u64,
-    pub(super) maximum_diagnostic_bytes: usize,
+    pub(super) maximum_manifest_paths: Option<usize>,
+    pub(super) maximum_manifest_bytes: Option<u64>,
+    pub(super) maximum_input_nar_bytes: Option<u64>,
+    pub(super) maximum_total_input_bytes: Option<u64>,
+    pub(super) maximum_output_nar_bytes: Option<u64>,
+    pub(super) maximum_total_output_bytes: Option<u64>,
+    pub(super) maximum_frame_metadata_bytes: Option<usize>,
+    pub(super) stream_buffer_bytes: Option<usize>,
+    pub(super) maximum_live_log_chunk_bytes: Option<usize>,
+    pub(super) live_log_queue_bytes: Option<usize>,
+    pub(super) transfer_idle_timeout_seconds: Option<u64>,
+    pub(super) setup_timeout_seconds: Option<u64>,
+    pub(super) output_collection_timeout_seconds: Option<u64>,
+    pub(super) maximum_connection_lifetime_seconds: Option<u64>,
+    pub(super) authentication_lifetime_seconds: Option<u64>,
+    pub(super) clock_skew_seconds: Option<u64>,
+    pub(super) nonce_retention_seconds: Option<u64>,
+    pub(super) reconnect_timeout_seconds: Option<u64>,
+    pub(super) maximum_diagnostic_bytes: Option<usize>,
 }
 
 #[derive(Clone, Deserialize)]

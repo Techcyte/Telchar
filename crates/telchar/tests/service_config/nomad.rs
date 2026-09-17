@@ -38,6 +38,94 @@ maximum_retained_nonces = 4096
 }
 
 #[test]
+fn nomad_transfer_limits_default_and_allow_partial_backend_overrides() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("nomad-transfer-limit-defaults");
+    let config_path = root.join("telchar.toml");
+    fs::write(
+        &config_path,
+        r#"
+[backends.nomad_callback]
+public_url = "ws://gateway.internal:17443/build-callback"
+
+[[backends.nomad]]
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://nomad.internal:4646"
+namespace = "telchar"
+driver = "raw_exec"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 3600
+
+[backends.nomad.transfer_limits]
+stream_buffer_bytes = 131072
+
+[backends.nomad.primary]
+[backends.nomad.primary.driver_config]
+command = "/bin/true"
+[backends.nomad.primary.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+[backends.nomad.primary.transfer_authentication]
+mode = "workload-identity"
+issuer = "http://nomad.internal:4646"
+jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
+audience = "telchar"
+[backends.nomad.primary.store]
+mode = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
+
+[backends.nomad.secondary]
+[backends.nomad.secondary.driver_config]
+command = "/bin/true"
+[backends.nomad.secondary.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+[backends.nomad.secondary.transfer_authentication]
+mode = "workload-identity"
+issuer = "http://nomad.internal:4646"
+jwks_url = "http://nomad.internal:4646/.well-known/jwks.json"
+audience = "telchar"
+[backends.nomad.secondary.store]
+mode = "daemon"
+uri = "unix:///nix/var/nix/daemon-socket/socket"
+[backends.nomad.secondary.transfer_limits]
+output_collection_timeout_seconds = 900
+"#,
+    )
+    .expect("configuration writes");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+
+    let config = ServiceConfig::load().expect("configuration loads");
+    let primary = config
+        .nomad_backends()
+        .iter()
+        .find(|backend| backend.target().name() == "primary")
+        .expect("primary backend loads")
+        .transfer_limits();
+    assert_eq!(primary.maximum_manifest_paths(), 65_536);
+    assert_eq!(primary.stream_buffer_bytes(), 131_072);
+    assert_eq!(primary.output_collection_timeout().as_secs(), 1_800);
+
+    let secondary = config
+        .nomad_backends()
+        .iter()
+        .find(|backend| backend.target().name() == "secondary")
+        .expect("secondary backend loads")
+        .transfer_limits();
+    assert_eq!(secondary.maximum_manifest_paths(), 65_536);
+    assert_eq!(secondary.stream_buffer_bytes(), 131_072);
+    assert_eq!(secondary.output_collection_timeout().as_secs(), 900);
+
+    restore_environment(saved);
+    fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
 fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();
