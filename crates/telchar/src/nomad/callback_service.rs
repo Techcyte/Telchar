@@ -445,11 +445,6 @@ pub fn serve_connection(
         expected_output_count = build_request.expected_outputs().len(),
         "Nomad callback output collection started"
     );
-    let output_collection_deadline = phase_deadline(
-        Instant::now(),
-        limits.output_collection_timeout(),
-        "Nomad output collection timeout is invalid",
-    )?;
     let outcome = match receive_build_outputs(
         &mut socket,
         &mut session,
@@ -458,7 +453,7 @@ pub fn serve_connection(
         build_request,
         gateway_store,
         limits,
-        output_collection_deadline.min(connection_deadline),
+        connection_deadline,
         shared_builds,
         &build_request.shared_build_key(),
     ) {
@@ -543,6 +538,47 @@ enum BuildCollectionOutcome {
     Failed { diagnostic: Option<String> },
 }
 
+struct OutputCollectionDeadline {
+    connection_deadline: Instant,
+    timeout: Duration,
+    transfer_deadline: Option<Instant>,
+}
+
+impl OutputCollectionDeadline {
+    fn new(connection_deadline: Instant, timeout: Duration) -> Self {
+        Self {
+            connection_deadline,
+            timeout,
+            transfer_deadline: None,
+        }
+    }
+
+    fn start(&mut self) -> io::Result<()> {
+        if self.transfer_deadline.is_none() {
+            self.transfer_deadline = Some(
+                phase_deadline(
+                    Instant::now(),
+                    self.timeout,
+                    "Nomad output collection timeout is invalid",
+                )?
+                .min(self.connection_deadline),
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_active(&self) -> io::Result<()> {
+        ensure_before(
+            self.connection_deadline,
+            "Nomad connection lifetime exceeded",
+        )?;
+        if let Some(deadline) = self.transfer_deadline {
+            ensure_before(deadline, "Nomad output collection timed out")?;
+        }
+        Ok(())
+    }
+}
+
 fn log_output_collection_outcome(
     backend: &str,
     job_id: &str,
@@ -588,8 +624,10 @@ fn receive_build_outputs<S: io::Read + io::Write>(
 ) -> io::Result<BuildCollectionOutcome> {
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
+    let mut deadline =
+        OutputCollectionDeadline::new(connection_deadline, limits.output_collection_timeout());
     loop {
-        ensure_before(connection_deadline, "Nomad output collection timed out")?;
+        deadline.ensure_active()?;
         let frame = read_transfer_frame(
             socket,
             ProtocolLimits::new(
@@ -618,6 +656,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 }
             }
             FrameKind::OutputMetadata => {
+                deadline.start()?;
                 if current.is_some() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1186,8 +1225,8 @@ impl Drop for ConnectionPermit {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputTransferSummary, ensure_before, phase_deadline, publish_live_log,
-        summarize_requested_inputs, take_chunk,
+        InputTransferSummary, OutputCollectionDeadline, ensure_before, phase_deadline,
+        publish_live_log, summarize_requested_inputs, take_chunk,
     };
     use crate::nomad::protocol::{PathManifestEntry, PathSet};
     use std::fmt;
@@ -1290,6 +1329,21 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(error.to_string(), "phase timed out");
+    }
+
+    #[test]
+    fn output_collection_timeout_starts_when_output_transfer_begins() {
+        let connection_deadline = Instant::now() + Duration::from_secs(60);
+        let mut deadline = OutputCollectionDeadline::new(connection_deadline, Duration::ZERO);
+
+        deadline
+            .ensure_active()
+            .expect("build may run before output transfer");
+        deadline.start().expect("output collection deadline starts");
+        let error = deadline.ensure_active().unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), "Nomad output collection timed out");
     }
 
     #[test]
