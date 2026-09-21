@@ -83,7 +83,18 @@ Host build.example.com
 
 Use the credential paths supplied by your operator. Omit `CertificateFile` only when the deployment accepts ordinary authorized keys rather than client certificates. Protect the private key and SSH configuration from other users; populate the known-hosts file with the operator-verified host key or host CA. Do not disable host verification to make a connection succeed.
 
-Let Nix manage connection sharing for `ssh-ng`. Setting the store's `max-connections` parameter above one makes Nix establish and reuse its own SSH master for concurrent connections from that store object. Do not add independent `ControlMaster`, `ControlPath`, or `ControlPersist` settings for the Telchar host.
+Connection sharing depends on the client:
+
+- Stock Nix manages sharing for `ssh-ng`. Setting the store's `max-connections` parameter above one makes Nix establish and reuse its own SSH master for concurrent connections from that store object. Do not add independent `ControlMaster`, `ControlPath`, or `ControlPersist` settings for the Telchar host.
+- Lix 2.93 and later call the system `ssh` without adding their own sharing options. Add sharing to the daemon account's host entry:
+
+  ```sshconfig
+      ControlMaster auto
+      ControlPath ~/.ssh/telchar-%C
+      ControlPersist 60
+  ```
+
+  The pinned Lix client is tested with this configuration through Telchar's forced-command ingress. The root-owned daemon also owns the control socket. Keep `ControlPath` short—especially on macOS, where Unix-domain socket paths have a smaller limit—and remove a stale socket if OpenSSH cannot recover it automatically. A persistent master keeps the authentication and server policy from when that connection was established; close it after changing credentials or ingress policy.
 
 Check store access using the same account and configuration as the daemon:
 

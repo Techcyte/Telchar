@@ -67,6 +67,8 @@
         gateway.succeed("printf 'command=\\\"/etc/telchar/forced-command\\\",restrict %s\\n' '" + public_key + "' > /var/lib/telchar-ingress/.ssh/authorized_keys")
         gateway.succeed("chown -R telchar-ingress:telchar /var/lib/telchar-ingress/.ssh && chmod 700 /var/lib/telchar-ingress/.ssh && chmod 600 /var/lib/telchar-ingress/.ssh/authorized_keys")
         stock_client.succeed("ssh-keyscan gateway > /root/.ssh/known_hosts 2>/dev/null")
+        stock_client.succeed("printf 'Host gateway\\n  ControlMaster auto\\n  ControlPath ~/.ssh/telchar-%%C\\n  ControlPersist 60\\n' > /root/.ssh/config")
+        stock_client.succeed("chmod 600 /root/.ssh/config")
         stock_client.succeed("HOME=/root timeout 30 nix-store --store ssh-ng://telchar-ingress@gateway --version >/tmp/lix-store-version")
         for expression, expected in [("${classic}", "telchar-lix-classic"), ("${flat}", "telchar-lix-fixed-flat"), ("${recursive}", "telchar-lix-fixed-recursive")]:
             stock_client.succeed("cp " + expression + " /tmp/lix-build.nix")
@@ -76,6 +78,7 @@
             command = "HOME=/root NIX_CONFIG='substituters =' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${system}' '" + derivation_path + "^*'"
             output_path = stock_client.succeed(command).strip()
             gateway.succeed("test \"$(cat '" + output_path + "')\" = " + expected)
+            stock_client.succeed("HOME=/root ssh -O check telchar-ingress@gateway")
         stock_client.succeed("cp ${incorrect} /tmp/lix-fixed-incorrect.nix")
         incorrect_derivation = stock_client.succeed("nix-instantiate /tmp/lix-fixed-incorrect.nix").strip()
         incorrect_export = stock_client.succeed("nix-store --export '" + incorrect_derivation + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
