@@ -177,6 +177,14 @@ pub(super) fn validate_ssh_backends(
                 .unwrap_or_else(|| {
                     PathBuf::from(PACKAGED_SSH_PROGRAM.unwrap_or(SYSTEM_SSH_PROGRAM))
                 });
+            if pool.source != "ec2"
+                && (pool.region.is_some()
+                    || pool.address.is_some()
+                    || pool.tags.is_some()
+                    || pool.credentials.is_some())
+            {
+                return Err(invalid("EC2 fields require an EC2 discovery source"));
+            }
             match pool.source.as_str() {
                 "static" => {
                     if pool.hosts.is_empty() || pool.endpoint.is_some() || pool.service.is_some() {
@@ -305,6 +313,9 @@ pub(super) fn validate_ssh_backends(
                     });
                 }
                 "ec2" => {
+                    if name.len() > 192 {
+                        return Err(invalid("EC2 pool name exceeds limit"));
+                    }
                     if !pool.hosts.is_empty()
                         || pool.endpoint.is_some()
                         || pool.service.is_some()

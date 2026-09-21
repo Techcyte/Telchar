@@ -542,6 +542,15 @@ fn run_daemon() -> io::Result<()> {
             )?,
         )
     };
+    let mut static_ssh_ec2_service = if config.static_ssh_ec2().is_empty() {
+        None
+    } else {
+        Some(
+            telchar::service::static_ssh_ec2::Ec2SshDiscoveryService::start(
+                config.static_ssh_ec2().to_vec(),
+            )?,
+        )
+    };
     let mut callback_service = if let Some(callback) = config.nomad_callback() {
         let callback_listener = std::net::TcpListener::bind(callback.bind())?;
         Some(
@@ -636,6 +645,8 @@ fn run_daemon() -> io::Result<()> {
     telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);
     let active_sessions = Arc::new(Mutex::new(0_usize));
     let mut discovered_static_ssh = Vec::new();
+    let mut consul_static_ssh = Vec::new();
+    let mut ec2_static_ssh = Vec::new();
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
@@ -695,9 +706,25 @@ fn run_daemon() -> io::Result<()> {
                 }
             }
         }
+        let mut discovery_changed = false;
         if let Some(service) = static_ssh_consul_service.as_mut()
             && let Some(discovered) = service.check()?
         {
+            consul_static_ssh = discovered;
+            discovery_changed = true;
+        }
+        if let Some(service) = static_ssh_ec2_service.as_mut()
+            && let Some(discovered) = service.check()?
+        {
+            ec2_static_ssh = discovered;
+            discovery_changed = true;
+        }
+        if discovery_changed {
+            let discovered = consul_static_ssh
+                .iter()
+                .chain(&ec2_static_ssh)
+                .cloned()
+                .collect::<Vec<_>>();
             telchar::service::static_ssh_consul::publish_inventory(
                 &config,
                 &discovered,
