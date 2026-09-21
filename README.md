@@ -96,6 +96,8 @@ Connection sharing depends on the client:
 
   The pinned Lix client is tested with this configuration through Telchar's forced-command ingress. The root-owned daemon also owns the control socket. Keep `ControlPath` short—especially on macOS, where Unix-domain socket paths have a smaller limit—and remove a stale socket if OpenSSH cannot recover it automatically. A persistent master keeps the authentication and server policy from when that connection was established; close it after changing credentials or ingress policy.
 
+  Lix 2.94, including Telchar's pinned 2.94.2 client, still accepts `max-connections` for `ssh-ng` and uses it to size its pool of protocol sessions. Lix has merged a later change that removes SSH-store connection pooling and the `max-connections` parameter; after that change reaches a release, OpenSSH multiplexing still avoids repeated authentication, but `max-connections` no longer increases parallel protocol sessions. Treat the URI parameter below as version-specific rather than a durable Lix interface.
+
 Check store access using the same account and configuration as the daemon:
 
 ```bash
