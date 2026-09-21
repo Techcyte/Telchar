@@ -54,7 +54,7 @@ Rust paths below are relative to `crates/telchar/src/`; `deploy/` is repository-
 | Worker operation handling and ordered build transaction | `service/session/mod.rs`; dependencies in `builder.rs`, bounded input timing in `input.rs` |
 | Admitted build identity, fixed-output authority | `build/mod.rs`, `build/derivation.rs` |
 | Configuration keys and validation | `service/config/{model,raw,validation,helpers}.rs`, `service/config/mod.rs` |
-| Inventory/token reload and SSH discovery | `service/config_reload.rs`, `service/static_ssh_consul.rs`, `backend/static_ssh/health.rs` |
+| Inventory/token reload and SSH discovery | `service/config_reload.rs`, `service/static_ssh_{consul,ec2}.rs`, `backend/static_ssh/health.rs` |
 | Compatibility selection and backend permits | `backend/mod.rs`, `backend/routing.rs` |
 | Local or SSH execution | `backend/local.rs`, `backend/static_ssh.rs` |
 | Coalescing, fair queueing, restart recovery | `shared_build/{mod,scheduler,recovery}.rs` |

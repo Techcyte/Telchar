@@ -85,6 +85,47 @@ PostgreSQL must not contain NAR bodies, secret credential material, signatures, 
 
 Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery uses the persisted backend name and deterministic job identity, resolving the backend through current configuration; do not change endpoint or namespace under the same name while work is in flight. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
 
+## EC2 SSH discovery
+
+EC2 is an SSH inventory source, not an autoscaling controller. Telchar discovers running instances using `DescribeInstances`; an external system owns launching, draining, and terminating them. Grant the gateway instance role `ec2:DescribeInstances` (resource `*`). No EC2 write permissions are required.
+
+```toml
+[[backends.ssh]]
+system = "x86_64-linux"
+supported_features = ["kvm"]
+maximum_concurrent_builds = 4
+ssh_user = "telchar"
+identity_file = "/run/secrets/telchar-builder-key"
+known_hosts_file = "/etc/telchar/ssh-known-hosts"
+
+[backends.ssh.aws-builders]
+source = "ec2"
+region = "us-east-1"
+address = "private-ip" # Default; "public-ip" is also supported.
+refresh_interval_seconds = 15
+request_timeout_seconds = 5
+
+[backends.ssh.aws-builders.tags]
+telchar-pool = "builders"
+```
+
+All configured tag key/value pairs must match. At least one tag is required; wildcard filters are rejected. Tags select membership only: instance tags cannot override systems, features, capacity, SSH credentials, or priority. Configure separate pools for differing capabilities, and keep pool membership disjoint to avoid counting a worker twice. The selected IP must exist; discovery does not fall back between private and public addresses. SSH uses port 22.
+
+Authentication defaults exclusively to the gateway's EC2 instance profile. Alternatively configure protected credential files:
+
+```toml
+[backends.ssh.aws-builders.credentials]
+access_key_id_file = "/run/secrets/aws-access-key-id"
+secret_access_key_file = "/run/secrets/aws-secret-access-key"
+# session_token_file = "/run/secrets/aws-session-token"
+```
+
+Paths must be absolute. Files must be regular files, have no group/other permissions, and contain a single nonempty credential of at most 16 KiB; a trailing newline is allowed. Symlinks to protected files are supported. Contents are read for requests, so rotation does not require SIGHUP. A configured credential-file failure does **not** fall back to the instance profile. Discovery does not use the ambient AWS environment/profile credential chain.
+
+Refresh publishes only complete paginated inventory. Failed requests, invalid membership, repeated pagination tokens, or an exhausted deadline retain the last successful inventory. A successful empty result removes that pool's discovered targets. Bounds are 256 returned instances and 64 pages per pool per refresh; the request timeout bounds the complete refresh, including credentials and pagination. At most 64 Consul/EC2 sources combined are accepted. Pool names are limited to 192 bytes. Refresh intervals range from 1 to 86,400 seconds; request timeouts from 1 to 300 seconds and cannot exceed the refresh interval.
+
+Manual, Consul, and EC2 inventories coexist. EC2 targets use the existing SSH/Nix readiness and execution machinery. Target identities include the pool, instance ID, and selected address; discovery does not migrate active executions. Discovery configuration changes require daemon restart. As with other SSH execution, terminating a busy instance can fail its build; Telchar neither drains EC2 instances nor automatically retries builds. AMIs need the gateway's authorized public key and a verifiable SSH host identity, preferably an operator-signed host certificate. Do not bake a shared host private key into the fleet.
+
 ## Static SSH readiness
 
 Telchar immediately checks every configured static SSH backend during startup by opening its pinned, noninteractive SSH connection and completing the Nix worker-protocol handshake with `nix-daemon --stdio`. An unavailable host does not prevent daemon startup. It remains excluded from new backend selection until a later check succeeds.
