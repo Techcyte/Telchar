@@ -115,6 +115,7 @@ pub struct ServiceConfig {
     local_backend: Option<LocalBackendConfig>,
     static_ssh_backends: Vec<StaticSshBackendConfig>,
     static_ssh_consul: Vec<StaticSshConsulConfig>,
+    static_ssh_ec2: Vec<StaticSshEc2Config>,
     nomad_backends: Vec<NomadBackendConfig>,
 }
 
@@ -211,6 +212,10 @@ impl ServiceConfig {
         &self.static_ssh_backends
     }
 
+    pub fn static_ssh_ec2(&self) -> &[StaticSshEc2Config] {
+        &self.static_ssh_ec2
+    }
+
     pub fn static_ssh_consul(&self) -> &[StaticSshConsulConfig] {
         &self.static_ssh_consul
     }
@@ -246,6 +251,7 @@ impl ServiceConfig {
             || self.backend_permit_wait != replacement.backend_permit_wait
             || self.local_backend != replacement.local_backend
             || self.static_ssh_consul != replacement.static_ssh_consul
+            || self.static_ssh_ec2 != replacement.static_ssh_ec2
             || self.nomad_backends != replacement.nomad_backends
         {
             return Err(invalid("configuration reload changes immutable settings"));
@@ -435,7 +441,8 @@ impl ServiceConfig {
             return Err(invalid("backend permit wait is invalid"));
         }
         let local_backend = backends.local.map(validate_local_backend).transpose()?;
-        let (static_ssh_backends, static_ssh_consul) = validate_ssh_backends(backends.ssh)?;
+        let (static_ssh_backends, static_ssh_consul, static_ssh_ec2) =
+            validate_ssh_backends(backends.ssh)?;
         let nomad_callback = match (backends.nomad.is_empty(), backends.nomad_callback) {
             (true, None) => None,
             (true, Some(_)) => {
@@ -470,6 +477,7 @@ impl ServiceConfig {
             local_backend,
             static_ssh_backends,
             static_ssh_consul,
+            static_ssh_ec2,
             nomad_backends,
         })
     }

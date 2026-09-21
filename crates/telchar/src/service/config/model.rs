@@ -182,6 +182,78 @@ impl StaticSshBackendConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ec2Address {
+    #[default]
+    PrivateIp,
+    PublicIp,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Ec2CredentialsConfig {
+    pub access_key_id_file: PathBuf,
+    pub secret_access_key_file: PathBuf,
+    pub session_token_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticSshEc2Config {
+    pub(crate) template: StaticSshBackendConfig,
+    pub(crate) ssh_user: String,
+    pub(crate) region: String,
+    pub(crate) address: Ec2Address,
+    pub(crate) tags: BTreeMap<String, String>,
+    pub(crate) credentials: Option<Ec2CredentialsConfig>,
+    pub(crate) refresh_interval: Duration,
+    pub(crate) request_timeout: Duration,
+}
+
+impl StaticSshEc2Config {
+    pub(crate) fn member(
+        &self,
+        instance_id: &str,
+        address: std::net::IpAddr,
+    ) -> io::Result<StaticSshBackendConfig> {
+        let mut member = self.template.clone();
+        member.target = BackendTarget::new(
+            &format!(
+                "{}-{}-{}",
+                self.template.target.name(),
+                instance_id,
+                address.to_string().replace(':', "-")
+            ),
+            BackendKind::StaticSsh,
+            self.template.target.system(),
+            self.template.target.features(),
+        )?
+        .with_selection_priority(self.template.target.selection_priority())?;
+        member.destination = format!("{}@{address}", self.ssh_user);
+        Ok(member)
+    }
+
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+
+    pub fn address(&self) -> Ec2Address {
+        self.address
+    }
+
+    pub fn tags(&self) -> &BTreeMap<String, String> {
+        &self.tags
+    }
+
+    pub fn credentials(&self) -> Option<&Ec2CredentialsConfig> {
+        self.credentials.as_ref()
+    }
+
+    pub fn refresh_interval(&self) -> Duration {
+        self.refresh_interval
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticSshConsulConfig {
     pub(super) name: String,

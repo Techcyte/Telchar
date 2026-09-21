@@ -170,6 +170,10 @@ pub(super) struct RawSshConfig {
 #[derive(Deserialize)]
 pub(super) struct RawSshBackendConfig {
     pub(super) source: String,
+    pub(super) region: Option<String>,
+    pub(super) address: Option<Ec2Address>,
+    pub(super) tags: Option<BTreeMap<String, String>>,
+    pub(super) credentials: Option<Ec2CredentialsConfig>,
     pub(super) system: Option<String>,
     pub(super) supported_features: Option<Vec<String>>,
     pub(super) maximum_concurrent_builds: Option<usize>,

@@ -126,9 +126,14 @@ pub(super) fn validate_local_backend(raw: RawLocalBackendConfig) -> io::Result<L
 
 pub(super) fn validate_ssh_backends(
     raw: Vec<RawSshConfig>,
-) -> io::Result<(Vec<StaticSshBackendConfig>, Vec<StaticSshConsulConfig>)> {
+) -> io::Result<(
+    Vec<StaticSshBackendConfig>,
+    Vec<StaticSshConsulConfig>,
+    Vec<StaticSshEc2Config>,
+)> {
     let mut static_backends = Vec::new();
     let mut consul_sources = Vec::new();
+    let mut ec2_sources = Vec::new();
     for group in raw {
         for (pool_name, pool) in group.backends {
             let name = validate_subject(pool_name, "SSH backend name is invalid")?;
@@ -299,16 +304,128 @@ pub(super) fn validate_ssh_backends(
                         ssh_program,
                     });
                 }
+                "ec2" => {
+                    if !pool.hosts.is_empty()
+                        || pool.endpoint.is_some()
+                        || pool.service.is_some()
+                        || pool.datacenter.is_some()
+                        || pool.required_tags.is_some()
+                        || pool.passing_only.is_some()
+                        || pool.token_file.is_some()
+                        || pool.ca_certificate_file.is_some()
+                    {
+                        return Err(invalid("EC2 SSH discovery fields are invalid"));
+                    }
+                    let region = pool
+                        .region
+                        .ok_or_else(|| invalid("EC2 region is required"))?;
+                    if region.len() > 64
+                        || region.is_empty()
+                        || !region.bytes().all(|byte| {
+                            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                        })
+                    {
+                        return Err(invalid("EC2 region is invalid"));
+                    }
+                    let tags = pool.tags.unwrap_or_default();
+                    if tags.is_empty()
+                        || tags.len() > 64
+                        || tags.iter().any(|(key, value)| {
+                            key.is_empty()
+                                || key.len() > 128
+                                || value.len() > 256
+                                || key.chars().chain(value.chars()).any(char::is_control)
+                                || key.contains(['*', '?'])
+                                || value.contains(['*', '?'])
+                        })
+                    {
+                        return Err(invalid("EC2 membership tags are invalid"));
+                    }
+                    let refresh = pool.refresh_interval_seconds.unwrap_or(15);
+                    let timeout = pool.request_timeout_seconds.unwrap_or(5);
+                    if refresh == 0
+                        || refresh > 86400
+                        || timeout == 0
+                        || timeout > 300
+                        || timeout > refresh
+                    {
+                        return Err(invalid("EC2 discovery timing is invalid"));
+                    }
+                    let ready = pool
+                        .ready_check_interval_seconds
+                        .or(group.ready_check_interval_seconds)
+                        .unwrap_or(DEFAULT_STATIC_SSH_READY_CHECK_INTERVAL_SECONDS);
+                    let unavailable = pool
+                        .unavailable_check_interval_seconds
+                        .or(group.unavailable_check_interval_seconds)
+                        .unwrap_or(DEFAULT_STATIC_SSH_UNAVAILABLE_CHECK_INTERVAL_SECONDS);
+                    let check = pool
+                        .check_timeout_seconds
+                        .or(group.check_timeout_seconds)
+                        .unwrap_or(DEFAULT_STATIC_SSH_CHECK_TIMEOUT_SECONDS);
+                    validate_ssh_leaf(
+                        capacity,
+                        ready,
+                        unavailable,
+                        check,
+                        &identity_file,
+                        &known_hosts_file,
+                        &ssh_program,
+                    )?;
+                    if !valid_ssh_destination(&format!("{ssh_user}@127.0.0.1")) {
+                        return Err(invalid("EC2 SSH user is invalid"));
+                    }
+                    if let Some(credentials) = &pool.credentials {
+                        for path in [
+                            &credentials.access_key_id_file,
+                            &credentials.secret_access_key_file,
+                        ]
+                        .into_iter()
+                        .chain(credentials.session_token_file.iter())
+                        {
+                            if !path.is_absolute() {
+                                return Err(invalid("EC2 credential path must be absolute"));
+                            }
+                        }
+                    }
+                    ec2_sources.push(StaticSshEc2Config {
+                        template: StaticSshBackendConfig {
+                            target: BackendTarget::new(
+                                &name,
+                                BackendKind::StaticSsh,
+                                &system,
+                                &features,
+                            )?
+                            .with_selection_priority(selection_priority)?,
+                            maximum_concurrent_builds: capacity,
+                            ready_check_interval: Duration::from_secs(ready),
+                            unavailable_check_interval: Duration::from_secs(unavailable),
+                            check_timeout: Duration::from_secs(check),
+                            destination: format!("{ssh_user}@127.0.0.1"),
+                            port: 22,
+                            identity_file,
+                            known_hosts_file,
+                            ssh_program,
+                        },
+                        ssh_user,
+                        region,
+                        tags,
+                        credentials: pool.credentials,
+                        address: pool.address.unwrap_or_default(),
+                        refresh_interval: Duration::from_secs(refresh),
+                        request_timeout: Duration::from_secs(timeout),
+                    });
+                }
                 _ => return Err(invalid("SSH backend source is invalid")),
             }
         }
     }
     if static_backends.len() > MAXIMUM_STATIC_SSH_BACKENDS
-        || consul_sources.len() > MAXIMUM_STATIC_SSH_CONSUL_SOURCES
+        || consul_sources.len() + ec2_sources.len() > MAXIMUM_STATIC_SSH_CONSUL_SOURCES
     {
         return Err(invalid("SSH backend count exceeds limit"));
     }
-    Ok((static_backends, consul_sources))
+    Ok((static_backends, consul_sources, ec2_sources))
 }
 
 fn validate_ssh_leaf(
