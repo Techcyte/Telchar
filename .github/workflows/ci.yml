@@ -17,7 +17,7 @@ concurrency:
 jobs:
   rust:
     name: Rust checks and tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - name: Check out repository
@@ -55,7 +55,7 @@ jobs:
   nix:
     name: Nix build and evaluation
     needs: rust
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
