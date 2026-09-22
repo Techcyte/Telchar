@@ -1142,7 +1142,7 @@ fn read_activity_fields(
             1 if capture_first_string && index == 0 => {
                 captured = Some(read_worker_byte_string_from(
                     input,
-                    MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES,
+                    MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES,
                 )?);
             }
             1 => discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)?,
@@ -1313,6 +1313,35 @@ mod tests {
         .expect("build operation frames read");
 
         assert_eq!(logs, b"static-ssh-build-log\n");
+    }
+
+    #[test]
+    fn build_operation_forwards_long_structured_build_log_lines() {
+        let build_log = vec![b'x'; 8 * 1024];
+        let mut response = Vec::new();
+        write_worker_integer_to(&mut response, STDERR_RESULT).expect("result marker writes");
+        write_worker_integer_to(&mut response, 1).expect("activity ID writes");
+        write_worker_integer_to(&mut response, BUILD_LOG_LINE_RESULT_TYPE)
+            .expect("build log result type writes");
+        write_worker_integer_to(&mut response, 1).expect("field count writes");
+        write_worker_integer_to(&mut response, 1).expect("string field type writes");
+        write_worker_byte_string_to(&mut response, &build_log).expect("build log field writes");
+        write_worker_integer_to(&mut response, STDERR_LAST).expect("last marker writes");
+        let mut logs = Vec::new();
+
+        read_build_operation_frames(
+            &mut response.as_slice(),
+            LATEST_WORKER_VERSION,
+            &mut |chunk| {
+                logs.extend_from_slice(chunk);
+                Ok(())
+            },
+        )
+        .expect("long build log line is forwarded");
+
+        let mut expected = build_log;
+        expected.push(b'\n');
+        assert_eq!(logs, expected);
     }
 
     #[test]
