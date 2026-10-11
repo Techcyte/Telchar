@@ -92,7 +92,7 @@ fn run() -> std::process::ExitCode {
             input_count = session.manifest().paths.len(),
             output_count = session.manifest().outputs.len()
         );
-        tracing::debug!(event = "worker.derivation.received", path = %session.manifest().derivation_path);
+        tracing::info!(event = "worker.derivation.received", path = %session.manifest().derivation_path);
         let requested = phase("resolve-inputs", || session.resolve_inputs(&store_uri))?;
         tracing::info!(
             event = "worker.inputs.resolved",
@@ -119,7 +119,9 @@ fn run() -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         Err(error) => {
-            tracing::error!(event = "worker.failed", error_kind = ?error.kind());
+            let diagnostic =
+                telchar_nomad_worker::failure_diagnostic(&error, config.maximum_diagnostic_bytes());
+            tracing::error!(event = "worker.failed", error_kind = ?error.kind(), reason = %diagnostic);
             std::process::ExitCode::FAILURE
         }
     }

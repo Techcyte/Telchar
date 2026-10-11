@@ -180,7 +180,21 @@ fn check_manifest_failure(level: &str) {
         assert!(!stderr.contains(secret), "{stderr}");
     }
     assert!(!stderr.contains("phase=\"build\""), "{stderr}");
-    assert_eq!(stderr.contains("/nix/store/"), level == "debug", "{stderr}");
+    let identity = stderr
+        .lines()
+        .find(|line| line.contains("event=\"worker.derivation.received\""))
+        .expect("worker reports build identity");
+    assert!(identity.contains(" INFO "), "{stderr}");
+    assert!(identity.contains(&manifest().derivation_path), "{stderr}");
+    let failure = stderr
+        .lines()
+        .find(|line| line.contains("event=\"worker.failed\""))
+        .expect("worker reports terminal failure");
+    assert!(failure.contains(" ERROR "), "{stderr}");
+    assert!(
+        failure.contains("reason=worker Nix store connection failed"),
+        "{stderr}"
+    );
 }
 
 #[test]

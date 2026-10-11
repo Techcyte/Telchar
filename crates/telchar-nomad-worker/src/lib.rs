@@ -25,6 +25,16 @@ const MAXIMUM_MANIFEST_PATHS: usize = nix_worker_protocol::MAXIMUM_BUILD_DERIVAT
 const MAXIMUM_INPUT_NAR_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAXIMUM_NAR_CHUNK_BYTES: usize = 1024 * 1024;
 
+pub fn failure_diagnostic(error: &io::Error, maximum_bytes: usize) -> String {
+    let mut diagnostic = error.to_string();
+    let mut end = maximum_bytes.min(diagnostic.len());
+    while !diagnostic.is_char_boundary(end) {
+        end -= 1;
+    }
+    diagnostic.truncate(end);
+    diagnostic
+}
+
 type WorkerSocket =
     tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
 
@@ -173,12 +183,7 @@ impl WorkerSession {
     }
 
     pub fn report_failure(&mut self, error: &io::Error, maximum_bytes: usize) -> io::Result<()> {
-        let diagnostic = error.to_string();
-        let diagnostic = diagnostic
-            .char_indices()
-            .take_while(|(offset, _)| *offset < maximum_bytes)
-            .map(|(_, character)| character)
-            .collect::<String>();
+        let diagnostic = failure_diagnostic(error, maximum_bytes);
         self.send_metadata(
             FrameKind::BuildResult,
             &BuildResultMetadata {
@@ -1345,6 +1350,16 @@ mod tests {
 
         assert_eq!(ordered[0].1, dependency);
         assert_eq!(ordered[1].1, output);
+    }
+
+    #[test]
+    fn failure_diagnostic_respects_utf8_byte_limit() {
+        let error = io::Error::other("échec");
+        assert_eq!(failure_diagnostic(&error, 0), "");
+        assert_eq!(failure_diagnostic(&error, 1), "");
+        assert_eq!(failure_diagnostic(&error, 2), "é");
+        assert_eq!(failure_diagnostic(&error, 3), "éc");
+        assert_eq!(failure_diagnostic(&error, 64), "échec");
     }
 
     #[test]

@@ -248,7 +248,9 @@ Both use the OTLP protocol and endpoint settings above, defaulting to gRPC on
 stderr, independently of the collector. Export queues and shutdown are bounded;
 collector unavailability does not change a build result.
 
-Worker INFO reports lifecycle phases, input/output summaries, counts and durations.
+Worker INFO reports the admitted derivation path, lifecycle phases, input/output
+summaries, counts and durations. Terminal worker ERROR events include error kind
+and a diagnostic bounded by `TELCHAR_MAXIMUM_DIAGNOSTIC_BYTES`.
 A phase still running after ten seconds emits periodic `worker.phase.running`
 events. These indicate liveness, not a percentage of build work completed.
 The reporter stops before its phase completion event. Phase duration metrics use
@@ -260,7 +262,7 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 ```
 
-Worker DEBUG includes full store paths, per-path transfer details and builder
+Worker DEBUG includes additional store paths, per-path transfer details and builder
 output, without a separate opt-in. Builder output is arbitrary build-script text;
 DEBUG copies it into local and exported diagnostics. Authentication credentials
 and environment dumps are not added by worker instrumentation. Existing client
