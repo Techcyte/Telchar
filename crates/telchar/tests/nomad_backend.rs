@@ -42,6 +42,8 @@ mod execution;
 mod identity;
 #[path = "nomad_backend/rendering.rs"]
 mod rendering;
+#[path = "nomad_backend/sidecars.rs"]
+mod sidecars;
 
 fn read_http_request_with_body(stream: &mut std::net::TcpStream) -> String {
     stream
