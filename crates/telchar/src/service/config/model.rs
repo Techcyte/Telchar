@@ -714,6 +714,23 @@ impl NomadCallbackConnect {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct NomadSidecar {
+    pub(crate) name: String,
+    pub(crate) driver: String,
+    pub(crate) driver_config: serde_json::Map<String, serde_json::Value>,
+    pub(crate) resources: NomadResources,
+    pub(crate) kill_timeout: Duration,
+    pub(crate) environment: BTreeMap<String, String>,
+    pub(crate) templates: Vec<NomadTaskTemplate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NomadTaskTemplate {
+    pub(crate) destination: String,
+    pub(crate) data: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct NomadBackendConfig {
     pub(super) target: BackendTarget,
     pub(super) maximum_concurrent_builds: usize,
@@ -740,6 +757,8 @@ pub struct NomadBackendConfig {
     pub(super) store: NomadStoreConfig,
     pub(super) transfer_limits: NomadTransferLimits,
     pub(super) prestart: Option<NomadPrestartConfig>,
+    pub(super) environment: BTreeMap<String, String>,
+    pub(super) sidecars: Vec<NomadSidecar>,
 }
 
 impl NomadBackendConfig {
@@ -874,5 +893,13 @@ impl NomadBackendConfig {
 
     pub fn prestart(&self) -> Option<&NomadPrestartConfig> {
         self.prestart.as_ref()
+    }
+
+    pub fn environment(&self) -> &BTreeMap<String, String> {
+        &self.environment
+    }
+
+    pub fn sidecars(&self) -> &[NomadSidecar] {
+        &self.sidecars
     }
 }

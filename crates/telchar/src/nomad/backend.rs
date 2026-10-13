@@ -1070,6 +1070,9 @@ fn render_job_at<S: AsRef<str>>(
     }
     copy_environment_variable(&mut task, "OTEL_EXPORTER_OTLP_ENDPOINT");
     copy_environment_variable(&mut task, "OTEL_EXPORTER_OTLP_PROTOCOL");
+    for (name, value) in config.environment() {
+        task["Env"][name] = Value::from(value.clone());
+    }
     match config.transfer_authentication() {
         NomadTransferAuthentication::WorkloadIdentity { .. } => {
             task["Env"]["TELCHAR_TRANSFER_AUTHENTICATION"] = Value::from("workload-identity");
@@ -1119,6 +1122,23 @@ fn render_job_at<S: AsRef<str>>(
         }));
     }
     tasks.push(task);
+    for sidecar in config.sidecars() {
+        tasks.push(json!({
+            "Name": sidecar.name,
+            "Driver": sidecar.driver,
+            "Config": sidecar.driver_config,
+            "Resources": render_resources(sidecar.resources),
+            "Env": sidecar.environment,
+            "Lifecycle": { "Hook": "prestart", "Sidecar": true },
+            "KillTimeout": duration_nanoseconds(sidecar.kill_timeout),
+            "Templates": sidecar.templates.iter().map(|template| json!({
+                "DestPath": template.destination,
+                "EmbeddedTmpl": template.data,
+                "ChangeMode": "noop",
+                "Perms": "0600",
+            })).collect::<Vec<_>>(),
+        }));
+    }
     let mut group = Map::new();
     group.insert("Name".to_owned(), Value::String("build".to_owned()));
     group.insert("Count".to_owned(), Value::from(1));
@@ -1137,8 +1157,10 @@ fn render_job_at<S: AsRef<str>>(
         }),
     );
     group.insert("Tasks".to_owned(), Value::Array(tasks));
-    if let Some(connect) = config.callback_connect() {
+    if !config.sidecars().is_empty() || config.callback_connect().is_some() {
         group.insert("Networks".to_owned(), json!([{ "Mode": "bridge" }]));
+    }
+    if let Some(connect) = config.callback_connect() {
         let sidecar_service = json!({
             "Proxy": {
                 "Upstreams": [{

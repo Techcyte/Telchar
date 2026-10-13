@@ -245,6 +245,8 @@ pub(super) struct RawNomadConfig {
     pub(super) store: Option<RawNomadStoreConfig>,
     pub(super) transfer_limits: Option<RawNomadTransferLimits>,
     pub(super) prestart: Option<RawNomadPrestartConfig>,
+    pub(super) environment: Option<BTreeMap<String, String>>,
+    pub(super) sidecars: Option<Vec<RawNomadSidecar>>,
     #[serde(flatten)]
     pub(super) backends: BTreeMap<String, RawNomadBackendConfig>,
 }
@@ -279,6 +281,29 @@ pub(super) struct RawNomadBackendConfig {
     pub(super) store: Option<RawNomadStoreConfig>,
     pub(super) transfer_limits: Option<RawNomadTransferLimits>,
     pub(super) prestart: Option<RawNomadPrestartConfig>,
+    pub(super) environment: Option<BTreeMap<String, String>>,
+    pub(super) sidecars: Option<Vec<RawNomadSidecar>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadSidecar {
+    pub(super) name: String,
+    pub(super) driver: String,
+    pub(super) driver_config: toml::Table,
+    pub(super) resources: RawNomadResources,
+    pub(super) kill_timeout_seconds: u64,
+    #[serde(default)]
+    pub(super) environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(super) templates: Vec<RawNomadTaskTemplate>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawNomadTaskTemplate {
+    pub(super) destination: String,
+    pub(super) data: String,
 }
 
 #[derive(Clone, Deserialize)]

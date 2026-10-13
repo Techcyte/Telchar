@@ -57,12 +57,21 @@ fn renders_optional_sidecars_and_worker_environment() {
     let tasks = group["Tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0]["Name"], "build");
-    assert_eq!(tasks[0]["Env"]["RUST_LOG"], "info,telchar_nomad_worker=debug");
-    assert_eq!(tasks[0]["Env"]["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://127.0.0.1:4318");
+    assert_eq!(
+        tasks[0]["Env"]["RUST_LOG"],
+        "info,telchar_nomad_worker=debug"
+    );
+    assert_eq!(
+        tasks[0]["Env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
+        "http://127.0.0.1:4318"
+    );
     assert_eq!(tasks[0]["Env"]["TELCHAR_TASK"], "build");
     assert_eq!(tasks[1]["Name"], "telemetry");
     assert_eq!(tasks[1]["Driver"], "docker");
-    assert_eq!(tasks[1]["Lifecycle"], serde_json::json!({"Hook":"prestart","Sidecar":true}));
+    assert_eq!(
+        tasks[1]["Lifecycle"],
+        serde_json::json!({"Hook":"prestart","Sidecar":true})
+    );
     assert_eq!(tasks[1]["KillTimeout"], 30_000_000_000_u64);
     assert_eq!(tasks[1]["Resources"]["MemoryMB"], 128);
     assert_eq!(tasks[1]["Env"]["COLLECTOR_LOG_LEVEL"], "warn");
@@ -70,8 +79,20 @@ fn renders_optional_sidecars_and_worker_environment() {
     assert_eq!(tasks[1]["Templates"][0]["DestPath"], "local/collector.yaml");
     assert_eq!(tasks[1]["Templates"][0]["EmbeddedTmpl"], "receivers: {}\n");
     assert_eq!(tasks[1]["Templates"][0]["ChangeMode"], "noop");
+    let inherited = SIDECAR.replace("backends.nomad.nomad-test.", "backends.nomad.");
+    let inherited_job = configured_job(&root, &inherited).unwrap();
+    assert_eq!(
+        inherited_job["Job"]["TaskGroups"][0]["Tasks"],
+        group["Tasks"]
+    );
     let plain = configured_job(&root, "").unwrap();
-    assert_eq!(plain["Job"]["TaskGroups"][0]["Tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        plain["Job"]["TaskGroups"][0]["Tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(plain["Job"]["TaskGroups"][0]["Networks"].is_null());
     fs::remove_dir_all(root).unwrap();
 }
@@ -94,10 +115,30 @@ fn rejects_invalid_sidecars_and_protected_worker_environment() {
         SIDECAR.replace("RUST_LOG =", "INVALID-NAME ="),
         SIDECAR.replace("receivers: {}", &"x".repeat(65_537)),
     ] {
-        assert_eq!(configured_job(&root, &extra).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            configured_job(&root, &extra).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
     }
-    let task = SIDECAR.split_once("[[backends.nomad.nomad-test.sidecars]]").unwrap().1;
+    let task = SIDECAR
+        .split_once("[[backends.nomad.nomad-test.sidecars]]")
+        .unwrap()
+        .1;
     let duplicate = format!("{SIDECAR}\n[[backends.nomad.nomad-test.sidecars]]{task}");
     assert!(configured_job(&root, &duplicate).is_err());
+    let many = (0..9)
+        .map(|index| {
+            format!(
+                "\n[[backends.nomad.nomad-test.sidecars]]{}",
+                task.replace("telemetry", &format!("task-{index}"))
+            )
+        })
+        .collect::<String>();
+    assert!(configured_job(&root, &many).is_err());
+    let large_environment = SIDECAR.replace(
+        "COLLECTOR_LOG_LEVEL = \"warn\"",
+        &format!("COLLECTOR_LOG_LEVEL = \"{}\"", "x".repeat(4097)),
+    );
+    assert!(configured_job(&root, &large_environment).is_err());
     fs::remove_dir_all(root).unwrap();
 }

@@ -62,6 +62,36 @@ A backend may add one Nomad lifecycle `prestart` task in the same job and task g
 
 Client data is never interpolated into the prestart command or driver configuration. Failure prevents the build task from starting and terminates the attempt without retry.
 
+## Optional allocation sidecars
+
+The group or named backend may supply `environment` and an array of `sidecars`.
+Both default to empty; a named backend replaces the corresponding group value,
+including when it explicitly supplies an empty map or array. Worker environment
+values override inherited OTLP endpoint/protocol settings. `TELCHAR_*`, `NOMAD_*`,
+`TRACEPARENT`, and `TRACESTATE` are reserved on the worker.
+
+Each sidecar has `name`, `driver`, `driver_config`, `resources`,
+`kill_timeout_seconds`, optional `environment`, and optional `templates`.
+Templates supply `destination` under `local/` and `data`; Nomad renders them with
+0600 permissions and `change_mode = "noop"`. Configuration is operator-owned;
+client build data is never interpolated into these tasks. Do not embed credentials
+in environment values or template literals published in Nomad job specifications.
+
+Sidecars use Nomad's `prestart` lifecycle with `sidecar = true`, share the build
+allocation's bridge network, and are stopped by Nomad after the main task exits.
+Startup means the task is running, not that its application is ready. Exporters
+must tolerate transient receiver startup and flush within their configured kill
+timeout. A failed sidecar can fail the allocation under the group's no-restart
+policy. Sidecar installation is optional and does not add a telemetry dependency
+to Telchar's build protocol.
+
+At most eight sidecars are accepted. Names must be unique and cannot be `build`,
+`prestart`, or start with `connect-proxy-`. Environment maps allow at most 64 entries,
+4096 bytes per value, and 16 KiB total. Each sidecar allows at most 16 templates and
+64 KiB total template data. Driver configuration and resources use the same bounds
+as the build task. Collector images, receiver/exporter configuration, and log filters
+belong to deployment configuration, not Telchar.
+
 ## Logs and outputs
 
 After the complete input closure is valid, the worker runs normal-mode `BuildDerivation` through its configured Nix daemon.

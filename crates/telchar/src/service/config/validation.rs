@@ -649,6 +649,19 @@ pub(super) fn validate_nomad_backends(
                 .or_else(|| group.prestart.clone())
                 .map(validate_nomad_prestart)
                 .transpose()?;
+            let environment = validate_nomad_environment(
+                backend
+                    .environment
+                    .or_else(|| group.environment.clone())
+                    .unwrap_or_default(),
+                true,
+            )?;
+            let sidecars = validate_nomad_sidecars(
+                backend
+                    .sidecars
+                    .or_else(|| group.sidecars.clone())
+                    .unwrap_or_default(),
+            )?;
             backends.push(NomadBackendConfig {
                 target: BackendTarget::new(
                     &name,
@@ -681,6 +694,8 @@ pub(super) fn validate_nomad_backends(
                 store,
                 transfer_limits,
                 prestart,
+                environment,
+                sidecars,
             });
         }
     }
@@ -902,7 +917,96 @@ pub(super) fn validate_nomad_prestart(
     })
 }
 
-pub(super) fn valid_transfer_bytes(value: u64) -> bool {
+pub(super) fn validate_nomad_environment(
+    environment: BTreeMap<String, String>,
+    worker: bool,
+) -> io::Result<BTreeMap<String, String>> {
+    if environment.len() > 64
+        || environment.iter().any(|(name, value)| {
+            name.is_empty()
+                || name.len() > 128
+                || !name.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte.is_ascii_alphabetic()
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+                || value.len() > 4096
+                || value.contains('\0')
+                || (worker
+                    && (name.starts_with("TELCHAR_")
+                        || name.starts_with("NOMAD_")
+                        || matches!(name.as_str(), "TRACEPARENT" | "TRACESTATE")))
+        })
+        || environment
+            .iter()
+            .map(|(name, value)| name.len() + value.len())
+            .sum::<usize>()
+            > 16 * 1024
+    {
+        return Err(invalid("Nomad task environment is invalid"));
+    }
+    Ok(environment)
+}
+
+fn validate_nomad_sidecars(raw: Vec<RawNomadSidecar>) -> io::Result<Vec<NomadSidecar>> {
+    if raw.len() > 8 {
+        return Err(invalid("Nomad sidecar count exceeds limit"));
+    }
+    let mut sidecars: Vec<NomadSidecar> = Vec::new();
+    for task in raw {
+        let name = validate_subject(task.name, "Nomad sidecar name is invalid")?;
+        if matches!(name.as_str(), "build" | "prestart")
+            || name.starts_with("connect-proxy-")
+            || sidecars.iter().any(|existing| existing.name == name)
+        {
+            return Err(invalid("Nomad sidecar name is reserved or duplicated"));
+        }
+        if !valid_transfer_timeout(task.kill_timeout_seconds) || task.templates.len() > 16 {
+            return Err(invalid("Nomad sidecar bounds are invalid"));
+        }
+        let mut templates: Vec<NomadTaskTemplate> = Vec::new();
+        for template in task.templates {
+            let path = Path::new(&template.destination);
+            if template.destination.len() > 1024
+                || !template.destination.starts_with("local/")
+                || path
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                || template.destination.contains('\0')
+                || template.data.len() > 64 * 1024
+                || templates
+                    .iter()
+                    .any(|existing| existing.destination == template.destination)
+            {
+                return Err(invalid("Nomad sidecar template is invalid"));
+            }
+            templates.push(NomadTaskTemplate {
+                destination: template.destination,
+                data: template.data,
+            });
+        }
+        if templates
+            .iter()
+            .map(|template| template.data.len())
+            .sum::<usize>()
+            > 64 * 1024
+        {
+            return Err(invalid("Nomad sidecar templates exceed limit"));
+        }
+        sidecars.push(NomadSidecar {
+            name,
+            driver: validate_subject(task.driver, "Nomad sidecar driver is invalid")?,
+            driver_config: validate_driver_config(task.driver_config)?,
+            resources: validate_nomad_resources(task.resources)?,
+            kill_timeout: Duration::from_secs(task.kill_timeout_seconds),
+            environment: validate_nomad_environment(task.environment, false)?,
+            templates,
+        });
+    }
+    Ok(sidecars)
+}
+
+fn valid_transfer_bytes(value: u64) -> bool {
     value > 0 && value <= MAXIMUM_NOMAD_TRANSFER_BYTES
 }
 
