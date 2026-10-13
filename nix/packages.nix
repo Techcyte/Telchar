@@ -10,6 +10,23 @@ let
   version = "2026.9.2";
   uidString = toString uid;
   gidString = toString gid;
+  buildArgs = {
+    src = source;
+    inherit version;
+    TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
+    nativeBuildInputs = [
+      pkgs.postgresql
+      pkgs.nix
+      pkgs.openssh
+    ];
+  };
+  cargoArtifacts = craneLib.buildDepsOnly (
+    buildArgs
+    // {
+      pname = "telchar";
+      cargoExtraArgs = "--locked -p telchar -p telchar-nomad-worker";
+    }
+  );
 
   nix-worker-protocol = craneLib.buildPackage {
     src = source;
@@ -18,26 +35,24 @@ let
     cargoExtraArgs = "-p nix-worker-protocol";
   };
 
-  telchar = craneLib.buildPackage {
-    src = source;
-    pname = "telchar";
-    inherit version;
-    TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
-    cargoExtraArgs = "-p telchar";
-    nativeBuildInputs = [
-      pkgs.postgresql
-      pkgs.nix
-      pkgs.openssh
-    ];
-    cargoTestExtraArgs = "--lib";
-  };
+  telchar = craneLib.buildPackage (
+    buildArgs
+    // {
+      pname = "telchar";
+      inherit cargoArtifacts;
+      cargoExtraArgs = "--locked -p telchar";
+      cargoTestExtraArgs = "--lib";
+    }
+  );
 
-  telchar-nomad-worker = craneLib.buildPackage {
-    src = source;
-    pname = "telchar-nomad-worker";
-    inherit version;
-    cargoExtraArgs = "-p telchar-nomad-worker";
-  };
+  telchar-nomad-worker = craneLib.buildPackage (
+    buildArgs
+    // {
+      pname = "telchar-nomad-worker";
+      inherit cargoArtifacts;
+      cargoExtraArgs = "--locked -p telchar-nomad-worker";
+    }
+  );
 
   sshIngressEntrypoint = pkgs.writeShellScriptBin "telchar-ssh-ingress" (
     builtins.readFile ../deploy/ssh/telchar-ssh-ingress.sh

@@ -37,7 +37,9 @@ jobs:
         run: nix develop -c cargo check --locked --workspace
 
       - name: Lint workspace
-        run: nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: >-
+          nix develop -c cargo clippy --locked --workspace
+          --all-targets -- -D warnings
 
       - name: Run workspace tests
         run: nix develop -c cargo test --locked --workspace -- --test-threads=1
@@ -69,18 +71,39 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        # v31.11.1
+        uses: >-
+          cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            keep-derivations = true
+            keep-outputs = true
+
+      - name: Restore and save Nix store
+        # v7
+        uses: >-
+          nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569
+        with:
+          primary-key: >-
+            nix-build-${{ runner.os }}-${{ runner.arch }}-${{
+            hashFiles('flake.lock', 'Cargo.lock', '**/*.nix', '**/Cargo.toml')
+            }}-${{ github.sha }}-${{ github.run_attempt }}
+          restore-prefixes-first-match: |
+            nix-build-${{ runner.os }}-${{ runner.arch }}-
+          gc-max-store-size-linux: 5G
 
       - name: Evaluate flake checks
         run: nix flake check --impure --no-build
 
       - name: Build Telchar
-        run: nix build --impure --no-link .#telchar
+        run: nix build --impure --out-link "$RUNNER_TEMP/telchar" .#telchar
 
       - name: Build Nomad worker
-        run: nix build --impure --no-link .#telchar-nomad-worker
+        run: >-
+          nix build --impure
+          --out-link "$RUNNER_TEMP/telchar-nomad-worker"
+          .#telchar-nomad-worker
 
       - name: Test OCI publication contracts
         run: nix develop -c python scripts/test-publish-oci-images.py
