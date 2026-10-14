@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
   "fmt",
   "registry",
 ] }
-tracing-opentelemetry = { version = "0.33.0", default-features = false, features = [
+tracing-opentelemetry = { version = "0.34.0", default-features = false, features = [
   "metrics",
 ] }
 opentelemetry = { version = "0.32.0", default-features = false, features = [
