@@ -24,18 +24,18 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 tracing-opentelemetry = { version = "0.33.0", default-features = false, features = [
   "metrics",
 ] }
-opentelemetry = { version = "0.32.0", default-features = false, features = [
+opentelemetry = { version = "0.33.0", default-features = false, features = [
   "logs",
   "metrics",
   "trace",
 ] }
-opentelemetry_sdk = { version = "0.32.0", default-features = false, features = [
+opentelemetry_sdk = { version = "0.33.0", default-features = false, features = [
   "logs",
   "metrics",
   "rt-tokio",
   "trace",
 ] }
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = [
   "grpc-tonic",
   "http-proto",
   "reqwest-blocking-client",
@@ -43,7 +43,7 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "metrics",
   "trace",
 ] }
-opentelemetry-appender-tracing = "0.32.0"
+opentelemetry-appender-tracing = "0.33.0"
 tokio = { version = "1", features = [
   "macros",
   "net",
@@ -68,7 +68,7 @@ tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",
   "rustls-tls-webpki-roots",
 ] }
-opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
+opentelemetry-proto = { version = "0.33.0", default-features = false, features = [
   "gen-tonic",
   "logs",
   "metrics",
