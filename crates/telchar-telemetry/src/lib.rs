@@ -13,7 +13,7 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::{WithExportConfig as _, WithHttpConfig as _};
+use opentelemetry_otlp::{WithExportConfig as _, WithHttpConfig as _, WithTonicConfig as _};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
@@ -177,11 +177,13 @@ impl Telemetry {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::SpanExporter::builder()
                     .with_tonic()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_endpoint(endpoint.clone())
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
                     .with_http()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_http_client(
                         trace_http_client.expect("HTTP client exists for HTTP transport"),
                     )
@@ -214,11 +216,13 @@ impl Telemetry {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::MetricExporter::builder()
                     .with_tonic()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_endpoint(endpoint.clone())
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
                     .with_http()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_http_client(
                         metric_http_client.expect("HTTP client exists for HTTP transport"),
                     )
@@ -245,11 +249,13 @@ impl Telemetry {
             let exporter = match transport {
                 OtlpTransport::Grpc => opentelemetry_otlp::LogExporter::builder()
                     .with_tonic()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_endpoint(endpoint)
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
                 OtlpTransport::HttpProtobuf => opentelemetry_otlp::LogExporter::builder()
                     .with_http()
+                    .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
                     .with_http_client(
                         log_http_client.expect("HTTP client exists for HTTP transport"),
                     )
