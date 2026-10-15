@@ -202,6 +202,46 @@ It does not rerun AWS executions or query live cleanup state. The second reruns
 local behavioral qualification using disposable stores. Preserve the evidence
 directory and probe Docker image; neither is supplied by a repository checkout.
 
+## Substantial ARM compilation campaign
+
+A follow-up campaign uses a uniquely named pinned CMake 4.1.6 derivation with
+uncached target outputs, eight compiler jobs and mandatory nonroot/sentinel
+sandbox assertions. Its realized input closure contains 109 paths and
+464,615,344 NAR bytes. Actual workers requested 373,489,368 missing-input bytes;
+other paths were already in the worker image. Both `out` and `debug` outputs
+must be validated and registered. Compilation success and usable-result
+verification remain pending; partial compiler logs are not successful builds.
+
+The larger workload exposed two fixture deadlines. A real loopback WebSocket
+regression reproduced read-idle `WouldBlock` during a silent build; the receiver
+now retries only transient idle errors within a monotonic deadline. A subsequent
+ARM run passed bootstrap linking and reached 75% of the full build before the
+adapter's inherited 300-second process deadline killed the worker. This is not
+evidence of failure at the AWS 600-second maximum. The execution adapter now
+allows 540 seconds, leaving time before the provider limit. The fixed sandbox
+probe retains its separate 300-second deadline. Both fixes have local regression
+coverage; a second image version is being qualified against the same workload.
+
+The current conservative campaign reservation is USD 40, not actual spend.
+Official Oregon ARM MicroVM rates are USD 0.0000276944 per vCPU-second and
+USD 0.0000036667 per GB-second. Charging a full 16 vCPU and 32 GB for 600 seconds
+would cost about USD 0.336 for compute; a 32 GB snapshot read adds about USD 0.0495.
+Image minimum-retention, shared receiver, storage, transfer and logs are separate.
+Observed guest memory and image minimum memory do not establish billed sizing.
+
+The fixed Rust worker starts only after `/run` writes a runtime-only execution
+binding. Its rustls/ring TLS state therefore does not exist at snapshot capture.
+However, the Nix daemon starts before capture and uses ordinary Nixpkgs OpenSSL,
+not AWS `openssl-snapsafe-libs`. Offline store traffic avoids intended daemon TLS
+but does not certify its retained RNG state. AWS's random-device guarantee and
+sample uniqueness must not be represented as general cryptographic certification.
+
+Evidence for this separate, not-yet-cleaned campaign is retained under
+`~/.local/state/telchar-microvm-test/workloads`. Its ledger must not be confused
+with the completed small-fixture campaign above. Production launch ambiguity,
+fencing, cancellation, restart, reconnect and stock-client scheduling remain
+deferred to an approved backend design; none is implemented by these fixtures.
+
 ## Proposed integration boundary
 
 One MicroVM per admitted ARM shared build, while the gateway may remain x86-64.
