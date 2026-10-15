@@ -108,6 +108,11 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
 
 #[test]
 fn socket_admission_requires_exact_single_use_capability() {
+    socket_capability_exchange(false);
+    socket_capability_exchange(true);
+}
+
+fn socket_capability_exchange(disconnect: bool) {
     let fixture = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migrate");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rendezvous.drv";
@@ -190,6 +195,35 @@ fn socket_admission_requires_exact_single_use_capability() {
                 "telchar-microvm-v1"
             );
             socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"intent_id": intent.intent_id, "provider_id": id, "bearer": bearer})).expect("bootstrap").into())).expect("send");
+            if accepted && disconnect {
+                socket
+                    .get_ref()
+                    .shutdown(std::net::Shutdown::Both)
+                    .expect("disconnect worker");
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(
+                    telchar::persistence::bind_microvm_launch(
+                        fixture.url(),
+                        &intent.intent_id,
+                        "microvm-exact"
+                    )
+                    .expect("late binding")
+                );
+                assert!(
+                    !server.join().expect("server"),
+                    "disconnected bootstrap cannot admit"
+                );
+                let consumed: bool = fixture
+                    .connect()
+                    .query_one(
+                        "SELECT session_consumed_at IS NOT NULL FROM microvm_launches",
+                        &[],
+                    )
+                    .expect("session reads")
+                    .get(0);
+                assert!(!consumed, "dead socket must not consume capability");
+                return;
+            }
             if accepted {
                 socket
                     .get_mut()
@@ -210,5 +244,8 @@ fn socket_admission_requires_exact_single_use_capability() {
             }
             assert_eq!(server.join().expect("server"), accepted);
         });
+        if disconnect && accepted {
+            break;
+        }
     }
 }

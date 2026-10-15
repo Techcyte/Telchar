@@ -18,6 +18,21 @@ pub struct SessionStream {
 }
 
 impl SessionStream {
+    fn verify_waiting_peer(&self) -> Result<(), ProviderError> {
+        self.inner
+            .set_nonblocking(true)
+            .map_err(|_| ProviderError)?;
+        let mut byte = [0];
+        let observation = self.inner.peek(&mut byte);
+        self.inner
+            .set_nonblocking(false)
+            .map_err(|_| ProviderError)?;
+        match observation {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            _ => Err(ProviderError),
+        }
+    }
+
     fn remaining(&self) -> std::io::Result<Duration> {
         self.deadline
             .checked_duration_since(Instant::now())
@@ -123,6 +138,7 @@ pub fn accept_session(
         if Instant::now() >= deadline {
             return Err(ProviderError);
         }
+        socket.get_ref().verify_waiting_peer()?;
         if super::admit_session(
             owner,
             &bootstrap.intent_id,
@@ -139,6 +155,7 @@ pub fn accept_session(
         .map_err(|_| ProviderError)?
         {
             // Binding can commit between the admission attempt and pending observation.
+            socket.get_ref().verify_waiting_peer()?;
             if super::admit_session(
                 owner,
                 &bootstrap.intent_id,
