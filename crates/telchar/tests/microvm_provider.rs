@@ -8,11 +8,13 @@ use std::time::Duration;
 
 #[test]
 fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
-    launch_exchange(false);
-    launch_exchange(true);
+    launch_exchange(false, "active");
+    launch_exchange(true, "active");
+    launch_exchange(true, "expired");
+    launch_exchange(true, "response-expired");
 }
 
-fn launch_exchange(success: bool) {
+fn launch_exchange(success: bool, ownership: &'static str) {
     let fixture = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider.drv";
@@ -50,6 +52,15 @@ fn launch_exchange(success: bool) {
         telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
             .expect("capacity reserves")
     );
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires");
+    if ownership == "expired" {
+        fixture.expire_singleton_ownership("daemon");
+    }
+    let control_url = fixture.url().to_owned();
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback binds");
     listener.set_nonblocking(true).expect("listener bounded");
     let endpoint = format!("http://{}", listener.local_addr().expect("address"));
@@ -82,6 +93,9 @@ fn launch_exchange(success: bool) {
                     let mut body = vec![0; length];
                     socket.read_exact(&mut body).expect("request body");
                     requests.push((headers, body));
+                    if ownership == "response-expired" {
+                        postgres::Client::connect(&control_url, postgres::NoTls).expect("fixture control connects").batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").expect("owner expires during request");
+                    }
                     let (status, body) = if success {
                         ("200 OK", serde_json::json!({
                             "microvmId": "microvm-exact", "state": "PENDING", "endpoint": "https://unused.invalid",
@@ -121,8 +135,10 @@ fn launch_exchange(success: bool) {
             .build();
         let provider =
             telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
-        let result = provider.launch_reserved(fixture.url(), &intent, "{}");
-        if success {
+        let result = provider.launch_reserved(&owner, &intent, "{}");
+        if ownership != "active" {
+            assert!(result.is_err(), "expired owner cannot dispatch or bind");
+        } else if success {
             assert_eq!(
                 result.expect("launch binds"),
                 Some("microvm-exact".to_owned())
@@ -133,36 +149,47 @@ fn launch_exchange(success: bool) {
                 "MicroVM provider operation failed"
             );
         }
-        assert_eq!(
-            provider
-                .launch_reserved(fixture.url(), &intent, "{}")
-                .expect("repeat has no dispatch grant"),
-            None
-        );
+        let repeat = provider.launch_reserved(&owner, &intent, "{}");
+        if ownership == "active" {
+            assert_eq!(repeat.expect("repeat has no dispatch grant"), None);
+        } else {
+            assert!(repeat.is_err());
+        }
     }
     let requests = server.join().expect("server joins");
-    assert_eq!(requests.len(), 1);
-    assert!(
-        requests[0]
-            .0
-            .to_ascii_lowercase()
-            .contains("authorization: aws4-hmac-sha256")
-    );
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].1).expect("launch body");
-    assert_eq!(body["clientToken"], "intent-fixture");
-    assert_eq!(body["imageVersion"], "1");
-    assert_eq!(body["maximumDurationInSeconds"], 600);
-    assert_eq!(body["idlePolicy"]["autoResumeEnabled"], false);
+    assert_eq!(requests.len(), if ownership == "expired" { 0 } else { 1 });
+    if ownership != "expired" {
+        assert!(
+            requests[0]
+                .0
+                .to_ascii_lowercase()
+                .contains("authorization: aws4-hmac-sha256")
+        );
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].1).expect("launch body");
+        assert_eq!(body["clientToken"], "intent-fixture");
+        assert_eq!(body["imageVersion"], "1");
+        assert_eq!(body["maximumDurationInSeconds"], 600);
+        assert_eq!(body["idlePolicy"]["autoResumeEnabled"], false);
+    }
     let row = fixture.connect().query_one(
         "SELECT phase, provider_id, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-fixture'", &[],
     ).expect("durable launch reads");
     assert_eq!(
         row.get::<_, String>(0),
-        if success { "bound" } else { "ambiguous" }
+        match ownership {
+            "expired" => "prepared",
+            "response-expired" => "dispatching",
+            _ if success => "bound",
+            _ => "ambiguous",
+        }
     );
     assert_eq!(
         row.get::<_, Option<String>>(1).as_deref(),
-        if success { Some("microvm-exact") } else { None }
+        if success && ownership == "active" {
+            Some("microvm-exact")
+        } else {
+            None
+        }
     );
     assert!(row.get::<_, bool>(2));
 }

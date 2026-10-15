@@ -174,10 +174,12 @@ impl Provider {
 
     pub fn launch_reserved(
         &self,
-        database: &(impl crate::persistence::DatabaseSource + ?Sized),
+        owner: &crate::service::singleton_ownership::SingletonOwnership,
         intent: &crate::persistence::MicrovmLaunchIntent,
         payload: &str,
     ) -> Result<Option<String>, ProviderError> {
+        owner.verify().map_err(|_| ProviderError)?;
+        let database = owner.database_url();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -187,13 +189,16 @@ impl Provider {
         {
             return Ok(None);
         }
-        match runtime.block_on(self.launch(
+        owner.verify().map_err(|_| ProviderError)?;
+        let response = runtime.block_on(self.launch(
             &intent.image_arn,
             &intent.image_version,
             &intent.client_token,
             payload,
             intent.maximum_duration_seconds,
-        )) {
+        ));
+        owner.verify().map_err(|_| ProviderError)?;
+        match response {
             Ok(id) => {
                 if !crate::persistence::bind_microvm_launch(database, &intent.intent_id, &id)
                     .map_err(|_| ProviderError)?
