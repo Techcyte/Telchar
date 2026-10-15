@@ -26,6 +26,12 @@ class ProbeState:
         with self.lock:
             return self.result
 
+    def start_hook(self, payload):
+        identity = payload.get("microvmId")
+        if not isinstance(identity, str) or not identity or len(identity) > 256 or payload.get("runHookPayload", "") != "":
+            raise ValueError("invalid probe hook")
+        return self.start(identity)
+
     def start(self, identity):
         with self.lock:
             if self.identity is not None:
@@ -99,11 +105,12 @@ def make_server(address, state, daemon_ready):
                 self.reply(400)
                 return
             if self.path == PREFIX + "run":
-                identity = payload.get("microvmId")
-                if not isinstance(identity, str) or not identity or len(identity) > 256 or payload.get("runHookPayload", "") != "":
+                try:
+                    accepted = state.start_hook(payload)
+                except (ValueError, OSError):
                     self.reply(400)
                     return
-                self.reply(200 if state.start(identity) else 409)
+                self.reply(200 if accepted else 409)
             elif self.path in (PREFIX + "ready", PREFIX + "validate", PREFIX + "resume"):
                 self.reply(409 if state.status() == "running" else (200 if daemon_ready() else 503))
             elif self.path == PREFIX + "suspend":

@@ -2564,6 +2564,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
