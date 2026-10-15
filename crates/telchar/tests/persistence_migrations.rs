@@ -1,13 +1,12 @@
 //! Tests migration ledger, schema, and backfill behavior contracts and failure boundaries.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::sync::Arc;
 use std::thread;
 
 use postgres::types::Type;
 use sha2::{Digest, Sha256};
-use support::postgres::PostgresFixture;
 
 #[test]
 fn verified_tls_database_migrates() {

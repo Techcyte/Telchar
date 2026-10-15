@@ -1,6 +1,6 @@
 //! Tests the bounded read-only operator command surface.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -8,7 +8,6 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use support::postgres::PostgresFixture;
 
 #[test]
 fn config_check_reports_configured_backends_without_database_access() {

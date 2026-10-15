@@ -1,10 +1,8 @@
 //! Tests singleton ownership contracts and failure boundaries, including only one owner acquires the database lifetime lock.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::time::Duration;
-
-use support::postgres::PostgresFixture;
 
 #[test]
 fn tls_owner_acquires_and_renews_the_database_lease() {

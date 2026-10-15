@@ -1,7 +1,5 @@
 //! Exercises the signed provider client against a real loopback HTTP boundary.
 
-mod support;
-
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
@@ -24,7 +22,7 @@ fn uncertain_http_outcomes_never_retry_or_release_capacity() {
 }
 
 fn launch_exchange(success: bool, ownership: &'static str) {
-    let fixture = support::postgres::PostgresFixture::start();
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider.drv";
     telchar::persistence::claim_shared_build(

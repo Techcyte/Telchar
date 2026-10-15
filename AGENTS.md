@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_64-linux` only; `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Nix flake outputs target `x86_64-linux` only; `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
@@ -25,6 +25,7 @@ Four Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_64
 | `crates/telchar/` | Gateway library and `telchar` binary: ingress, coordination, stores, backends, operator inspection, telemetry. |
 | `crates/telchar-nomad-worker/` | Allocation-side worker binary/library: callback authentication, inputs, Nix build, logs, output return. Depends on the gateway, protocol, and telemetry crates. |
 | `crates/telchar-telemetry/` | Shared local tracing, bounded OTLP exporters, and phase progress reporting for the gateway and allocation worker. No scheduling or persistence policy. |
+| `crates/telchar-test-support/` | Shared isolated PostgreSQL integration fixtures; dev-dependency only, not published. |
 | `crates/telchar/migrations/` | Numbered PostgreSQL schema migrations, embedded by `persistence/migrations.rs`. |
 | `nix/` | Packages, OCI archives, Telchar NixOS service module, SSH identity adapter, product flake checks. |
 | `nix/checks/nixos/`, `tests/nixos/` | Executable VM contracts and shared fixtures. `tests/nixos/lib.nix` exports constructors; `common.nix`, `ingress.nix`, `static-ssh.nix`, `nomad.nix`, and `recovery.nix` own their topologies and setup. |
@@ -105,7 +106,7 @@ nix develop -c cargo test --locked -p telchar --test shared_build_recovery -- --
 nix develop -c cargo test --locked -p telchar-nomad-worker -- --test-threads=1
 ```
 
-Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL/admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
+Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL fixtures live in `crates/telchar-test-support/`; admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
 
 ### Workspace and flake checks
 

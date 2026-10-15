@@ -10,9 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
-use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 use telchar::service::executor_service::{

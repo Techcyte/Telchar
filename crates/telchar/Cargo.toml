@@ -44,6 +44,7 @@ aws-credential-types = "1.3.0"
 aws-sdk-lambdamicrovms = { version = "1.13.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 
 [dev-dependencies]
+telchar-test-support = { path = "../telchar-test-support" }
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true

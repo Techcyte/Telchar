@@ -89,7 +89,7 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
         )));
         write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
     });
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let digest = admitted.shared_build_digest();
     telchar::persistence::claim_shared_build_with_request(
@@ -186,7 +186,7 @@ fn configured_backend_does_not_retry_callback_recorded_build_failure() {
             "deterministic build failure was retried"
         );
     });
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let derivation = std::str::from_utf8(admitted.derivation_path()).expect("derivation is UTF-8");
     telchar::persistence::claim_shared_build_with_request(
@@ -290,7 +290,7 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
             write_json_response(&mut status, 404, r#"{}"#);
         }
     });
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let derivation = std::str::from_utf8(admitted.derivation_path()).expect("derivation is UTF-8");
     telchar::persistence::claim_shared_build_with_request(
@@ -404,7 +404,7 @@ fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
         );
         second_status_tx.send(()).expect("second status reports");
     });
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let derivation_path =
         std::str::from_utf8(admitted.derivation_path()).expect("derivation path is UTF-8");
@@ -550,7 +550,7 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
         )
         .expect("trace context validates"),
     );
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let request = &admitted;
     let digest = request.shared_build_digest();

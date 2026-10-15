@@ -4,6 +4,7 @@ members = [
   "crates/telchar",
   "crates/telchar-nomad-worker",
   "crates/telchar-telemetry",
+  "crates/telchar-test-support",
 ]
 resolver = "2"
 

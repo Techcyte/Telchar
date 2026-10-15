@@ -1,10 +1,9 @@
 //! Exercises durable MicroVM launch identity and ownership with PostgreSQL.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::time::Duration;
 
-use support::postgres::PostgresFixture;
 use telchar::backend::BackendKind;
 
 fn prepared_launch() -> PostgresFixture {

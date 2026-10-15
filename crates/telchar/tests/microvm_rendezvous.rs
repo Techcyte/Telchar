@@ -1,7 +1,5 @@
 //! MicroVM bootstrap admission over real loopback sockets and PostgreSQL.
 
-mod support;
-
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -9,7 +7,7 @@ use tungstenite::client::IntoClientRequest;
 
 #[test]
 fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
-    let fixture = support::postgres::PostgresFixture::start();
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migrate");
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
@@ -123,7 +121,7 @@ fn early_wait_rejects_cancellation_expiry_and_ownership_loss() {
 }
 
 fn socket_capability_exchange(interruption: &str) {
-    let fixture = support::postgres::PostgresFixture::start();
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migrate");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rendezvous.drv";
     telchar::persistence::claim_shared_build(

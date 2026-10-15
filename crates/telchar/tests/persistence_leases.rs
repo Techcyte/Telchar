@@ -1,13 +1,12 @@
 //! Tests store-lease, retained-byte, and request-release persistence contracts and failure boundaries.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::fmt;
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::Duration;
 
-use support::postgres::PostgresFixture;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;

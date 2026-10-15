@@ -1,7 +1,5 @@
 //! Exercises exact provider identity through a real signed HTTP exchange.
 
-mod support;
-
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
@@ -48,7 +46,7 @@ fn exchange(
             .expect("response sends");
         String::from_utf8(headers).expect("HTTP text")
     });
-    let fixture = support::postgres::PostgresFixture::start();
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cleanup.drv";
     telchar::persistence::claim_shared_build(

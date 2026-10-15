@@ -1,11 +1,9 @@
 //! Tests protocol-session, request, and attachment persistence contracts and failure boundaries.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::sync::Arc;
 use std::thread;
-
-use support::postgres::PostgresFixture;
 
 #[path = "persistence_sessions/attachments.rs"]
 mod attachments;

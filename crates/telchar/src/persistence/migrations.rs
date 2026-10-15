@@ -259,15 +259,8 @@ fn checksum(sql: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    mod postgres {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/postgres.rs"
-        ));
-    }
-
     use super::*;
-    use postgres::PostgresFixture;
+    use telchar_test_support::postgres::PostgresFixture;
 
     #[test]
     fn migration_metadata_is_valid() {

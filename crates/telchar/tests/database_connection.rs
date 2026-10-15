@@ -1,6 +1,4 @@
-mod support;
-
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[derive(Clone)]
 struct TestDatabase {

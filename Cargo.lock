@@ -2567,6 +2567,7 @@ dependencies = [
  "sha2",
  "signal-hook",
  "telchar-telemetry",
+ "telchar-test-support",
  "tempfile",
  "tokio",
  "tokio-postgres-rustls",
@@ -2597,6 +2598,7 @@ dependencies = [
  "sha2",
  "telchar",
  "telchar-telemetry",
+ "telchar-test-support",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -2622,6 +2624,13 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "telchar-test-support"
+version = "0.1.0"
+dependencies = [
+ "postgres",
 ]
 
 [[package]]

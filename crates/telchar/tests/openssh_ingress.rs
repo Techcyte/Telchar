@@ -9,9 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod support;
-
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn arbitrary_ssh_command_is_replaced_by_forced_command() {

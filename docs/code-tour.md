@@ -4,12 +4,14 @@ This guide maps Telchar's source tree to stable architectural boundaries. Read [
 
 ## Fast orientation
 
-Telchar has four Rust crates:
+Telchar has four product Rust crates:
 
 - `crates/nix-worker-protocol` provides bounded, typed Nix worker-protocol I/O without Telchar policy.
 - `crates/telchar` provides ingress, daemon composition, durable coordination, store access, and backend execution.
 - `crates/telchar-nomad-worker` provides the allocation-side Nomad worker.
 - `crates/telchar-telemetry` provides shared local tracing, bounded OTLP exporters, and phase progress reporting.
+
+`crates/telchar-test-support` is a private dev-dependency crate providing isolated PostgreSQL integration fixtures.
 
 PostgreSQL migrations live in `crates/telchar/migrations/`. Nix packaging and executable system tests live under `nix/` and `tests/nixos/`.
 
@@ -143,7 +145,7 @@ Integration tests are organized by behavior. Larger suites use a small root fixt
 - `nomad_backend.rs` with `nomad_backend/{client,execution,identity,rendering}.rs`;
 - `ipc_frontend.rs` with `ipc_frontend/{handshake,ownership,readiness,sessions,socket}.rs`.
 
-Shared PostgreSQL and admitted-request helpers live under `tests/support/`.
+Shared PostgreSQL fixtures live in `crates/telchar-test-support/`. Admitted-request helpers live under the gateway crate's `tests/support/`.
 
 Release-relevant files:
 

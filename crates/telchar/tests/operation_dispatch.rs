@@ -15,13 +15,11 @@ use nix_worker_protocol::{
 };
 use telchar::fixture::nix::{NixFixture, TrustMode};
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[allow(dead_code)]
 #[path = "../../../tests/telemetry/collector.rs"]
 mod collector;
-
-use support::postgres::PostgresFixture;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

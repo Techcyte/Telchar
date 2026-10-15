@@ -1,7 +1,5 @@
 //! Tests nomad callback admission contracts and failure boundaries, including authentication.
 
-mod support;
-
 use std::cell::RefCell;
 use std::io;
 use std::time::{Duration, UNIX_EPOCH};
@@ -207,7 +205,7 @@ fn resolves_exact_active_callback_execution() {
 
 #[test]
 fn postgres_resolver_requires_exact_active_nomad_execution() {
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let digest = [3_u8; 32];
     telchar::persistence::claim_shared_build(

@@ -1,6 +1,6 @@
 //! Tests shared build recovery contracts and failure boundaries, including claim.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -11,8 +11,6 @@ use telchar::persistence::{SharedBuild, SharedBuildState};
 use telchar::shared_build::recovery::{
     AdoptedExecution, RecoveryBackend, SharedBuildOutputStore, reconcile_active_shared_builds,
 };
-
-use support::postgres::PostgresFixture;
 
 const DERIVATION: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-recovery.drv";
 const OUTPUT: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-recovery";

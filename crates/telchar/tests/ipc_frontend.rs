@@ -11,9 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod support;
-
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
 use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};

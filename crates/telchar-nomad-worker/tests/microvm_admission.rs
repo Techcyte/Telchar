@@ -1,9 +1,4 @@
-mod postgres {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../telchar/tests/support/postgres.rs"
-    ));
-}
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -12,7 +7,7 @@ use tungstenite::client::IntoClientRequest;
 
 #[test]
 fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
-    let database = postgres::PostgresFixture::start();
+    let database = PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("migrate");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tls.drv";
     telchar::persistence::claim_shared_build(
