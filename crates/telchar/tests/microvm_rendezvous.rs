@@ -16,6 +16,8 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
         Duration::from_secs(30),
     )
     .expect("owner");
+    let pending =
+        telchar::microvm::rendezvous::PendingConnections::new(2, 1).expect("pending limits");
     for case in [
         "path",
         "query",
@@ -38,6 +40,7 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
                     stream,
                     &owner,
                     Instant::now() + Duration::from_millis(500),
+                    pending.reserve().expect("pending slot"),
                 )
                 .is_err()
             });
@@ -160,6 +163,8 @@ fn socket_capability_exchange(disconnect: bool) {
         Duration::from_secs(30),
     )
     .expect("owner");
+    let pending =
+        telchar::microvm::rendezvous::PendingConnections::new(2, 1).expect("pending limits");
     for (bearer, id, accepted) in [
         ("wrong", "microvm-exact", false),
         (capability.bearer(), "microvm-other", false),
@@ -175,6 +180,7 @@ fn socket_capability_exchange(disconnect: bool) {
                     stream,
                     &owner,
                     Instant::now() + Duration::from_secs(2),
+                    pending.reserve().expect("pending slot"),
                 )
                 .is_ok()
             });

@@ -11,6 +11,80 @@ use tungstenite::protocol::{Message, WebSocket, WebSocketConfig};
 use super::ProviderError;
 use crate::service::singleton_ownership::SingletonOwnership;
 
+pub struct PendingConnections {
+    maximum: usize,
+    maximum_backend: usize,
+    counts: std::sync::Mutex<PendingCounts>,
+}
+
+#[derive(Default)]
+struct PendingCounts {
+    total: usize,
+    backends: std::collections::HashMap<String, usize>,
+}
+
+pub struct PendingConnection<'a> {
+    limits: &'a PendingConnections,
+    backend: Option<String>,
+}
+
+impl PendingConnections {
+    pub fn new(maximum: usize, maximum_backend: usize) -> Result<Self, ProviderError> {
+        if maximum == 0 || maximum_backend == 0 || maximum_backend > maximum {
+            return Err(ProviderError);
+        }
+        Ok(Self {
+            maximum,
+            maximum_backend,
+            counts: std::sync::Mutex::new(PendingCounts::default()),
+        })
+    }
+
+    pub fn reserve(&self) -> Result<PendingConnection<'_>, ProviderError> {
+        let mut counts = self.counts.lock().map_err(|_| ProviderError)?;
+        if counts.total >= self.maximum {
+            return Err(ProviderError);
+        }
+        counts.total += 1;
+        Ok(PendingConnection {
+            limits: self,
+            backend: None,
+        })
+    }
+}
+
+impl PendingConnection<'_> {
+    pub fn authenticate(&mut self, backend: &str) -> Result<(), ProviderError> {
+        if self.backend.is_some() || backend.is_empty() || backend.len() > 256 {
+            return Err(ProviderError);
+        }
+        let mut counts = self.limits.counts.lock().map_err(|_| ProviderError)?;
+        let count = counts.backends.entry(backend.to_owned()).or_default();
+        if *count >= self.limits.maximum_backend {
+            return Err(ProviderError);
+        }
+        *count += 1;
+        self.backend = Some(backend.to_owned());
+        Ok(())
+    }
+}
+
+impl Drop for PendingConnection<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = self.limits.counts.lock() {
+            counts.total -= 1;
+            if let Some(backend) = &self.backend
+                && let Some(count) = counts.backends.get_mut(backend)
+            {
+                *count -= 1;
+                if *count == 0 {
+                    counts.backends.remove(backend);
+                }
+            }
+        }
+    }
+}
+
 pub struct SessionStream {
     inner: TcpStream,
     deadline: Instant,
@@ -89,6 +163,7 @@ pub fn accept_session(
     stream: TcpStream,
     owner: &SingletonOwnership,
     deadline: Instant,
+    mut pending: PendingConnection<'_>,
 ) -> Result<WebSocket<SessionStream>, ProviderError> {
     owner.verify().map_err(|_| ProviderError)?;
     let stream = SessionStream {
@@ -134,6 +209,14 @@ pub fn accept_session(
         return Err(ProviderError);
     }
     let verifier = super::bearer_verifier(&bootstrap.bearer).ok_or(ProviderError)?;
+    let backend = crate::persistence::microvm_session_backend(
+        owner.database_url(),
+        &bootstrap.intent_id,
+        &verifier,
+    )
+    .map_err(|_| ProviderError)?
+    .ok_or(ProviderError)?;
+    pending.authenticate(&backend)?;
     loop {
         if Instant::now() >= deadline {
             return Err(ProviderError);
