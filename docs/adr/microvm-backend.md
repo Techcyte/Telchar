@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed; incomplete design under review. Not accepted or implemented.
+Proposed; incomplete design under review. Not implemented. Travis approved the
+first-release launch-ambiguity and output-only recovery limits below; that
+approval does not accept the whole ADR or authorize implementation.
 
 ## Scope
 
@@ -86,9 +88,138 @@ Checked public documentation during design; no account API calls:
    fresh post-restore daemon startup against snapshot-safe dependency packaging;
    image readiness and exact startup/sandbox checks need a coherent policy.
 
+## Proposed launch transaction
+
+Use a gateway-generated random execution-intent ID as the durable backend
+execution identity. Store provider ID separately; neither derivation identity
+nor provider list order is a substitute. Create one launch record linked to the
+exact shared-build attempt, under current ownership and before any remote call.
+
+Proposed launch record fields:
+
+- intent ID, attempt ID, admitted specification digest and backend name;
+- immutable account/region/image ARN/version and deployment configuration digest;
+- client token and digest of the exact launch request, excluding secret material;
+- launch phase, creator ownership generation and creation timestamps;
+- admission cutoff, provider maximum duration, nullable provider ID and cleanup
+  obligation/status; all state transitions compare the exact attempt/intent;
+- bootstrap credential verifier, expiration and session-consumed state, never
+  bearer bytes, NARs or logs. Secret persistence policy remains a design question.
+
+The request digest must not be presented as replayable request content. A digest
+cannot recover omitted secret payload bytes. The first-release proposal does not
+replay `RunMicrovm` after an ambiguous outcome; explicitly disable SDK automatic
+launch retries too. Pass a unique client token as defense in depth, not as an
+undocumented restart-recovery guarantee. Reads and exact-ID termination may use
+bounded backoff without creating replacement execution.
+
+In one fenced transaction, mark the intent `dispatching` and grant exactly one
+local dispatch. Commit before calling AWS. A crash between that commit and the
+call is deliberately treated as possibly launched; it cannot be distinguished
+from a lost response. This trades availability for avoiding duplicate builds.
+If a response arrives, validate account-scoped client context, expected image and
+version, and bounded response identity before atomically binding provider ID.
+Conflicting IDs are an incident, never a last-write-wins update.
+
+`prepared`, `dispatching`, `bound`, `ambiguous` and `closed` describe the launch
+record, not additional shared-build states. Cleanup status is independent of
+shared-build success/failure so a successful registered result cannot erase an
+unconfirmed termination obligation. Append-only migration and ownership trigger
+coverage are required for every mutable table.
+
+### Crash and ambiguity matrix
+
+| Boundary | Proposed handling |
+| --- | --- |
+| Before launch record commit | No remote call permitted; ordinary queued/admission handling |
+| Prepared but not dispatching | Current owner may grant the single dispatch, after checking cutoff and cancellation |
+| Dispatching committed, no bound ID | Treat as ambiguous; never issue another launch |
+| Response received, ID commit fails | No build authorization; preserve exact response in surviving process memory for fenced reconciliation by current owner, otherwise ambiguity remains |
+| Exact ID durably bound, worker not admitted | Current owner may authorize the original bounded bootstrap session; no new launch |
+| Worker session admitted, gateway dies | Outputs-first reconciliation; incomplete transfer fails first-release recovery; retain cleanup obligation |
+| Some outputs registered | Not success until all expected outputs validate; no output-set inference from provider termination |
+| All outputs valid, terminal result absent | Existing outputs-first recovery records success; still reconcile cleanup |
+| Termination requested, confirmation missing | Bounded retry/query exact ID; retained cleanup-pending status |
+| Provider ID unknown through cutoff | Fail request with launch-ambiguous classification, retain capacity/cleanup quarantine; no inferred absence from listing |
+
+Unknown-ID quarantine cannot be safely released solely at `intent creation +
+maximum duration`: the provider may accept/start later, and the documented API
+request timeout does not establish cancellation of server work. A defensible
+release bound needs a provider-guaranteed acceptance/start limit or an explicit
+operator reconciliation decision. This is a release blocker for unattended
+capacity reuse, not a reason to silently add a guessed time margin. Known IDs
+have exact cleanup polling; provider maximum duration remains defense in depth.
+
+## Proposed early worker rendezvous
+
+Replace the experimental opaque TCP relay with an application-level bounded
+bootstrap rendezvous. The worker receives intent ID, expiring random capability,
+callback URL and trust configuration only through `/run`, and freshly executes
+the TLS client after restore. The operator owns public TLS termination; Telchar
+must not acquire native TLS termination as a side effect of this backend.
+
+Authenticate a small bootstrap message before retaining any wait slot. Capability
+possession proves knowledge of launch-specific initialization, not independently
+attested AWS identity. Until the API-returned exact ID is durably bound and
+matches the hook-reported ID, send no manifest, inputs or build authorization.
+Do not bind the provider ID solely from a bearer client's assertion. Bounded
+waiting ends at admission cutoff; malformed/unknown/foreign sessions fail closed.
+Global/per-backend pending-connection limits and per-message byte/time limits
+prevent a capability-free connection flood from consuming execution capacity.
+
+After binding, one fenced admission transaction verifies current owner, exact
+attempt, nonterminal shared build, matching provider ID, credential verifier,
+expiry and unused session slot, then consumes the slot. A crash after consumption
+but before manifest delivery fails closed; no transparent session replay. Hook
+idempotence is distinct from reconnect permission. Repeated identical `/run`
+cannot start another worker; different binding must be rejected.
+
+This conservative proposal does not use a callback to rescue a lost launch
+response. That alternative would need a stronger documented identity binding or
+explicitly accepted trusted-image capability attestation model. Record it as an
+alternative rather than quietly broadening credential authority.
+
+## Ownership and first-release recovery boundaries
+
+PostgreSQL lease verification immediately precedes remote mutations but cannot
+make AWS calls atomic with ownership. A paused former owner may resume between
+verification and remote launch. It must never authorize a build after losing its
+fenced database authority; new ownership never dispatches an intent already
+marked dispatching. This limits duplicate launches for one intent but does not
+prove instantaneous cessation of remote side effects.
+
+Stale owners must stop callback/store activity and must not terminate an adopted
+execution based on stale cancellation state. Exact cleanup belongs to current
+ownership; queued cleanup survives process death. Database fencing also does not
+roll back an already issued Nix store import. Store validation and eventual
+outputs-first recovery remain necessary, with no claim of distributed atomicity.
+
+Travis approved output-only build recovery for the first release. A durable
+worker reconnect protocol is outside that release. A known provider ID supports
+cleanup/inspection, not automatic adoption of a dead WebSocket. After restart,
+complete exact gateway outputs win; otherwise fail the interrupted build and
+terminate its known execution. Do not label provider RUNNING status as resumable
+build recovery. This deliberate availability limitation is approved for the
+first release.
+
+## Approved first-release limits
+
+Travis approved these recommendations during design:
+
+- An ambiguous launch fails the build without automatic relaunch or binding
+  solely from callback-reported identity. Retain capacity quarantine and cleanup
+  obligation until operator reconciliation; do not invent a time-based release.
+- After gateway restart, exact validated gateway outputs win. Otherwise fail the
+  interrupted build and terminate the known MicroVM; no running-build adoption
+  or resumable WebSocket claim.
+
+These decisions constrain the remaining design. Operator reconciliation still
+needs a concrete, auditable workflow; approval is not permission to discard an
+unknown execution or terminate unrelated resources.
+
 ## Remaining proposal sections
 
-Durable state/crash matrix, authentication/transport, lifecycle/recovery,
-configuration and deployment, implementation slices, qualification gates,
-alternatives and approval decisions are pending. This document is not an
-implementation authorization.
+Credential durability and callback transport extraction, capacity quarantine,
+configuration/deployment, image startup, implementation slices, qualification
+gates, alternatives and approval decisions remain pending. This document is not
+an implementation authorization.
