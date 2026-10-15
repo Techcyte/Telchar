@@ -57,6 +57,146 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn admission_consumes_exact_bound_capability_once_across_restart() {
+    let mut fixture = prepared_launch();
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("dispatch")
+    );
+    assert!(
+        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+            .expect("bind")
+    );
+    for (id, verifier) in [("microvm-other", [3; 32]), ("microvm-exact", [4; 32])] {
+        assert!(
+            !telchar::persistence::admit_microvm_session(
+                fixture.url(),
+                "intent-one",
+                id,
+                &verifier
+            )
+            .expect("wrong credential rejected")
+        );
+    }
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let callers: Vec<_> = (0..2)
+        .map(|_| {
+            let url = fixture.url().to_owned();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                telchar::persistence::admit_microvm_session(
+                    &url,
+                    "intent-one",
+                    "microvm-exact",
+                    &[3; 32],
+                )
+                .expect("admission resolves")
+            })
+        })
+        .collect();
+    let results: Vec<_> = callers
+        .into_iter()
+        .map(|caller| caller.join().expect("admission joins"))
+        .collect();
+    assert_eq!(results.into_iter().filter(|admitted| *admitted).count(), 1);
+    fixture.restart();
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            fixture.url(),
+            "intent-one",
+            "microvm-exact",
+            &[3; 32]
+        )
+        .expect("consumed session cannot reconnect")
+    );
+}
+
+#[test]
+fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
+    for gate in [
+        "prepared",
+        "expired",
+        "cancelled",
+        "released",
+        "terminal",
+        "fenced",
+    ] {
+        let fixture = prepared_launch();
+        if gate != "prepared" {
+            assert!(
+                telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+                    .expect("dispatch")
+            );
+            assert!(
+                telchar::persistence::bind_microvm_launch(
+                    fixture.url(),
+                    "intent-one",
+                    "microvm-exact"
+                )
+                .expect("bind")
+            );
+        }
+        match gate {
+            "expired" => {
+                fixture.connect().batch_execute("UPDATE microvm_launches SET created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute'").expect("expired fixture");
+            }
+            "cancelled" => {
+                telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+                    .expect("cancel");
+            }
+            "released" => {
+                fixture
+                    .connect()
+                    .batch_execute(
+                        "UPDATE microvm_launches SET reservation_released_at = clock_timestamp()",
+                    )
+                    .expect("released fixture");
+            }
+            "terminal" => {
+                telchar::persistence::complete_shared_build_failure(
+                    fixture.url(),
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
+                    "fixture-failure",
+                    &serde_json::json!({}),
+                    Duration::from_secs(3600),
+                )
+                .expect("terminal build");
+            }
+            _ => {}
+        }
+        let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(20),
+        )
+        .expect("owner");
+        if gate == "fenced" {
+            fixture.expire_singleton_ownership("daemon");
+        }
+        let result = telchar::persistence::admit_microvm_session(
+            owner.database_url(),
+            "intent-one",
+            "microvm-exact",
+            &[3; 32],
+        );
+        if gate == "fenced" {
+            assert!(result.is_err());
+        } else {
+            assert!(!result.expect("gate rejects"), "{gate}");
+        }
+        let consumed: bool = fixture
+            .connect()
+            .query_one(
+                "SELECT session_consumed_at IS NOT NULL FROM microvm_launches",
+                &[],
+            )
+            .expect("consumption reads")
+            .get(0);
+        assert!(!consumed, "{gate}");
+    }
+}
+
+#[test]
 fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
     let mut fixture = prepared_launch();
     let first_attempt: i64 = fixture

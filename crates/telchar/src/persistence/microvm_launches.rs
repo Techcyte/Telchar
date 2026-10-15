@@ -175,6 +175,44 @@ pub fn reserve_microvm_launch(
     Ok(inserted == 1)
 }
 
+/// Consumes a verified capability for one exact bound worker session.
+pub fn admit_microvm_session(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+    credential_verifier: &[u8; 32],
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(admit_microvm_session));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let active = transaction
+        .query_opt(
+            "SELECT b.derivation_path FROM shared_builds b
+         JOIN shared_build_attempts a ON a.derivation_path = b.derivation_path
+         JOIN microvm_launches l ON l.attempt_id = a.attempt_id
+         WHERE l.intent_id = $1 AND b.state = 'running' AND a.state = 'running'
+           AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name
+         FOR UPDATE OF b, a",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    if active.is_none() {
+        return Ok(false);
+    }
+    let consumed = transaction
+        .execute(
+            "UPDATE microvm_launches SET session_consumed_at = clock_timestamp()
+         WHERE intent_id = $1 AND provider_id = $2 AND credential_verifier = $3
+           AND phase = 'bound' AND admission_cutoff > clock_timestamp()
+           AND session_consumed_at IS NULL AND reservation_released_at IS NULL",
+            &[&intent_id, &provider_id, &&credential_verifier[..]],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(consumed == 1)
+}
+
 pub fn bind_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
