@@ -1,7 +1,7 @@
 //! Disposable execution-authenticated WSS receiver fixture.
 
 use rustls::pki_types::pem::PemObject;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use telchar::nomad::protocol::{
     Direction, Frame, FrameKind, InputManifest, PathSet, ProtocolLimits, TransferSession,
@@ -99,6 +99,21 @@ fn register_output(
     Ok(())
 }
 
+fn stage_output(directory: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = directory.join(format!("output-{}-{sequence}.nar", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(path)?;
+    Ok(file)
+}
+
 fn exchange<S: Read + Write>(
     socket: &mut tungstenite::WebSocket<S>,
     manifest: InputManifest,
@@ -140,7 +155,7 @@ fn exchange<S: Read + Write>(
             session.accept(Direction::GatewayToWorker, frame.clone())
         })?;
     }
-    let mut current: Option<(telchar::nomad::protocol::PathManifestEntry, Vec<u8>)> = None;
+    let mut current: Option<(telchar::nomad::protocol::PathManifestEntry, std::fs::File)> = None;
     loop {
         let frame = receive(socket)?;
         session.accept(Direction::WorkerToGateway, frame.clone())?;
@@ -158,7 +173,10 @@ fn exchange<S: Read + Write>(
                 if current.is_some() {
                     return Err(io::Error::other("interleaved output"));
                 }
-                current = Some((decode_metadata(frame.metadata(), METADATA)?, Vec::new()));
+                current = Some((
+                    decode_metadata(frame.metadata(), METADATA)?,
+                    stage_output(directory)?,
+                ));
             }
             FrameKind::OutputNar => {
                 let chunk: telchar::nomad::protocol::NarMetadata =
@@ -169,14 +187,15 @@ fn exchange<S: Read + Write>(
                 if chunk.path != metadata.path
                     || chunk.nar_hash != metadata.nar_hash
                     || chunk.nar_size != metadata.nar_size
-                    || chunk.offset != bytes.len() as u64
+                    || chunk.offset != bytes.stream_position()?
                 {
                     return Err(io::Error::other("output chunk metadata mismatch"));
                 }
-                bytes.extend_from_slice(frame.payload());
+                bytes.write_all(frame.payload())?;
                 if chunk.final_chunk {
+                    bytes.seek(SeekFrom::Start(0))?;
                     register_output(
-                        bytes.as_slice(),
+                        bytes,
                         metadata,
                         directory,
                         Path::new("/nix/store"),
@@ -317,6 +336,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use tungstenite::http::Request;
+
+    #[test]
+    fn output_staging_is_seekable_and_unlinked() {
+        use std::io::{Seek, SeekFrom};
+        let directory = std::env::temp_dir().join(format!("microvm-stage-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut file = stage_output(&directory).unwrap();
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        file.write_all(b"first").unwrap();
+        file.write_all(b"second").unwrap();
+        assert_eq!(file.stream_position().unwrap(), 11);
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "firstsecond");
+        drop(file);
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn returned_nar_is_validated_and_registered_in_real_store() {

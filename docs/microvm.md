@@ -133,9 +133,9 @@ python3 tests/microvm/local-exchange.py
 Docker, OpenSSL, `ldd` and `patchelf` must be available. The script removes its exact
 containers and network on exit. `nix/microvm-worker.nix` composes the fixed worker
 and runtime adapter for ARM packaging; its AWS WSS qualification is pending.
-Receiver output buffering is bounded but remains memory-backed, so large-transfer
-measurements must wait for disk staging. TLS snapshot uniqueness and reconnect
-behavior remain unqualified.
+Receiver output chunks are staged in an unlinked, mode-0600 file and rewound for
+validation before registration. Protocol transfer limits still bound disk use.
+TLS snapshot uniqueness and reconnect behavior remain unqualified.
 
 ## Proposed integration boundary
 
