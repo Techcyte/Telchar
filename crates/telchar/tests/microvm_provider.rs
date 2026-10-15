@@ -16,6 +16,13 @@ fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
     launch_exchange(true, "region-mismatch");
 }
 
+#[test]
+fn uncertain_http_outcomes_never_retry_or_release_capacity() {
+    for fault in ["dropped", "malformed", "timeout"] {
+        launch_exchange(false, fault);
+    }
+}
+
 fn launch_exchange(success: bool, ownership: &'static str) {
     let fixture = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
@@ -104,7 +111,16 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     if ownership == "response-expired" {
                         postgres::Client::connect(&control_url, postgres::NoTls).expect("fixture control connects").batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").expect("owner expires during request");
                     }
-                    let (status, body) = if success {
+                    if ownership == "dropped" {
+                        continue;
+                    }
+                    if ownership == "timeout" {
+                        std::thread::sleep(Duration::from_millis(1300));
+                        continue;
+                    }
+                    let (status, body) = if ownership == "malformed" {
+                        ("200 OK", "{invalid".to_owned())
+                    } else if success {
                         ("200 OK", serde_json::json!({
                             "microvmId": "microvm-exact", "state": "PENDING", "endpoint": "https://unused.invalid",
                             "imageArn": "image-fixture", "imageVersion": "1", "maximumDurationInSeconds": 600, "startedAt": 1,
@@ -154,7 +170,12 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         } else {
             "{}"
         };
+        let started = std::time::Instant::now();
         let result = provider.launch_reserved(&owner, &intent, payload);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "bounded launch: {ownership}"
+        );
         if ownership != "active" {
             assert!(result.is_err(), "expired owner cannot dispatch or bind");
         } else if success {
@@ -169,7 +190,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             );
         }
         let repeat = provider.launch_reserved(&owner, &intent, payload);
-        if ownership == "active" {
+        if matches!(ownership, "active" | "dropped" | "malformed" | "timeout") {
             assert_eq!(repeat.expect("repeat has no dispatch grant"), None);
         } else {
             assert!(repeat.is_err());
