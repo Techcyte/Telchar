@@ -213,13 +213,142 @@ Travis approved these recommendations during design:
   interrupted build and terminate the known MicroVM; no running-build adoption
   or resumable WebSocket claim.
 
-These decisions constrain the remaining design. Operator reconciliation still
-needs a concrete, auditable workflow; approval is not permission to discard an
-unknown execution or terminate unrelated resources.
+These decisions constrain the remaining design; approval is not permission to
+discard an unknown execution or terminate unrelated resources.
+
+## Capacity quarantine and operator reconciliation
+
+A normal backend permit governs active dispatch, but an in-memory permit cannot
+represent unresolved remote cost after process death. Add a durable per-backend
+execution reservation linked to the intent. Reserve transactionally before
+marking dispatching, counting all nonreleased reservations across generations.
+The existing fair scheduler still selects work; this reservation is an external
+execution safety gate, not another queue or a second quota charged to followers.
+
+Known-ID capacity releases only after observed terminal execution or an explicit
+operator resolution. Build completion may release subject admission while remote
+capacity remains occupied for cleanup. An ambiguous intent keeps its reservation
+after the build fails. Restart reconstructs these obligations before accepting
+new MicroVM dispatches. If quarantined reservations consume all configured
+capacity, that backend becomes unschedulable; do not borrow capacity from another
+backend to resume the same execution. Separate configured aggregate launch-rate
+and unresolved-intent limits prevent runaway API traffic.
+
+Keep `telchar operator` read-only. It reports intent/attempt/backend, phase,
+creation time, provider ID if known, cleanup status and bounded failure reason;
+no capability, hook body or credential hash is exposed. Resolution is a proposed
+separate explicit administrative action routed to the active daemon, with local
+administrator authentication, current ownership and compare-and-set against the
+exact unresolved intent. Do not create an unfenced direct database repair path.
+
+Resolution choices:
+
+1. Attach an exact provider ID only with an audited evidence reference linking
+   it to this launch (for example a retained exact successful response recovered
+   by the operator). Verify configured account/region and image/version with the
+   provider. Image/version/time matching alone is insufficient. Attachment enables
+   exact cleanup only; it never resurrects a failed build or authorizes worker
+   admission after cutoff.
+2. Record verified termination for an already bound ID after an exact query.
+3. Explicitly acknowledge unresolved remote-execution risk and release the
+   reservation. Require intent ID, reason and evidence reference, record actor,
+   ownership generation and database timestamp, and clearly label this as risk
+   acceptance, not verified absence. No automatic TTL or blanket reset operation.
+
+Release does not delete the obligation or its audit history. A later exact ID
+observation remains visible and eligible for cleanup by current ownership, even
+if capacity was manually released. Do not claim token/list matching can discover
+all orphan instances. Operators may elect to disable backend dispatch rather
+than accept this risk. Administrative command shape and deployment authentication
+must be reviewed before implementation; no public mutation endpoint is implied.
+
+## Credential and transport proposal
+
+Generate a fresh 256-bit random bootstrap capability in the gateway after intent
+creation, using OS entropy. Persist only its cryptographic verifier, expiry and
+consumption status. Carry the bearer only in the bounded `/run` payload and
+worker runtime-only0600 file; never in generated Nix configuration, database,
+CLI arguments, telemetry or diagnostic bodies. No need to recover the bearer on
+restart: approved output-only recovery closes interrupted work. If the process
+dies before dispatch, abandon that unused intent rather than silently generate a
+different request under its token. Marking dispatching requires a verifier already
+committed and the original payload available in the issuing process memory.
+
+Use a dedicated versioned MicroVM bootstrap schema and callback route; the
+experimental headers and certificate transport are not a production protocol.
+Require `wss://` externally, normal hostname/certificate validation against
+operator-configured trust roots, no insecure certificate switch or URL userinfo.
+A private local plaintext hop behind operator TLS termination is permitted only
+as protected deployment wiring, matching the current product boundary. Reverse
+proxy logs must redact authentication, and proxy idle/frame limits must permit
+bounded silent compilation without removing application deadlines.
+
+Separate bootstrap verification from authenticated transfer. Prefer the smallest
+extraction of backend-independent transfer/session mechanics into a Telchar domain
+module, retaining Nomad authentication, allocation verification and wire contract
+unchanged. Do not rename the Nomad protocol or broaden its Authentication fields
+with fabricated job/allocation IDs. The actual extraction boundary requires a
+complete read of callback_service/protocol and their real-store tests before a
+concrete module/API is selected. No generic plugin framework or blanket workspace
+crate rename is proposed.
+
+MicroVM transfer limits must be operator-configured and mutually validated with
+existing gateway admission limits: metadata/path count, per-NAR and aggregate
+bytes, chunk size, bounded live logs, staging disk reserve, input/build/collection
+and whole-execution deadlines. Stream/stage using production NAR validation and
+typed store import. Independent declared metadata, exact admitted outputs and
+fixed-output content addresses remain authoritative. Receipt follows successful
+gateway registration, never just worker build success. No replay of old logs or
+partial transfer resume in the first release.
+
+## Image startup and snapshot safety proposal
+
+Prefer a minimal hook supervisor at snapshot time, with no live Nix daemon,
+worker TLS client, gateway connection, per-execution credentials or initialized
+OpenSSL-dependent application process. Bake immutable Nix/worker closures and GC
+roots on disk; do not snapshot a service solely to avoid startup latency. `/ready`
+checks the static artifact/startup prerequisites without starting a build. Image
+validation may start fresh processes on its separate validation instance, not
+leave them alive in the captured source snapshot.
+
+On `/run`, atomically install the exact binding, start a fresh root Nix daemon
+with dedicated nonroot build users, require sandbox=true and
+sandbox-fallback=false, then fresh-exec the worker. Startup failure never admits a
+build. Nix daemon socket readiness is a protocol check, not a sleep. Duplicate
+identical hooks cannot launch another daemon/worker; conflicting hooks fail.
+The daemon and worker process group is terminated on local deadline. Reject
+active suspend/snapshot requests; do not implement warm suspended builders.
+
+This proposal removes retained application OpenSSL state from Nix, but it is not
+proof that every supervisor/library/provider component is snapshot-safe. Inventory
+all captured processes and loaded crypto libraries. The [AWS snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
+requires AWS-patched OpenSSL when used in a snapshotted application. A fresh Nix
+process linked to Nixpkgs OpenSSL must be explicitly distinguished from retained
+OpenSSL state; provider guidance or security review must validate that boundary.
+Use the AWS snapshot-safe library for any OpenSSL consumer that must remain alive
+at capture, or do not release that image. Merely selecting an AL2023 base does not
+replace Nix store-linked OpenSSL. Distinct random samples are not certification.
+
+Pin image ARN and exact numeric version with reproducible package provenance;
+never follow a moving version implicitly. Only a successful active version is
+schedulable. Monitor the [managed base image lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images.html)
+(available/deprecated/expiring/expired/recalled) and require operator rebuilds;
+image publication and privileged capability approval remain deployment-owned.
+ARM64 only initially; do not advertise x86 through implicit emulation. All OS
+capabilities needed for Nix sandboxing must be explicit and qualified.
+
+Set provider maximum lifetime explicitly and local deadlines strictly inside it,
+with time reserved for transfer/cleanup; the experiment's600s ceiling is evidence,
+not authorization for longer production testing. For outbound-only execution,
+set the documented idle threshold beyond maximum execution lifetime and disable
+auto-resume, rather than assume autoResumeEnabled=false disables suspension.
+[IdlePolicy](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_IdlePolicy.html)
+measures inbound proxy traffic and requires a threshold of at least60s; omission
+and default behavior must be verified before allowing them. Do not use an idle
+policy that can suspend a legitimate silent build.
 
 ## Remaining proposal sections
 
-Credential durability and callback transport extraction, capacity quarantine,
-configuration/deployment, image startup, implementation slices, qualification
-gates, alternatives and approval decisions remain pending. This document is not
-an implementation authorization.
+Configuration/deployment detail, full owner/test map, implementation slices,
+qualification gates, alternatives and approval decisions remain pending. This
+document is not an implementation authorization.
