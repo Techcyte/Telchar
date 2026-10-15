@@ -71,6 +71,25 @@ pub fn pending_microvm_cleanup(
         .collect())
 }
 
+pub fn pending_microvm_cleanup_identity(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(pending_microvm_cleanup_identity));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client.query_opt(
+        "SELECT 1 FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.reservation_released_at IS NULL
+           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
+                OR b.state NOT IN ('running', 'collecting'))",
+        &[&intent_id, &provider_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    Ok(row.is_some())
+}
+
 /// Records an exact successful provider TERMINATED observation, not a terminate acknowledgment.
 pub fn record_microvm_termination(
     database: &(impl DatabaseSource + ?Sized),

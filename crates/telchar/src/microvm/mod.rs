@@ -41,6 +41,39 @@ impl Provider {
         })
     }
 
+    pub fn cleanup(
+        &self,
+        owner: &crate::service::singleton_ownership::SingletonOwnership,
+        cleanup: &crate::persistence::MicrovmCleanup,
+    ) -> Result<bool, ProviderError> {
+        owner.verify().map_err(|_| ProviderError)?;
+        let pending = crate::persistence::pending_microvm_cleanup_identity(
+            owner.database_url(),
+            &cleanup.intent_id,
+            &cleanup.provider_id,
+        )
+        .map_err(|_| ProviderError)?;
+        if !pending {
+            return Ok(false);
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ProviderError)?;
+        let terminated = runtime.block_on(self.is_terminated(&cleanup.provider_id))?;
+        owner.verify().map_err(|_| ProviderError)?;
+        if !terminated {
+            runtime.block_on(self.terminate(&cleanup.provider_id))?;
+            return Ok(false);
+        }
+        crate::persistence::record_microvm_termination(
+            owner.database_url(),
+            &cleanup.intent_id,
+            &cleanup.provider_id,
+        )
+        .map_err(|_| ProviderError)
+    }
+
     pub async fn is_terminated(&self, provider_id: &str) -> Result<bool, ProviderError> {
         if provider_id.is_empty()
             || provider_id.len() > 256
