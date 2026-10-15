@@ -27,11 +27,166 @@ fn prepared_launch() -> PostgresFixture {
     let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("attempt reads")
         .expect("attempt exists");
-    fixture.connect().execute(
-        "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds) VALUES ('intent-one', $1, 'launch-fixture', '116392764028', 'us-west-2', 'arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture', '1', $2, $2, 'token-one', $2, clock_timestamp() + interval '1 minute', 600)",
-        &[&attempt.attempt_id, &&[1_u8; 32][..]],
-    ).expect("launch reserves durable capacity");
+    assert!(
+        telchar::persistence::reserve_microvm_launch(
+            fixture.url(),
+            &launch_intent(attempt.attempt_id, "intent-one"),
+            1,
+        )
+        .expect("launch reserves durable capacity")
+    );
     fixture
+}
+
+fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::MicrovmLaunchIntent {
+    telchar::persistence::MicrovmLaunchIntent {
+        intent_id: intent_id.to_owned(),
+        attempt_id,
+        backend_name: "launch-fixture".to_owned(),
+        account_id: "116392764028".to_owned(),
+        region: "us-west-2".to_owned(),
+        image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".to_owned(),
+        image_version: "1".to_owned(),
+        configuration_digest: [1; 32],
+        request_digest: [2; 32],
+        client_token: intent_id.to_owned(),
+        credential_verifier: [3; 32],
+        admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+        maximum_duration_seconds: 600,
+    }
+}
+
+#[test]
+fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
+    let mut fixture = prepared_launch();
+    let first_attempt: i64 = fixture
+        .connect()
+        .query_one(
+            "DELETE FROM microvm_launches WHERE intent_id = 'intent-one' RETURNING attempt_id",
+            &[],
+        )
+        .expect("fixture keeps unreserved attempt")
+        .get(0);
+    let derivation = "/nix/store/cccccccccccccccccccccccccccccccc-other.drv";
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[2; 32],
+        "launch-fixture",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &["/nix/store/dddddddddddddddddddddddddddddddd-other"],
+    )
+    .expect("second build claims");
+    telchar::persistence::start_shared_build(fixture.url(), derivation)
+        .expect("second attempt starts");
+    let second_attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .expect("second attempt reads")
+        .expect("second attempt exists")
+        .attempt_id;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let callers: Vec<_> = [
+        (first_attempt, "reserve-one"),
+        (second_attempt, "reserve-two"),
+    ]
+    .into_iter()
+    .map(|(attempt, id)| {
+        let url = fixture.url().to_owned();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let intent = launch_intent(attempt, id);
+            barrier.wait();
+            (
+                intent,
+                telchar::persistence::reserve_microvm_launch(&url, &launch_intent(attempt, id), 1)
+                    .expect("capacity reservation resolves"),
+            )
+        })
+    })
+    .collect();
+    let results: Vec<_> = callers
+        .into_iter()
+        .map(|caller| caller.join().expect("reservation joins"))
+        .collect();
+    assert_eq!(results.iter().filter(|(_, reserved)| *reserved).count(), 1);
+    let winner = &results
+        .iter()
+        .find(|(_, reserved)| *reserved)
+        .expect("one winner")
+        .0;
+    let loser = &results
+        .iter()
+        .find(|(_, reserved)| !*reserved)
+        .expect("one waiter")
+        .0;
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(fixture.url(), &winner.intent_id)
+            .expect("winner dispatches")
+    );
+    assert!(
+        telchar::persistence::cancel_microvm_launch(fixture.url(), &winner.intent_id)
+            .expect("winner becomes ambiguous")
+    );
+    fixture.restart();
+    assert!(
+        !telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 1)
+            .expect("ambiguous reservation blocks capacity")
+    );
+    assert!(
+        telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 2)
+            .expect("explicit second slot available")
+    );
+    assert!(
+        !telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 3)
+            .expect("same attempt cannot reserve again")
+    );
+    assert!(
+        telchar::persistence::cancel_microvm_launch(fixture.url(), &loser.intent_id)
+            .expect("unused reservation releases")
+    );
+}
+
+#[test]
+fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
+    let fixture = prepared_launch();
+    let attempt: i64 = fixture
+        .connect()
+        .query_one(
+            "DELETE FROM microvm_launches WHERE intent_id = 'intent-one' RETURNING attempt_id",
+            &[],
+        )
+        .expect("unreserved attempt exists")
+        .get(0);
+    let mut intent = launch_intent(attempt, "guarded");
+    assert!(telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 0).is_err());
+    intent.admission_cutoff = std::time::SystemTime::now() - Duration::from_secs(1);
+    assert!(
+        !telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
+            .expect("expired intent rejected")
+    );
+    intent.admission_cutoff = std::time::SystemTime::now() + Duration::from_secs(60);
+    intent.backend_name = "different-backend".to_owned();
+    assert!(
+        !telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
+            .expect("mismatched backend rejected")
+    );
+    intent.backend_name = "launch-fixture".to_owned();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires");
+    fixture.expire_singleton_ownership("daemon");
+    assert!(
+        telchar::persistence::reserve_microvm_launch(owner.database_url(), &intent, 1).is_err()
+    );
+    let count: i64 = fixture
+        .connect()
+        .query_one("SELECT count(*) FROM microvm_launches", &[])
+        .expect("no rejected reservation persisted")
+        .get(0);
+    assert_eq!(count, 0);
 }
 
 #[test]
