@@ -108,10 +108,29 @@ def main():
                                          "/run/certificate.pem", "/run/key.pem", "0.0.0.0:8443"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             processes.append(receiver)
             time.sleep(.3)
-            result = run("docker", "exec", worker, "/run/microvm-worker", "/run/worker.json", timeout=180)
+            run("docker", "exec", worker, "/bin/mkdir", "-p", "/fixture/tests/microvm", "/fixture/deploy/microvm")
+            for relative in ["tests/microvm/bootstrap.py", "deploy/microvm/runtime.py"]:
+                run("docker", "cp", relative, f"{worker}:/fixture/{relative}")
+            adapter = subprocess.Popen(["docker", "exec", worker, "/bin/python3", "/fixture/tests/microvm/bootstrap.py", "--worker", "/run/microvm-worker", "--port", "8081"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            processes.append(adapter)
+            time.sleep(.3)
+            payload = json.loads((root / "worker.json").read_text())
+            payload.pop("microvmId")
+            hook = json.dumps({"microvmId": "local-worker", "runHookPayload": json.dumps(payload)})
+            result = run("docker", "exec", worker, "/bin/python3", "-c",
+                         "import sys,time,urllib.request,json; u='http://127.0.0.1:8081/aws/lambda-microvms/runtime/v1/'; "
+                         "r=urllib.request.urlopen(urllib.request.Request(u+'run',data=sys.argv[1].encode())); assert r.status==200; "
+                         "\nfor _ in range(600):\n"
+                         " time.sleep(.1)\n"
+                         " try: state=json.load(urllib.request.urlopen(urllib.request.Request(u+'terminate',data=b'{}')))['status']\n"
+                         " except OSError: continue\n"
+                         " if state!='running':\n"
+                         "  assert state=='succeeded',state\n"
+                         "  print(state); break\n"
+                         "else: raise TimeoutError('worker execution')", hook, timeout=180)
             stdout, stderr = receiver.communicate(timeout=30)
             assert receiver.returncode == 0 and not stderr, stderr.decode()
-            assert b"microvm outbound build transfer succeeded" in result, result.decode()
+            assert b"succeeded" in result, result.decode()
             run("docker", "exec", gateway, "/bin/bash", "-ec", 'test -e "$1"', "check", prepared["output"])
             source = run("docker", "exec", gateway, "/bin/cat", prepared["source"])
             output = run("docker", "exec", gateway, "/bin/cat", prepared["output"])

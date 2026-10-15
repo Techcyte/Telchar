@@ -1,5 +1,5 @@
 # Experimental sandbox gate, not a production Telchar execution backend.
-{ pkgs }:
+{ pkgs, worker ? null }:
 let
   sandboxExpression = pkgs.writeText "sandbox-proof.nix" ''
     { network }: builtins.derivation {
@@ -29,8 +29,17 @@ let
     drv=$(nix-instantiate ${sandboxExpression} --argstr network "$network" --add-root /run/probe-derivation)
     nix-store --store daemon --realise "$drv" --option substituters "" --add-root /run/probe-output
   '';
+  fixture = pkgs.runCommand "microvm-execution-fixture" { } ''
+    mkdir -p "$out/tests/microvm" "$out/deploy/microvm"
+    cp ${../tests/microvm/bootstrap.py} "$out/tests/microvm/bootstrap.py"
+    cp ${../deploy/microvm/runtime.py} "$out/deploy/microvm/runtime.py"
+  '';
+  adapterCommand = if worker == null then
+    "${pkgs.python3}/bin/python3 ${runtime} --probe ${probe}"
+  else
+    "${pkgs.python3}/bin/python3 ${fixture}/tests/microvm/bootstrap.py --worker ${worker}/bin/microvm-worker --listen 0.0.0.0";
   closure = pkgs.closureInfo {
-    rootPaths = [ pkgs.nix pkgs.python3 pkgs.coreutils pkgs.bash pkgs.cacert probe ];
+    rootPaths = [ pkgs.nix pkgs.python3 pkgs.coreutils pkgs.bash pkgs.cacert probe ] ++ pkgs.lib.optional (worker != null) worker;
   };
   entrypoint = pkgs.writeShellScript "microvm-probe-entrypoint" ''
     set -euo pipefail
@@ -44,7 +53,7 @@ let
     nix --offline daemon &
     daemon=$!
     trap 'kill "$daemon" 2>/dev/null || true' EXIT
-    ${pkgs.python3}/bin/python3 ${runtime} --probe ${probe} &
+    ${adapterCommand} &
     adapter=$!
     trap 'kill "$daemon" "$adapter" 2>/dev/null || true' EXIT
     # Failure of either process fails the container rather than leaving an

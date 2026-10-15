@@ -54,3 +54,26 @@ def write_bootstrap(hook, destination):
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as output:
         json.dump(value, output)
+
+
+def main():
+    import argparse
+    import subprocess
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--worker", required=True)
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--listen", default="127.0.0.1")
+    args = parser.parse_args()
+    destination = Path("/run/execution.json")
+    state = ExecutionState([args.worker, str(destination)], destination)
+
+    def ready():
+        result = subprocess.run(["nix", "--offline", "store", "ping", "--store", "daemon"],
+                                capture_output=True, timeout=5)
+        return result.returncode == 0
+
+    runtime.make_server((args.listen, args.port), state, ready).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
