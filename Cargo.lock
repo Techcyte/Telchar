@@ -2589,6 +2589,7 @@ dependencies = [
  "nix-worker-protocol",
  "opentelemetry",
  "opentelemetry-proto",
+ "postgres",
  "reqwest",
  "rustls",
  "serde",

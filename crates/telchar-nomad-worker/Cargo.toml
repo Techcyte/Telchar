@@ -23,6 +23,7 @@ url = "2"
 rustls.workspace = true
 
 [dev-dependencies]
+postgres = "0.19"
 opentelemetry-proto.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
