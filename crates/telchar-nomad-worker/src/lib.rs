@@ -47,6 +47,7 @@ pub struct WorkerSession {
     inputs: InputTransferSession,
     transfer_chunk_bytes: usize,
     connection_deadline: Instant,
+    deadline_monitor: Option<microvm::SessionDeadline>,
 }
 
 impl WorkerSession {
@@ -965,6 +966,7 @@ pub fn receive_authenticated_manifest(
         protocol,
         inputs,
         transfer_chunk_bytes,
+        deadline_monitor: None,
         connection_deadline: Instant::now()
             .checked_add(maximum_connection_lifetime)
             .ok_or_else(|| invalid("worker connection lifetime is invalid"))?,

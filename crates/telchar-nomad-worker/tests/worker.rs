@@ -426,6 +426,56 @@ fn receives_manifest_on_execution_authenticated_connection() {
 }
 
 #[test]
+fn microvm_session_deadline_closes_transport_after_manifest() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let sent = manifest();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut socket = tungstenite::accept(stream).expect("upgrade");
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &Frame::new(
+                FrameKind::InputManifest,
+                encode_metadata(&sent, 8192).expect("manifest"),
+                vec![],
+            ),
+            ProtocolLimits::new(8192, 0),
+        )
+        .expect("frame");
+        socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .expect("send");
+        socket
+            .get_mut()
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("timeout");
+        match socket.read() {
+            Err(tungstenite::Error::Io(error)) => assert_ne!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock,
+                "deadline must close live session"
+            ),
+            Err(tungstenite::Error::Protocol(
+                tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            )) => {}
+            other => panic!("expected deadline disconnect, got {other:?}"),
+        }
+    });
+    let (socket, _) = tungstenite::connect(format!("ws://{address}")).expect("connect");
+    let session = telchar_nomad_worker::microvm::receive_session(
+        socket,
+        8192,
+        4096,
+        std::time::Instant::now() + std::time::Duration::from_millis(200),
+    )
+    .expect("session");
+    server.join().expect("server");
+    drop(session);
+}
+
+#[test]
 fn authenticated_session_rejects_unbounded_limits_before_reading() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let address = listener.local_addr().expect("address");

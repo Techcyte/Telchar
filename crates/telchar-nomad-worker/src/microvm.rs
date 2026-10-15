@@ -39,34 +39,52 @@ pub fn receive_session(
         config.max_frame_size = Some(maximum_message_bytes);
     });
     super::set_socket_timeouts(&mut socket, remaining)?;
-    let (finished, completion) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let watchdog = scope.spawn(move || {
-            if completion.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-        });
-        let result = super::receive_authenticated_manifest(
-            socket,
-            maximum_manifest_bytes,
-            transfer_chunk_bytes,
-            remaining,
-        )
-        .and_then(|mut session| {
-            if Instant::now() >= deadline {
-                return Err(super::invalid("MicroVM session deadline expired"));
-            }
-            session.connection_deadline = deadline;
-            Ok(session)
-        });
-        let _ = finished.send(());
-        watchdog
-            .join()
-            .map_err(|_| io::Error::other("MicroVM deadline monitor failed"))?;
-        result
-    })
+    let monitor = SessionDeadline::start(stream, deadline)?;
+    let mut session = super::receive_authenticated_manifest(
+        socket,
+        maximum_manifest_bytes,
+        transfer_chunk_bytes,
+        remaining,
+    )?;
+    if Instant::now() >= deadline {
+        return Err(super::invalid("MicroVM session deadline expired"));
+    }
+    session.connection_deadline = deadline;
+    session.deadline_monitor = Some(monitor);
+    Ok(session)
+}
+
+pub(super) struct SessionDeadline {
+    finished: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SessionDeadline {
+    fn start(stream: TcpStream, deadline: Instant) -> io::Result<Self> {
+        let (finished, completion) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("microvm-session-deadline".to_owned())
+            .spawn(move || {
+                if completion.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            })?;
+        Ok(Self {
+            finished,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for SessionDeadline {
+    fn drop(&mut self) {
+        let _ = self.finished.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 pub fn connect(
