@@ -347,7 +347,9 @@ cancel-running uses the existing shared-build cancellation decision, not an
 individual follower disconnect as authority to kill shared work.
 
 Before dispatch, cancellation atomically closes the unused intent and releases
-its reservation. After dispatch, close admission first and fail/cancel the shared
+its reservation. Dispatch grant and cancellation compare-and-set the same phase;
+only one can win. A process cannot dispatch using a previously read prepared
+state after cancellation committed. After dispatch, close admission first and fail/cancel the shared
 build through existing terminal-state arbitration. A known ID becomes cleanup
 pending; an unknown ID becomes ambiguous/quarantined. Do not call Run again in
 either case. A response arriving after cutoff may bind the exact ID for cleanup,
@@ -471,7 +473,16 @@ Use a gateway-only AWS credential provider with refresh and least privilege for
 launch/exact inspection/termination and necessary image inspection. Pin account
 identity at startup; fail closed on mismatch. Review exact IAM action/resource
 support against the provider authorization reference before shipping a policy;
-do not publish guessed ARN wildcard policy as least privilege. Worker hook
+do not publish guessed ARN wildcard policy as least privilege. The authoritative
+[MicroVM security guide](https://docs.aws.amazon.com/lambda/latest/dg/microvms-security.html)
+lists the `lambda:RunMicrovm`, `lambda:GetMicrovm`, `lambda:TerminateMicrovm` and
+`lambda:GetMicrovmImage` actions, and illustrates image-scoped lifecycle access.
+Its broad operator example is not the gateway policy: exclude image mutation,
+suspend/resume and inbound/shell token actions. The outbound-only design needs no
+MicroVM endpoint authentication token. The guide states runtime execution roles
+are optional (without one, no runtime CloudWatch logging or guest AWS-service
+access); prefer none unless a concrete logging/operational requirement justifies
+one. Review any role-passing and network-connector permissions independently. Worker hook
 payload contains no gateway AWS credential. If guest roles are unavoidable for
 platform operation, restrict them to the minimum independently audited service
 needs; build sandbox must not inherit metadata credentials or hook binding files.
@@ -544,8 +555,52 @@ permission. Include snapshot security sign-off, clean failure logs and independe
 cleanup verification. Expensive/live qualification needs a separate agreed budget,
 account/region/resource ledger and cleanup authority.
 
-## Remaining proposal sections
+## Alternatives and invariant review
 
-Full owner/test audit, lifecycle detail, critical alternatives/invariant review
-and approval decisions remain pending. This document is not an implementation
-authorization.
+- **Replay launch using clientToken.** Rejected for first release: documented
+  token support lacks a retention/late-acceptance guarantee adequate for restart
+  replay. Changing SDK retry configuration cannot supply that guarantee.
+- **Bind from authenticated callback or image/time listing.** Rejected: bearer
+  possession is the stated trust model, not independent provider attestation;
+  listing lacks request identity. A future stronger binding needs explicit
+  architectural review, not an implementation shortcut.
+- **Adopt running execution after restart.** Deferred: provider RUNNING does not
+  reconstruct a socket or staged import. Approved output-only recovery avoids
+  introducing durable resumable transfer or build retries.
+- **Retain Nix daemon in snapshot using ordinary OpenSSL.** Not qualified.
+  Fresh-process startup is preferred over patching the entire Nix crypto closure;
+  any remaining captured crypto consumer still needs snapshot-safe treatment.
+- **Extend Nomad auth with synthetic job/allocation values.** Rejected: destroys
+  authentication meaning. Reuse bounded transfer logic behind distinct admission.
+- **Add a generic executor framework.** Rejected: explicit backend branch and
+  narrow shared mechanics suffice. No fleet scheduler, image provisioner or
+  automatic failover is proposed.
+
+Review invariants across every slice: exact admitted specification and all
+expected gateway outputs decide success; provider success never does. At most
+one dispatch grant and one admitted session exist per intent. Cancellation,
+admission and terminal mutation compare current attempt/phase under ownership.
+Unknown launch cannot release capacity automatically. Cleanup survives terminal
+build state and backend disablement. A stale owner cannot write durable results,
+but may already have issued external side effects; validated store registration
+and cleanup/recovery handle this limit rather than claim atomic distributed
+fencing. Disconnect never silently becomes an automatic build retry.
+
+## Approval and implementation prerequisites
+
+Only the two first-release limits explicitly recorded above have approval.
+Travis's review must accept or revise the compute-launch product-boundary
+exception, verifier-only bootstrap trust model, conservative capacity/operator
+risk-resolution policy, fresh-process image/security gates and implementation
+slices before production changes. An administrative risk release deliberately
+trades remote-capacity certainty for operator availability; it is never described
+as cleanup success.
+
+Before editing implementation, finish complete owning-module reads for the
+selected extraction/config/runtime boundaries, choose the concrete protocol/API
+shape and verify exact IAM/resource/connector policy with authoritative references.
+The protocol state/framing bodies have been inspected, but this ADR does not
+claim a complete audit of every worker helper/config/callback path. Qualification
+must establish behavioral parity for any moved code. These prerequisites bound
+implementation choices; they do not license speculative refactoring. No production
+code, schema, deployment or AWS resources are changed by this document.
