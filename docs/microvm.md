@@ -179,7 +179,8 @@ public EC2 receiver verified wrong execution → HTTP 403, exact binding → HTT
 and disconnect → failed transfer. That receiver test is not an ARM authentication
 negative run. Local real-store tests cover corrupt returned-output rejection
 before registration. Reconnect, durable recovery, snapshot cryptographic uniqueness,
-large closures, saturation, billed cost and production scheduling remain unqualified.
+saturation, billed cost and production scheduling remain unqualified. Substantial
+closure compilation is covered by the follow-up campaign below.
 
 All seven test MicroVMs and the receiver were confirmed terminated. The dedicated
 volume, security group, key pair, image, bucket, IAM role and log group were
@@ -249,6 +250,24 @@ However, the Nix daemon starts before capture and uses ordinary Nixpkgs OpenSSL,
 not AWS `openssl-snapsafe-libs`. Offline store traffic avoids intended daemon TLS
 but does not certify its retained RNG state. AWS's random-device guarantee and
 sample uniqueness must not be represented as general cryptographic certification.
+Four operator-created certificates had distinct fingerprints; these were generated
+outside the guest, so they do not measure guest entropy or retained RNG state.
+
+Failure coverage remains deliberately scoped:
+
+| Boundary | Evidence | Limitation |
+| --- | --- | --- |
+| Invalid hook identity, concurrent duplicate hook, active snapshot/suspend rejection | Local HTTP runtime tests | Not an AWS replay/recovery campaign |
+| Exact WSS execution binding and disconnect failure | Local real TLS receiver; prior local client to AWS receiver | Not an ARM authentication-negative run |
+| Corrupt input rejected by Nix daemon | Prior actual AWS ARM execution | Small fixture, not repeated substantial compilation |
+| Corrupt output rejected before registration | Local real-store receiver tests | Not an AWS ARM output-corruption run |
+| Silent compiler link / bounded socket idle | Local deadline regression and successful substantial AWS compilation | Not reconnect support |
+| Process lifetime | Actual ARM 300-second adapter failure; local timeout/process-group tests; successful 540-second adapter image | Not an intentional AWS 600-second provider-expiry test |
+| Disk exhaustion / saturation | No induced exhaustion | Unverified; no capacity or admission-safety claim |
+
+No extra AWS failure campaign was launched after preserving the successful build.
+Production launch ambiguity, cancellation and recovery require separate approved
+architecture, not more retries of these fixtures.
 
 Evidence for this separate campaign is retained under
 `~/.local/state/telchar-microvm-test/workloads`. Independent AWS queries confirmed
