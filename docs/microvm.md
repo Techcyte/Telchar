@@ -47,13 +47,43 @@ Replace `nix eval --impure --raw` with `nix build --impure --no-link` and remove
 `.drvPath` to build the image. An ARM-capable Nix builder is required. This is
 intentionally not a new public flake output or release artifact yet.
 
-## AWS validation still required
+## AWS sandbox evidence
+
+A disposable ARM64 MicroVM in `us-west-2` completed the fixed sandbox probe.
+The image used the managed AL2023 base, elevated capabilities, an 8192 MiB
+baseline, ready/validate hooks, and an asynchronous run hook. The test configured
+an explicit 600-second maximum lifetime and no idle suspension policy.
+
+The sandboxed daemon built
+`/nix/store/iql5cx0c0sx4gs5i81hw00p6iqxx7lsz-telchar-microvm-sandbox-proof`
+with substitution disabled. Its builder assertions verified a non-root UID,
+invisibility of the host-only sentinel, and a different network namespace.
+Authenticated endpoint polling returned `succeeded`, corroborated by the daemon
+build log and lifecycle completion event. The test did not perform TLS or NAR
+transfers inside the MicroVM, exercise gateway integration, or measure billing.
+
+The image build accepted a ZIP containing `FROM scratch`, the flattened ARM
+probe filesystem, and its entrypoint/environment. No ECR repository, Docker
+preload images, or GitLab runner software was needed. The transferred archive's
+SHA-256 was
+`455d9cddfad7e5f5611a5bd7632c44d1a4af8515a8c9bb2dac90afa3a2de2886`.
+
+The VM reached `RUNNING` by the first two-second polling interval; this is a
+coarse observation, not a startup benchmark. Termination was confirmed before
+deleting the image, artifact bucket, temporary role, and CloudWatch log group.
+
+Qualification is not yet clean: opening and closing the daemon socket for
+readiness emits interrupted/EOF daemon errors, and unrooted CLI results emit GC
+warnings. These require behavioral fixes and another clean test before treating
+the probe as a production readiness contract.
+
+## Repeating AWS validation
 
 Use an up-to-date AWS CLI/SDK exposing `lambda-microvms`; the development host's
 AWS CLI 2.34.24 does not recognize that service. No resources are provisioned by
 these tests.
 
-Once approved for a test account:
+In an approved test account:
 
 1. Build the ARM image and push to an operator-owned ECR repository. Package a
    Dockerfile referencing its immutable digest into the S3 code artifact.
