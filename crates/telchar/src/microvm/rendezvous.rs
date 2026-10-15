@@ -115,14 +115,42 @@ pub fn accept_session(
         || bootstrap.intent_id.len() > 128
         || bootstrap.provider_id.is_empty()
         || bootstrap.provider_id.len() > 256
-        || !super::admit_session(
+    {
+        return Err(ProviderError);
+    }
+    let verifier = super::bearer_verifier(&bootstrap.bearer).ok_or(ProviderError)?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(ProviderError);
+        }
+        if super::admit_session(
             owner,
             &bootstrap.intent_id,
             &bootstrap.provider_id,
             &bootstrap.bearer,
-        )?
-    {
-        return Err(ProviderError);
+        )? {
+            return Ok(socket);
+        }
+        if !crate::persistence::microvm_session_awaits_binding(
+            owner.database_url(),
+            &bootstrap.intent_id,
+            &verifier,
+        )
+        .map_err(|_| ProviderError)?
+        {
+            // Binding can commit between the admission attempt and pending observation.
+            if super::admit_session(
+                owner,
+                &bootstrap.intent_id,
+                &bootstrap.provider_id,
+                &bootstrap.bearer,
+            )? {
+                return Ok(socket);
+            }
+            return Err(ProviderError);
+        }
+        std::thread::sleep(
+            Duration::from_millis(25).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
-    Ok(socket)
 }

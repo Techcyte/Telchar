@@ -50,22 +50,27 @@ pub fn admit_session(
     bearer: &str,
 ) -> Result<bool, ProviderError> {
     owner.verify().map_err(|_| ProviderError)?;
-    if bearer.len() != 43 {
-        return Ok(false);
-    }
-    let Ok(entropy) = URL_SAFE_NO_PAD.decode(bearer) else {
+    let Some(verifier) = bearer_verifier(bearer) else {
         return Ok(false);
     };
-    if entropy.len() != 32 || URL_SAFE_NO_PAD.encode(&entropy) != bearer {
-        return Ok(false);
-    }
     crate::persistence::admit_microvm_session(
         owner.database_url(),
         intent_id,
         provider_id,
-        &capability_verifier(&entropy),
+        &verifier,
     )
     .map_err(|_| ProviderError)
+}
+
+fn bearer_verifier(bearer: &str) -> Option<[u8; 32]> {
+    if bearer.len() != 43 {
+        return None;
+    }
+    let entropy = URL_SAFE_NO_PAD.decode(bearer).ok()?;
+    if entropy.len() != 32 || URL_SAFE_NO_PAD.encode(&entropy) != bearer {
+        return None;
+    }
+    Some(capability_verifier(&entropy))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

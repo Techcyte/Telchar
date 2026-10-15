@@ -175,6 +175,31 @@ pub fn reserve_microvm_launch(
     Ok(inserted == 1)
 }
 
+pub fn microvm_session_awaits_binding(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    credential_verifier: &[u8; 32],
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(microvm_session_awaits_binding));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let pending = client
+        .query_opt(
+            "SELECT 1 FROM microvm_launches l
+         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE l.intent_id = $1 AND l.credential_verifier = $2
+           AND l.phase = 'dispatching' AND l.provider_id IS NULL
+           AND l.session_consumed_at IS NULL AND l.reservation_released_at IS NULL
+           AND l.admission_cutoff > clock_timestamp()
+           AND b.state = 'running' AND a.state = 'running'
+           AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
+            &[&intent_id, &&credential_verifier[..]],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(pending.is_some())
+}
+
 /// Consumes a verified capability for one exact bound worker session.
 pub fn admit_microvm_session(
     database: &(impl DatabaseSource + ?Sized),

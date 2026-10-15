@@ -149,14 +149,7 @@ fn socket_admission_requires_exact_single_use_capability() {
         telchar::persistence::dispatch_microvm_launch(fixture.url(), &intent.intent_id)
             .expect("dispatch")
     );
-    assert!(
-        telchar::persistence::bind_microvm_launch(
-            fixture.url(),
-            &intent.intent_id,
-            "microvm-exact"
-        )
-        .expect("bind")
-    );
+
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(30),
@@ -197,6 +190,24 @@ fn socket_admission_requires_exact_single_use_capability() {
                 "telchar-microvm-v1"
             );
             socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"intent_id": intent.intent_id, "provider_id": id, "bearer": bearer})).expect("bootstrap").into())).expect("send");
+            if accepted {
+                socket
+                    .get_mut()
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .expect("prebinding read bounded");
+                assert!(
+                    matches!(socket.read(), Err(tungstenite::Error::Io(error)) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)),
+                    "no authorization before binding"
+                );
+                assert!(
+                    telchar::persistence::bind_microvm_launch(
+                        fixture.url(),
+                        &intent.intent_id,
+                        "microvm-exact"
+                    )
+                    .expect("bind after bootstrap")
+                );
+            }
             assert_eq!(server.join().expect("server"), accepted);
         });
     }
