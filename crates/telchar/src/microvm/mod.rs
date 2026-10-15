@@ -41,6 +41,42 @@ impl Provider {
         })
     }
 
+    pub async fn is_terminated(&self, provider_id: &str) -> Result<bool, ProviderError> {
+        if provider_id.is_empty()
+            || provider_id.len() > 256
+            || provider_id.chars().any(char::is_control)
+        {
+            return Err(ProviderError);
+        }
+        let result = self
+            .client
+            .get_microvm()
+            .microvm_identifier(provider_id)
+            .send()
+            .await
+            .map_err(|_| ProviderError)?;
+        if result.microvm_id() != provider_id {
+            return Err(ProviderError);
+        }
+        Ok(result.state() == &aws_sdk_lambdamicrovms::types::MicrovmState::Terminated)
+    }
+
+    pub async fn terminate(&self, provider_id: &str) -> Result<(), ProviderError> {
+        if provider_id.is_empty()
+            || provider_id.len() > 256
+            || provider_id.chars().any(char::is_control)
+        {
+            return Err(ProviderError);
+        }
+        self.client
+            .terminate_microvm()
+            .microvm_identifier(provider_id)
+            .send()
+            .await
+            .map_err(|_| ProviderError)?;
+        Ok(())
+    }
+
     pub async fn launch(
         &self,
         image: &str,
