@@ -20,7 +20,33 @@ fn send<S: Read + Write>(socket: &mut tungstenite::WebSocket<S>, frame: &Frame) 
 }
 
 fn receive<S: Read + Write>(socket: &mut tungstenite::WebSocket<S>) -> io::Result<Frame> {
-    let message = socket.read().map_err(io::Error::other)?;
+    receive_until(
+        socket,
+        std::time::Instant::now() + std::time::Duration::from_secs(540),
+    )
+}
+
+fn receive_until<S: Read + Write>(
+    socket: &mut tungstenite::WebSocket<S>,
+    deadline: std::time::Instant,
+) -> io::Result<Frame> {
+    let message = loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "receiver wait exhausted",
+            ));
+        }
+        match socket.read() {
+            Ok(message) => break message,
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    };
     let tungstenite::Message::Binary(bytes) = message else {
         return Err(io::Error::other("expected binary transfer frame"));
     };
@@ -389,6 +415,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use tungstenite::http::Request;
+
+    #[test]
+    fn receive_waits_through_socket_idle_periods() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            send(
+                &mut socket,
+                &Frame::new(FrameKind::BuildStarted, vec![], vec![]),
+            )
+            .unwrap();
+        });
+        let (mut socket, _) = tungstenite::connect(format!("ws://{address}/fixture")).unwrap();
+        match socket.get_mut() {
+            tungstenite::stream::MaybeTlsStream::Plain(stream) => {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+                    .unwrap();
+            }
+            _ => panic!("expected plain test connection"),
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(40);
+        assert_eq!(
+            receive_until(&mut socket, deadline).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            receive(&mut socket).unwrap().kind(),
+            FrameKind::BuildStarted
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn output_staging_is_seekable_and_unlinked() {
