@@ -47,34 +47,50 @@ pub fn connect(
     stream
         .set_write_timeout(Some(remaining()?))
         .map_err(|_| failed())?;
-    let mut request = endpoint.into_client_request().map_err(|_| failed())?;
-    request.headers_mut().insert(
-        "sec-websocket-protocol",
-        "telchar-microvm-v1".parse().map_err(|_| failed())?,
-    );
-    let (mut socket, response) = tungstenite::client_tls_with_config(
-        request,
-        stream,
-        Some(
-            tungstenite::protocol::WebSocketConfig::default()
-                .max_message_size(Some(4096))
-                .max_frame_size(Some(4096)),
-        ),
-        Some(tungstenite::Connector::Rustls(tls)),
-    )
-    .map_err(|_| failed())?;
-    if response
-        .headers()
-        .get("sec-websocket-protocol")
-        .map(|value| value.as_bytes())
-        != Some(b"telchar-microvm-v1".as_slice())
-    {
-        return Err(failed());
-    }
-    super::set_socket_timeouts(&mut socket, remaining()?).map_err(|_| failed())?;
-    socket
-        .send(tungstenite::Message::Binary(bootstrap.into()))
-        .map_err(|_| failed())?;
-    remaining()?;
-    Ok(socket)
+    let deadline_stream = stream.try_clone().map_err(|_| failed())?;
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let watchdog = scope.spawn(move || {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if completion.recv_timeout(remaining) == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                let _ = deadline_stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        let result = (|| {
+            let mut request = endpoint.into_client_request().map_err(|_| failed())?;
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                "telchar-microvm-v1".parse().map_err(|_| failed())?,
+            );
+            let (mut socket, response) = tungstenite::client_tls_with_config(
+                request,
+                stream,
+                Some(
+                    tungstenite::protocol::WebSocketConfig::default()
+                        .max_message_size(Some(4096))
+                        .max_frame_size(Some(4096)),
+                ),
+                Some(tungstenite::Connector::Rustls(tls)),
+            )
+            .map_err(|_| failed())?;
+            if response
+                .headers()
+                .get("sec-websocket-protocol")
+                .map(|value| value.as_bytes())
+                != Some(b"telchar-microvm-v1".as_slice())
+            {
+                return Err(failed());
+            }
+            super::set_socket_timeouts(&mut socket, remaining()?).map_err(|_| failed())?;
+            socket
+                .send(tungstenite::Message::Binary(bootstrap.into()))
+                .map_err(|_| failed())?;
+            remaining()?;
+            Ok(socket)
+        })();
+        let _ = finished.send(());
+        watchdog.join().map_err(|_| failed())?;
+        result
+    })
 }

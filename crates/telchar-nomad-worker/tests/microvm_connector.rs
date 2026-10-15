@@ -5,7 +5,11 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
-    for host in ["localhost", "wrong.invalid"] {
+    for (host, trusted) in [
+        ("localhost", true),
+        ("wrong.invalid", true),
+        ("localhost", false),
+    ] {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
         let address = listener.local_addr().expect("address");
         let server = std::thread::spawn(move || -> io::Result<()> {
@@ -57,9 +61,11 @@ fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
             Ok(())
         });
         let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(include_bytes!("fixtures/microvm-cert.der").to_vec().into())
-            .unwrap();
+        if trusted {
+            roots
+                .add(include_bytes!("fixtures/microvm-cert.der").to_vec().into())
+                .unwrap();
+        }
         let tls = rustls::ClientConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
         )
@@ -76,7 +82,10 @@ fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
             "microvm-exact",
             "secret",
         );
-        assert_eq!(result.is_ok(), host == "localhost");
-        assert_eq!(server.join().unwrap().is_ok(), host == "localhost");
+        assert_eq!(result.is_ok(), host == "localhost" && trusted);
+        assert_eq!(
+            server.join().unwrap().is_ok(),
+            host == "localhost" && trusted
+        );
     }
 }
