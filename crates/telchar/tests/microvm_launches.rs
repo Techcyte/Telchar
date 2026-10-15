@@ -35,6 +35,133 @@ fn prepared_launch() -> PostgresFixture {
 }
 
 #[test]
+fn exact_binding_is_single_assignment_and_late_response_is_cleanup_only() {
+    for cancelled in [false, true] {
+        let mut fixture = prepared_launch();
+        assert!(
+            !telchar::persistence::bind_microvm_launch(
+                fixture.url(),
+                "intent-one",
+                "microvm-before-dispatch"
+            )
+            .expect("prepared launch rejects binding")
+        );
+        assert!(
+            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+                .expect("launch dispatches")
+        );
+        if cancelled {
+            assert!(
+                telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+                    .expect("launch cancels before API response")
+            );
+        }
+        assert!(
+            telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+                .expect("exact API response persists")
+        );
+        assert!(
+            !telchar::persistence::bind_microvm_launch(
+                fixture.url(),
+                "intent-one",
+                "microvm-other"
+            )
+            .expect("different identity cannot replace binding")
+        );
+        fixture.restart();
+        let row = fixture.connect().query_one(
+            "SELECT phase, provider_id, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+        ).expect("binding survives restart");
+        assert_eq!(
+            row.get::<_, String>(0),
+            if cancelled { "closed" } else { "bound" }
+        );
+        assert_eq!(row.get::<_, String>(1), "microvm-exact");
+        assert!(row.get::<_, bool>(2));
+    }
+}
+
+#[test]
+fn binding_after_cutoff_or_terminal_build_records_cleanup_without_admission() {
+    for terminal in [false, true] {
+        let fixture = prepared_launch();
+        assert!(
+            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+                .expect("launch dispatches")
+        );
+        if terminal {
+            telchar::persistence::complete_shared_build_failure(
+                fixture.url(),
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
+                "launch-expired",
+                &serde_json::json!({}),
+                Duration::from_secs(3600),
+            )
+            .expect("build terminates before response");
+        } else {
+            fixture.connect().execute(
+                "UPDATE microvm_launches SET created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute' WHERE intent_id = 'intent-one'", &[],
+            ).expect("admission cutoff expires");
+        }
+        assert!(
+            telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-late")
+                .expect("late response retained for cleanup")
+        );
+        let row = fixture.connect().query_one(
+            "SELECT phase, provider_id, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+        ).expect("late binding reads");
+        assert_eq!(row.get::<_, String>(0), "closed");
+        assert_eq!(row.get::<_, String>(1), "microvm-late");
+        assert!(row.get::<_, bool>(2));
+    }
+}
+
+#[test]
+fn concurrent_binding_records_only_one_exact_identity() {
+    let fixture = prepared_launch();
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("launch dispatches")
+    );
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let callers: Vec<_> = ["microvm-first", "microvm-second"]
+        .into_iter()
+        .map(|id| {
+            let url = fixture.url().to_owned();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                (
+                    id,
+                    telchar::persistence::bind_microvm_launch(&url, "intent-one", id)
+                        .expect("binding resolves"),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = callers
+        .into_iter()
+        .map(|caller| caller.join().expect("binding joins"))
+        .collect();
+    assert_eq!(results.iter().filter(|(_, bound)| *bound).count(), 1);
+    let row = fixture
+        .connect()
+        .query_one(
+            "SELECT provider_id FROM microvm_launches WHERE intent_id = 'intent-one'",
+            &[],
+        )
+        .expect("winner reads");
+    assert_eq!(
+        row.get::<_, String>(0),
+        results
+            .iter()
+            .find(|(_, bound)| *bound)
+            .expect("one winner")
+            .0
+    );
+}
+
+#[test]
 fn cancellation_closes_prepared_launch_and_releases_only_unused_capacity() {
     let fixture = prepared_launch();
     assert!(

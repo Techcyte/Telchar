@@ -11,6 +11,53 @@ impl fmt::Display for MicrovmLaunchError {
 
 impl std::error::Error for MicrovmLaunchError {}
 
+pub fn bind_microvm_launch(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation = telemetry::DatabaseOperation::start(stringify!(bind_microvm_launch));
+    if intent_id.is_empty()
+        || intent_id.len() > 128
+        || provider_id.is_empty()
+        || provider_id.len() > 256
+        || provider_id.chars().any(char::is_control)
+    {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let active = transaction
+        .query_opt(
+            "SELECT b.state = 'running' AND a.state = 'running'
+                AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name
+         FROM shared_builds b
+         JOIN shared_build_attempts a ON a.derivation_path = b.derivation_path
+         JOIN microvm_launches l ON l.attempt_id = a.attempt_id
+         WHERE l.intent_id = $1 FOR UPDATE OF b, a",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    let Some(active) = active else {
+        return Ok(false);
+    };
+    let active: bool = active.get(0);
+    let bound = transaction
+        .execute(
+            "UPDATE microvm_launches SET provider_id = $2,
+             phase = CASE WHEN phase = 'dispatching' AND $3
+                               AND admission_cutoff > clock_timestamp()
+                          THEN 'bound' ELSE 'closed' END
+         WHERE intent_id = $1 AND provider_id IS NULL
+           AND phase IN ('dispatching', 'ambiguous')
+           AND reservation_released_at IS NULL",
+            &[&intent_id, &provider_id, &active],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(bound == 1)
+}
+
 pub fn cancel_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
