@@ -20,9 +20,9 @@ serde_json.workspace = true
 sha2 = "0.11"
 hmac = "0.13"
 url = "2"
+rustls.workspace = true
 
 [dev-dependencies]
-rustls.workspace = true
 opentelemetry-proto.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

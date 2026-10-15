@@ -1,5 +1,7 @@
 //! Runs the allocation-side authenticated transfer session, resolves inputs, invokes Nix, and returns logs and outputs.
 
+pub mod microvm;
+
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
