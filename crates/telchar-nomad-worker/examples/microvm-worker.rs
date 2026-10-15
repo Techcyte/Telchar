@@ -40,7 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }).collect::<io::Result<Vec<_>>>()?;
     let mut roots = rustls::RootCertStore::empty();
     roots.add(rustls::pki_types::CertificateDer::from(certificate))?;
-    let tls = rustls::ClientConfig::builder()
+    let tls = rustls::ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+        .with_safe_default_protocol_versions()?
         .with_root_certificates(roots)
         .with_no_client_auth();
     let stream = std::net::TcpStream::connect((
