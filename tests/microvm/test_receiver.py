@@ -25,8 +25,22 @@ class ReceiverTests(unittest.TestCase):
             ], capture_output=True)
             self.assertEqual(generation.returncode, 0, generation.stderr.decode())
             configuration = root / "execution.json"
+            derivation = "/nix/store/" + "a" * 32 + "-build.drv"
+            output = "/nix/store/" + "c" * 32 + "-output"
+            def byte_list(value):
+                return list(value.encode())
             configuration.write_text(json.dumps({
                 "execution": "test", "microvmId": "instance", "credential": "a" * 64,
+                "directory": directory, "store_uri": "unix:///nonexistent/socket",
+                "manifest": {
+                    "derivation_path": derivation,
+                    "build": {"derivation_path": byte_list(derivation),
+                              "outputs": [{"name": byte_list("out"), "path": byte_list(output), "hash_algorithm": [], "hash": []}],
+                              "input_sources": [], "system": "x86_64-linux", "required_system_features": [],
+                              "builder": byte_list("/bin/sh"), "arguments": [],
+                              "environment": [[byte_list("out"), byte_list(output)]]},
+                    "paths": [{"path": "/nix/store/" + "b" * 32 + "-input", "nar_hash": "0" * 64, "nar_size": 42, "references": [], "deriver": None, "content_address": None}], "outputs": [output],
+                },
             }))
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -57,12 +71,32 @@ class ReceiverTests(unittest.TestCase):
                                      f"Sec-WebSocket-Key: {nonce}\r\nSec-WebSocket-Version: 13\r\n"
                                      f"Authorization: Bearer {'a' * 64}\r\n"
                                      f"X-Telchar-Execution: {identity}\r\nX-Telchar-Microvm: instance\r\n\r\n").encode())
-                        return tls.recv(4096).split(b"\r\n", 1)[0]
+                        response = b""
+                        while b"\r\n\r\n" not in response:
+                            response += tls.recv(1)
+                        if identity == "test":
+                            first = tls.recv(1)
+                            if not first:
+                                stdout, stderr = receiver.communicate(timeout=5)
+                                self.fail(f"receiver stopped before manifest: {stderr.decode()} {stdout.decode()}")
+                            self.assertEqual(first, b"\x82", "manifest must be binary WebSocket message")
+                            length = tls.recv(1)[0] & 0x7f
+                            if length == 126:
+                                length = int.from_bytes(tls.recv(2), "big")
+                            elif length == 127:
+                                length = int.from_bytes(tls.recv(8), "big")
+                            frame = b""
+                            while len(frame) < length:
+                                frame += tls.recv(length - len(frame))
+                            self.assertIn(derivation.encode(), frame)
+                        return response.split(b"\r\n", 1)[0]
                 self.assertEqual(exchange("foreign"), b"HTTP/1.1 403 Forbidden")
                 self.assertEqual(exchange("test"), b"HTTP/1.1 101 Switching Protocols")
                 stdout, stderr = receiver.communicate(timeout=5)
-                self.assertEqual(receiver.returncode, 0, stderr.decode())
-                self.assertEqual(stderr.decode().splitlines(), ["execution authentication rejected"])
+                self.assertNotEqual(receiver.returncode, 0, "disconnected transfer must fail")
+                self.assertIn("execution authentication rejected", stderr.decode())
+                self.assertIn("UnexpectedEof", stderr.decode())
+                self.assertIn("peer closed connection without sending TLS close_notify", stderr.decode())
                 self.assertEqual(stdout.decode().splitlines(), ["execution authentication accepted"])
             finally:
                 if receiver.poll() is None:

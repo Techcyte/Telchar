@@ -204,8 +204,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         match accepted {
             Ok(mut socket) => {
-                socket.close(None)?;
                 println!("execution authentication accepted");
+                let manifest: InputManifest = serde_json::from_value(configuration["manifest"].clone())?;
+                exchange(&mut socket, manifest, Path::new(required("directory")?), required("store_uri")?)?;
                 return Ok(());
             }
             Err(_) => eprintln!("execution authentication rejected"),
