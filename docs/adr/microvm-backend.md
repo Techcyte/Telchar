@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed; incomplete design under review. Not implemented. Travis approved the
+Proposed; design under review. Not implemented. Travis approved the
 first-release launch-ambiguity and output-only recovery limits below; that
 approval does not accept the whole ADR or authorize implementation.
 
@@ -313,9 +313,12 @@ active suspend/snapshot requests; do not implement warm suspended builders.
 This proposal removes retained application OpenSSL state from Nix, but it is not
 proof that every supervisor/library/provider component is snapshot-safe. Inventory
 all captured processes and loaded crypto libraries. The [AWS snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
-requires AWS-patched OpenSSL when used in a snapshotted application. A fresh Nix
-process linked to Nixpkgs OpenSSL must be explicitly distinguished from retained
-OpenSSL state; provider guidance or security review must validate that boundary.
+directs applications using OpenSSL to the AWS-patched library, not merely to
+fresh connections. A fresh Nix process linked to Nixpkgs OpenSSL must be explicitly
+distinguished from retained OpenSSL state; the documentation does not explicitly
+exempt post-restore processes. Provider guidance or security review must validate
+that boundary. If it cannot, package Nix with the snapshot-safe library before
+release rather than treat fresh startup as an established exemption.
 Use the AWS snapshot-safe library for any OpenSSL consumer that must remain alive
 at capture, or do not release that image. Merely selecting an AL2023 base does not
 replace Nix store-linked OpenSSL. Distinct random samples are not certification.
@@ -445,8 +448,11 @@ Proposed fields are domains, not a final TOML API:
 
 - Backend name, `aarch64-linux`, explicitly qualified system features, selection
   priority and concurrent execution capacity.
-- Expected AWS account, explicit region, exact image ARN/version, fixed approved
-  resource shape, provider maximum lifetime and idle policy. Client derivation
+- Expected AWS account, explicit region, exact image ARN/version, approved
+  image resource class, provider maximum lifetime and idle policy. Image baseline
+  and elastic peak are not interchangeable with fixed reserved resources; size
+  Nix parallelism and disk admission for the qualified class, not an assumed
+  hard per-build CPU/RAM cap. Client derivation
   environment never selects these. Reject inconsistent image/account/region.
 - Bounded provider request/read timeouts, polling/backoff, launch rate and
   unresolved-intent limits; no build-retry field.
@@ -554,6 +560,26 @@ qualification requirements, not reasons to repeat the closed campaign without
 permission. Include snapshot security sign-off, clean failure logs and independent
 cleanup verification. Expensive/live qualification needs a separate agreed budget,
 account/region/resource ledger and cleanup authority.
+
+## Evidence and review scope
+
+The closed [qualification record](../microvm.md) distinguishes actual native ARM
+compilation/registration, local real-store/socket behavior and archived evidence
+validation. The 484.190s CMake result is one successful substantial build, not a
+latency distribution or a capacity benchmark. Emulated ARM CMake/CTest usability
+used a host compiler; it does not establish a second native ARM build. Original
+peak-resource, billing, disk-exhaustion and failure gaps remain visible there.
+The experiment captured a running Nix daemon; its image is not the proposed
+fresh-daemon production image and cannot certify that image's snapshot safety.
+
+Reviewed source bodies cover backend routing/capabilities, launch/recovery
+identity, callback admission, worker input/build/output and connector, transfer
+state/framing, promotion, singleton lease and relevant config validation. Closest
+recovery/admission tests include doubles: they locate orchestration boundaries,
+not provider correctness. Lease/PostgreSQL and real-store contracts have separate
+authority. No tests were run for this documentation-only design. Selected-module
+complete reads remain mandatory immediately before implementation, especially
+where an extraction is actually chosen.
 
 ## Alternatives and invariant review
 
