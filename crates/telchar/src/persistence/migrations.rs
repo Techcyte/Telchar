@@ -105,6 +105,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_attempt_trace_context",
         sql: include_str!("../../migrations/0018_shared_build_attempt_trace_context.sql"),
     },
+    Migration {
+        version: 19,
+        name: "microvm_launches",
+        sql: include_str!("../../migrations/0019_microvm_launches.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
