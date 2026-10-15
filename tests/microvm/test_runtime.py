@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Behavioral contracts for the experimental MicroVM lifecycle server."""
 import concurrent.futures
+import contextlib
 import http.client
 import importlib.util
+import io
 import json
 import tempfile
 import threading
@@ -86,8 +88,13 @@ class LifecycleTests(unittest.TestCase):
         for command, timeout in [([sys.executable, "-c", "raise SystemExit(1)"], 5),
                                  ([sys.executable, "-c", "import time; time.sleep(10)"], .05)]:
             state = runtime.ProbeState(command, timeout=timeout)
-            self.assertTrue(state.start("test"))
-            state.join()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertTrue(state.start("test"))
+                state.join()
+            self.assertEqual(json.loads(output.getvalue()), {
+                "event": "microvm.probe.completed", "outcome": "failed",
+            })
             self.assertEqual(state.status(), "failed")
             self.assertTrue(state.start("test"))
             self.assertEqual(state.status(), "failed")

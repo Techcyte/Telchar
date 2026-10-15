@@ -47,3 +47,9 @@ while time.monotonic() < deadline:
 else:
     raise TimeoutError('sandbox probe did not finish')
 PY
+logs=$(docker logs "$container" 2>&1)
+printf '%s\n' "$logs"
+if printf '%s\n' "$logs" | grep -Ei 'error:|warning:'; then
+  echo 'sandbox qualification emitted errors or warnings' >&2
+  exit 1
+fi

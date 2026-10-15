@@ -26,8 +26,8 @@ let
     # No package evaluation/downloads: instantiate a tiny standalone expression
     # against dependencies already registered in the snapshotted store.
     network=$(readlink /proc/self/ns/net)
-    drv=$(nix-instantiate ${sandboxExpression} --argstr network "$network")
-    nix-store --store daemon --realise "$drv" --option substituters ""
+    drv=$(nix-instantiate ${sandboxExpression} --argstr network "$network" --add-root /run/probe-derivation)
+    nix-store --store daemon --realise "$drv" --option substituters "" --add-root /run/probe-output
   '';
   closure = pkgs.closureInfo {
     rootPaths = [ pkgs.nix pkgs.python3 pkgs.coreutils pkgs.bash pkgs.cacert probe ];
@@ -41,7 +41,7 @@ let
     chmod 1775 /nix/store
     nix-store --load-db < ${closure}/registration
     touch /run/telchar-microvm-host-only
-    nix daemon &
+    nix --offline daemon &
     daemon=$!
     trap 'kill "$daemon" 2>/dev/null || true' EXIT
     ${pkgs.python3}/bin/python3 ${runtime} --probe ${probe} &

@@ -11,7 +11,8 @@ unchanged. AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
   dedicated build users, and a lifecycle adapter. `sandbox = true` and
   `sandbox-fallback = false` are mandatory. No host store is mounted.
 - `deploy/microvm/runtime.py`: bounded lifecycle hook requests. `/ready` and
-  `/validate` check the daemon socket without executing a build before snapshot.
+  `/validate` ping the daemon through the Nix client without executing a build
+  before snapshot.
   `/run` starts one fixed probe asynchronously; duplicate delivery for the same
   MicroVM ID does not repeat it. Different IDs and nonempty runtime payloads are
   rejected. There is no arbitrary command endpoint. Active probes reject suspend.
@@ -72,10 +73,13 @@ The VM reached `RUNNING` by the first two-second polling interval; this is a
 coarse observation, not a startup benchmark. Termination was confirmed before
 deleting the image, artifact bucket, temporary role, and CloudWatch log group.
 
-Qualification is not yet clean: opening and closing the daemon socket for
-readiness emits interrupted/EOF daemon errors, and unrooted CLI results emit GC
-warnings. These require behavioral fixes and another clean test before treating
-the probe as a production readiness contract.
+A follow-up ARM64 run used the Nix client for daemon readiness, retained the
+probe derivation/output through GC roots, and explicitly disabled automatic
+connectivity detection for the offline probe daemon. The real sandbox build
+passed again, with no errors or warnings in the collected build/runtime logs.
+Termination and deletion of all disposable test resources were confirmed.
+The local disposable-container test also rejects runtime errors and warnings.
+This qualifies the fixed sandbox probe only, not a production worker.
 
 ## Repeating AWS validation
 

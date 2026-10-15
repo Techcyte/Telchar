@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import signal
-import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -124,11 +123,15 @@ def main():
 
     def daemon_ready():
         try:
-            with socket.socket(socket.AF_UNIX) as connection:
-                connection.settimeout(1)
-                connection.connect("/nix/var/nix/daemon-socket/socket")
-            return True
-        except OSError:
+            result = subprocess.run(
+                ["nix", "--offline", "store", "ping", "--store", "daemon"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=2,
+                check=False,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
             return False
 
     # AWS routes the authenticated MicroVM endpoint to this application port.
