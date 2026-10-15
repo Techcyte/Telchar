@@ -7,6 +7,68 @@ use std::time::Instant;
 
 use tungstenite::client::IntoClientRequest;
 
+pub fn receive_session(
+    mut socket: super::WorkerSocket,
+    maximum_manifest_bytes: usize,
+    transfer_chunk_bytes: usize,
+    deadline: Instant,
+) -> io::Result<super::WorkerSession> {
+    if maximum_manifest_bytes == 0
+        || maximum_manifest_bytes > super::MAXIMUM_MANIFEST_METADATA_BYTES
+        || transfer_chunk_bytes == 0
+        || transfer_chunk_bytes > super::MAXIMUM_NAR_CHUNK_BYTES
+    {
+        return Err(super::invalid("MicroVM session limits are invalid"));
+    }
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| super::invalid("MicroVM session deadline expired"))?;
+    let stream = match socket.get_ref() {
+        tungstenite::stream::MaybeTlsStream::Plain(stream) => stream,
+        tungstenite::stream::MaybeTlsStream::Rustls(stream) => &stream.sock,
+        _ => return Err(super::invalid("MicroVM session transport is unsupported")),
+    }
+    .try_clone()?;
+    let maximum_message_bytes = maximum_manifest_bytes
+        .max(transfer_chunk_bytes)
+        .checked_add(super::MAXIMUM_AUTHENTICATION_METADATA_BYTES + 64)
+        .ok_or_else(|| super::invalid("MicroVM message limit is invalid"))?;
+    socket.set_config(|config| {
+        config.max_message_size = Some(maximum_message_bytes);
+        config.max_frame_size = Some(maximum_message_bytes);
+    });
+    super::set_socket_timeouts(&mut socket, remaining)?;
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let watchdog = scope.spawn(move || {
+            if completion.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        let result = super::receive_authenticated_manifest(
+            socket,
+            maximum_manifest_bytes,
+            transfer_chunk_bytes,
+            remaining,
+        )
+        .and_then(|mut session| {
+            if Instant::now() >= deadline {
+                return Err(super::invalid("MicroVM session deadline expired"));
+            }
+            session.connection_deadline = deadline;
+            Ok(session)
+        });
+        let _ = finished.send(());
+        watchdog
+            .join()
+            .map_err(|_| io::Error::other("MicroVM deadline monitor failed"))?;
+        result
+    })
+}
+
 pub fn connect(
     endpoint: &str,
     address: SocketAddr,

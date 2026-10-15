@@ -380,38 +380,49 @@ fn select_protocol(
 
 #[test]
 fn receives_manifest_on_execution_authenticated_connection() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
-    let endpoint = format!("ws://{}/fixture", listener.local_addr().expect("address"));
-    let expected = manifest();
-    let sent = expected.clone();
-    let server = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("connection accepts");
-        let mut socket = tungstenite::accept(stream).expect("WebSocket accepts");
-        let mut body = Vec::new();
-        write_frame(
-            &mut body,
-            &Frame::new(
-                FrameKind::InputManifest,
-                encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes"),
-                vec![],
-            ),
-            ProtocolLimits::new(8 * 1024 * 1024, 0),
-        )
-        .expect("frame writes");
-        socket
-            .send(tungstenite::Message::Binary(body.into()))
-            .expect("manifest sends");
-    });
-    let (socket, _) = tungstenite::connect(endpoint).expect("connection opens");
-    let session = telchar_nomad_worker::receive_authenticated_manifest(
-        socket,
-        8 * 1024 * 1024,
-        262144,
-        std::time::Duration::from_secs(60),
-    )
-    .expect("execution-authenticated session receives manifest without Nomad identity");
-    assert_eq!(session.manifest(), &expected);
-    server.join().expect("server joins");
+    for microvm in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let endpoint = format!("ws://{}/fixture", listener.local_addr().expect("address"));
+        let expected = manifest();
+        let sent = expected.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection accepts");
+            let mut socket = tungstenite::accept(stream).expect("WebSocket accepts");
+            let mut body = Vec::new();
+            write_frame(
+                &mut body,
+                &Frame::new(
+                    FrameKind::InputManifest,
+                    encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes"),
+                    vec![],
+                ),
+                ProtocolLimits::new(8 * 1024 * 1024, 0),
+            )
+            .expect("frame writes");
+            socket
+                .send(tungstenite::Message::Binary(body.into()))
+                .expect("manifest sends");
+        });
+        let (socket, _) = tungstenite::connect(endpoint).expect("connection opens");
+        let session = if microvm {
+            telchar_nomad_worker::microvm::receive_session(
+                socket,
+                8 * 1024 * 1024,
+                262144,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+        } else {
+            telchar_nomad_worker::receive_authenticated_manifest(
+                socket,
+                8 * 1024 * 1024,
+                262144,
+                std::time::Duration::from_secs(60),
+            )
+        }
+        .expect("execution-authenticated session receives manifest without Nomad identity");
+        assert_eq!(session.manifest(), &expected);
+        server.join().expect("server joins");
+    }
 }
 
 #[test]
