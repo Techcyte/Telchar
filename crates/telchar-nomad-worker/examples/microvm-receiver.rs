@@ -156,11 +156,30 @@ fn exchange<S: Read + Write>(
         })?;
     }
     let mut current: Option<(telchar::nomad::protocol::PathManifestEntry, std::fs::File)> = None;
+    let mut log = None;
+    let mut log_bytes = 0usize;
     loop {
         let frame = receive(socket)?;
         session.accept(Direction::WorkerToGateway, frame.clone())?;
         match frame.kind() {
-            FrameKind::BuildStarted | FrameKind::LogChunk => {}
+            FrameKind::BuildStarted => {}
+            FrameKind::LogChunk => {
+                use std::os::unix::fs::OpenOptionsExt;
+                log_bytes = log_bytes
+                    .checked_add(frame.payload().len())
+                    .filter(|bytes| *bytes <= 1 << 20)
+                    .ok_or_else(|| io::Error::other("build log limit exceeded"))?;
+                if log.is_none() {
+                    log = Some(
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .mode(0o600)
+                            .open(directory.join("build.log"))?,
+                    );
+                }
+                log.as_mut().unwrap().write_all(frame.payload())?;
+            }
             FrameKind::BuildResult => {
                 let result: telchar::nomad::protocol::BuildResultMetadata =
                     decode_metadata(frame.metadata(), METADATA)?;
@@ -746,6 +765,15 @@ mod tests {
         send(
             &mut socket,
             &Frame::new(
+                FrameKind::LogChunk,
+                encode_metadata(&LogChunk { sequence: 0 }, METADATA).unwrap(),
+                b"fixture diagnostic\n".to_vec(),
+            ),
+        )
+        .unwrap();
+        send(
+            &mut socket,
+            &Frame::new(
                 FrameKind::BuildResult,
                 encode_metadata(
                     &BuildResultMetadata {
@@ -760,6 +788,10 @@ mod tests {
         )
         .unwrap();
         let error = server.join().unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("build.log")).unwrap(),
+            b"fixture diagnostic\n"
+        );
         std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(error.to_string(), "worker reported build failure");
     }
