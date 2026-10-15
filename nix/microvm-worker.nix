@@ -6,7 +6,15 @@ let
     version = "2026.9.2";
     src = source;
     cargoExtraArgs = "--locked -p telchar-nomad-worker";
-    cargoBuildExtraArgs = "--example microvm-worker";
+    cargoBuildCommand = "cargoWithProfile build --example microvm-worker";
+    cargoArtifacts = craneLib.buildDepsOnly {
+      pname = "telchar-microvm-fixture";
+      version = "2026.9.2";
+      src = source;
+      cargoExtraArgs = "--locked -p telchar-nomad-worker";
+      doCheck = false;
+      TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
+    };
     doCheck = false;
     TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
     installPhaseCommand = ''
