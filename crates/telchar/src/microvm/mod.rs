@@ -1,5 +1,7 @@
 //! AWS control-plane operations for exact MicroVM executions.
 
+pub mod rendezvous;
+
 use std::time::Duration;
 
 use aws_sdk_lambdamicrovms::{Client, Config};
