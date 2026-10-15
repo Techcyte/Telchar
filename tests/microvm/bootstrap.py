@@ -21,7 +21,7 @@ runtime = load_runtime()
 
 class ExecutionState(runtime.ProbeState):
     def __init__(self, command, destination):
-        super().__init__(command)
+        super().__init__(command, timeout=540)
         self.destination = destination
         self.hook_lock = threading.Lock()
 

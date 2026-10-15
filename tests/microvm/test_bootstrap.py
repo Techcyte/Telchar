@@ -72,6 +72,12 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(json.loads(observed.read_text())["microvmId"], "microvm-test")
             self.assertFalse(state.start_hook({**hook, "microvmId": "foreign"}))
 
+    def test_worker_deadline_leaves_time_before_provider_termination(self):
+        loader.exec_module(bootstrap)
+        with tempfile.TemporaryDirectory() as directory:
+            state = bootstrap.ExecutionState(["/bin/true"], Path(directory) / "execution.json")
+            self.assertEqual(state.timeout, 540)
+
     def test_bootstrap_rejects_unencrypted_or_credential_bearing_endpoints(self):
         loader.exec_module(bootstrap)
         with tempfile.TemporaryDirectory() as directory:
