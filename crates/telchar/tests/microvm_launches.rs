@@ -7,9 +7,8 @@ use std::time::Duration;
 use support::postgres::PostgresFixture;
 use telchar::backend::BackendKind;
 
-#[test]
-fn launch_reservation_survives_build_failure_and_database_restart() {
-    let mut fixture = PostgresFixture::start();
+fn prepared_launch() -> PostgresFixture {
+    let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv";
     telchar::persistence::claim_shared_build(
@@ -32,6 +31,121 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds) VALUES ('intent-one', $1, 'launch-fixture', '116392764028', 'us-west-2', 'arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture', '1', $2, $2, 'token-one', $2, clock_timestamp() + interval '1 minute', 600)",
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("launch reserves durable capacity");
+    fixture
+}
+
+#[test]
+fn cancellation_closes_prepared_launch_and_releases_only_unused_capacity() {
+    let fixture = prepared_launch();
+    assert!(
+        telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+            .expect("prepared launch cancels")
+    );
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("cancelled launch cannot dispatch")
+    );
+    let row = fixture.connect().query_one(
+        "SELECT phase, reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+    ).expect("cancelled launch reads");
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert!(row.get::<_, bool>(1));
+    assert!(
+        !telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+            .expect("duplicate cancellation has no transition")
+    );
+}
+
+#[test]
+fn cancellation_retains_dispatched_and_bound_reservations() {
+    for provider_id in [None, Some("microvm-exact")] {
+        let mut fixture = prepared_launch();
+        assert!(
+            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+                .expect("launch dispatches")
+        );
+        if let Some(provider_id) = provider_id {
+            fixture.connect().execute(
+                "UPDATE microvm_launches SET phase = 'bound', provider_id = $1 WHERE intent_id = 'intent-one'", &[&provider_id],
+            ).expect("API binding fixture records");
+        }
+        assert!(
+            telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+                .expect("dispatched launch cancels")
+        );
+        fixture.restart();
+        let row = fixture.connect().query_one(
+            "SELECT phase, reservation_released_at IS NULL, provider_id FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+        ).expect("cleanup obligation survives restart");
+        assert_eq!(
+            row.get::<_, String>(0),
+            if provider_id.is_some() {
+                "closed"
+            } else {
+                "ambiguous"
+            }
+        );
+        assert!(row.get::<_, bool>(1));
+        assert_eq!(row.get::<_, Option<String>>(2).as_deref(), provider_id);
+    }
+}
+
+#[test]
+fn cancellation_rejects_expired_ownership() {
+    let fixture = prepared_launch();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires");
+    fixture.expire_singleton_ownership("daemon");
+    assert!(
+        telchar::persistence::cancel_microvm_launch(owner.database_url(), "intent-one").is_err()
+    );
+    let row = fixture.connect().query_one(
+        "SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+    ).expect("fenced launch reads");
+    assert_eq!(row.get::<_, String>(0), "prepared");
+    assert!(row.get::<_, bool>(1));
+}
+
+#[test]
+fn cancellation_and_dispatch_race_preserves_ambiguous_capacity() {
+    let fixture = prepared_launch();
+    let dispatch_url = fixture.url().to_owned();
+    let cancel_url = dispatch_url.clone();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let dispatch_barrier = barrier.clone();
+    let dispatch = std::thread::spawn(move || {
+        dispatch_barrier.wait();
+        telchar::persistence::dispatch_microvm_launch(&dispatch_url, "intent-one")
+            .expect("racing dispatch resolves")
+    });
+    let cancel = std::thread::spawn(move || {
+        barrier.wait();
+        telchar::persistence::cancel_microvm_launch(&cancel_url, "intent-one")
+            .expect("racing cancellation resolves")
+    });
+    let dispatched = dispatch.join().expect("dispatch joins");
+    assert!(cancel.join().expect("cancellation joins"));
+    let row = fixture.connect().query_one(
+        "SELECT phase, reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+    ).expect("raced launch reads");
+    assert_eq!(
+        row.get::<_, String>(0),
+        if dispatched { "ambiguous" } else { "closed" }
+    );
+    assert_eq!(row.get::<_, bool>(1), !dispatched);
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("cancelled execution never redispatches")
+    );
+}
+
+#[test]
+fn launch_reservation_survives_build_failure_and_database_restart() {
+    let mut fixture = prepared_launch();
+    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv";
     fixture.connect().execute(
         "UPDATE microvm_launches SET reservation_released_at = clock_timestamp() WHERE intent_id = 'intent-one'", &[],
     ).expect("reservation releases for negative case");

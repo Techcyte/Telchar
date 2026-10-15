@@ -11,6 +11,30 @@ impl fmt::Display for MicrovmLaunchError {
 
 impl std::error::Error for MicrovmLaunchError {}
 
+pub fn cancel_microvm_launch(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(cancel_microvm_launch));
+    if intent_id.is_empty() || intent_id.len() > 128 {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let changed = client
+        .execute(
+            "UPDATE microvm_launches
+         SET phase = CASE WHEN phase = 'prepared' THEN 'closed'
+                          WHEN provider_id IS NULL THEN 'ambiguous' ELSE 'closed' END,
+             reservation_released_at = CASE WHEN phase = 'prepared'
+                 THEN clock_timestamp() ELSE reservation_released_at END
+         WHERE intent_id = $1 AND phase IN ('prepared', 'dispatching', 'bound')",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
+}
+
 pub fn dispatch_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
