@@ -78,7 +78,7 @@ fn exchange<S: Read + Write>(
     socket: &mut tungstenite::WebSocket<S>, manifest: InputManifest,
     directory: &Path, store_uri: &str,
 ) -> io::Result<()> {
-    let mut session = TransferSession::new(manifest.clone(), 10000, 10000, 1 << 30, 1 << 30, 1 << 30, 1 << 20, METADATA)?;
+    let mut session = TransferSession::new(manifest.clone(), 10000, 1 << 30, 1 << 30, 1 << 30, 1 << 30, 1 << 20, METADATA)?;
     send(socket, &Frame::new(FrameKind::InputManifest, encode_metadata(&manifest, METADATA)?, vec![]))?;
     let valid = receive(socket)?;
     session.accept(Direction::WorkerToGateway, valid)?;
@@ -293,6 +293,56 @@ mod tests {
         assert!(store.is_valid_path(returned.path.as_bytes()).unwrap());
         send(&mut socket, &Frame::new(FrameKind::BuildResult, encode_metadata(&BuildResultMetadata { outcome: BuildOutcome::Built, diagnostic: None }, METADATA).unwrap(), vec![])).unwrap();
         server.join().unwrap().unwrap();
+        actual_worker_build(&store_uri);
+    }
+
+    fn actual_worker_build(store_uri: &str) {
+        use telchar::nomad::protocol::*;
+        let shell = std::fs::canonicalize("/bin/bash").unwrap();
+        let package = shell.parent().unwrap().parent().unwrap();
+        let expression = format!("builtins.derivation {{ name = \"wss-worker-proof\"; system = \"x86_64-linux\"; shell = builtins.storePath \"{}\"; builder = \"{}\"; args = [ \"-euc\" \"test ! -e /run/telchar-microvm-host-only; printf worker-built > $out\" ]; }}", package.display(), shell.display());
+        let instantiated = std::process::Command::new("/bin/nix-instantiate").args(["--expr", &expression, "--add-root", "/run/wss-derivation"]).output().unwrap();
+        assert!(instantiated.status.success(), "{}", String::from_utf8_lossy(&instantiated.stderr));
+        let derivation = std::fs::canonicalize(String::from_utf8(instantiated.stdout).unwrap().trim()).unwrap().to_str().unwrap().to_owned();
+        let shown = std::process::Command::new("/bin/nix").args(["--offline", "derivation", "show", &derivation]).output().unwrap();
+        assert!(shown.status.success(), "{}", String::from_utf8_lossy(&shown.stderr));
+        let value: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+        let drv = value["derivations"].as_object().unwrap().values().next().unwrap();
+        let bytes = |value: &serde_json::Value| value.as_str().unwrap().as_bytes().to_vec();
+        let output = format!("/nix/store/{}", drv["outputs"]["out"]["path"].as_str().unwrap());
+        let build = BuildSpecification {
+            derivation_path: derivation.as_bytes().to_vec(),
+            outputs: vec![NamedOutput { name: b"out".to_vec(), path: output.as_bytes().to_vec(), hash_algorithm: vec![], hash: vec![] }],
+            input_sources: drv["inputs"]["srcs"].as_array().unwrap().iter().map(|value| format!("/nix/store/{}", value.as_str().unwrap()).into_bytes()).collect(),
+            system: drv["system"].as_str().unwrap().to_owned(), required_system_features: vec![],
+            builder: bytes(&drv["builder"]), arguments: drv["args"].as_array().unwrap().iter().map(bytes).collect(),
+            environment: drv["env"].as_object().unwrap().iter().map(|(name, value)| (name.as_bytes().to_vec(), bytes(value))).collect(),
+        };
+        let closure = std::process::Command::new("/bin/nix-store").args(["--query", "--requisites"]).arg(package).output().unwrap();
+        assert!(closure.status.success(), "{}", String::from_utf8_lossy(&closure.stderr));
+        let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(store_uri).unwrap();
+        let mut store = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint).unwrap();
+        let paths = String::from_utf8(closure.stdout).unwrap().lines().map(|path| {
+            let info = store.query_path_info(path.as_bytes()).unwrap().unwrap();
+            PathManifestEntry { path: path.to_owned(), nar_hash: info.nar_hash_hex().to_owned(), nar_size: info.nar_size(), references: info.references().iter().map(|path| String::from_utf8(path.clone()).unwrap()).collect(), deriver: None, content_address: None }
+        }).collect();
+        let manifest = InputManifest { derivation_path: derivation, build, paths, outputs: vec![output.clone()] };
+        TransferSession::new(manifest.clone(), 10000, 1 << 30, 1 << 30, 1 << 30, 1 << 30, 1 << 20, METADATA).expect("real build manifest validates");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_uri = store_uri.to_owned();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            exchange(&mut tungstenite::accept(stream).unwrap(), manifest, Path::new("/tmp"), &server_uri)
+        });
+        let (socket, _) = tungstenite::connect(format!("ws://{address}/fixture")).unwrap();
+        let mut worker = telchar_nomad_worker::receive_authenticated_manifest(socket, METADATA, CHUNK, std::time::Duration::from_secs(60)).unwrap();
+        let requested = worker.resolve_inputs(store_uri).unwrap();
+        worker.import_requested_inputs(store_uri, &requested).unwrap();
+        let result = worker.build(store_uri).unwrap();
+        worker.return_outputs(store_uri, &result).unwrap();
+        server.join().unwrap().unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"worker-built");
     }
 
     #[test]
