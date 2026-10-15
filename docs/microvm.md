@@ -209,8 +209,22 @@ uncached target outputs, eight compiler jobs and mandatory nonroot/sentinel
 sandbox assertions. Its realized input closure contains 109 paths and
 464,615,344 NAR bytes. Actual workers requested 373,489,368 missing-input bytes;
 other paths were already in the worker image. Both `out` and `debug` outputs
-must be validated and registered. Compilation success and usable-result
-verification remain pending; partial compiler logs are not successful builds.
+were validated and registered in the successful AWS run. Actual native ARM
+compilation and package fixup took 425.235 seconds. Launch through registration
+and authoritative metadata queries took 484.190 seconds, within the 600-second
+provider limit. Output NARs were 57,537,296 bytes (`out`) and 516,599,664 bytes
+(`debug`), both preserved with verified hashes and imported locally. The produced
+ARM CMake configured and built a real C program; produced ARM CTest passed 1/1
+and program output matched. This usability check used explicit QEMU/proot
+process-tree emulation with a host compiler, not a second native ARM build.
+
+Manifest-to-build-start took 2.273 seconds, about 164.33 MB/s effective input
+transfer/import. Output transfer, validation and registration took 53.589 seconds,
+about 10.71 MB/s effective. These include processing and are not isolated network
+throughput. Launch API return was 0.157 seconds, not boot time. Substantial-build
+worker peak memory/disk were not sampled; prior small-fixture observations do not
+fill that gap. Receiver before/after filesystem and host memory observations are
+retained separately.
 
 The larger workload exposed two fixture deadlines. A real loopback WebSocket
 regression reproduced read-idle `WouldBlock` during a silent build; the receiver
@@ -220,7 +234,7 @@ adapter's inherited 300-second process deadline killed the worker. This is not
 evidence of failure at the AWS 600-second maximum. The execution adapter now
 allows 540 seconds, leaving time before the provider limit. The fixed sandbox
 probe retains its separate 300-second deadline. Both fixes have local regression
-coverage; a second image version is being qualified against the same workload.
+coverage; the second image version completed the same workload.
 
 The current conservative campaign reservation is USD 40, not actual spend.
 Official Oregon ARM MicroVM rates are USD 0.0000276944 per vCPU-second and
@@ -236,9 +250,13 @@ not AWS `openssl-snapsafe-libs`. Offline store traffic avoids intended daemon TL
 but does not certify its retained RNG state. AWS's random-device guarantee and
 sample uniqueness must not be represented as general cryptographic certification.
 
-Evidence for this separate, not-yet-cleaned campaign is retained under
-`~/.local/state/telchar-microvm-test/workloads`. Its ledger must not be confused
-with the completed small-fixture campaign above. Production launch ambiguity,
+Evidence for this separate campaign is retained under
+`~/.local/state/telchar-microvm-test/workloads`. Independent AWS queries confirmed
+all four workers and the receiver terminated; the volume, security group, key,
+both image versions, bucket, role and log group were absent. Its ledger records
+`cleanup=complete`; it must not be confused with the small-fixture campaign above.
+`tests/microvm/verify-workload-evidence.py` checks archived output hashes, timing
+ordering, isolation and cleanup records without AWS access. Production launch ambiguity,
 fencing, cancellation, restart, reconnect and stock-client scheduling remain
 deferred to an approved backend design; none is implemented by these fixtures.
 
