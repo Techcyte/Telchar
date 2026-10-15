@@ -28,6 +28,66 @@ pub struct MicrovmLaunchIntent {
     pub maximum_duration_seconds: i32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MicrovmCleanup {
+    pub intent_id: String,
+    pub provider_id: String,
+    pub account_id: String,
+    pub region: String,
+}
+
+pub fn pending_microvm_cleanup(
+    database: &(impl DatabaseSource + ?Sized),
+    backend_name: &str,
+    limit: usize,
+) -> Result<Vec<MicrovmCleanup>, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(pending_microvm_cleanup));
+    if !(1..=1000).contains(&limit) {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let rows = client
+        .query(
+            "SELECT l.intent_id, l.provider_id, l.account_id, l.region
+         FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE l.backend_name = $1 AND l.provider_id IS NOT NULL
+           AND l.reservation_released_at IS NULL
+           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
+                OR b.state NOT IN ('running', 'collecting'))
+         ORDER BY l.created_at, l.intent_id LIMIT $2",
+            &[&backend_name, &(limit as i64)],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| MicrovmCleanup {
+            intent_id: row.get(0),
+            provider_id: row.get(1),
+            account_id: row.get(2),
+            region: row.get(3),
+        })
+        .collect())
+}
+
+/// Records an exact successful provider TERMINATED observation, not a terminate acknowledgment.
+pub fn record_microvm_termination(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(record_microvm_termination));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let changed = client.execute(
+        "UPDATE microvm_launches SET phase = 'closed', reservation_released_at = clock_timestamp()
+         WHERE intent_id = $1 AND provider_id = $2 AND reservation_released_at IS NULL",
+        &[&intent_id, &provider_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
+}
+
 pub fn reserve_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent: &MicrovmLaunchIntent,

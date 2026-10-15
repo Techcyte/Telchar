@@ -190,6 +190,89 @@ fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
 }
 
 #[test]
+fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity() {
+    let mut fixture = prepared_launch();
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("dispatch")
+    );
+    assert!(
+        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+            .expect("binding")
+    );
+    assert!(
+        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10)
+            .expect("active launch reads")
+            .is_empty()
+    );
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
+        "fixture-failure",
+        &serde_json::json!({}),
+        Duration::from_secs(3600),
+    )
+    .expect("terminal build");
+    fixture.restart();
+    let cleanup =
+        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10)
+            .expect("cleanup reads");
+    assert_eq!(cleanup.len(), 1);
+    assert_eq!(cleanup[0].intent_id, "intent-one");
+    assert_eq!(cleanup[0].provider_id, "microvm-exact");
+    assert_eq!(cleanup[0].account_id, "116392764028");
+    assert_eq!(cleanup[0].region, "us-west-2");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires cleanup");
+    fixture.expire_singleton_ownership("daemon");
+    assert!(
+        telchar::persistence::record_microvm_termination(
+            owner.database_url(),
+            "intent-one",
+            "microvm-exact",
+        )
+        .is_err(),
+        "expired owner cannot release capacity"
+    );
+    assert!(
+        !telchar::persistence::record_microvm_termination(
+            fixture.url(),
+            "intent-one",
+            "microvm-other"
+        )
+        .expect("wrong identity rejected")
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(
+            fixture.url(),
+            "intent-one",
+            "microvm-exact"
+        )
+        .expect("exact observation recorded")
+    );
+    assert!(
+        !telchar::persistence::record_microvm_termination(
+            fixture.url(),
+            "intent-one",
+            "microvm-exact"
+        )
+        .expect("duplicate observation has no release")
+    );
+    fixture.restart();
+    assert!(
+        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10)
+            .expect("released list reads")
+            .is_empty()
+    );
+    let row = fixture.connect().query_one("SELECT phase, reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[]).expect("release persists");
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert!(row.get::<_, bool>(1));
+}
+
+#[test]
 fn exact_binding_is_single_assignment_and_late_response_is_cleanup_only() {
     for cancelled in [false, true] {
         let mut fixture = prepared_launch();
