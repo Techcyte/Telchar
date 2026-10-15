@@ -53,6 +53,27 @@ fn stream_input<S: Read + Write>(
     Ok(())
 }
 
+fn register_output(
+    source: impl Read, metadata: &telchar::nomad::protocol::PathManifestEntry,
+    directory: &Path, store_directory: &Path, store_uri: &str,
+) -> io::Result<()> {
+    use telchar::store::daemon::GatewayStoreEndpoint;
+    use telchar::store::promotion::{DeclaredPathInfo, GatewayStorePromotionBackend, validate_and_promote_nar};
+    let hash = metadata.nar_hash.as_bytes().chunks_exact(2).map(|pair| {
+        u8::from_str_radix(std::str::from_utf8(pair).map_err(io::Error::other)?, 16).map_err(io::Error::other)
+    }).collect::<io::Result<Vec<_>>>()?;
+    let declared = DeclaredPathInfo {
+        path: metadata.path.clone().into(),
+        nar_hash: hash.try_into().map_err(|_| io::Error::other("invalid NAR hash"))?,
+        nar_size: metadata.nar_size, references: metadata.references.iter().map(Into::into).collect(),
+        deriver: metadata.deriver.as_ref().map(Into::into), content_address: metadata.content_address.clone(),
+        signatures: vec![], ultimate: false,
+    };
+    let mut backend = GatewayStorePromotionBackend::new(GatewayStoreEndpoint::parse(store_uri)?);
+    validate_and_promote_nar(source, directory, store_directory, &declared, &mut backend)?;
+    Ok(())
+}
+
 fn exchange<S: Read + Write>(
     socket: &mut tungstenite::WebSocket<S>, manifest: InputManifest,
     directory: &Path, _store_uri: &str,
@@ -174,6 +195,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use tungstenite::http::Request;
+
+    #[test]
+    fn returned_nar_is_validated_and_registered_in_real_store() {
+        use sha2::{Digest, Sha256};
+        use telchar::nomad::protocol::PathManifestEntry;
+        let Ok(store_uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+            let output = std::process::Command::new("bash")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/output-container.sh"))
+                .arg(std::env::current_exe().unwrap())
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("error:"));
+            return;
+        };
+        let directory = Path::new("/tmp");
+        let store_directory = Path::new("/nix/store");
+        let mut nar = Vec::new();
+        for value in [b"nix-archive-1".as_slice(), b"(", b"type", b"regular", b"contents", b"returned build output", b")"] {
+            nar.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            nar.extend_from_slice(value);
+            nar.resize(nar.len().next_multiple_of(8), 0);
+        }
+        let path = store_directory.join("cccccccccccccccccccccccccccccccc-output");
+        let metadata = PathManifestEntry {
+            path: path.to_str().unwrap().to_owned(), nar_hash: Sha256::digest(&nar).iter().map(|byte| format!("{byte:02x}")).collect(),
+            nar_size: nar.len() as u64, references: vec![], deriver: None, content_address: None,
+        };
+        let mut corrupt = metadata.clone();
+        corrupt.nar_hash = "0".repeat(64);
+        let error = register_output(nar.as_slice(), &corrupt, directory, store_directory, &store_uri).unwrap_err();
+        assert_eq!(error.to_string(), "NAR hash mismatch");
+        let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(&store_uri).unwrap();
+        let mut store = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint).unwrap();
+        assert!(!store.is_valid_path(metadata.path.as_bytes()).unwrap());
+        register_output(nar.as_slice(), &metadata, directory, store_directory, &store_uri).unwrap();
+        let registered = store.query_path_info(metadata.path.as_bytes()).unwrap().unwrap();
+        assert_eq!(registered.nar_size(), metadata.nar_size);
+        assert!(registered.references().is_empty());
+        assert!(store.is_valid_path(metadata.path.as_bytes()).unwrap());
+    }
 
     #[test]
     fn exchange_streams_admitted_input_and_reports_build_failure() {
