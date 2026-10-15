@@ -69,24 +69,14 @@ Checked public documentation during design; no account API calls:
   targets an exact ID. A termination request is not independent observation of
   completed termination; bound cleanup polling and preserve unresolved cleanup.
 
-## Design questions to resolve
+## Decision summary
 
-1. Launch-response loss: callback-assisted authenticated binding versus terminal
-   ambiguous intent retained until the provider lifetime bound. No list/time
-   guesses or automatic replacement launch. Establish token replay guarantees
-   before proposing launch replay.
-2. Early connection: admit bounded authenticated bootstrap before provider ID
-   commit without admitting the build or trusting a self-reported ID alone.
-   Determine exact binding checks and transactional admission sequence.
-3. Recovery: separate monitoring a known provider execution from reconnecting
-   its transfer stream. Existing worker protocol does not establish durable
-   resumable transfer. Define fail-closed first-release behavior explicitly.
-4. Ownership loss: AWS cannot enforce PostgreSQL generation. Specify stale
-   side-effect exposure, launch deadline and cleanup handoff; do not claim
-   database triggers fence remote API calls.
-5. Snapshot safety: retained Nix daemon ordinary OpenSSL is unqualified. Compare
-   fresh post-restore daemon startup against snapshot-safe dependency packaging;
-   image readiness and exact startup/sandbox checks need a coherent policy.
+Launch ambiguity and restart behavior have narrow first-release approval below.
+Remaining sections propose exact admission, bounded cleanup and fresh-process
+image startup. Unknown provider token-retention and acceptance-delay guarantees
+remain explicitly unknown; this design does not require them for launch replay
+or automatic unknown-ID capacity release. Snapshot security and deployment IAM
+review are implementation release gates, not claims established by this ADR.
 
 ## Proposed launch transaction
 
@@ -104,7 +94,8 @@ Proposed launch record fields:
 - admission cutoff, provider maximum duration, nullable provider ID and cleanup
   obligation/status; all state transitions compare the exact attempt/intent;
 - bootstrap credential verifier, expiration and session-consumed state, never
-  bearer bytes, NARs or logs. Secret persistence policy remains a design question.
+  bearer bytes, NARs or logs. The credential policy below intentionally prevents
+  bearer reconstruction after restart.
 
 The request digest must not be presented as replayable request content. A digest
 cannot recover omitted secret payload bytes. The first-release proposal does not
@@ -132,7 +123,7 @@ coverage are required for every mutable table.
 | Boundary | Proposed handling |
 | --- | --- |
 | Before launch record commit | No remote call permitted; ordinary queued/admission handling |
-| Prepared but not dispatching | Current owner may grant the single dispatch, after checking cutoff and cancellation |
+| Prepared but not dispatching | Original issuing process may dispatch after cutoff/cancellation checks; restart abandons unused intent because bearer is not persisted |
 | Dispatching committed, no bound ID | Treat as ambiguous; never issue another launch |
 | Response received, ID commit fails | No build authorization; preserve exact response in surviving process memory for fenced reconciliation by current owner, otherwise ambiguity remains |
 | Exact ID durably bound, worker not admitted | Current owner may authorize the original bounded bootstrap session; no new launch |
@@ -188,8 +179,8 @@ fenced database authority; new ownership never dispatches an intent already
 marked dispatching. This limits duplicate launches for one intent but does not
 prove instantaneous cessation of remote side effects.
 
-Stale owners must stop callback/store activity and must not terminate an adopted
-execution based on stale cancellation state. Exact cleanup belongs to current
+Stale owners must stop callback/store activity and must not terminate an execution
+based on stale cancellation state. Exact cleanup belongs to current
 ownership; queued cleanup survives process death. Database fencing also does not
 roll back an already issued Nix store import. Store validation and eventual
 outputs-first recovery remain necessary, with no claim of distributed atomicity.
@@ -340,12 +331,71 @@ capabilities needed for Nix sandboxing must be explicit and qualified.
 Set provider maximum lifetime explicitly and local deadlines strictly inside it,
 with time reserved for transfer/cleanup; the experiment's600s ceiling is evidence,
 not authorization for longer production testing. For outbound-only execution,
-set the documented idle threshold beyond maximum execution lifetime and disable
-auto-resume, rather than assume autoResumeEnabled=false disables suspension.
+set the documented idle threshold beyond maximum execution lifetime, explicitly
+set the required suspended-duration field and disable auto-resume, rather than assume autoResumeEnabled=false disables suspension.
 [IdlePolicy](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_IdlePolicy.html)
 measures inbound proxy traffic and requires a threshold of at least60s; omission
 and default behavior must be verified before allowing them. Do not use an idle
 policy that can suspend a legitimate silent build.
+
+## Cancellation, deadlines and cleanup lifecycle
+
+Maintain three distinct outcomes: caller attachment, shared build and remote
+execution cleanup. Default detach-and-finish only removes the caller attachment;
+other followers and admitted execution continue. Operator-configured
+cancel-running uses the existing shared-build cancellation decision, not an
+individual follower disconnect as authority to kill shared work.
+
+Before dispatch, cancellation atomically closes the unused intent and releases
+its reservation. After dispatch, close admission first and fail/cancel the shared
+build through existing terminal-state arbitration. A known ID becomes cleanup
+pending; an unknown ID becomes ambiguous/quarantined. Do not call Run again in
+either case. A response arriving after cutoff may bind the exact ID for cleanup,
+never reopen admission or revive the failed build. A late callback cannot renew
+the deadline. Concurrent cancellation/success resolves through fenced conditional
+terminal mutation; neither handler overwrites an already recorded result.
+
+Separate deadlines cover provider request, hook startup, preauthorization
+rendezvous, input setup/import, build, output collection and whole execution.
+Use monotonic time within one process and durable database-time cutoffs for
+restart/admission decisions. Provider lifetime is a final independent ceiling,
+not proof the local worker stops immediately when its socket disconnects. Local
+supervisor must kill the whole execution process group, including Nix daemon
+children, rather than only the TLS client. Shutdown closes new admission and
+boundedly drains sessions; anything incomplete then follows output-only recovery.
+
+Loss of the admitted stream is terminal for that execution session: stop further
+transfer, fail incomplete build, queue exact termination. No reconnect, reimport
+resume, replacement launch or automatic attempt rotation. Preauthorization
+connection retry is distinct: a worker may retry transport establishment within
+its original cutoff only while no admission slot has been consumed. A pending
+connection owns no session-consumed slot. Once consumed, even loss before the
+first manifest cannot be replayed. HTTP/TLS connection attempts and DNS resolution
+need actual bounded connect/read deadlines, not just a loop deadline checked
+after a potentially unbounded connect.
+
+Current ownership runs a bounded cleanup reconciler independently of active
+builds. Persist cleanup requested before exact-ID TerminateMicrovm; retry only
+that exact identity with bounded backoff and inspect its state. API success alone
+is not cleanup completion. A single eventually consistent not-found/error is
+not automatically definitive absence. Persist observations and keep capacity
+until an exact successful Get response reports TERMINATED for the bound identity
+(with its termination timestamp retained), or an operator explicitly resolves it.
+The API documents this state and timestamp. Automatic 404-only release is not
+part of the first release; no undocumented tombstone-retention rule is assumed. IAM denial, throttling, unavailable region and timeout
+leave cleanup pending and alertable; no catch-all success. Never terminate all
+instances of an image or act on list/time resemblance. Known ID and original
+account/region cleanup context must survive backend disablement.
+
+On lease loss, close sockets and halt fresh AWS/store operations; in-flight
+operations may still complete. A stale process with a late successful response
+cannot write under its expired generation. If still alive, it may offer that
+bounded exact response to the current owner through a future authenticated
+handoff; do not require this optional optimization for correctness. Without
+handoff, ambiguity remains. A stale process must not issue compensating terminate
+based on stale state. Current owner first reconciles exact gateway outputs, then
+fails incomplete builds and assumes all durable cleanup obligations. This is
+single-active fail-closed operation, not active/active handover.
 
 ## Concrete transfer reuse boundary
 
@@ -369,7 +419,15 @@ real MicroVM gateway-store integration contract. Do not blanket-enable the
 ignored test or count its existence as passing coverage.
 
 Smallest initial reuse candidate is authenticated `WorkerSession` transfer/build
-logic with a separate MicroVM connector and credential admission. Preserve the
+logic with a separate MicroVM connector and credential admission. Inspection of
+`connect`/`connect_once` confirms Nomad authentication and its named WebSocket
+subprotocol are sent there; do not route MicroVM bootstrap through that connector.
+`receive_authenticated_manifest` accepts an already connected socket, but initializes
+Nomad protocol-session state internally and uses fixed path/input limits. Its
+connection deadline begins after manifest receipt, so pre-manifest waiting needs
+an independent bounded deadline. These are concrete adaptation points, not an
+assertion that the current public helper is a complete production worker API.
+Preserve the
 TLNW Nomad wire contract and its existing callers. Before moving protocol types,
 read their entire implementation and worker callers, add behavioral parity tests,
 and decide whether a backend-neutral transfer module is actually necessary.
