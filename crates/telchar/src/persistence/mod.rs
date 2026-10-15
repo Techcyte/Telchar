@@ -38,6 +38,7 @@ pub use connection::{Database, DatabaseConnection, DatabaseSource, validate_veri
 pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
 mod leases;
+mod microvm_launches;
 mod migrations;
 mod sessions;
 mod shared_builds;
@@ -48,6 +49,7 @@ pub use build_requests::*;
 pub use callback_nonces::*;
 pub use executor::*;
 pub use leases::*;
+pub use microvm_launches::*;
 pub use migrations::*;
 pub use sessions::*;
 pub use shared_builds::*;

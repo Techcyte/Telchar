@@ -32,6 +32,38 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds) VALUES ('intent-one', $1, 'launch-fixture', '116392764028', 'us-west-2', 'arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture', '1', $2, $2, 'token-one', $2, clock_timestamp() + interval '1 minute', 600)",
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("launch reserves durable capacity");
+    fixture.connect().execute(
+        "UPDATE microvm_launches SET reservation_released_at = clock_timestamp() WHERE intent_id = 'intent-one'", &[],
+    ).expect("reservation releases for negative case");
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("released reservation cannot dispatch")
+    );
+    fixture.connect().execute(
+        "UPDATE microvm_launches SET reservation_released_at = NULL, created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute' WHERE intent_id = 'intent-one'", &[],
+    ).expect("cutoff expires for negative case");
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("expired intent cannot dispatch")
+    );
+    fixture.connect().execute(
+        "UPDATE microvm_launches SET admission_cutoff = clock_timestamp() + interval '1 minute' WHERE intent_id = 'intent-one'", &[],
+    ).expect("cutoff restores for concurrency case");
+    let first_url = fixture.url().to_owned();
+    let second_url = first_url.clone();
+    let first = std::thread::spawn(move || {
+        telchar::persistence::dispatch_microvm_launch(&first_url, "intent-one")
+            .expect("first dispatch resolves")
+    });
+    let second = std::thread::spawn(move || {
+        telchar::persistence::dispatch_microvm_launch(&second_url, "intent-one")
+            .expect("second dispatch resolves")
+    });
+    assert_eq!(
+        usize::from(first.join().expect("first caller joins"))
+            + usize::from(second.join().expect("second caller joins")),
+        1
+    );
     telchar::persistence::complete_shared_build_failure(
         fixture.url(),
         derivation,
@@ -45,7 +77,22 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         "SELECT reservation_released_at IS NULL, phase FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
     ).expect("launch survives restart");
     assert!(row.get::<_, bool>(0));
-    assert_eq!(row.get::<_, String>(1), "prepared");
+    assert_eq!(row.get::<_, String>(1), "dispatching");
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("restart cannot redispatch")
+    );
+    fixture
+        .connect()
+        .execute(
+            "UPDATE microvm_launches SET phase = 'prepared' WHERE intent_id = 'intent-one'",
+            &[],
+        )
+        .expect("terminal attempt exercises dispatch gate");
+    assert!(
+        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("terminal attempt cannot dispatch")
+    );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
@@ -56,10 +103,10 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         .expect("stale connection opens");
     let error = stale
         .execute(
-            "UPDATE microvm_launches SET phase = 'dispatching' WHERE intent_id = 'intent-one'",
+            "UPDATE microvm_launches SET phase = 'ambiguous' WHERE intent_id = 'intent-one'",
             &[],
         )
-        .expect_err("expired owner cannot dispatch");
+        .expect_err("expired owner cannot mutate launch");
     assert_eq!(
         error.code(),
         Some(&postgres::error::SqlState::OBJECT_NOT_IN_PREREQUISITE_STATE)
