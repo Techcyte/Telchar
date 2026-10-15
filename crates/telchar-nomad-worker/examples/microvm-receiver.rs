@@ -120,6 +120,30 @@ fn exchange<S: Read + Write>(
     directory: &Path,
     store_uri: &str,
 ) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let started = std::time::Instant::now();
+    let name = format!(
+        "timings-{}-{}.jsonl",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos()
+    );
+    let mut timings = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(directory.join(name))?;
+    let mut record = |phase: &str, bytes: u64| -> io::Result<()> {
+        writeln!(
+            timings,
+            "{}",
+            serde_json::json!({
+                "phase": phase, "seconds": started.elapsed().as_secs_f64(), "bytes": bytes
+            })
+        )
+    };
     let mut session = TransferSession::new(
         manifest.clone(),
         10000,
@@ -138,11 +162,14 @@ fn exchange<S: Read + Write>(
             vec![],
         ),
     )?;
+    record("manifest", 0)?;
     let valid = receive(socket)?;
     session.accept(Direction::WorkerToGateway, valid)?;
     let request = receive(socket)?;
     let requested: PathSet = decode_metadata(request.metadata(), METADATA)?;
     session.accept(Direction::WorkerToGateway, request)?;
+    record("input_request", 0)?;
+    let mut input_bytes = 0;
     for path in requested.paths {
         let (index, entry) = manifest
             .paths
@@ -150,11 +177,14 @@ fn exchange<S: Read + Write>(
             .enumerate()
             .find(|(_, entry)| entry.path == path)
             .ok_or_else(|| io::Error::other("unadmitted input"))?;
+        input_bytes += entry.nar_size;
         let mut file = std::fs::File::open(directory.join(format!("{index}.nar")))?;
         stream_input(socket, entry, &mut file, |frame| {
             session.accept(Direction::GatewayToWorker, frame.clone())
         })?;
     }
+    record("inputs_sent", input_bytes)?;
+    let mut output_bytes = 0;
     let mut current: Option<(telchar::nomad::protocol::PathManifestEntry, std::fs::File)> = None;
     let mut log = None;
     let mut log_bytes = 0usize;
@@ -162,7 +192,7 @@ fn exchange<S: Read + Write>(
         let frame = receive(socket)?;
         session.accept(Direction::WorkerToGateway, frame.clone())?;
         match frame.kind() {
-            FrameKind::BuildStarted => {}
+            FrameKind::BuildStarted => record("build_started", 0)?,
             FrameKind::LogChunk => {
                 use std::os::unix::fs::OpenOptionsExt;
                 log_bytes = log_bytes
@@ -181,6 +211,7 @@ fn exchange<S: Read + Write>(
                 log.as_mut().unwrap().write_all(frame.payload())?;
             }
             FrameKind::BuildResult => {
+                record("build_result", output_bytes)?;
                 let result: telchar::nomad::protocol::BuildResultMetadata =
                     decode_metadata(frame.metadata(), METADATA)?;
                 if result.outcome == telchar::nomad::protocol::BuildOutcome::Failed {
@@ -189,6 +220,7 @@ fn exchange<S: Read + Write>(
                 return Ok(());
             }
             FrameKind::OutputMetadata => {
+                record("output_metadata", 0)?;
                 if current.is_some() {
                     return Err(io::Error::other("interleaved output"));
                 }
@@ -210,6 +242,7 @@ fn exchange<S: Read + Write>(
                 {
                     return Err(io::Error::other("output chunk metadata mismatch"));
                 }
+                output_bytes += frame.payload().len() as u64;
                 bytes.write_all(frame.payload())?;
                 if chunk.final_chunk {
                     bytes.seek(SeekFrom::Start(0))?;
@@ -231,6 +264,7 @@ fn exchange<S: Read + Write>(
                     );
                     session.accept(Direction::GatewayToWorker, frame.clone())?;
                     send(socket, &frame)?;
+                    record("output_registered", output_bytes)?;
                     current = None;
                 }
             }
@@ -792,6 +826,34 @@ mod tests {
             std::fs::read(directory.join("build.log")).unwrap(),
             b"fixture diagnostic\n"
         );
+        let path = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("timings-"))
+            .unwrap()
+            .path();
+        let events = std::fs::read_to_string(path).unwrap();
+        let events: Vec<serde_json::Value> = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["phase"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "manifest",
+                "input_request",
+                "inputs_sent",
+                "build_started",
+                "build_result"
+            ]
+        );
+        assert_eq!(events[2]["bytes"], 42);
+        assert!(events.windows(2).all(
+            |pair| pair[0]["seconds"].as_f64().unwrap() <= pair[1]["seconds"].as_f64().unwrap()
+        ));
         std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(error.to_string(), "worker reported build failure");
     }
@@ -880,7 +942,7 @@ mod tests {
             exchange(
                 &mut socket,
                 manifest,
-                std::path::Path::new("/nonexistent-fixture"),
+                &std::env::temp_dir(),
                 "unix:///nonexistent/socket",
             )
             .expect_err("foreign input request rejected")
