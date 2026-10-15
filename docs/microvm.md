@@ -1,9 +1,9 @@
 # Lambda MicroVM backend experiment
 
 This is an experimental sandbox feasibility gate, **not an implemented Telchar
-backend**. It does not submit gateway builds, authenticate worker callbacks,
-transfer NARs, or recover executions. Production routing and persistence are
-unchanged. AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
+backend**. Disposable fixtures exercise authenticated WSS, NAR transfers and
+validated output registration locally. No selectable gateway backend or execution
+recovery is implemented. Production routing and persistence are unchanged. AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
 
 ## What exists
 
@@ -89,8 +89,9 @@ these tests.
 
 In an approved test account:
 
-1. Build the ARM image and push to an operator-owned ECR repository. Package a
-   Dockerfile referencing its immutable digest into the S3 code artifact.
+1. Build the ARM image. Package a flattened filesystem and `FROM scratch`
+   Dockerfile into the S3 code artifact, or use an operator-owned ECR image
+   referenced by immutable digest.
 2. Create the managed MicroVM image with `additionalOsCapabilities = ["ALL"]`,
    the managed AL2023 base, lifecycle hook port 8080, and the documented ready
    and validate paths. The application container is custom; the VM kernel/base
@@ -105,6 +106,36 @@ In an approved test account:
 Snapshot uniqueness and Nix's OpenSSL dependencies require separate review:
 AWS recommends snapshot-safe OpenSSL. The probe makes no TLS connections and
 must not be interpreted as validating snapshotted cryptographic state.
+
+## Outbound WSS fixture evidence
+
+`tests/microvm/local-exchange.py` runs the compiled `microvm-worker` and
+`microvm-receiver` examples in two disposable privileged containers with separate
+stores on an internal Docker network. No host store is mounted. The test supplies
+a certificate trust root, execution-scoped credential and exact instance identity.
+A runtime `/run` hook writes the credential binding with mode 0600 before starting
+the fixed worker. The receiver authenticates before sending an admitted manifest.
+
+A 1,040,000-byte source absent from the worker is imported through the real worker
+session. Its sandbox build checks a non-root UID and an invisible host sentinel.
+The receiver validates and registers the returned output before acknowledging it;
+the test verifies exact source/output byte equality. Local x86 wall time was about
+9.4 seconds including container setup. This is neither an ARM/AWS result nor a
+transport throughput benchmark.
+
+Run from the flake development shell after building the probe image and examples:
+
+```sh
+cargo build --locked -p telchar-nomad-worker --examples
+python3 tests/microvm/local-exchange.py
+```
+
+Docker, OpenSSL, `ldd` and `patchelf` must be available. The script removes its exact
+containers and network on exit. `nix/microvm-worker.nix` composes the fixed worker
+and runtime adapter for ARM packaging; its AWS WSS qualification is pending.
+Receiver output buffering is bounded but remains memory-backed, so large-transfer
+measurements must wait for disk staging. TLS snapshot uniqueness and reconnect
+behavior remain unqualified.
 
 ## Proposed integration boundary
 
