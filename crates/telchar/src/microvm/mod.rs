@@ -3,6 +3,68 @@
 use std::time::Duration;
 
 use aws_sdk_lambdamicrovms::{Client, Config};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use sha2::{Digest, Sha256};
+
+pub struct Capability {
+    bearer: String,
+    verifier: [u8; 32],
+}
+
+impl Capability {
+    pub fn generate() -> Result<Self, ProviderError> {
+        use std::io::Read;
+
+        let mut entropy = [0; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut entropy))
+            .map_err(|_| ProviderError)?;
+        Ok(Self {
+            bearer: URL_SAFE_NO_PAD.encode(entropy),
+            verifier: capability_verifier(&entropy),
+        })
+    }
+
+    pub fn bearer(&self) -> &str {
+        &self.bearer
+    }
+
+    pub fn verifier(&self) -> [u8; 32] {
+        self.verifier
+    }
+}
+
+fn capability_verifier(entropy: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"telchar-microvm-capability-v1\0");
+    digest.update(entropy);
+    digest.finalize().into()
+}
+
+pub fn admit_session(
+    owner: &crate::service::singleton_ownership::SingletonOwnership,
+    intent_id: &str,
+    provider_id: &str,
+    bearer: &str,
+) -> Result<bool, ProviderError> {
+    owner.verify().map_err(|_| ProviderError)?;
+    if bearer.len() != 43 {
+        return Ok(false);
+    }
+    let Ok(entropy) = URL_SAFE_NO_PAD.decode(bearer) else {
+        return Ok(false);
+    };
+    if entropy.len() != 32 || URL_SAFE_NO_PAD.encode(&entropy) != bearer {
+        return Ok(false);
+    }
+    crate::persistence::admit_microvm_session(
+        owner.database_url(),
+        intent_id,
+        provider_id,
+        &capability_verifier(&entropy),
+    )
+    .map_err(|_| ProviderError)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProviderError;

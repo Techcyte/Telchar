@@ -57,6 +57,75 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer() {
+    let fixture = prepared_launch();
+    let capability = telchar::microvm::Capability::generate().expect("OS entropy");
+    let other = telchar::microvm::Capability::generate().expect("independent entropy");
+    assert_ne!(capability.bearer(), other.bearer());
+    assert_eq!(capability.bearer().len(), 43);
+    fixture
+        .connect()
+        .execute(
+            "UPDATE microvm_launches SET credential_verifier = $1",
+            &[&&capability.verifier()[..]],
+        )
+        .expect("only verifier persists");
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            .expect("dispatch")
+    );
+    assert!(
+        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+            .expect("bind")
+    );
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner");
+    for bearer in ["", "invalid", &"a".repeat(4096), other.bearer()] {
+        assert!(
+            !telchar::microvm::admit_session(&owner, "intent-one", "microvm-exact", bearer)
+                .expect("invalid capability denies")
+        );
+    }
+    assert!(
+        !telchar::microvm::admit_session(
+            &owner,
+            "intent-one",
+            "microvm-other",
+            capability.bearer()
+        )
+        .expect("wrong execution denies")
+    );
+    assert!(
+        telchar::microvm::admit_session(&owner, "intent-one", "microvm-exact", capability.bearer())
+            .expect("capability admits")
+    );
+    assert!(
+        !telchar::microvm::admit_session(
+            &owner,
+            "intent-one",
+            "microvm-exact",
+            capability.bearer()
+        )
+        .expect("replay denies")
+    );
+    fixture.expire_singleton_ownership("daemon");
+    assert!(
+        telchar::microvm::admit_session(&owner, "intent-one", "microvm-exact", capability.bearer())
+            .is_err()
+    );
+    let stored: Vec<u8> = fixture
+        .connect()
+        .query_one("SELECT credential_verifier FROM microvm_launches", &[])
+        .expect("verifier reads")
+        .get(0);
+    assert_eq!(stored, capability.verifier());
+    assert_ne!(stored, capability.bearer().as_bytes());
+}
+
+#[test]
 fn admission_consumes_exact_bound_capability_once_across_restart() {
     let mut fixture = prepared_launch();
     assert!(
