@@ -5,7 +5,8 @@ let
     pname = "telchar-microvm-fixture";
     version = "2026.9.2";
     src = source;
-    cargoExtraArgs = "--locked -p telchar-nomad-worker --example microvm-worker";
+    cargoExtraArgs = "--locked -p telchar-nomad-worker";
+    cargoBuildExtraArgs = "--example microvm-worker";
     doCheck = false;
     TELCHAR_DEFAULT_SSH_PROGRAM = "${pkgs.openssh}/bin/ssh";
     installPhaseCommand = ''
