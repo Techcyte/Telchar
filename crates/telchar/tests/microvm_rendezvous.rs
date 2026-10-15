@@ -2,9 +2,109 @@
 
 mod support;
 
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest;
+
+#[test]
+fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
+    let fixture = support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migrate");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(30),
+    )
+    .expect("owner");
+    for case in [
+        "path",
+        "query",
+        "protocol",
+        "headers",
+        "silent",
+        "bootstrap-silent",
+        "text",
+        "malformed",
+        "unknown-field",
+        "oversized",
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                let (stream, _) = listener.accept().expect("accept");
+                telchar::microvm::rendezvous::accept_session(
+                    stream,
+                    &owner,
+                    Instant::now() + Duration::from_millis(500),
+                )
+                .is_err()
+            });
+            let mut stream = TcpStream::connect(address).expect("connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("client timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .expect("write timeout");
+            if case == "headers" {
+                let header = format!(
+                    "GET /microvm HTTP/1.1\r\nHost: localhost\r\nX-Padding: {}",
+                    "a".repeat(10000)
+                );
+                let _ = stream.write_all(header.as_bytes());
+                assert!(server.join().expect("server"), "{case}");
+                return;
+            }
+            if case == "silent" {
+                assert!(server.join().expect("server"), "{case}");
+                return;
+            }
+            let path = match case {
+                "path" => "/foreign",
+                "query" => "/microvm?secret=forbidden",
+                _ => "/microvm",
+            };
+            let mut request = format!("ws://{address}{path}")
+                .into_client_request()
+                .expect("request");
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                if case == "protocol" {
+                    "telchar-nomad-transfer-v1"
+                } else {
+                    "telchar-microvm-v1"
+                }
+                .parse()
+                .expect("protocol"),
+            );
+            let result = tungstenite::client(request, stream);
+            if matches!(case, "path" | "query" | "protocol") {
+                assert!(result.is_err(), "{case}");
+            } else {
+                let (mut socket, _) = result.expect("upgrade");
+                let message = match case {
+                    "text" => Some(tungstenite::Message::Text("{}".into())),
+                    "malformed" => Some(tungstenite::Message::Binary(b"{".to_vec().into())),
+                    "unknown-field" => Some(tungstenite::Message::Binary(br#"{"intent_id":"unknown","provider_id":"microvm-unknown","bearer":"invalid","foreign":true}"#.to_vec().into())),
+                    "oversized" => Some(tungstenite::Message::Binary(vec![b'a'; 4097].into())),
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    let _ = socket.send(message);
+                }
+                assert!(server.join().expect("server"), "{case}");
+                return;
+            }
+            assert!(server.join().expect("server"), "{case}");
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "bounded rejection: {case}"
+        );
+    }
+}
 
 #[test]
 fn socket_admission_requires_exact_single_use_capability() {
