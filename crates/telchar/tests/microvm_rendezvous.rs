@@ -111,11 +111,18 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
 
 #[test]
 fn socket_admission_requires_exact_single_use_capability() {
-    socket_capability_exchange(false);
-    socket_capability_exchange(true);
+    socket_capability_exchange("active");
+    socket_capability_exchange("disconnect");
 }
 
-fn socket_capability_exchange(disconnect: bool) {
+#[test]
+fn early_wait_rejects_cancellation_expiry_and_ownership_loss() {
+    for interruption in ["cancelled", "expired", "fenced"] {
+        socket_capability_exchange(interruption);
+    }
+}
+
+fn socket_capability_exchange(interruption: &str) {
     let fixture = support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migrate");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rendezvous.drv";
@@ -201,7 +208,59 @@ fn socket_capability_exchange(disconnect: bool) {
                 "telchar-microvm-v1"
             );
             socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"intent_id": intent.intent_id, "provider_id": id, "bearer": bearer})).expect("bootstrap").into())).expect("send");
-            if accepted && disconnect {
+            if accepted && matches!(interruption, "cancelled" | "expired" | "fenced") {
+                socket
+                    .get_mut()
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .expect("prebinding read bounded");
+                assert!(
+                    matches!(socket.read(), Err(tungstenite::Error::Io(error)) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)),
+                    "session waits before interruption"
+                );
+                let interrupted_at = Instant::now();
+                match interruption {
+                    "cancelled" => {
+                        assert!(
+                            telchar::persistence::cancel_microvm_launch(
+                                owner.database_url(),
+                                &intent.intent_id
+                            )
+                            .expect("cancel waiting launch")
+                        );
+                    }
+                    "expired" => {
+                        fixture.connect().batch_execute("UPDATE microvm_launches SET created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute'").expect("expire admission cutoff");
+                    }
+                    "fenced" => fixture.expire_singleton_ownership("daemon"),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    !server.join().expect("server"),
+                    "interrupted wait cannot admit: {interruption}"
+                );
+                assert!(
+                    interrupted_at.elapsed() < Duration::from_secs(1),
+                    "prompt interruption: {interruption}"
+                );
+                let row = fixture.connect().query_one("SELECT session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches", &[]).expect("session reads");
+                assert!(
+                    !row.get::<_, bool>(0),
+                    "interruption preserves unused capability"
+                );
+                assert!(
+                    row.get::<_, bool>(1),
+                    "dispatched uncertainty retains execution reservation"
+                );
+                let mut first = pending.reserve().expect("first pending slot released");
+                first
+                    .authenticate("rendezvous")
+                    .expect("backend pending slot released");
+                let _second = pending
+                    .reserve()
+                    .expect("second global slot remains available");
+                return;
+            }
+            if accepted && interruption == "disconnect" {
                 socket
                     .get_ref()
                     .shutdown(std::net::Shutdown::Both)
@@ -250,7 +309,7 @@ fn socket_capability_exchange(disconnect: bool) {
             }
             assert_eq!(server.join().expect("server"), accepted);
         });
-        if disconnect && accepted {
+        if interruption != "active" && accepted {
             break;
         }
     }
