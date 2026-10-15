@@ -76,7 +76,7 @@ fn register_output(
 
 fn exchange<S: Read + Write>(
     socket: &mut tungstenite::WebSocket<S>, manifest: InputManifest,
-    directory: &Path, _store_uri: &str,
+    directory: &Path, store_uri: &str,
 ) -> io::Result<()> {
     let mut session = TransferSession::new(manifest.clone(), 10000, 10000, 1 << 30, 1 << 30, 1 << 30, 1 << 20, METADATA)?;
     send(socket, &Frame::new(FrameKind::InputManifest, encode_metadata(&manifest, METADATA)?, vec![]))?;
@@ -91,6 +91,7 @@ fn exchange<S: Read + Write>(
         let mut file = std::fs::File::open(directory.join(format!("{index}.nar")))?;
         stream_input(socket, entry, &mut file, |frame| session.accept(Direction::GatewayToWorker, frame.clone()))?;
     }
+    let mut current: Option<(telchar::nomad::protocol::PathManifestEntry, Vec<u8>)> = None;
     loop {
         let frame = receive(socket)?;
         session.accept(Direction::WorkerToGateway, frame.clone())?;
@@ -103,7 +104,29 @@ fn exchange<S: Read + Write>(
                 }
                 return Ok(());
             }
-            _ => return Err(io::Error::other("output collection not configured")),
+            FrameKind::OutputMetadata => {
+                if current.is_some() {
+                    return Err(io::Error::other("interleaved output"));
+                }
+                current = Some((decode_metadata(frame.metadata(), METADATA)?, Vec::new()));
+            }
+            FrameKind::OutputNar => {
+                let chunk: telchar::nomad::protocol::NarMetadata = decode_metadata(frame.metadata(), METADATA)?;
+                let (metadata, bytes) = current.as_mut().ok_or_else(|| io::Error::other("output metadata missing"))?;
+                if chunk.path != metadata.path || chunk.nar_hash != metadata.nar_hash || chunk.nar_size != metadata.nar_size || chunk.offset != bytes.len() as u64 {
+                    return Err(io::Error::other("output chunk metadata mismatch"));
+                }
+                bytes.extend_from_slice(frame.payload());
+                if chunk.final_chunk {
+                    register_output(bytes.as_slice(), metadata, directory, Path::new("/nix/store"), store_uri)?;
+                    let receipt = telchar::nomad::protocol::OutputReceipt { path: metadata.path.clone(), accepted: true };
+                    let frame = Frame::new(FrameKind::OutputReceipt, encode_metadata(&receipt, METADATA)?, vec![]);
+                    session.accept(Direction::GatewayToWorker, frame.clone())?;
+                    send(socket, &frame)?;
+                    current = None;
+                }
+            }
+            _ => return Err(io::Error::other("unexpected transfer frame")),
         }
     }
 }
@@ -234,6 +257,42 @@ mod tests {
         assert_eq!(registered.nar_size(), metadata.nar_size);
         assert!(registered.references().is_empty());
         assert!(store.is_valid_path(metadata.path.as_bytes()).unwrap());
+        use telchar::nomad::protocol::*;
+        let mut returned = metadata.clone();
+        returned.path = "/nix/store/dddddddddddddddddddddddddddddddd-output".to_owned();
+        let mut build = manifest();
+        build.outputs = vec![returned.path.clone()];
+        build.build.outputs[0].path = returned.path.as_bytes().to_vec();
+        build.build.environment = vec![(b"out".to_vec(), returned.path.as_bytes().to_vec())];
+        let derivation = build.derivation_path.clone();
+        let valid_paths = PathSet { paths: build.paths.iter().map(|entry| entry.path.clone()).collect() };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_uri = store_uri.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            exchange(&mut tungstenite::accept(stream).unwrap(), build, Path::new("/tmp"), &server_uri)
+        });
+        let (mut socket, _) = tungstenite::connect(format!("ws://{address}/fixture")).unwrap();
+        assert_eq!(receive(&mut socket).unwrap().kind(), FrameKind::InputManifest);
+        for (kind, metadata) in [
+            (FrameKind::ValidPaths, encode_metadata(&valid_paths, METADATA).unwrap()),
+            (FrameKind::InputRequest, encode_metadata(&PathSet { paths: vec![] }, METADATA).unwrap()),
+            (FrameKind::BuildStarted, encode_metadata(&BuildStarted { derivation_path: derivation }, METADATA).unwrap()),
+            (FrameKind::OutputMetadata, encode_metadata(&returned, METADATA).unwrap()),
+        ] {
+            send(&mut socket, &Frame::new(kind, metadata, vec![])).unwrap();
+        }
+        let chunk = NarMetadata { path: returned.path.clone(), nar_hash: returned.nar_hash.clone(), nar_size: returned.nar_size, offset: 0, final_chunk: true };
+        send(&mut socket, &Frame::new(FrameKind::OutputNar, encode_metadata(&chunk, METADATA).unwrap(), nar)).unwrap();
+        let receipt = receive(&mut socket).unwrap();
+        assert_eq!(receipt.kind(), FrameKind::OutputReceipt);
+        let receipt: OutputReceipt = decode_metadata(receipt.metadata(), METADATA).unwrap();
+        assert!(receipt.accepted);
+        assert_eq!(receipt.path, returned.path);
+        assert!(store.is_valid_path(returned.path.as_bytes()).unwrap());
+        send(&mut socket, &Frame::new(FrameKind::BuildResult, encode_metadata(&BuildResultMetadata { outcome: BuildOutcome::Built, diagnostic: None }, METADATA).unwrap(), vec![])).unwrap();
+        server.join().unwrap().unwrap();
     }
 
     #[test]
