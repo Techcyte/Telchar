@@ -84,6 +84,23 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+pub fn launch_request_digest(
+    image: &str,
+    version: &str,
+    token: &str,
+    payload: &str,
+    lifetime_seconds: i32,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"telchar-microvm-launch-v1\0");
+    for field in [image, version, token, payload] {
+        digest.update((field.len() as u64).to_be_bytes());
+        digest.update(field.as_bytes());
+    }
+    digest.update(lifetime_seconds.to_be_bytes());
+    digest.finalize().into()
+}
+
 pub struct Provider {
     client: Client,
 }
@@ -186,6 +203,18 @@ impl Provider {
         payload: &str,
     ) -> Result<Option<String>, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
+        if self.client.config().region().map(|region| region.as_ref())
+            != Some(intent.region.as_str())
+            || launch_request_digest(
+                &intent.image_arn,
+                &intent.image_version,
+                &intent.client_token,
+                payload,
+                intent.maximum_duration_seconds,
+            ) != intent.request_digest
+        {
+            return Err(ProviderError);
+        }
         let database = owner.database_url();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

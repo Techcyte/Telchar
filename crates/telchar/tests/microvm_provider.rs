@@ -12,6 +12,8 @@ fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
     launch_exchange(true, "active");
     launch_exchange(true, "expired");
     launch_exchange(true, "response-expired");
+    launch_exchange(true, "payload-mismatch");
+    launch_exchange(true, "region-mismatch");
 }
 
 fn launch_exchange(success: bool, ownership: &'static str) {
@@ -42,7 +44,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         image_arn: "image-fixture".to_owned(),
         image_version: "1".to_owned(),
         configuration_digest: [1; 32],
-        request_digest: [2; 32],
+        request_digest: telchar::microvm::launch_request_digest(
+            "image-fixture",
+            "1",
+            "intent-fixture",
+            "{}",
+            600,
+        ),
         client_token: "intent-fixture".to_owned(),
         credential_verifier: [3; 32],
         admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
@@ -123,7 +131,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     {
         let config = aws_sdk_lambdamicrovms::Config::builder()
             .behavior_version_latest()
-            .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
+            .region(aws_sdk_lambdamicrovms::config::Region::new(
+                if ownership == "region-mismatch" {
+                    "us-east-1"
+                } else {
+                    "us-west-2"
+                },
+            ))
             .credentials_provider(aws_credential_types::Credentials::new(
                 "fixture-key",
                 "fixture-secret",
@@ -135,7 +149,12 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             .build();
         let provider =
             telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
-        let result = provider.launch_reserved(&owner, &intent, "{}");
+        let payload = if ownership == "payload-mismatch" {
+            "{\"extra\":true}"
+        } else {
+            "{}"
+        };
+        let result = provider.launch_reserved(&owner, &intent, payload);
         if ownership != "active" {
             assert!(result.is_err(), "expired owner cannot dispatch or bind");
         } else if success {
@@ -149,7 +168,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                 "MicroVM provider operation failed"
             );
         }
-        let repeat = provider.launch_reserved(&owner, &intent, "{}");
+        let repeat = provider.launch_reserved(&owner, &intent, payload);
         if ownership == "active" {
             assert_eq!(repeat.expect("repeat has no dispatch grant"), None);
         } else {
@@ -157,8 +176,12 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         }
     }
     let requests = server.join().expect("server joins");
-    assert_eq!(requests.len(), if ownership == "expired" { 0 } else { 1 });
-    if ownership != "expired" {
+    let rejected_before_dispatch = matches!(
+        ownership,
+        "expired" | "payload-mismatch" | "region-mismatch"
+    );
+    assert_eq!(requests.len(), if rejected_before_dispatch { 0 } else { 1 });
+    if !rejected_before_dispatch {
         assert!(
             requests[0]
                 .0
@@ -177,7 +200,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     assert_eq!(
         row.get::<_, String>(0),
         match ownership {
-            "expired" => "prepared",
+            "expired" | "payload-mismatch" | "region-mismatch" => "prepared",
             "response-expired" => "dispatching",
             _ if success => "bound",
             _ => "ambiguous",
