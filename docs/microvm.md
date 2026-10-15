@@ -2,7 +2,7 @@
 
 This is an experimental sandbox feasibility gate, **not an implemented Telchar
 backend**. Disposable fixtures exercise authenticated WSS, NAR transfers and
-validated output registration locally. No selectable gateway backend or execution
+validated output registration locally and on actual AWS ARM64 MicroVMs. No selectable gateway backend or execution
 recovery is implemented. Production routing and persistence are unchanged. AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
 
 ## What exists
@@ -132,10 +132,75 @@ python3 tests/microvm/local-exchange.py
 
 Docker, OpenSSL, `ldd` and `patchelf` must be available. The script removes its exact
 containers and network on exit. `nix/microvm-worker.nix` composes the fixed worker
-and runtime adapter for ARM packaging; its AWS WSS qualification is pending.
+and runtime adapter for ARM packaging.
 Receiver output chunks are staged in an unlinked, mode-0600 file and rewound for
 validation before registration. Protocol transfer limits still bound disk use.
 TLS snapshot uniqueness and reconnect behavior remain unqualified.
+
+## AWS outbound WSS qualification
+
+An ARM64 image completed automatic AWS `/run` → outbound pinned WSS →
+execution/actual-instance authentication → missing-input import → nonroot sandbox
+build → production NAR validation and typed gateway registration. No Nomad
+identity was fabricated. An independent x86-64 EC2 gateway had no host-store
+mounts. A bounded opaque TCP relay held early TLS until `RunMicrovm` returned the
+actual identity; it did not terminate TLS or bypass authentication.
+
+Three successful runs returned the exact 1,040,000-byte source payload, including
+two sandbox resource reports. The timed run checked output absence before launch
+and registered a 1,040,376-byte output NAR. Observed boundaries from that single
+small fixture run:
+
+| Boundary | Seconds |
+| --- | ---: |
+| Launch API return | 0.278 |
+| Launch to observed authenticated WSS | 2.802 |
+| Manifest to input import completion / build started | 0.165 |
+| Build started to output metadata | 1.437 |
+| Output transfer, validation and registration | 0.081 |
+| Launch through exact byte comparison | 5.073 |
+
+Authentication observation includes API, receiver configuration/startup, relay,
+TLS and polling; it is not isolated VM boot time. Input NAR bytes were 1,040,112;
+effective input rate was 6.30 MB/s including negotiation/import. Effective output
+rate was 12.79 MB/s including validation/registration. Neither is a network
+capacity benchmark. Socket-send timing alone is not throughput.
+
+Sandbox-visible filesystem capacity was 33,635,975,168 bytes, with 658,034,688 used
+and 31,243,177,984 available. Guest `MemTotal` was 32,894,692 KiB despite the image's
+8192 MiB minimum: minimum image memory is not observed runtime sizing or billing.
+A failed measurement first omitted a declared coreutils input; Nix correctly hid
+that tool in the sandbox. Declaring its store dependency fixed the test without
+relaxing isolation.
+
+A fresh ARM worker rejected a corrupted source NAR during actual input import and
+reported failed lifecycle completion. Separately, a local pinned-TLS client to the
+public EC2 receiver verified wrong execution → HTTP 403, exact binding → HTTP 101,
+and disconnect → failed transfer. That receiver test is not an ARM authentication
+negative run. Local real-store tests cover corrupt returned-output rejection
+before registration. Reconnect, durable recovery, snapshot cryptographic uniqueness,
+large closures, saturation, billed cost and production scheduling remain unqualified.
+
+All seven test MicroVMs and the receiver were confirmed terminated. The dedicated
+volume, security group, key pair, image, bucket, IAM role and log group were
+independently confirmed absent. Evidence lives outside the repository at
+`~/.local/state/telchar-microvm-test/wss`, including actual returned bytes/NARs,
+registration metadata, phase logs, CloudWatch events and cleanup observations.
+The ARM archive SHA-256 is
+`63491b6daba08ed1679ad1317c136a12c6905129d7e08cabb0fc75b82503ff73`.
+
+From the development shell, archived evidence can be checked without AWS access:
+
+```sh
+python3 tests/microvm/verify-evidence.py "$HOME/.local/state/telchar-microvm-test/wss"
+bash tests/microvm/verify-local.sh
+```
+
+The first command restores each preserved NAR into a private temporary directory,
+checks hashes, payloads, lifecycle events, phase ordering and cleanup records.
+It does not rerun AWS executions or query live cleanup state. The second reruns
+local behavioral qualification using disposable stores. Preserve the evidence
+directory and probe Docker image; neither is supplied by a repository checkout.
 
 ## Proposed integration boundary
 
