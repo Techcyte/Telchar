@@ -378,6 +378,72 @@ fn select_protocol(
     Ok(response)
 }
 
+#[test]
+fn receives_manifest_on_execution_authenticated_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let endpoint = format!("ws://{}/fixture", listener.local_addr().expect("address"));
+    let expected = manifest();
+    let sent = expected.clone();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("connection accepts");
+        let mut socket = tungstenite::accept(stream).expect("WebSocket accepts");
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &Frame::new(
+                FrameKind::InputManifest,
+                encode_metadata(&sent, 8 * 1024 * 1024).expect("manifest encodes"),
+                vec![],
+            ),
+            ProtocolLimits::new(8 * 1024 * 1024, 0),
+        )
+        .expect("frame writes");
+        socket
+            .send(tungstenite::Message::Binary(body.into()))
+            .expect("manifest sends");
+    });
+    let (socket, _) = tungstenite::connect(endpoint).expect("connection opens");
+    let session = telchar_nomad_worker::receive_authenticated_manifest(
+        socket,
+        8 * 1024 * 1024,
+        262144,
+        std::time::Duration::from_secs(60),
+    )
+    .expect("execution-authenticated session receives manifest without Nomad identity");
+    assert_eq!(session.manifest(), &expected);
+    server.join().expect("server joins");
+}
+
+#[test]
+fn authenticated_session_rejects_unbounded_limits_before_reading() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        for _ in 0..4 {
+            let (stream, _) = listener.accept().expect("connection accepts");
+            let _socket = tungstenite::accept(stream).expect("WebSocket accepts");
+        }
+    });
+    for (metadata, chunk, lifetime) in [
+        (0, 1, 1),
+        (64 * 1024 * 1024 + 1, 1, 1),
+        (1, 1024 * 1024 + 1, 1),
+        (1, 1, 0),
+    ] {
+        let (socket, _) = tungstenite::connect(format!("ws://{address}")).expect("connects");
+        let error = telchar_nomad_worker::receive_authenticated_manifest(
+            socket,
+            metadata,
+            chunk,
+            std::time::Duration::from_secs(lifetime),
+        )
+        .err()
+        .expect("invalid limits rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+    server.join().expect("server joins");
+}
+
 fn manifest() -> InputManifest {
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-build.drv".to_owned();
     let input = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input".to_owned();
