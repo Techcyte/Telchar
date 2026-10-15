@@ -167,9 +167,24 @@ pub fn cancel_microvm_launch(
     Ok(changed == 1)
 }
 
+pub fn dispatch_microvm_launch_intent(
+    database: &(impl DatabaseSource + ?Sized),
+    intent: &MicrovmLaunchIntent,
+) -> Result<bool, MicrovmLaunchError> {
+    dispatch_launch(database, &intent.intent_id, Some(intent))
+}
+
 pub fn dispatch_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    dispatch_launch(database, intent_id, None)
+}
+
+fn dispatch_launch(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    intent: Option<&MicrovmLaunchIntent>,
 ) -> Result<bool, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(dispatch_microvm_launch));
@@ -191,6 +206,21 @@ pub fn dispatch_microvm_launch(
         .map_err(|_| MicrovmLaunchError)?;
     if active.is_none() {
         return Ok(false);
+    }
+    if let Some(intent) = intent {
+        let matches = transaction.query_one(
+            "SELECT attempt_id = $2 AND backend_name = $3 AND account_id = $4 AND region = $5
+                AND image_arn = $6 AND image_version = $7 AND configuration_digest = $8
+                AND request_digest = $9 AND client_token = $10 AND credential_verifier = $11
+                AND maximum_duration_seconds = $12 FROM microvm_launches WHERE intent_id = $1 FOR UPDATE",
+            &[&intent_id, &intent.attempt_id, &intent.backend_name, &intent.account_id,
+              &intent.region, &intent.image_arn, &intent.image_version,
+              &&intent.configuration_digest[..], &&intent.request_digest[..], &intent.client_token,
+              &&intent.credential_verifier[..], &intent.maximum_duration_seconds],
+        ).map_err(|_| MicrovmLaunchError)?.get::<_, bool>(0);
+        if !matches {
+            return Err(MicrovmLaunchError);
+        }
     }
     let granted = transaction
         .execute(

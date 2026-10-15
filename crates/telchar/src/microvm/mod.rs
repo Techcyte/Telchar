@@ -77,7 +77,45 @@ impl Provider {
         Ok(())
     }
 
-    pub async fn launch(
+    pub fn launch_reserved(
+        &self,
+        database: &(impl crate::persistence::DatabaseSource + ?Sized),
+        intent: &crate::persistence::MicrovmLaunchIntent,
+        payload: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ProviderError)?;
+        if !crate::persistence::dispatch_microvm_launch_intent(database, intent)
+            .map_err(|_| ProviderError)?
+        {
+            return Ok(None);
+        }
+        match runtime.block_on(self.launch(
+            &intent.image_arn,
+            &intent.image_version,
+            &intent.client_token,
+            payload,
+            intent.maximum_duration_seconds,
+        )) {
+            Ok(id) => {
+                if !crate::persistence::bind_microvm_launch(database, &intent.intent_id, &id)
+                    .map_err(|_| ProviderError)?
+                {
+                    return Err(ProviderError);
+                }
+                Ok(Some(id))
+            }
+            Err(error) => {
+                crate::persistence::cancel_microvm_launch(database, &intent.intent_id)
+                    .map_err(|_| ProviderError)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn launch(
         &self,
         image: &str,
         version: &str,
