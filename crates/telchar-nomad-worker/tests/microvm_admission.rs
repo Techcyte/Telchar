@@ -59,10 +59,11 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
     )
     .unwrap();
     let pending = telchar::microvm::rendezvous::PendingConnections::new(2, 1).unwrap();
-    for (id, accepted) in [
-        ("microvm-wrong", false),
-        ("microvm-exact", true),
-        ("microvm-exact", false),
+    for (expected_intent, id, accepted) in [
+        ("tls-intent", "microvm-wrong", false),
+        ("another-intent", "microvm-exact", false),
+        ("tls-intent", "microvm-exact", true),
+        ("tls-intent", "microvm-exact", false),
     ] {
         let gateway = TcpListener::bind("127.0.0.1:0").unwrap();
         let gateway_address = gateway.local_addr().unwrap();
@@ -74,6 +75,7 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
                 let result = telchar::microvm::rendezvous::accept_session(
                     stream,
                     &owner,
+                    expected_intent,
                     Instant::now() + Duration::from_secs(2),
                     pending.reserve().unwrap(),
                 );

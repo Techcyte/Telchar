@@ -37,6 +37,7 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
                 telchar::microvm::rendezvous::accept_session(
                     stream,
                     &owner,
+                    "rendezvous-intent",
                     Instant::now() + Duration::from_millis(500),
                     pending.reserve().expect("pending slot"),
                 )
@@ -184,6 +185,7 @@ fn socket_capability_exchange(interruption: &str) {
                 telchar::microvm::rendezvous::accept_session(
                     stream,
                     &owner,
+                    "rendezvous-intent",
                     Instant::now() + Duration::from_secs(2),
                     pending.reserve().expect("pending slot"),
                 )

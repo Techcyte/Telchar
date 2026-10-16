@@ -162,6 +162,7 @@ struct Bootstrap {
 pub fn accept_session(
     stream: TcpStream,
     owner: &SingletonOwnership,
+    expected_intent: &str,
     deadline: Instant,
     mut pending: PendingConnection<'_>,
 ) -> Result<WebSocket<SessionStream>, ProviderError> {
@@ -201,7 +202,8 @@ pub fn accept_session(
         return Err(ProviderError);
     };
     let bootstrap: Bootstrap = serde_json::from_slice(&message).map_err(|_| ProviderError)?;
-    if bootstrap.intent_id.is_empty()
+    if bootstrap.intent_id != expected_intent
+        || bootstrap.intent_id.is_empty()
         || bootstrap.intent_id.len() > 128
         || bootstrap.provider_id.is_empty()
         || bootstrap.provider_id.len() > 256

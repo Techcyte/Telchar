@@ -135,6 +135,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         let socket = telchar::microvm::rendezvous::accept_session(
             stream,
             &owner,
+            "build-intent",
             std::time::Instant::now() + Duration::from_secs(15),
             pending.reserve().unwrap(),
         )
