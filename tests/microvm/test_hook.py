@@ -1,9 +1,12 @@
 """Runtime binding and real process hook contracts."""
 import concurrent.futures
+import http.client
 import importlib.util
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -41,6 +44,52 @@ class HookTests(unittest.TestCase):
             self.assertFalse(state.start_hook({**hook, "runHookPayload": json.dumps(payload)}))
             self.assertFalse(state.start_hook({**hook, "microvmId": "microvm-other"}))
             self.assertEqual(marker.read_text(), "run\n")
+
+    def test_termination_cancels_active_execution_without_relaunch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binding = Path(directory) / "execution.json"
+            marker = Path(directory) / "worker-started"
+            state = execution.ExecutionState(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", f"import pathlib,time; pathlib.Path({str(marker)!r}).touch(); time.sleep(30)"],
+                [sys.executable, "-c", "raise SystemExit(0)"], binding)
+            payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+                       "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 10}
+            hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
+            self.assertTrue(state.start_hook(hook))
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(marker.exists())
+            started = time.monotonic()
+            runtime_spec = importlib.util.spec_from_file_location("runtime", ROOT / "deploy/microvm/runtime.py")
+            assert runtime_spec is not None and runtime_spec.loader is not None
+            runtime = importlib.util.module_from_spec(runtime_spec)
+            runtime_spec.loader.exec_module(runtime)
+            server = runtime.make_server(("127.0.0.1", 0), state, lambda: True)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+                try:
+                    connection.request("POST", runtime.PREFIX + "terminate", "{}")
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    response.read()
+                finally:
+                    connection.close()
+                state.thread.join(timeout=1)
+                self.assertFalse(state.thread.is_alive(), "terminate hook must stop execution")
+            finally:
+                state.terminate()
+                state.join()
+                server.shutdown()
+                server.server_close()
+                thread.join()
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertEqual(state.status(), "failed")
+            self.assertTrue(state.start_hook(hook))
+            self.assertEqual(state.status(), "failed")
 
     def test_invalid_hook_cannot_write_binding_or_start_processes(self):
         with tempfile.TemporaryDirectory() as directory:

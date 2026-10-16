@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PREFIX = "/aws/lambda-microvms/runtime/v1/"
@@ -21,6 +22,7 @@ class ProbeState:
         self.identity = None
         self.result = "idle"
         self.thread = None
+        self.cancelled = threading.Event()
 
     def status(self):
         with self.lock:
@@ -42,6 +44,9 @@ class ProbeState:
             self.thread.start()
             return True
 
+    def terminate(self):
+        self.cancelled.set()
+
     def _execute(self):
         result = "failed"
         try:
@@ -49,8 +54,16 @@ class ProbeState:
             # entire probe process group if it times out.
             process = subprocess.Popen(self.command, start_new_session=True)
             try:
-                if process.wait(timeout=self.timeout) == 0:
-                    result = "succeeded"
+                deadline = time.monotonic() + self.timeout
+                while not self.cancelled.is_set() and time.monotonic() < deadline:
+                    code = process.poll()
+                    if code is not None:
+                        if code == 0:
+                            result = "succeeded"
+                        break
+                    self.cancelled.wait(min(.025, max(0, deadline - time.monotonic())))
+                else:
+                    raise subprocess.TimeoutExpired(self.command, self.timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -116,6 +129,7 @@ def make_server(address, state, daemon_ready):
             elif self.path == PREFIX + "suspend":
                 self.reply(409 if state.status() == "running" else 200)
             else:
+                state.terminate()
                 self.reply(200)
 
     server = ThreadingHTTPServer(address, Handler)

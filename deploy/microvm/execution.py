@@ -20,6 +20,7 @@ class ExecutionState:
         self.binding = None
         self.result = "idle"
         self.thread = None
+        self.cancelled = threading.Event()
 
     def status(self):
         with self.lock:
@@ -69,8 +70,11 @@ class ExecutionState:
             self.thread.start()
             return True
 
+    def terminate(self):
+        self.cancelled.set()
+
     def _execute(self, lifetime):
-        result = supervise(self.daemon_command, self.worker_command, self.ready_command, lifetime)
+        result = supervise(self.daemon_command, self.worker_command, self.ready_command, lifetime, self.cancelled)
         with self.lock:
             self.result = "succeeded" if result else "failed"
 
@@ -86,16 +90,17 @@ def stop(process):
         process.wait()
 
 
-def supervise(daemon_command, worker_command, ready_command, lifetime):
+def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled=None):
     if lifetime <= 0 or lifetime > 28800:
         raise ValueError("invalid execution lifetime")
+    cancelled = cancelled if cancelled is not None else threading.Event()
     deadline = time.monotonic() + lifetime
     daemon = worker = readiness = None
     try:
         daemon = subprocess.Popen(daemon_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
-        while daemon.poll() is None:
+        while daemon.poll() is None and not cancelled.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
@@ -114,12 +119,12 @@ def supervise(daemon_command, worker_command, ready_command, lifetime):
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
         else:
             return False
-        if time.monotonic() >= deadline or daemon.poll() is not None:
+        if time.monotonic() >= deadline or daemon.poll() is not None or cancelled.is_set():
             return False
         worker = subprocess.Popen(worker_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
-        while time.monotonic() < deadline and daemon.poll() is None:
+        while time.monotonic() < deadline and daemon.poll() is None and not cancelled.is_set():
             result = worker.poll()
             if result is not None:
                 return result == 0
