@@ -2,8 +2,20 @@
 # Private canonical store with a copy-on-write view of installed executables.
 set -euo pipefail
 binary=$(realpath "$1")
+shift
+if (($# == 0)); then
+    set -- --exact receipts_require_authoritative_registration --test-threads=1
+fi
 root=$(mktemp -d /tmp/telchar-output.XXXXXX)
-trap 'rm -rf "$root"' EXIT
+cleanup() {
+    status=$?
+    if ((status != 0)); then
+        printf 'Canonical store fixture retained: %s\n' "$root" >&2
+    else
+        rm -rf "$root"
+    fi
+}
+trap cleanup EXIT
 mkdir "$root/upper" "$root/work" "$root/store" "$root/state" "$root/log" "$root/conf" "$root/tmp"
 export NIX_STATE_DIR="$root/state" NIX_LOG_DIR="$root/log" NIX_CONF_DIR="$root/conf" TMPDIR="$root/tmp"
 export NIX_USER_CONF_FILES=/dev/null NIX_STORE_DIR=/nix/store NIX_DAEMON_SOCKET_PATH="$root/socket"
@@ -18,5 +30,5 @@ nix-store --store local --init
 nix-daemon > "$MICROVM_STORE_ROOT/daemon.log" 2>&1 & daemon=$!
 trap '\''kill "$daemon"; wait "$daemon" || true'\'' EXIT
 for ((i=0;i<100;i++)); do test ! -S "$NIX_DAEMON_SOCKET_PATH" || break; sleep .02; done
-"$MICROVM_OUTPUT_TEST" --exact receipts_require_authoritative_registration --test-threads=1
-'
+"$MICROVM_OUTPUT_TEST" "$@"
+' bash "$@"
