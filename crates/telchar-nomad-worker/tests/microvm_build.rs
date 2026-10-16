@@ -259,6 +259,7 @@ fn run_build() {
     let gateway_store = endpoint.clone();
     let staging = root.clone();
     let execution_intent = intent.clone();
+    let ownership_lost = case == "fenced";
     let gateway_thread = std::thread::spawn(move || {
         let (provider, response) = provider_response();
         let limits = Limits {
@@ -283,7 +284,14 @@ fn run_build() {
             |_| {},
         );
         response.join().unwrap();
-        callback.shutdown().unwrap();
+        let shutdown = callback.shutdown();
+        if ownership_lost {
+            if let Err(error) = shutdown {
+                assert_eq!(error.to_string(), "MicroVM listener failed");
+            }
+        } else {
+            shutdown.unwrap();
+        }
         result
     });
     let binding = root.join("binding.json");

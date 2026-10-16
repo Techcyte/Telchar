@@ -13,6 +13,7 @@ use crate::service::singleton_ownership::SingletonOwnership;
 pub struct CallbackService {
     stopped: Arc<AtomicBool>,
     listener: Option<JoinHandle<io::Result<()>>>,
+    failed: bool,
 }
 
 struct Admission {
@@ -35,6 +36,7 @@ impl CallbackService {
         if admission_timeout.is_zero() || Instant::now().checked_add(admission_timeout).is_none() {
             return Err(io::Error::other("MicroVM admission timeout is invalid"));
         }
+        owner.verify().map_err(io::Error::other)?;
         listener.set_nonblocking(true)?;
         let stopped = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stopped);
@@ -42,8 +44,13 @@ impl CallbackService {
             .name("microvm-listener".into())
             .spawn(move || {
                 let mut admissions: Vec<Admission> = Vec::new();
+                let mut next_authority_check = Instant::now();
                 let result = (|| {
                     while !stopping.load(Ordering::Acquire) {
+                        if Instant::now() >= next_authority_check {
+                            owner.verify().map_err(io::Error::other)?;
+                            next_authority_check = Instant::now() + Duration::from_millis(100);
+                        }
                         let mut index = 0;
                         while index < admissions.len() {
                             if admissions[index].worker.is_finished() {
@@ -101,15 +108,35 @@ impl CallbackService {
         Ok(Self {
             stopped,
             listener: Some(listener),
+            failed: false,
         })
+    }
+
+    pub fn check(&mut self) -> io::Result<()> {
+        if self
+            .listener
+            .as_ref()
+            .is_some_and(|listener| listener.is_finished())
+        {
+            self.join();
+        }
+        if self.failed || self.stopped.load(Ordering::Acquire) {
+            return Err(io::Error::other("MicroVM listener is unavailable"));
+        }
+        Ok(())
+    }
+
+    fn join(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            self.failed |= !matches!(listener.join(), Ok(Ok(())));
+        }
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
         self.stopped.store(true, Ordering::Release);
-        if let Some(listener) = self.listener.take() {
-            listener
-                .join()
-                .map_err(|_| io::Error::other("MicroVM listener failed"))??;
+        self.join();
+        if self.failed {
+            return Err(io::Error::other("MicroVM listener failed"));
         }
         Ok(())
     }
@@ -117,7 +144,9 @@ impl CallbackService {
 
 impl Drop for CallbackService {
     fn drop(&mut self) {
-        if let Err(error) = self.shutdown() {
+        if self.listener.is_some()
+            && let Err(error) = self.shutdown()
+        {
             tracing::error!(event = "microvm.listener.shutdown_failed", %error);
         }
     }
