@@ -14,19 +14,19 @@ const FIXTURE: &str = concat!(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        for multiple in [false, true] {
-            run_isolated_build(multiple);
+        for case in ["single", "multiple", "cancelled"] {
+            run_isolated_build(case);
         }
         return;
     }
     run_build();
 }
 
-fn run_isolated_build(multiple: bool) {
+fn run_isolated_build(case: &str) {
     let database = telchar_test_support::postgres::PostgresFixture::start();
     let output = Command::new("bash")
         .env("MICROVM_TEST_DATABASE", database.url())
-        .env("MICROVM_TEST_MULTIPLE", if multiple { "1" } else { "0" })
+        .env("MICROVM_TEST_CASE", case)
         .arg(FIXTURE)
         .arg(std::env::current_exe().unwrap())
         .args([
@@ -50,7 +50,8 @@ fn run_isolated_build(multiple: bool) {
 }
 
 fn run_build() {
-    let multiple = std::env::var("MICROVM_TEST_MULTIPLE").unwrap() == "1";
+    let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    let multiple = case == "multiple";
     let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
     let endpoint =
         GatewayStoreEndpoint::parse(&std::env::var("MICROVM_TEST_STORE_URI").unwrap()).unwrap();
@@ -306,6 +307,28 @@ fn run_build() {
     let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
     upstream.send(socket.read().unwrap()).unwrap();
     socket.send(upstream.read().unwrap()).unwrap();
+    if case == "cancelled" {
+        let started = std::time::Instant::now();
+        assert!(telchar::persistence::cancel_microvm_launch(&database, "build-intent").unwrap());
+        let result = gateway_thread.join().unwrap();
+        drop(upstream);
+        drop(socket);
+        let worker = worker.wait_with_output().unwrap();
+        assert!(!worker.status.success());
+        let diagnostic = String::from_utf8(worker.stderr).unwrap();
+        assert!(diagnostic.contains("MicroVM worker failed"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("Canonical store fixture retained:"),
+            "{diagnostic}"
+        );
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancelled idle session did not stop promptly"
+        );
+        assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        return;
+    }
     loop {
         let message = socket.read().unwrap();
         let frame = read_frame(

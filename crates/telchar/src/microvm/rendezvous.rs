@@ -92,6 +92,10 @@ pub struct SessionStream {
 }
 
 impl SessionStream {
+    pub(crate) fn interrupt_handle(&self) -> std::io::Result<TcpStream> {
+        self.inner.try_clone()
+    }
+
     fn verify_waiting_peer(&self) -> Result<(), ProviderError> {
         self.inner
             .set_nonblocking(true)

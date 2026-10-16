@@ -38,16 +38,41 @@ pub fn run_admitted(
     };
     let request = load()?;
     let session = Session::new(&request, store, staging, limits)?;
-    session.run(
-        socket,
-        || {
-            if load()? != request {
-                return Err(io::Error::other("MicroVM execution authority changed"));
-            }
-            Ok(())
-        },
-        log,
-    )
+    let interrupt = socket.get_ref().interrupt_handle()?;
+    std::thread::scope(|scope| {
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let active_request = &request;
+        let load_request = &load;
+        let monitor = std::thread::Builder::new()
+            .name("microvm-authority".into())
+            .spawn_scoped(scope, move || {
+                loop {
+                    match stopped.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                    if load_request().map_or(true, |active| &active != active_request) {
+                        let _ = interrupt.shutdown(std::net::Shutdown::Both);
+                        return;
+                    }
+                }
+            })?;
+        let result = session.run(
+            socket,
+            || {
+                if load()? != request {
+                    return Err(io::Error::other("MicroVM execution authority changed"));
+                }
+                Ok(())
+            },
+            log,
+        );
+        drop(stop);
+        monitor
+            .join()
+            .map_err(|_| io::Error::other("MicroVM authority monitor failed"))?;
+        result
+    })
 }
 
 pub struct Session {
