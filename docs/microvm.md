@@ -1,9 +1,56 @@
 # Lambda MicroVM backend experiment
 
-This is an experimental sandbox feasibility gate, **not an implemented Telchar
-backend**. Disposable fixtures exercise authenticated WSS, NAR transfers and
-validated output registration locally and on actual AWS ARM64 MicroVMs. No selectable gateway backend or execution
-recovery is implemented. Production routing and persistence are unchanged. AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
+**No selectable production Telchar MicroVM backend exists.** Historical disposable
+fixtures exercise authenticated WSS, NAR transfers and validated output
+registration locally and on actual AWS ARM64 MicroVMs. Partial production
+implementation is described below; its durable ledger is included in gateway
+schema migrations, but routing and execution recovery are not integrated.
+AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
+
+## Production implementation status
+
+The [backend ADR](adr/microvm-backend.md) defines the intended conservative release.
+Implemented boundaries include:
+
+- Migration `0019_microvm_launches.sql` and fenced reservation, single dispatch,
+  exact provider binding, single-use admission and cleanup-recording APIs.
+- Bounded provider launch/get/terminate with SDK launch retries disabled. Ambiguous
+  launches retain capacity; only an exact observed `TERMINATED` releases a known
+  execution's cleanup reservation.
+- Separate `/microvm` WebSocket admission with expiring verifier-only credentials,
+  authenticated early waiting and pending-connection bounds. TLS termination is
+  operator-owned; Nomad authentication remains separate.
+- `telchar-microvm-worker` with explicit trust/store/binding inputs, bounded WSS
+  transport and existing worker transfer/build mechanics.
+- `deploy/microvm/execution.py` runtime hooks, protected execution binding and
+  fresh daemon/worker supervision. Process-group cleanup is not proof of escaped
+  Nix builder containment.
+
+These are partial components, not a deployable service. Missing release gates
+include production gateway transfer/promotion composition with successful worker
+executable qualification, strict selectable configuration/routing and capacity
+identity, output-only restart recovery, independent cleanup maintenance,
+provider account/credential/egress correspondence, administrative reconciliation
+and audit, metrics, NixOS wiring, and a secure ARM production image. Mandatory
+sandbox/build-user/secret isolation and snapshot cryptographic safety remain
+unresolved production gates. Do not deploy the experimental images as a substitute.
+
+From the flake development shell, implemented local boundaries can be checked with:
+
+```sh
+bash tests/microvm/verify-implementation.sh
+```
+
+This runs formatting, workspace all-target compilation, focused PostgreSQL/HTTP/
+TLS/worker tests and Python runtime tests including a private Nix daemon. The
+private Nix supervision fixture disables sandboxing; it does not qualify
+production containment or the complete worker/gateway path. The checkpoint does
+not run full workspace tests, Clippy, stock-client VM contracts or live AWS
+qualification. Local checks use isolated state and require nonroot Linux process
+and socket permissions. Preserve the pinned flake dependencies and test TLS
+fixtures. No AWS credentials or resources are needed.
+
+The sections below describe historical experiments, not production qualification.
 
 ## What exists
 
@@ -266,8 +313,8 @@ Failure coverage remains deliberately scoped:
 | Disk exhaustion / saturation | No induced exhaustion | Unverified; no capacity or admission-safety claim |
 
 No extra AWS failure campaign was launched after preserving the successful build.
-Production launch ambiguity, cancellation and recovery require separate approved
-architecture, not more retries of these fixtures.
+Production launch ambiguity, cancellation and recovery follow the backend ADR;
+retries of these fixtures do not qualify that implementation.
 
 Evidence for this separate campaign is retained under
 `~/.local/state/telchar-microvm-test/workloads`. Independent AWS queries confirmed
@@ -275,9 +322,10 @@ all four workers and the receiver terminated; the volume, security group, key,
 both image versions, bucket, role and log group were absent. Its ledger records
 `cleanup=complete`; it must not be confused with the small-fixture campaign above.
 `tests/microvm/verify-workload-evidence.py` checks archived output hashes, timing
-ordering, isolation and cleanup records without AWS access. Production launch ambiguity,
-fencing, cancellation, restart, reconnect and stock-client scheduling remain
-deferred to an approved backend design; none is implemented by these fixtures.
+ordering, isolation and cleanup records without AWS access. These fixtures do not
+implement production launch ambiguity, fencing, cancellation, restart or
+stock-client scheduling. The partial production components above are separate;
+reconnect is outside the intended first release.
 
 ## Proposed integration boundary
 
@@ -299,8 +347,9 @@ requires explicit MicroVM authentication and durable identity support:
 
 The existing worker has no reconnect after a dropped callback. Recovery must
 address this explicitly; MicroVM memory persistence does not fix a broken socket.
-A new backend touches durable identity, configuration, routing and authentication;
-those changes need an ADR and failure/restart tests before product integration.
+The backend ADR covers durable identity, configuration, routing and authentication.
+Product integration still requires the corresponding failure/restart contracts
+and release gates; the historical fixtures do not satisfy them.
 
 ## Sources
 
