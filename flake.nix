@@ -126,6 +126,7 @@
           pkgs.skopeo
           pkgs.openssh
           pkgs.postgresql
+          pkgs.python3
           pkgs.cargo
           pkgs.clippy
           pkgs.rustc
