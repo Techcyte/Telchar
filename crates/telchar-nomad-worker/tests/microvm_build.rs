@@ -14,7 +14,7 @@ const FIXTURE: &str = concat!(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        for case in ["single", "multiple", "cancelled"] {
+        for case in ["single", "multiple", "cancelled", "fenced"] {
             run_isolated_build(case);
         }
         return;
@@ -307,9 +307,16 @@ fn run_build() {
     let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
     upstream.send(socket.read().unwrap()).unwrap();
     socket.send(upstream.read().unwrap()).unwrap();
-    if case == "cancelled" {
+    if matches!(case.as_str(), "cancelled" | "fenced") {
         let started = std::time::Instant::now();
-        assert!(telchar::persistence::cancel_microvm_launch(&database, "build-intent").unwrap());
+        if case == "cancelled" {
+            assert!(
+                telchar::persistence::cancel_microvm_launch(&database, "build-intent").unwrap()
+            );
+        } else {
+            let mut database = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            assert_eq!(database.execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'", &[]).unwrap(), 1);
+        }
         let result = gateway_thread.join().unwrap();
         drop(upstream);
         drop(socket);
@@ -324,7 +331,7 @@ fn run_build() {
         assert!(result.is_err());
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "cancelled idle session did not stop promptly"
+            "{case} idle session did not stop promptly"
         );
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
         return;
