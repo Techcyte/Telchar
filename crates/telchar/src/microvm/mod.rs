@@ -212,6 +212,11 @@ impl Provider {
         cleanup: &crate::persistence::MicrovmCleanup,
     ) -> Result<bool, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
+        if self.client.config().region().map(|region| region.as_ref())
+            != Some(cleanup.region.as_str())
+        {
+            return Err(ProviderError);
+        }
         let pending = crate::persistence::pending_microvm_cleanup_identity(
             owner.database_url(),
             &cleanup.intent_id,

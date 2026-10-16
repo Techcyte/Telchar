@@ -22,10 +22,9 @@ fn exchange(
             match listener.accept() {
                 Ok((socket, _)) => break socket,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "request arrives before deadline"
-                    );
+                    if std::time::Instant::now() >= deadline {
+                        return String::new();
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(error) => panic!("accept: {error}"),
@@ -73,13 +72,22 @@ fn exchange(
         Duration::from_secs(20),
     )
     .expect("owner acquires");
+    if operation == "expired-cleanup" {
+        fixture.expire_singleton_ownership("daemon");
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
     let config = aws_sdk_lambdamicrovms::Config::builder()
         .behavior_version_latest()
-        .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
+        .region(aws_sdk_lambdamicrovms::config::Region::new(
+            if operation == "region-cleanup" {
+                "us-east-1"
+            } else {
+                "us-west-2"
+            },
+        ))
         .credentials_provider(aws_credential_types::Credentials::new(
             "fixture-key",
             "fixture-secret",
@@ -91,14 +99,11 @@ fn exchange(
         .build();
     let provider =
         telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
-    let result = if operation == "cleanup" {
-        let cleanup = telchar::persistence::pending_microvm_cleanup(
-            owner.database_url(),
-            "cleanup-fixture",
-            1,
-        )
-        .expect("pending identity")
-        .remove(0);
+    let result = if operation.ends_with("cleanup") {
+        let cleanup =
+            telchar::persistence::pending_microvm_cleanup(fixture.url(), "cleanup-fixture", 1)
+                .expect("pending identity")
+                .remove(0);
         let result = provider.cleanup(&owner, &cleanup);
         let released: bool = fixture.connect().query_one("SELECT reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'cleanup-intent'", &[]).expect("reservation reads").get(0);
         assert_eq!(released, result.as_ref().is_ok_and(|released| *released));
@@ -159,6 +164,22 @@ fn cleanup_releases_only_after_exact_provider_observation() {
     assert!(result.is_err());
     let (result, _) = exchange("404 Not Found", "{}", "cleanup");
     assert!(result.is_err());
+}
+
+#[test]
+fn cleanup_rejects_wrong_region_and_expired_owner_without_http_request() {
+    for operation in ["region-cleanup", "expired-cleanup"] {
+        let (result, request) = exchange(
+            "200 OK",
+            &observation("microvm-exact", "TERMINATED"),
+            operation,
+        );
+        assert!(result.is_err(), "cleanup must reject {operation}");
+        assert!(
+            request.is_empty(),
+            "cleanup must send no request: {operation}"
+        );
+    }
 }
 
 #[test]
