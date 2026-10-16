@@ -101,14 +101,13 @@ fn receipts_require_authoritative_registration() {
         }
         assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
     }
-    for invalid_reference in [true, false] {
-        gateway_session(
-            &endpoint,
-            staging.path(),
-            &metadata,
-            &nar,
-            invalid_reference,
-        );
+    for rejection in [
+        Some("reference"),
+        Some("deriver"),
+        Some("content address"),
+        None,
+    ] {
+        gateway_session(&endpoint, staging.path(), &metadata, &nar, rejection);
     }
 }
 
@@ -117,7 +116,7 @@ fn gateway_session(
     staging: &std::path::Path,
     input: &PathManifestEntry,
     nar: &[u8],
-    invalid_reference: bool,
+    rejection: Option<&str>,
 ) {
     use std::net::TcpListener;
     use std::time::Duration;
@@ -150,9 +149,19 @@ fn gateway_session(
     let limits = ProtocolLimits::new(8192, 256);
     let mut output_info = input.clone();
     output_info.path = output.into();
-    if invalid_reference {
-        output_info.references =
-            vec!["/nix/store/ffffffffffffffffffffffffffffffff-unadmitted".into()];
+    match rejection {
+        Some("reference") => {
+            output_info.references =
+                vec!["/nix/store/ffffffffffffffffffffffffffffffff-unadmitted".into()]
+        }
+        Some("deriver") => {
+            output_info.deriver =
+                Some("/nix/store/ffffffffffffffffffffffffffffffff-other.drv".into())
+        }
+        Some("content address") => {
+            output_info.content_address = Some(format!("fixed:sha256:{}", "0".repeat(52)))
+        }
+        _ => {}
     }
     std::thread::scope(|scope| {
         let worker = scope.spawn(move || {
@@ -225,10 +234,10 @@ fn gateway_session(
                 encode_metadata(&output_info, 8192).unwrap(),
                 vec![],
             );
-            if invalid_reference {
+            if rejection.is_some() {
                 assert!(
                     socket.read().is_err(),
-                    "unadmitted reference must close session before NAR transfer"
+                    "unadmitted metadata must close session before NAR transfer"
                 );
                 return;
             }
@@ -290,10 +299,10 @@ fn gateway_session(
         )
         .unwrap()
         .run(socket, || Ok(()), |bytes| logs.extend_from_slice(bytes));
-        if invalid_reference {
+        if let Some(field) = rejection {
             assert_eq!(
                 result.unwrap_err().to_string(),
-                "MicroVM output reference is not admitted"
+                format!("MicroVM output {field} is not admitted")
             );
         } else {
             assert_eq!(result.unwrap().outcome, BuildOutcome::Built);
@@ -304,6 +313,6 @@ fn gateway_session(
     let mut store = GatewayStoreConnection::connect(endpoint).unwrap();
     assert_eq!(
         store.is_valid_path(output.as_bytes()).unwrap(),
-        !invalid_reference
+        rejection.is_none()
     );
 }

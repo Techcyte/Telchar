@@ -158,6 +158,18 @@ impl Session {
                     {
                         return Err(io::Error::other("MicroVM output deriver is not admitted"));
                     }
+                    let authority = self
+                        .manifest
+                        .build
+                        .outputs
+                        .iter()
+                        .find(|output| output.path == metadata.path.as_bytes())
+                        .ok_or_else(|| io::Error::other("MicroVM output is not admitted"))?;
+                    if authority.hash_algorithm.is_empty() && metadata.content_address.is_some() {
+                        return Err(io::Error::other(
+                            "MicroVM output content address is not admitted",
+                        ));
+                    }
                     self.outputs.declare(metadata)?;
                 }
                 FrameKind::OutputNar => {
