@@ -15,6 +15,12 @@ fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
 }
 
 #[test]
+fn execution_closes_admission_without_releasing_provider_reservation() {
+    launch_exchange(true, "execution-timeout");
+    launch_exchange(false, "execution-failure");
+}
+
+#[test]
 fn launch_rejects_hook_coordinates_that_disagree_with_reservation() {
     for mismatch in [
         "hook-intent",
@@ -204,12 +210,46 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             &payload
         };
         let started = std::time::Instant::now();
-        let result = provider.launch_reserved(&owner, &intent, payload);
+        let result = if ownership.starts_with("execution-") {
+            let sessions = telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap();
+            let executor = telchar::microvm::execution::Execution {
+                provider: &provider,
+                owner: &owner,
+                sessions: &sessions,
+                store: telchar::store::daemon::GatewayStoreEndpoint::parse(
+                    "unix:///not-used/microvm.sock",
+                )
+                .unwrap(),
+                staging: std::env::temp_dir(),
+                limits: telchar::microvm::session::Limits {
+                    maximum_paths: 10,
+                    maximum_nar_bytes: 1024,
+                    maximum_total_bytes: 2048,
+                    metadata_bytes: 8192,
+                    chunk_bytes: 1024,
+                },
+            };
+            assert!(
+                executor
+                    .run_reserved(
+                        &intent,
+                        payload,
+                        started + Duration::from_millis(500),
+                        |_| {}
+                    )
+                    .is_err()
+            );
+            Ok(None)
+        } else {
+            provider.launch_reserved(&owner, &intent, payload)
+        };
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "bounded launch: {ownership}"
         );
-        if ownership != "active" {
+        if ownership.starts_with("execution-") {
+            assert_eq!(result.unwrap(), None);
+        } else if ownership != "active" {
             assert!(result.is_err(), "expired owner cannot dispatch or bind");
         } else if success {
             assert_eq!(
@@ -223,7 +263,15 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             );
         }
         let repeat = provider.launch_reserved(&owner, &intent, payload);
-        if matches!(ownership, "active" | "dropped" | "malformed" | "timeout") {
+        if matches!(
+            ownership,
+            "active"
+                | "dropped"
+                | "malformed"
+                | "timeout"
+                | "execution-timeout"
+                | "execution-failure"
+        ) {
             assert_eq!(repeat.expect("repeat has no dispatch grant"), None);
         } else {
             assert!(repeat.is_err());
@@ -263,13 +311,14 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             "expired" | "payload-mismatch" | "region-mismatch" | "hook-intent"
             | "hook-lifetime" | "hook-capability" | "hook-schema" => "prepared",
             "response-expired" => "dispatching",
+            "execution-timeout" => "closed",
             _ if success => "bound",
             _ => "ambiguous",
         }
     );
     assert_eq!(
         row.get::<_, Option<String>>(1).as_deref(),
-        if success && ownership == "active" {
+        if success && matches!(ownership, "active" | "execution-timeout") {
             Some("microvm-exact")
         } else {
             None

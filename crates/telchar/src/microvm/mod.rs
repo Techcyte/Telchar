@@ -1,6 +1,7 @@
 //! AWS control-plane operations for exact MicroVM executions.
 
 pub mod callback_service;
+pub mod execution;
 pub mod outputs;
 pub mod rendezvous;
 pub mod session;
