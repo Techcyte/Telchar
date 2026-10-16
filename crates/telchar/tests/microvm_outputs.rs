@@ -101,7 +101,15 @@ fn receipts_require_authoritative_registration() {
         }
         assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
     }
-    gateway_session(&endpoint, staging.path(), &metadata, &nar);
+    for invalid_reference in [true, false] {
+        gateway_session(
+            &endpoint,
+            staging.path(),
+            &metadata,
+            &nar,
+            invalid_reference,
+        );
+    }
 }
 
 fn gateway_session(
@@ -109,6 +117,7 @@ fn gateway_session(
     staging: &std::path::Path,
     input: &PathManifestEntry,
     nar: &[u8],
+    invalid_reference: bool,
 ) {
     use std::net::TcpListener;
     use std::time::Duration;
@@ -141,6 +150,10 @@ fn gateway_session(
     let limits = ProtocolLimits::new(8192, 256);
     let mut output_info = input.clone();
     output_info.path = output.into();
+    if invalid_reference {
+        output_info.references =
+            vec!["/nix/store/ffffffffffffffffffffffffffffffff-unadmitted".into()];
+    }
     std::thread::scope(|scope| {
         let worker = scope.spawn(move || {
             let (mut socket, _) = tungstenite::connect(format!("ws://{address}")).unwrap();
@@ -212,6 +225,13 @@ fn gateway_session(
                 encode_metadata(&output_info, 8192).unwrap(),
                 vec![],
             );
+            if invalid_reference {
+                assert!(
+                    socket.read().is_err(),
+                    "unadmitted reference must close session before NAR transfer"
+                );
+                return;
+            }
             send(
                 &mut socket,
                 FrameKind::OutputNar,
@@ -269,12 +289,21 @@ fn gateway_session(
             },
         )
         .unwrap()
-        .run(socket, || Ok(()), |bytes| logs.extend_from_slice(bytes))
-        .unwrap();
-        assert_eq!(result.outcome, BuildOutcome::Built);
+        .run(socket, || Ok(()), |bytes| logs.extend_from_slice(bytes));
+        if invalid_reference {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "MicroVM output reference is not admitted"
+            );
+        } else {
+            assert_eq!(result.unwrap().outcome, BuildOutcome::Built);
+        }
         assert_eq!(logs, b"building\n");
         worker.join().unwrap();
     });
     let mut store = GatewayStoreConnection::connect(endpoint).unwrap();
-    assert!(store.is_valid_path(output.as_bytes()).unwrap());
+    assert_eq!(
+        store.is_valid_path(output.as_bytes()).unwrap(),
+        !invalid_reference
+    );
 }

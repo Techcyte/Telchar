@@ -138,10 +138,28 @@ impl Session {
             match frame.kind() {
                 FrameKind::BuildStarted => {}
                 FrameKind::LogChunk => log(frame.payload()),
-                FrameKind::OutputMetadata => self.outputs.declare(decode_metadata(
-                    frame.metadata(),
-                    self.limits.metadata_bytes,
-                )?)?,
+                FrameKind::OutputMetadata => {
+                    let metadata: PathManifestEntry =
+                        decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
+                    if metadata.references.iter().any(|reference| {
+                        !self
+                            .manifest
+                            .paths
+                            .iter()
+                            .any(|input| &input.path == reference)
+                            && !self.manifest.outputs.contains(reference)
+                    }) {
+                        return Err(io::Error::other("MicroVM output reference is not admitted"));
+                    }
+                    if metadata
+                        .deriver
+                        .as_ref()
+                        .is_some_and(|deriver| deriver != &self.manifest.derivation_path)
+                    {
+                        return Err(io::Error::other("MicroVM output deriver is not admitted"));
+                    }
+                    self.outputs.declare(metadata)?;
+                }
                 FrameKind::OutputNar => {
                     let chunk: NarMetadata =
                         decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
