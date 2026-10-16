@@ -60,14 +60,16 @@ chunk_bytes = 1024
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let service = telchar::microvm::service::Service::start(
-            config,
-            provider,
-            owner,
-            listener,
-            telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
-        )
-        .unwrap();
+        let service = Arc::new(
+            telchar::microvm::service::Service::start(
+                config,
+                provider,
+                owner,
+                listener,
+                telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
+            )
+            .unwrap(),
+        );
         service.check().unwrap();
         if fenced {
             fixture.expire_singleton_ownership("daemon");
@@ -78,7 +80,41 @@ chunk_bytes = 1024
             }
             let _ = service.shutdown();
         } else {
-            service.shutdown().unwrap();
+            use tungstenite::client::IntoClientRequest;
+            let mut request = format!("ws://{address}/microvm")
+                .into_client_request()
+                .unwrap();
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                "telchar-microvm-v1".parse().unwrap(),
+            );
+            let (peer, _) =
+                tungstenite::client(request, TcpStream::connect(address).unwrap()).unwrap();
+            let stopping = Arc::clone(&service);
+            let shutdown = std::thread::spawn(move || stopping.shutdown());
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                let started = Instant::now();
+                let health = service.check();
+                assert!(
+                    started.elapsed() < Duration::from_millis(200),
+                    "health must not wait for admission drain"
+                );
+                if health.is_err() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "shutdown must close execution admission promptly"
+                );
+                std::thread::yield_now();
+            }
+            assert!(
+                !shutdown.is_finished(),
+                "silent admitted upgrade still draining"
+            );
+            drop(peer);
+            shutdown.join().unwrap().unwrap();
             service.shutdown().unwrap();
         }
         assert!(service.check().is_err());

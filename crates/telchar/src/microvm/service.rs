@@ -2,7 +2,8 @@
 
 use std::io;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use super::Provider;
 use super::callback_service::CallbackService;
@@ -21,12 +22,12 @@ pub struct Service {
     sessions: Arc<ExecutionSessions>,
     store: GatewayStoreEndpoint,
     lifecycle: Mutex<Lifecycle>,
+    stopped: AtomicBool,
 }
 
 struct Lifecycle {
     callback: CallbackService,
     cleanup: MicrovmCleanupService,
-    stopped: bool,
 }
 
 impl Service {
@@ -61,21 +62,28 @@ impl Service {
             owner,
             sessions,
             store,
-            lifecycle: Mutex::new(Lifecycle {
-                callback,
-                cleanup,
-                stopped: false,
-            }),
+            lifecycle: Mutex::new(Lifecycle { callback, cleanup }),
+            stopped: AtomicBool::new(false),
         })
     }
 
     pub fn check(&self) -> io::Result<()> {
         self.owner.verify().map_err(io::Error::other)?;
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| io::Error::other("MicroVM lifecycle unavailable"))?;
-        if lifecycle.stopped {
+        let mut lifecycle = loop {
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(io::Error::other("MicroVM service stopped"));
+            }
+            match self.lifecycle.try_lock() {
+                Ok(lifecycle) => break lifecycle,
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("MicroVM lifecycle unavailable"));
+                }
+            }
+        };
+        if self.stopped.load(Ordering::Acquire) {
             return Err(io::Error::other("MicroVM service stopped"));
         }
         lifecycle.callback.check()?;
@@ -83,11 +91,11 @@ impl Service {
     }
 
     pub fn shutdown(&self) -> io::Result<()> {
+        self.stopped.store(true, Ordering::Release);
         let mut lifecycle = self
             .lifecycle
             .lock()
             .map_err(|_| io::Error::other("MicroVM lifecycle unavailable"))?;
-        lifecycle.stopped = true;
         let callback = lifecycle.callback.shutdown();
         let cleanup = lifecycle.cleanup.shutdown();
         callback.and(cleanup)
