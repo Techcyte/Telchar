@@ -167,19 +167,28 @@ fn run_build() {
     );
     let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gateway_address = gateway.local_addr().unwrap();
+    let owner = std::sync::Arc::new(owner);
+    let sessions =
+        std::sync::Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+    let mut callback = telchar::microvm::callback_service::CallbackService::start(
+        gateway,
+        owner.clone(),
+        sessions.clone(),
+        1,
+        1,
+        Duration::from_secs(5),
+    )
+    .unwrap();
     let gateway_store = endpoint.clone();
     let staging = root.clone();
     let gateway_thread = std::thread::spawn(move || {
-        let pending = telchar::microvm::rendezvous::PendingConnections::new(1, 1).unwrap();
-        let (stream, _) = gateway.accept().unwrap();
-        let socket = telchar::microvm::rendezvous::accept_session(
-            stream,
-            &owner,
-            "build-intent",
-            std::time::Instant::now() + Duration::from_secs(15),
-            pending.reserve().unwrap(),
-        )
-        .unwrap();
+        let waiting = sessions
+            .register(
+                "build-intent",
+                std::time::Instant::now() + Duration::from_secs(15),
+            )
+            .unwrap();
+        let socket = waiting.receive().unwrap();
         let limits = Limits {
             maximum_paths: 10,
             maximum_nar_bytes: 1024 * 1024,
@@ -200,7 +209,9 @@ fn run_build() {
                 .unwrap()
                 .is_none()
         );
-        run_admitted(socket, &owner, gateway_store, staging, limits, |_| {})
+        let result = run_admitted(socket, &owner, gateway_store, staging, limits, |_| {});
+        callback.shutdown().unwrap();
+        result
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
