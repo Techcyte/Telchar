@@ -163,6 +163,121 @@ struct Bootstrap {
     bearer: String,
 }
 
+pub struct ExecutionSessions {
+    maximum: usize,
+    waiting: std::sync::Mutex<std::collections::HashMap<String, WaitingExecution>>,
+}
+
+struct WaitingExecution {
+    deadline: Instant,
+    sender: Option<std::sync::mpsc::SyncSender<AdmittedConnection>>,
+}
+
+pub struct ExecutionSession<'a> {
+    sessions: &'a ExecutionSessions,
+    intent_id: String,
+    deadline: Instant,
+    receiver: std::sync::mpsc::Receiver<AdmittedConnection>,
+}
+
+impl ExecutionSessions {
+    pub fn new(maximum: usize) -> Result<Self, ProviderError> {
+        if maximum == 0 {
+            return Err(ProviderError);
+        }
+        Ok(Self {
+            maximum,
+            waiting: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    pub fn register(
+        &self,
+        intent_id: &str,
+        deadline: Instant,
+    ) -> Result<ExecutionSession<'_>, ProviderError> {
+        let mut waiting = self.waiting.lock().map_err(|_| ProviderError)?;
+        if intent_id.is_empty()
+            || intent_id.len() > 128
+            || deadline <= Instant::now()
+            || waiting.len() >= self.maximum
+            || waiting.contains_key(intent_id)
+        {
+            return Err(ProviderError);
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        waiting.insert(
+            intent_id.to_owned(),
+            WaitingExecution {
+                deadline,
+                sender: Some(sender),
+            },
+        );
+        Ok(ExecutionSession {
+            sessions: self,
+            intent_id: intent_id.to_owned(),
+            deadline,
+            receiver,
+        })
+    }
+
+    pub fn accept(
+        &self,
+        stream: TcpStream,
+        owner: &SingletonOwnership,
+        admission_deadline: Instant,
+        pending: PendingConnection<'_>,
+    ) -> Result<(), ProviderError> {
+        let connection =
+            accept_session_for(stream, owner, admission_deadline, pending, |intent_id| {
+                let waiting = self.waiting.lock().map_err(|_| ProviderError)?;
+                let execution = waiting.get(intent_id).ok_or(ProviderError)?;
+                if execution.sender.is_none() {
+                    return Err(ProviderError);
+                }
+                Ok(execution.deadline)
+            })?;
+        let mut waiting = self.waiting.lock().map_err(|_| ProviderError)?;
+        let execution = waiting
+            .get_mut(connection.intent_id())
+            .ok_or(ProviderError)?;
+        if Instant::now() >= execution.deadline {
+            return Err(ProviderError);
+        }
+        execution
+            .sender
+            .take()
+            .ok_or(ProviderError)?
+            .try_send(connection)
+            .map_err(|_| ProviderError)
+    }
+}
+
+impl ExecutionSession<'_> {
+    pub fn receive(&self) -> Result<AdmittedConnection, ProviderError> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(ProviderError)?;
+        let connection = self
+            .receiver
+            .recv_timeout(remaining)
+            .map_err(|_| ProviderError)?;
+        if Instant::now() >= self.deadline {
+            return Err(ProviderError);
+        }
+        Ok(connection)
+    }
+}
+
+impl Drop for ExecutionSession<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.sessions.waiting.lock() {
+            waiting.remove(&self.intent_id);
+        }
+    }
+}
+
 pub struct AdmittedConnection {
     intent_id: String,
     socket: WebSocket<SessionStream>,
@@ -183,7 +298,22 @@ pub fn accept_session(
     owner: &SingletonOwnership,
     expected_intent: &str,
     deadline: Instant,
+    pending: PendingConnection<'_>,
+) -> Result<AdmittedConnection, ProviderError> {
+    accept_session_for(stream, owner, deadline, pending, |intent| {
+        if intent != expected_intent {
+            return Err(ProviderError);
+        }
+        Ok(deadline)
+    })
+}
+
+fn accept_session_for(
+    stream: TcpStream,
+    owner: &SingletonOwnership,
+    deadline: Instant,
     mut pending: PendingConnection<'_>,
+    mut execution_deadline: impl FnMut(&str) -> Result<Instant, ProviderError>,
 ) -> Result<AdmittedConnection, ProviderError> {
     owner.verify().map_err(|_| ProviderError)?;
     let stream = SessionStream {
@@ -221,8 +351,7 @@ pub fn accept_session(
         return Err(ProviderError);
     };
     let bootstrap: Bootstrap = serde_json::from_slice(&message).map_err(|_| ProviderError)?;
-    if bootstrap.intent_id != expected_intent
-        || bootstrap.intent_id.is_empty()
+    if bootstrap.intent_id.is_empty()
         || bootstrap.intent_id.len() > 128
         || bootstrap.provider_id.is_empty()
         || bootstrap.provider_id.len() > 256
@@ -239,7 +368,8 @@ pub fn accept_session(
     .ok_or(ProviderError)?;
     pending.authenticate(&backend)?;
     loop {
-        if Instant::now() >= deadline {
+        let session_deadline = execution_deadline(&bootstrap.intent_id)?;
+        if Instant::now() >= deadline.min(session_deadline) {
             return Err(ProviderError);
         }
         socket.get_ref().verify_waiting_peer()?;
@@ -249,6 +379,7 @@ pub fn accept_session(
             &bootstrap.provider_id,
             &bootstrap.bearer,
         )? {
+            socket.get_mut().deadline = session_deadline;
             return Ok(AdmittedConnection {
                 intent_id: bootstrap.intent_id,
                 socket,
@@ -269,6 +400,7 @@ pub fn accept_session(
                 &bootstrap.provider_id,
                 &bootstrap.bearer,
             )? {
+                socket.get_mut().deadline = session_deadline;
                 return Ok(AdmittedConnection {
                     intent_id: bootstrap.intent_id,
                     socket,
