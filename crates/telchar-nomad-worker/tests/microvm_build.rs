@@ -14,31 +14,43 @@ const FIXTURE: &str = concat!(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        let database = telchar_test_support::postgres::PostgresFixture::start();
-        let output = Command::new("bash")
-            .env("MICROVM_TEST_DATABASE", database.url())
-            .arg(FIXTURE)
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "dedicated_worker_builds_and_returns_registered_output",
-                "--test-threads=1",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            output.stderr.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        for multiple in [false, true] {
+            run_isolated_build(multiple);
+        }
         return;
     }
+    run_build();
+}
+
+fn run_isolated_build(multiple: bool) {
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let output = Command::new("bash")
+        .env("MICROVM_TEST_DATABASE", database.url())
+        .env("MICROVM_TEST_MULTIPLE", if multiple { "1" } else { "0" })
+        .arg(FIXTURE)
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "dedicated_worker_builds_and_returns_registered_output",
+            "--test-threads=1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_build() {
+    let multiple = std::env::var("MICROVM_TEST_MULTIPLE").unwrap() == "1";
     let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
     let endpoint =
         GatewayStoreEndpoint::parse(&std::env::var("MICROVM_TEST_STORE_URI").unwrap()).unwrap();
@@ -59,14 +71,35 @@ fn dedicated_worker_builds_and_returns_registered_output() {
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(store.query_path_info(input.as_bytes()).unwrap().is_some());
     let output = "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output";
+    let secondary = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dedicated-reference";
+    let outputs = if multiple {
+        vec![output, secondary]
+    } else {
+        vec![output]
+    };
     let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv";
     assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+    let extra_script = if multiple {
+        "; printf '%s' \"$out\" > \"$reference\""
+    } else {
+        ""
+    };
+    let extra_output = if multiple {
+        format!(r#",("reference","{secondary}","","")"#)
+    } else {
+        String::new()
+    };
+    let extra_environment = if multiple {
+        format!(r#",("reference","{secondary}")"#)
+    } else {
+        String::new()
+    };
     let script = serde_json::to_string(&format!(
-        "read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\""
+        "read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}"
     ))
     .unwrap();
     let derivation = format!(
-        r#"Derive([("out","{output}","","")],[],["{input}"],"x86_64-linux","/bin/sh",["-c",{script}],[("out","{output}"),("system","x86_64-linux"),("builder","/bin/sh"),("name","dedicated")])"#
+        r#"Derive([("out","{output}","",""){extra_output}],[],["{input}"],"x86_64-linux","/bin/sh",["-c",{script}],[("out","{output}"){extra_environment},("system","x86_64-linux"),("builder","/bin/sh"),("name","dedicated")])"#
     );
     let request = telchar::build::BuildRequest::from_stored_derivation(
         drv.as_bytes(),
@@ -91,7 +124,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         local,
         local.capabilities(),
         None,
-        &[output],
+        &outputs,
         &request,
     )
     .unwrap();
@@ -331,7 +364,17 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         String::from_utf8_lossy(&worker.stderr)
     );
     assert_eq!(result.unwrap().outcome, BuildOutcome::Built);
-    assert!(store.is_valid_path(output.as_bytes()).unwrap());
+    for expected in outputs {
+        assert!(store.is_valid_path(expected.as_bytes()).unwrap());
+    }
+    if multiple {
+        assert_eq!(std::fs::read(secondary).unwrap(), output.as_bytes());
+        let info = store
+            .query_path_info(secondary.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.references(), &[output.as_bytes().to_vec()]);
+    }
     assert_eq!(
         std::fs::read(output).unwrap(),
         b"dedicated-worker-success\n"
