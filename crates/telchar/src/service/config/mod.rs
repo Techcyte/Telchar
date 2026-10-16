@@ -483,10 +483,12 @@ impl ServiceConfig {
     }
 }
 
+mod microvm;
 mod model;
 mod raw;
 mod validation;
 
+pub use microvm::MicrovmBackendConfig;
 pub use model::*;
 use raw::*;
 use validation::*;
