@@ -105,6 +105,35 @@ impl MicrovmBackendConfig {
         Ok(Self(deployment))
     }
 
+    pub async fn provider(&self) -> io::Result<crate::microvm::Provider> {
+        let timeout = Duration::from_secs(self.0.provider_timeout_seconds);
+        let shared = tokio::time::timeout(
+            timeout,
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_config::Region::new(self.0.region.clone()))
+                .load(),
+        )
+        .await
+        .map_err(|_| io::Error::other("MicroVM credential configuration timed out"))?;
+        let config = aws_sdk_lambdamicrovms::config::Builder::from(&shared)
+            .endpoint_url(format!("https://lambda.{}.amazonaws.com", self.0.region))
+            .build();
+        let identity = aws_sdk_sts::config::Builder::from(&shared)
+            .endpoint_url(format!("https://sts.{}.amazonaws.com", self.0.region))
+            .build();
+        crate::microvm::Provider::verify_account(
+            config,
+            identity,
+            shared
+                .credentials_provider()
+                .ok_or_else(|| io::Error::other("MicroVM credentials unavailable"))?,
+            &self.0.account_id,
+            timeout,
+        )
+        .await
+        .map_err(io::Error::other)
+    }
+
     pub fn name(&self) -> &str {
         &self.0.name
     }

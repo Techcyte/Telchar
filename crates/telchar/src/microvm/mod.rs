@@ -181,9 +181,61 @@ pub fn launch_request_digest(
 
 pub struct Provider {
     client: Client,
+    account_id: Option<String>,
 }
 
 impl Provider {
+    pub async fn verify_account(
+        config: Config,
+        identity: aws_sdk_sts::Config,
+        credentials: aws_credential_types::provider::SharedCredentialsProvider,
+        account_id: &str,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
+        use aws_credential_types::provider::ProvideCredentials;
+
+        if account_id.len() != 12 || !account_id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ProviderError);
+        }
+        let provider = Self::new(config, timeout)?;
+        let credentials = tokio::time::timeout(timeout, credentials.provide_credentials())
+            .await
+            .map_err(|_| ProviderError)?
+            .map_err(|_| ProviderError)?;
+        let identity = aws_sdk_sts::Client::from_conf(
+            identity
+                .to_builder()
+                .credentials_provider(credentials.clone())
+                .retry_config(aws_sdk_sts::config::retry::RetryConfig::disabled())
+                .timeout_config(
+                    aws_sdk_sts::config::timeout::TimeoutConfig::builder()
+                        .operation_timeout(timeout)
+                        .operation_attempt_timeout(timeout)
+                        .connect_timeout(timeout)
+                        .read_timeout(timeout)
+                        .build(),
+                )
+                .build(),
+        );
+        let result = identity
+            .get_caller_identity()
+            .send()
+            .await
+            .map_err(|_| ProviderError)?;
+        if result.account() != Some(account_id) {
+            return Err(ProviderError);
+        }
+        let config = provider
+            .client
+            .config()
+            .to_builder()
+            .credentials_provider(credentials)
+            .build();
+        let mut provider = Self::new(config, timeout)?;
+        provider.account_id = Some(account_id.to_owned());
+        Ok(provider)
+    }
+
     pub fn new(config: Config, timeout: Duration) -> Result<Self, ProviderError> {
         if timeout.is_zero() || timeout > Duration::from_secs(60) {
             return Err(ProviderError);
@@ -202,6 +254,7 @@ impl Provider {
             .build();
         Ok(Self {
             client: Client::from_conf(config),
+            account_id: None,
         })
     }
 
@@ -213,6 +266,10 @@ impl Provider {
         owner.verify().map_err(|_| ProviderError)?;
         if self.client.config().region().map(|region| region.as_ref())
             != Some(cleanup.region.as_str())
+            || self
+                .account_id
+                .as_deref()
+                .is_some_and(|account| account != cleanup.account_id)
         {
             return Err(ProviderError);
         }
@@ -289,6 +346,10 @@ impl Provider {
         validate_launch_payload(payload, intent)?;
         if self.client.config().region().map(|region| region.as_ref())
             != Some(intent.region.as_str())
+            || self
+                .account_id
+                .as_deref()
+                .is_some_and(|account| account != intent.account_id)
             || launch_request_digest(
                 &intent.image_arn,
                 &intent.image_version,

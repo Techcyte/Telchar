@@ -2547,6 +2547,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-ec2",
  "aws-sdk-lambdamicrovms",
+ "aws-sdk-sts",
  "base64 0.23.1",
  "hmac",
  "jsonwebtoken",
