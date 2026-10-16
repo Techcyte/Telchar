@@ -82,21 +82,19 @@ impl Service {
         lifecycle.cleanup.check()
     }
 
-    pub fn shutdown(&mut self) -> io::Result<()> {
-        let lifecycle = self
+    pub fn shutdown(&self) -> io::Result<()> {
+        let mut lifecycle = self
             .lifecycle
-            .get_mut()
+            .lock()
             .map_err(|_| io::Error::other("MicroVM lifecycle unavailable"))?;
         lifecycle.stopped = true;
         let callback = lifecycle.callback.shutdown();
         let cleanup = lifecycle.cleanup.shutdown();
         callback.and(cleanup)
     }
-}
 
-impl BuildBackend for Service {
-    fn execute_with_logs(
-        &mut self,
+    fn execute_build(
+        &self,
         build: &BuildExecution<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
@@ -114,6 +112,17 @@ impl BuildBackend for Service {
             self.check()?;
             cancelled()
         })
+    }
+}
+
+impl BuildBackend for Arc<Service> {
+    fn execute_with_logs(
+        &mut self,
+        build: &BuildExecution<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<BuildResult> {
+        self.execute_build(build, logs, cancelled)
     }
 }
 

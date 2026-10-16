@@ -60,7 +60,7 @@ chunk_bytes = 1024
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let mut service = telchar::microvm::service::Service::start(
+        let service = telchar::microvm::service::Service::start(
             config,
             provider,
             owner,

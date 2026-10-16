@@ -21,6 +21,7 @@ fn execution_closes_admission_without_releasing_provider_reservation() {
     launch_exchange(false, "configured");
     launch_exchange(false, "configured-missing");
     launch_exchange(true, "configured-cancelled");
+    launch_exchange(true, "configured-shutdown");
 }
 
 #[test]
@@ -61,7 +62,10 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("attempt reads")
         .expect("attempt exists");
-    if matches!(ownership, "configured" | "configured-cancelled") {
+    if matches!(
+        ownership,
+        "configured" | "configured-cancelled" | "configured-shutdown"
+    ) {
         let source = r#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","provider"),("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"),("system","aarch64-linux")])"#;
         let target = telchar::backend::BackendTarget::new(
             "provider-fixture",
@@ -128,11 +132,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                 .expect("capacity reserves")
         );
     }
-    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
-        fixture.url(),
-        Duration::from_secs(20),
-    )
-    .expect("owner acquires");
+    let owner = std::sync::Arc::new(
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(20),
+        )
+        .expect("owner acquires"),
+    );
     if ownership == "expired" {
         fixture.expire_singleton_ownership("daemon");
     }
@@ -277,7 +283,10 @@ chunk_bytes = 1024
 "#,
                 )
                 .unwrap();
-                if matches!(ownership, "configured" | "configured-cancelled") {
+                if matches!(
+                    ownership,
+                    "configured" | "configured-cancelled" | "configured-shutdown"
+                ) {
                     let request = telchar::persistence::microvm_attempt_request(
                         owner.database(),
                         attempt.attempt_id,
@@ -300,6 +309,40 @@ chunk_bytes = 1024
                         .get(0);
                     assert_eq!(count, 0);
                     build.set_target_name(policy.name()).unwrap();
+                    if ownership == "configured-shutdown" {
+                        use telchar::backend::BuildBackend;
+                        let service = std::sync::Arc::new(
+                            telchar::microvm::service::Service::start(
+                                policy.clone(),
+                                provider.clone(),
+                                owner.clone(),
+                                TcpListener::bind("127.0.0.1:0").unwrap(),
+                                executor.store.clone(),
+                            )
+                            .unwrap(),
+                        );
+                        let mut backend = std::sync::Arc::clone(&service);
+                        let mut control = fixture.connect();
+                        let started = std::time::Instant::now();
+                        let error = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || {
+                            let bound: bool = control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound')", &[]).unwrap().get(0);
+                            if bound {
+                                service.shutdown().unwrap();
+                            }
+                            Ok(false)
+                        }).unwrap_err();
+                        assert!(started.elapsed() < Duration::from_secs(1));
+                        assert_eq!(error.to_string(), "MicroVM service stopped");
+                        let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches", &[]).unwrap();
+                        assert_eq!(row.get::<_, String>(0), "closed");
+                        assert!(row.get::<_, bool>(1));
+                        assert!(
+                            backend.execute(&build).is_err(),
+                            "stopped handles cannot dispatch"
+                        );
+                        assert_eq!(server.join().unwrap().len(), 1);
+                        return;
+                    }
                     if ownership == "configured-cancelled" {
                         let mut control = fixture.connect();
                         let started = std::time::Instant::now();
