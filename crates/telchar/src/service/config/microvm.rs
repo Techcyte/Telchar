@@ -123,6 +123,52 @@ impl MicrovmBackendConfig {
             chunk_bytes: self.0.chunk_bytes,
         }
     }
+    pub fn staging_directory(&self) -> &Path {
+        &self.0.staging_directory
+    }
+
+    pub(crate) fn launch(
+        &self,
+        attempt_id: i64,
+    ) -> io::Result<(crate::persistence::MicrovmLaunchIntent, String)> {
+        let capability = crate::microvm::Capability::generate().map_err(io::Error::other)?;
+        let identity = crate::microvm::Capability::generate().map_err(io::Error::other)?;
+        let intent_id = identity.bearer().to_owned();
+        let lifetime = self.0.maximum_duration_seconds as i32;
+        let payload = capability
+            .launch_payload(
+                &self.0.callback_url,
+                self.0.callback_address,
+                &intent_id,
+                lifetime,
+            )
+            .map_err(io::Error::other)?;
+        let intent = crate::persistence::MicrovmLaunchIntent {
+            intent_id: intent_id.clone(),
+            attempt_id,
+            backend_name: self.0.name.clone(),
+            account_id: self.0.account_id.clone(),
+            region: self.0.region.clone(),
+            image_arn: self.0.image_arn.clone(),
+            image_version: self.0.image_version.clone(),
+            configuration_digest: self.fingerprint(),
+            request_digest: crate::microvm::launch_request_digest(
+                &self.0.image_arn,
+                &self.0.image_version,
+                &intent_id,
+                &payload,
+                lifetime,
+            ),
+            client_token: intent_id,
+            credential_verifier: capability.verifier(),
+            admission_cutoff: std::time::SystemTime::now()
+                .checked_add(Duration::from_secs(self.0.admission_timeout_seconds))
+                .ok_or_else(|| io::Error::other("MicroVM admission cutoff overflow"))?,
+            maximum_duration_seconds: lifetime,
+        };
+        Ok((intent, payload))
+    }
+
     pub fn fingerprint(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(b"telchar-microvm-deployment-v1\0");

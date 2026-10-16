@@ -22,6 +22,41 @@ pub struct Execution<'a> {
 }
 
 impl Execution<'_> {
+    pub fn run_configured(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+        attempt_id: i64,
+        log: impl FnMut(&[u8]),
+    ) -> io::Result<BuildResultMetadata> {
+        self.owner.verify().map_err(io::Error::other)?;
+        let deadline = Instant::now()
+            .checked_add(config.execution_timeout())
+            .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
+        let (intent, payload) = config.launch(attempt_id)?;
+        if !crate::persistence::reserve_microvm_launch(
+            self.owner.database(),
+            &intent,
+            config.maximum_concurrent_builds(),
+        )
+        .map_err(io::Error::other)?
+        {
+            return Err(io::Error::other("MicroVM reservation was not granted"));
+        }
+        let execution = Execution {
+            provider: self.provider,
+            owner: self.owner,
+            sessions: self.sessions,
+            store: self.store.clone(),
+            staging: config.staging_directory().to_owned(),
+            limits: config.transfer_limits(),
+        };
+        let result = execution.run_reserved(&intent, &payload, deadline, log);
+        self.owner.verify().map_err(io::Error::other)?;
+        crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
+            .map_err(io::Error::other)?;
+        result
+    }
+
     pub fn run_reserved(
         &self,
         intent: &MicrovmLaunchIntent,

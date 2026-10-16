@@ -18,6 +18,7 @@ fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
 fn execution_closes_admission_without_releasing_provider_reservation() {
     launch_exchange(true, "execution-timeout");
     launch_exchange(false, "execution-failure");
+    launch_exchange(false, "configured");
 }
 
 #[test]
@@ -102,10 +103,12 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
         maximum_duration_seconds: 600,
     };
-    assert!(
-        telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
-            .expect("capacity reserves")
-    );
+    if ownership != "configured" {
+        assert!(
+            telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
+                .expect("capacity reserves")
+        );
+    }
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
@@ -210,7 +213,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             &payload
         };
         let started = std::time::Instant::now();
-        let result = if ownership.starts_with("execution-") {
+        let result = if ownership.starts_with("execution-") || ownership == "configured" {
             let sessions = telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap();
             let executor = telchar::microvm::execution::Execution {
                 provider: &provider,
@@ -229,6 +232,51 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     chunk_bytes: 1024,
                 },
             };
+            if ownership == "configured" {
+                let policy = telchar::service::config::MicrovmBackendConfig::parse(
+                    r#"
+name = "provider-fixture"
+system = "aarch64-linux"
+account_id = "116392764028"
+region = "us-west-2"
+image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
+image_version = "1"
+maximum_concurrent_builds = 1
+maximum_duration_seconds = 600
+execution_timeout_seconds = 540
+admission_timeout_seconds = 30
+provider_timeout_seconds = 1
+cleanup_interval_seconds = 5
+callback_url = "wss://gateway.example/microvm"
+callback_address = "127.0.0.1:443"
+staging_directory = "/tmp"
+maximum_paths = 10
+maximum_nar_bytes = 1024
+maximum_total_bytes = 2048
+metadata_bytes = 8192
+chunk_bytes = 1024
+"#,
+                )
+                .unwrap();
+                assert!(
+                    executor
+                        .run_configured(&policy, attempt.attempt_id, |_| {})
+                        .is_err()
+                );
+                let row = fixture.connect().query_one("SELECT intent_id, phase, configuration_digest, reservation_released_at IS NULL FROM microvm_launches", &[]).unwrap();
+                assert_ne!(row.get::<_, String>(0), "intent-fixture");
+                assert_eq!(row.get::<_, String>(1), "ambiguous");
+                assert_eq!(row.get::<_, Vec<u8>>(2), policy.fingerprint());
+                assert!(row.get::<_, bool>(3));
+                assert!(
+                    executor
+                        .run_configured(&policy, attempt.attempt_id, |_| {})
+                        .is_err()
+                );
+                let requests = server.join().unwrap();
+                assert_eq!(requests.len(), 1, "capacity prevents another dispatch");
+                return;
+            }
             assert!(
                 executor
                     .run_reserved(
