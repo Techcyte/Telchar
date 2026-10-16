@@ -210,7 +210,7 @@ pub fn accept_session(
     }
     let verifier = super::bearer_verifier(&bootstrap.bearer).ok_or(ProviderError)?;
     let backend = crate::persistence::microvm_session_backend(
-        owner.database_url(),
+        owner.database(),
         &bootstrap.intent_id,
         &verifier,
     )
@@ -231,7 +231,7 @@ pub fn accept_session(
             return Ok(socket);
         }
         if !crate::persistence::microvm_session_awaits_binding(
-            owner.database_url(),
+            owner.database(),
             &bootstrap.intent_id,
             &verifier,
         )

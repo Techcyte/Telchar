@@ -134,13 +134,8 @@ pub fn admit_session(
     let Some(verifier) = bearer_verifier(bearer) else {
         return Ok(false);
     };
-    crate::persistence::admit_microvm_session(
-        owner.database_url(),
-        intent_id,
-        provider_id,
-        &verifier,
-    )
-    .map_err(|_| ProviderError)
+    crate::persistence::admit_microvm_session(owner.database(), intent_id, provider_id, &verifier)
+        .map_err(|_| ProviderError)
 }
 
 fn bearer_verifier(bearer: &str) -> Option<[u8; 32]> {
@@ -220,7 +215,7 @@ impl Provider {
             return Err(ProviderError);
         }
         let pending = crate::persistence::pending_microvm_cleanup_identity(
-            owner.database_url(),
+            owner.database(),
             &cleanup.intent_id,
             &cleanup.provider_id,
         )
@@ -239,7 +234,7 @@ impl Provider {
             return Ok(false);
         }
         crate::persistence::record_microvm_termination(
-            owner.database_url(),
+            owner.database(),
             &cleanup.intent_id,
             &cleanup.provider_id,
         )
@@ -302,7 +297,7 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        let database = owner.database_url();
+        let database = owner.database();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

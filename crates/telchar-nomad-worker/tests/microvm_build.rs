@@ -16,7 +16,9 @@ const FIXTURE: &str = concat!(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        let database = telchar_test_support::postgres::PostgresFixture::start();
         let output = Command::new("bash")
+            .env("MICROVM_TEST_DATABASE", database.url())
             .arg(FIXTURE)
             .arg(std::env::current_exe().unwrap())
             .args([
@@ -92,6 +94,80 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         }],
         outputs: vec![output.into()],
     };
+    let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
+    telchar::persistence::migrate(&database).unwrap();
+    let local = telchar::backend::BackendKind::Local;
+    telchar::persistence::claim_shared_build(
+        &database,
+        drv,
+        &[1; 32],
+        "build",
+        local,
+        local.capabilities(),
+        None,
+        &[output],
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(&database, drv).unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, drv)
+        .unwrap()
+        .unwrap();
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    let intent = telchar::persistence::MicrovmLaunchIntent {
+        intent_id: "build-intent".into(),
+        attempt_id: attempt.attempt_id,
+        backend_name: "build".into(),
+        account_id: "116392764028".into(),
+        region: "us-west-2".into(),
+        image_arn: "fixture".into(),
+        image_version: "1".into(),
+        configuration_digest: [1; 32],
+        request_digest: [2; 32],
+        client_token: "build-token".into(),
+        credential_verifier: capability.verifier(),
+        admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+        maximum_duration_seconds: 60,
+    };
+    assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, &intent.intent_id).unwrap());
+    assert!(
+        telchar::persistence::bind_microvm_launch(&database, &intent.intent_id, "microvm-build")
+            .unwrap()
+    );
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        &database,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway_address = gateway.local_addr().unwrap();
+    let gateway_store = endpoint.clone();
+    let staging = root.clone();
+    let gateway_thread = std::thread::spawn(move || {
+        let pending = telchar::microvm::rendezvous::PendingConnections::new(1, 1).unwrap();
+        let (stream, _) = gateway.accept().unwrap();
+        let socket = telchar::microvm::rendezvous::accept_session(
+            stream,
+            &owner,
+            std::time::Instant::now() + Duration::from_secs(15),
+            pending.reserve().unwrap(),
+        )
+        .unwrap();
+        let limits = Limits {
+            maximum_paths: 10,
+            maximum_nar_bytes: 1024 * 1024,
+            maximum_total_bytes: 2 * 1024 * 1024,
+            metadata_bytes: 8192,
+            chunk_bytes: 256 * 1024,
+        };
+        Session::new(manifest, gateway_store, staging, limits)
+            .unwrap()
+            .run(
+                socket,
+                || owner.verify().map_err(std::io::Error::other),
+                |_| {},
+            )
+    });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let binding = root.join("binding.json");
@@ -99,7 +175,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
     std::fs::write(&trust, include_bytes!("fixtures/microvm-cert.der")).unwrap();
     std::fs::write(&binding, serde_json::to_vec(&serde_json::json!({
         "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
-        "intent_id": "build-intent", "provider_id": "microvm-build", "bearer": "s".repeat(43), "lifetime_seconds": 15
+        "intent_id": "build-intent", "provider_id": "microvm-build", "bearer": capability.bearer(), "lifetime_seconds": 15
     })).unwrap()).unwrap();
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut worker = Command::new("bash")
@@ -168,19 +244,74 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         Ok(response)
     };
     let mut socket = tungstenite::accept_hdr(tls, upgrade).unwrap();
-    let bootstrap: serde_json::Value =
-        serde_json::from_slice(&socket.read().unwrap().into_data()).unwrap();
-    assert_eq!(bootstrap["intent_id"], "build-intent");
-    let limits = Limits {
-        maximum_paths: 10,
-        maximum_nar_bytes: 1024 * 1024,
-        maximum_total_bytes: 2 * 1024 * 1024,
-        metadata_bytes: 8192,
-        chunk_bytes: 256 * 1024,
+    use telchar::nomad::protocol::{
+        FrameKind, NarMetadata, PathSet, ProtocolLimits, decode_metadata, read_frame,
     };
-    let result = Session::new(manifest, endpoint.clone(), root.clone(), limits)
+    use tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{gateway_address}/microvm")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "telchar-microvm-v1".parse().unwrap(),
+    );
+    let connection = std::net::TcpStream::connect(gateway_address).unwrap();
+    connection
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    connection
+        .set_write_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
+    upstream.send(socket.read().unwrap()).unwrap();
+    socket.send(upstream.read().unwrap()).unwrap();
+    loop {
+        let message = socket.read().unwrap();
+        let frame = read_frame(
+            &mut message.clone().into_data().as_ref(),
+            ProtocolLimits::new(8192, 256 * 1024),
+        )
+        .unwrap();
+        upstream.send(message).unwrap();
+        match frame.kind() {
+            FrameKind::InputRequest => {
+                let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
+                for _ in requested.paths {
+                    loop {
+                        let message = upstream.read().unwrap();
+                        let frame = read_frame(
+                            &mut message.clone().into_data().as_ref(),
+                            ProtocolLimits::new(8192, 256 * 1024),
+                        )
+                        .unwrap();
+                        let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                        socket.send(message).unwrap();
+                        if chunk.final_chunk {
+                            break;
+                        }
+                    }
+                }
+            }
+            FrameKind::OutputNar => {
+                let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                if chunk.final_chunk {
+                    socket.send(upstream.read().unwrap()).unwrap();
+                }
+            }
+            FrameKind::BuildResult => break,
+            _ => {}
+        }
+    }
+    let result = gateway_thread.join().unwrap();
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            &database,
+            &intent.intent_id,
+            "microvm-build",
+            &capability.verifier()
+        )
         .unwrap()
-        .run(socket, || Ok(()), |_| {});
+    );
     let worker = worker.wait_with_output().unwrap();
     assert!(
         worker.status.success(),
