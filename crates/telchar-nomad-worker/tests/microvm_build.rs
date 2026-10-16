@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-use telchar::microvm::session::{Limits, run_admitted};
+use telchar::microvm::session::Limits;
 use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
@@ -10,6 +10,71 @@ const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../tests/microvm/canonical-store.sh"
 );
+
+fn provider_response() -> (telchar::microvm::Provider, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let response = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("provider accept: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            assert!(header.len() < 32768);
+        }
+        let header = String::from_utf8(header).unwrap();
+        let length: usize = header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        assert!(length < 32768);
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(request["clientToken"], "build-token");
+        let body = serde_json::json!({"microvmId":"microvm-build", "state":"PENDING", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1}).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let config = aws_sdk_lambdamicrovms::Config::builder()
+        .behavior_version_latest()
+        .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
+        .credentials_provider(aws_credential_types::Credentials::new(
+            "fixture-key",
+            "fixture-secret",
+            None,
+            None,
+            "test",
+        ))
+        .endpoint_url(endpoint)
+        .build();
+    (
+        telchar::microvm::Provider::new(config, Duration::from_secs(2)).unwrap(),
+        response,
+    )
+}
 
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
@@ -134,6 +199,16 @@ fn run_build() {
         .unwrap()
         .unwrap();
     let capability = telchar::microvm::Capability::generate().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let payload = capability
+        .launch_payload(
+            &format!("wss://localhost:{}/microvm", address.port()),
+            address,
+            "build-intent",
+            60,
+        )
+        .unwrap();
     let intent = telchar::persistence::MicrovmLaunchIntent {
         intent_id: "build-intent".into(),
         attempt_id: attempt.attempt_id,
@@ -143,18 +218,20 @@ fn run_build() {
         image_arn: "fixture".into(),
         image_version: "1".into(),
         configuration_digest: [1; 32],
-        request_digest: [2; 32],
+        request_digest: telchar::microvm::launch_request_digest(
+            "fixture",
+            "1",
+            "build-token",
+            &payload,
+            60,
+        ),
         client_token: "build-token".into(),
         credential_verifier: capability.verifier(),
         admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
         maximum_duration_seconds: 60,
     };
     assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
-    assert!(telchar::persistence::dispatch_microvm_launch(&database, &intent.intent_id).unwrap());
-    assert!(
-        telchar::persistence::bind_microvm_launch(&database, &intent.intent_id, "microvm-build")
-            .unwrap()
-    );
+
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         &database,
         Duration::from_secs(60),
@@ -181,14 +258,9 @@ fn run_build() {
     .unwrap();
     let gateway_store = endpoint.clone();
     let staging = root.clone();
+    let execution_intent = intent.clone();
     let gateway_thread = std::thread::spawn(move || {
-        let waiting = sessions
-            .register(
-                "build-intent",
-                std::time::Instant::now() + Duration::from_secs(15),
-            )
-            .unwrap();
-        let socket = waiting.receive_active(&owner).unwrap();
+        let (provider, response) = provider_response();
         let limits = Limits {
             maximum_paths: 10,
             maximum_nar_bytes: 1024 * 1024,
@@ -196,25 +268,24 @@ fn run_build() {
             metadata_bytes: 8192,
             chunk_bytes: 256 * 1024,
         };
-        let admitted =
-            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
-                .unwrap()
-                .expect("consumed active intent has admitted request");
-        assert_eq!(
-            admitted.shared_build_digest(),
-            request.shared_build_digest()
+        let execution = telchar::microvm::execution::Execution {
+            provider: &provider,
+            owner: &owner,
+            sessions: &sessions,
+            store: gateway_store,
+            staging,
+            limits,
+        };
+        let result = execution.run_reserved(
+            &execution_intent,
+            &payload,
+            std::time::Instant::now() + Duration::from_secs(15),
+            |_| {},
         );
-        assert!(
-            telchar::persistence::microvm_session_request(owner.database(), "another-intent")
-                .unwrap()
-                .is_none()
-        );
-        let result = run_admitted(socket, &owner, gateway_store, staging, limits, |_| {});
+        response.join().unwrap();
         callback.shutdown().unwrap();
         result
     });
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
     let binding = root.join("binding.json");
     let trust = root.join("trust.der");
     std::fs::write(&trust, include_bytes!("fixtures/microvm-cert.der")).unwrap();
