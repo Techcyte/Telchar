@@ -17,8 +17,7 @@ fn service_closes_admission_on_shutdown_and_ownership_loss() {
             )
             .unwrap(),
         );
-        let config = telchar::service::config::MicrovmBackendConfig::parse(
-            r#"
+        let deployment = r#"
 name = "arm"
 system = "aarch64-linux"
 account_id = "000000000001"
@@ -39,7 +38,10 @@ maximum_nar_bytes = 1024
 maximum_total_bytes = 2048
 metadata_bytes = 1024
 chunk_bytes = 1024
-"#,
+"#;
+        let config = telchar::service::config::MicrovmBackendConfig::parse(deployment).unwrap();
+        let second = telchar::service::config::MicrovmBackendConfig::parse(
+            &deployment.replace("name = \"arm\"", "name = \"arm-secondary\""),
         )
         .unwrap();
         let provider = telchar::microvm::Provider::new(
@@ -60,16 +62,14 @@ chunk_bytes = 1024
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let service = Arc::new(
-            telchar::microvm::service::Service::start(
-                config,
-                provider,
-                owner,
-                listener,
-                telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
-            )
-            .unwrap(),
-        );
+        let services = telchar::microvm::service::Service::start_many(
+            vec![(config, provider.clone()), (second, provider)],
+            owner,
+            listener,
+            telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
+        )
+        .unwrap();
+        let service = Arc::clone(&services[0]);
         service.check().unwrap();
         use telchar::backend::BuildBackend;
         let configuration_file = tempfile::NamedTempFile::new().unwrap();
@@ -89,7 +89,7 @@ maximum_concurrent_builds = 1
         let backends = telchar::backend::routing::ConfiguredBackends::with_microvm_services(
             &configuration,
             None,
-            vec![Arc::clone(&service)],
+            services.clone(),
         )
         .unwrap();
         let executor = backends
@@ -184,6 +184,8 @@ maximum_concurrent_builds = 1
             service.shutdown().unwrap();
         }
         assert!(service.check().is_err());
+        assert!(services[1].check().is_err());
+        services[1].shutdown().ok();
         assert!(executor.selected_target("aarch64-linux", &[]).is_err());
         assert!(reloaded.selected_target("aarch64-linux", &[]).is_err());
         assert!(TcpStream::connect(address).is_err());

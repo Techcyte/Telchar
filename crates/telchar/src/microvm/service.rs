@@ -22,11 +22,11 @@ pub struct Service {
     sessions: Arc<ExecutionSessions>,
     store: GatewayStoreEndpoint,
     lifecycle: Mutex<Lifecycle>,
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
 }
 
 struct Lifecycle {
-    callback: CallbackService,
+    callback: Arc<Mutex<CallbackService>>,
     cleanup: MicrovmCleanupService,
 }
 
@@ -38,8 +38,45 @@ impl Service {
         listener: TcpListener,
         store: GatewayStoreEndpoint,
     ) -> io::Result<Self> {
+        let services = Self::start_many(vec![(config, provider)], owner, listener, store)?;
+        Arc::try_unwrap(services.into_iter().next().expect("one configured service"))
+            .map_err(|_| io::Error::other("MicroVM service ownership unavailable"))
+    }
+
+    pub fn start_many(
+        deployments: Vec<(MicrovmBackendConfig, Provider)>,
+        owner: Arc<SingletonOwnership>,
+        listener: TcpListener,
+        store: GatewayStoreEndpoint,
+    ) -> io::Result<Vec<Arc<Self>>> {
         owner.verify().map_err(io::Error::other)?;
-        let maximum = config.maximum_concurrent_builds();
+        let mut names = std::collections::BTreeSet::new();
+        let mut maximum = 0usize;
+        let mut admission_timeout = std::time::Duration::ZERO;
+        for (config, _) in &deployments {
+            if !names.insert(config.name()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "duplicate MicroVM backend",
+                ));
+            }
+            maximum = maximum
+                .checked_add(config.maximum_concurrent_builds())
+                .filter(|maximum| *maximum <= 65536)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "MicroVM capacity exceeds limit",
+                    )
+                })?;
+            admission_timeout = admission_timeout.max(config.admission_timeout());
+        }
+        if maximum == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MicroVM deployments are empty",
+            ));
+        }
         let sessions = Arc::new(ExecutionSessions::new(maximum).map_err(io::Error::other)?);
         let callback = CallbackService::start(
             listener,
@@ -47,24 +84,33 @@ impl Service {
             Arc::clone(&sessions),
             maximum,
             maximum,
-            config.admission_timeout(),
+            admission_timeout,
         )?;
-        let cleanup = MicrovmCleanupService::start(
-            Arc::clone(&owner),
-            provider.clone(),
-            config.name().to_owned(),
-            config.cleanup_interval(),
-            maximum.min(1000),
-        )?;
-        Ok(Self {
-            config,
-            provider,
-            owner,
-            sessions,
-            store,
-            lifecycle: Mutex::new(Lifecycle { callback, cleanup }),
-            stopped: AtomicBool::new(false),
-        })
+        let callback = Arc::new(Mutex::new(callback));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut services = Vec::with_capacity(deployments.len());
+        for (config, provider) in deployments {
+            let cleanup = MicrovmCleanupService::start(
+                Arc::clone(&owner),
+                provider.clone(),
+                config.name().to_owned(),
+                config.cleanup_interval(),
+                maximum.min(1000),
+            )?;
+            services.push(Arc::new(Self {
+                config,
+                provider,
+                owner: Arc::clone(&owner),
+                sessions: Arc::clone(&sessions),
+                store: store.clone(),
+                lifecycle: Mutex::new(Lifecycle {
+                    callback: Arc::clone(&callback),
+                    cleanup,
+                }),
+                stopped: Arc::clone(&stopped),
+            }));
+        }
+        Ok(services)
     }
 
     pub fn configuration(&self) -> &MicrovmBackendConfig {
@@ -90,7 +136,22 @@ impl Service {
         if self.stopped.load(Ordering::Acquire) {
             return Err(io::Error::other("MicroVM service stopped"));
         }
-        lifecycle.callback.check()?;
+        let callback = Arc::clone(&lifecycle.callback);
+        let mut callback = loop {
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(io::Error::other("MicroVM service stopped"));
+            }
+            match callback.try_lock() {
+                Ok(callback) => break callback,
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("MicroVM listener unavailable"));
+                }
+            }
+        };
+        callback.check()?;
         lifecycle.cleanup.check()
     }
 
@@ -100,7 +161,11 @@ impl Service {
             .lifecycle
             .lock()
             .map_err(|_| io::Error::other("MicroVM lifecycle unavailable"))?;
-        let callback = lifecycle.callback.shutdown();
+        let callback = lifecycle
+            .callback
+            .lock()
+            .map_err(|_| io::Error::other("MicroVM listener unavailable"))?
+            .shutdown();
         let cleanup = lifecycle.cleanup.shutdown();
         callback.and(cleanup)
     }
