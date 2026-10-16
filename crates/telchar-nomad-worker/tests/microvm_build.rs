@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-use telchar::microvm::session::{Limits, Session};
+use telchar::microvm::session::{Limits, run_admitted};
 use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
@@ -199,13 +199,15 @@ fn run_build() {
                 .unwrap()
                 .is_none()
         );
-        Session::new(&admitted, gateway_store, staging, limits)
-            .unwrap()
-            .run(
-                socket,
-                || owner.verify().map_err(std::io::Error::other),
-                |_| {},
-            )
+        run_admitted(
+            socket,
+            &owner,
+            "build-intent",
+            gateway_store,
+            staging,
+            limits,
+            |_| {},
+        )
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

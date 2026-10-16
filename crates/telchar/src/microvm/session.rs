@@ -21,6 +21,35 @@ pub struct Limits {
     pub chunk_bytes: usize,
 }
 
+pub fn run_admitted(
+    socket: WebSocket<super::rendezvous::SessionStream>,
+    owner: &crate::service::singleton_ownership::SingletonOwnership,
+    intent_id: &str,
+    store: GatewayStoreEndpoint,
+    staging: PathBuf,
+    limits: Limits,
+    log: impl FnMut(&[u8]),
+) -> io::Result<BuildResultMetadata> {
+    let load = || {
+        owner.verify().map_err(io::Error::other)?;
+        crate::persistence::microvm_session_request(owner.database(), intent_id)
+            .map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("MicroVM execution is not active"))
+    };
+    let request = load()?;
+    let session = Session::new(&request, store, staging, limits)?;
+    session.run(
+        socket,
+        || {
+            if load()? != request {
+                return Err(io::Error::other("MicroVM execution authority changed"));
+            }
+            Ok(())
+        },
+        log,
+    )
+}
+
 pub struct Session {
     manifest: InputManifest,
     request: crate::build::BuildRequest,
