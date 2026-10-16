@@ -4,6 +4,7 @@ pub mod callback_service;
 pub mod execution;
 pub mod outputs;
 pub mod rendezvous;
+pub mod service;
 pub mod session;
 
 use std::time::Duration;
@@ -179,6 +180,7 @@ pub fn launch_request_digest(
     digest.finalize().into()
 }
 
+#[derive(Clone)]
 pub struct Provider {
     client: Client,
     account_id: Option<String>,

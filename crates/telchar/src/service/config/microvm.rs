@@ -140,6 +140,12 @@ impl MicrovmBackendConfig {
     pub fn maximum_concurrent_builds(&self) -> usize {
         self.0.maximum_concurrent_builds
     }
+    pub fn admission_timeout(&self) -> Duration {
+        Duration::from_secs(self.0.admission_timeout_seconds)
+    }
+    pub fn cleanup_interval(&self) -> Duration {
+        Duration::from_secs(self.0.cleanup_interval_seconds)
+    }
     pub fn execution_timeout(&self) -> Duration {
         Duration::from_secs(self.0.execution_timeout_seconds)
     }
