@@ -33,8 +33,8 @@ fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
                 rustls::ServerConnection::new(Arc::new(config)).unwrap(),
                 stream,
             );
-            let mut socket = tungstenite::accept_hdr(
-                tls,
+            #[allow(clippy::result_large_err)]
+            let select_protocol =
                 |request: &tungstenite::handshake::server::Request,
                  mut response: tungstenite::handshake::server::Response| {
                     assert_eq!(request.uri().path(), "/microvm");
@@ -47,9 +47,9 @@ fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
                         "telchar-microvm-v1".parse().unwrap(),
                     );
                     Ok(response)
-                },
-            )
-            .map_err(io::Error::other)?;
+                };
+            let mut socket =
+                tungstenite::accept_hdr(tls, select_protocol).map_err(io::Error::other)?;
             let message = socket.read().map_err(io::Error::other)?;
             assert!(message.is_binary());
             let bootstrap: serde_json::Value =

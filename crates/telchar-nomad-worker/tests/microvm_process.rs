@@ -50,8 +50,8 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
             rustls::ServerConnection::new(Arc::new(tls)).unwrap(),
             stream,
         );
-        let mut socket = tungstenite::accept_hdr(
-            tls,
+        #[allow(clippy::result_large_err)]
+        let select_protocol =
             |_: &tungstenite::handshake::server::Request,
              mut response: tungstenite::handshake::server::Response| {
                 response.headers_mut().insert(
@@ -59,9 +59,8 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
                     "telchar-microvm-v1".parse().unwrap(),
                 );
                 Ok(response)
-            },
-        )
-        .unwrap();
+            };
+        let mut socket = tungstenite::accept_hdr(tls, select_protocol).unwrap();
         let bootstrap: serde_json::Value =
             serde_json::from_slice(&socket.read().unwrap().into_data()).unwrap();
         assert_eq!(

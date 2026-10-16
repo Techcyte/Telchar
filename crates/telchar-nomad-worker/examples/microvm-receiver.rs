@@ -379,19 +379,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         let stream = rustls::StreamOwned::new(rustls::ServerConnection::new(tls.clone())?, stream);
-        let accepted = tungstenite::accept_hdr(
-            stream,
-            |request: &tungstenite::handshake::server::Request, response| {
-                if authentication.accept(request) {
-                    Ok(response)
-                } else {
-                    Err(tungstenite::http::Response::builder()
-                        .status(403)
-                        .body(None)
-                        .expect("valid rejection"))
-                }
-            },
-        );
+        #[allow(clippy::result_large_err)]
+        let authenticate = |request: &tungstenite::handshake::server::Request, response| {
+            if authentication.accept(request) {
+                Ok(response)
+            } else {
+                Err(tungstenite::http::Response::builder()
+                    .status(403)
+                    .body(None)
+                    .expect("valid rejection"))
+            }
+        };
+        let accepted = tungstenite::accept_hdr(stream, authenticate);
         match accepted {
             Ok(mut socket) => {
                 println!("execution authentication accepted");

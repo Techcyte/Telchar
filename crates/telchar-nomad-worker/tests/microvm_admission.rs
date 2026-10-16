@@ -112,8 +112,8 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
                     rustls::ServerConnection::new(Arc::new(config)).unwrap(),
                     stream,
                 );
-                let mut incoming = tungstenite::accept_hdr(
-                    tls,
+                #[allow(clippy::result_large_err)]
+                let select_protocol =
                     |_: &tungstenite::handshake::server::Request,
                      mut response: tungstenite::handshake::server::Response| {
                         response.headers_mut().insert(
@@ -121,9 +121,9 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
                             "telchar-microvm-v1".parse().unwrap(),
                         );
                         Ok(response)
-                    },
-                )
-                .map_err(|error| error.to_string())?;
+                    };
+                let mut incoming = tungstenite::accept_hdr(tls, select_protocol)
+                    .map_err(|error| error.to_string())?;
                 let mut request = format!("ws://{gateway_address}/microvm")
                     .into_client_request()
                     .unwrap();
