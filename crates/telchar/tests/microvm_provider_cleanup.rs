@@ -7,8 +7,10 @@ use std::time::Duration;
 fn exchange(
     status: &str,
     body: &str,
-    operation: &str,
+    operation: &'static str,
 ) -> (Result<bool, telchar::microvm::ProviderError>, String) {
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
+    let control_url = fixture.url().to_owned();
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback binds");
     listener.set_nonblocking(true).expect("bounded accept");
     let endpoint = format!("http://{}", listener.local_addr().expect("address"));
@@ -17,35 +19,69 @@ fn exchange(
         body.len()
     );
     let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let mut socket = loop {
-            match listener.accept() {
-                Ok((socket, _)) => break socket,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
-                        return String::new();
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("accept: {error}"),
-            }
+        let count = if operation == "lifecycle-cleanup" {
+            3
+        } else {
+            1
         };
-        socket
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("bounded read");
-        let mut headers = Vec::new();
-        let mut byte = [0];
-        while !headers.ends_with(b"\r\n\r\n") {
-            socket.read_exact(&mut byte).expect("headers arrive");
-            headers.push(byte[0]);
-            assert!(headers.len() < 32768);
+        let mut requests = String::new();
+        for index in 0..count {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return String::new();
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded read");
+            let mut headers = Vec::new();
+            let mut byte = [0];
+            while !headers.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).expect("headers arrive");
+                headers.push(byte[0]);
+                assert!(headers.len() < 32768);
+            }
+            let response = if operation == "lifecycle-cleanup" && index == 1 {
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
+            } else if operation == "lifecycle-cleanup" && index == 2 {
+                let body = observation("microvm-exact", "TERMINATED");
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                response.clone()
+            };
+            if operation == "response-expired-cleanup" {
+                postgres::Client::connect(&control_url, postgres::NoTls).unwrap().batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+            }
+            socket
+                .write_all(response.as_bytes())
+                .expect("response sends");
+            requests.push_str(&String::from_utf8(headers).expect("HTTP text"));
         }
-        socket
-            .write_all(response.as_bytes())
-            .expect("response sends");
-        String::from_utf8(headers).expect("HTTP text")
+        if operation == "response-expired-cleanup" {
+            let until = std::time::Instant::now() + Duration::from_millis(300);
+            while std::time::Instant::now() < until {
+                match listener.accept() {
+                    Ok(_) => panic!("ownership loss must prevent follow-up termination"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            }
+        }
+        requests
     });
-    let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cleanup.drv";
     telchar::persistence::claim_shared_build(
@@ -107,7 +143,38 @@ fn exchange(
         let result = provider.cleanup(&owner, &cleanup);
         let released: bool = fixture.connect().query_one("SELECT reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'cleanup-intent'", &[]).expect("reservation reads").get(0);
         assert_eq!(released, result.as_ref().is_ok_and(|released| *released));
-        result
+        if operation == "lifecycle-cleanup" {
+            assert!(!result.expect("terminate acknowledgment retains capacity"));
+            assert!(!released);
+            let pending = telchar::persistence::pending_microvm_cleanup(
+                owner.database_url(),
+                "cleanup-fixture",
+                1,
+            )
+            .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert!(
+                provider
+                    .cleanup(&owner, &pending[0])
+                    .expect("later exact terminal observation")
+            );
+            assert!(
+                telchar::persistence::pending_microvm_cleanup(
+                    owner.database_url(),
+                    "cleanup-fixture",
+                    1
+                )
+                .unwrap()
+                .is_empty()
+            );
+            assert!(
+                !provider.cleanup(&owner, &cleanup).unwrap(),
+                "released obligation sends no further request"
+            );
+            Ok(true)
+        } else {
+            result
+        }
     } else {
         runtime.block_on(async {
             if operation == "get" {
@@ -180,6 +247,46 @@ fn cleanup_rejects_wrong_region_and_expired_owner_without_http_request() {
             "cleanup must send no request: {operation}"
         );
     }
+}
+
+#[test]
+fn cleanup_retains_capacity_until_poll_after_termination_request() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "lifecycle-cleanup",
+    );
+    assert!(result.unwrap());
+    let methods = requests
+        .lines()
+        .filter(|line| line.contains(" /2025-09-09/microvms/"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "GET /2025-09-09/microvms/microvm-exact HTTP/1.1",
+            "DELETE /2025-09-09/microvms/microvm-exact HTTP/1.1",
+            "GET /2025-09-09/microvms/microvm-exact HTTP/1.1",
+        ]
+    );
+}
+
+#[test]
+fn ownership_loss_during_observation_prevents_termination_and_release() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "response-expired-cleanup",
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("GET "))
+            .count(),
+        1
+    );
+    assert!(!requests.contains("DELETE "));
 }
 
 #[test]
