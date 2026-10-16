@@ -73,7 +73,16 @@ chunk_bytes = 1024
         service.check().unwrap();
         use telchar::backend::BuildBackend;
         let configuration_file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(configuration_file.path(), "").unwrap();
+        std::fs::write(
+            configuration_file.path(),
+            r#"
+[backends.local]
+name = "local"
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+"#,
+        )
+        .unwrap();
         let configuration =
             telchar::service::config::ServiceConfig::load_from_default(configuration_file.path())
                 .unwrap();
@@ -99,6 +108,35 @@ chunk_bytes = 1024
             .unwrap();
         assert_eq!(permit.target(), &target);
         drop(permit);
+        let reloadable = telchar::backend::routing::ReloadableBackends::new(backends.clone());
+        let mut current = configuration.clone();
+        let mut health = telchar::service::daemon_services::StaticSshHealthService::start(
+            backends.static_ssh_health(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        telchar::service::config_reload::BackendReload::prepare_config(
+            &current,
+            configuration.clone(),
+            None,
+            None,
+            Duration::from_secs(1),
+        )
+        .unwrap()
+        .apply(&mut current, &reloadable, &mut health)
+        .unwrap();
+        let reloaded = reloadable
+            .snapshot()
+            .executor(
+                database.clone(),
+                Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+            )
+            .unwrap();
+        assert_eq!(
+            reloaded.selected_target("aarch64-linux", &[]).unwrap(),
+            target
+        );
+        health.shutdown().unwrap();
         if fenced {
             fixture.expire_singleton_ownership("daemon");
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -147,6 +185,7 @@ chunk_bytes = 1024
         }
         assert!(service.check().is_err());
         assert!(executor.selected_target("aarch64-linux", &[]).is_err());
+        assert!(reloaded.selected_target("aarch64-linux", &[]).is_err());
         assert!(TcpStream::connect(address).is_err());
     }
 }

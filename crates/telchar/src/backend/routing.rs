@@ -221,6 +221,30 @@ impl ConfiguredBackends {
         })
     }
 
+    pub(crate) fn retain_microvm_services(
+        self,
+        config: &ServiceConfig,
+        current: &Self,
+    ) -> io::Result<Self> {
+        if current.inner.microvm.is_empty() {
+            return Ok(self);
+        }
+        Self::compose(
+            config,
+            self.inner.static_ssh.clone(),
+            self.inner.gateway_store.clone(),
+            self.inner.local_build_helper.clone(),
+            self.inner.static_ssh_health.clone(),
+            Arc::clone(&self.inner.schedulable_static_ssh),
+            current
+                .inner
+                .microvm
+                .iter()
+                .map(|(_, service)| Arc::clone(service))
+                .collect(),
+        )
+    }
+
     pub fn targets(&self) -> impl Iterator<Item = &crate::backend::BackendTarget> {
         self.inner.pool.targets()
     }
