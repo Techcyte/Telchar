@@ -35,7 +35,14 @@ and audit, metrics, NixOS wiring, and a secure ARM production image. Mandatory
 sandbox/build-user/secret isolation and snapshot cryptographic safety remain
 unresolved production gates. Do not deploy the experimental images as a substitute.
 
-From the flake development shell, implemented local boundaries can be checked with:
+Before running compilation or qualification, establish a verified hard memory
+limit covering the command and its descendants. Full workspace compilation
+exhausted the development host's memory with concurrent linkers. Serial test
+threads and `CARGO_BUILD_JOBS=1` reduce concurrency but do not enforce memory
+limits. Do not run heavy checks without resource containment.
+
+Within that boundary and the flake development shell, implemented local
+boundaries can be checked with:
 
 ```sh
 bash tests/microvm/verify-implementation.sh
