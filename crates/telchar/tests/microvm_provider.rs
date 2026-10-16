@@ -276,11 +276,37 @@ chunk_bytes = 1024
 "#,
                 )
                 .unwrap();
-                assert!(
-                    executor
-                        .run_configured(&policy, attempt.attempt_id, |_| {})
-                        .is_err()
-                );
+                if ownership == "configured" {
+                    let request = telchar::persistence::microvm_attempt_request(
+                        owner.database(),
+                        attempt.attempt_id,
+                        policy.name(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let mut build = telchar::backend::BuildExecution::new(
+                        "scheduler-request",
+                        &request,
+                        Duration::from_secs(2),
+                    )
+                    .unwrap();
+                    build.set_target_name("wrong-target").unwrap();
+                    assert!(executor.run_build(&policy, &build, |_| {}).is_err());
+                    let count: i64 = fixture
+                        .connect()
+                        .query_one("SELECT count(*) FROM microvm_launches", &[])
+                        .unwrap()
+                        .get(0);
+                    assert_eq!(count, 0);
+                    build.set_target_name(policy.name()).unwrap();
+                    assert!(executor.run_build(&policy, &build, |_| {}).is_err());
+                } else {
+                    assert!(
+                        executor
+                            .run_configured(&policy, attempt.attempt_id, |_| {})
+                            .is_err()
+                    );
+                }
                 if ownership == "configured-missing" {
                     let count: i64 = fixture
                         .connect()

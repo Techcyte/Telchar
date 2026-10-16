@@ -22,10 +22,67 @@ pub struct Execution<'a> {
 }
 
 impl Execution<'_> {
+    pub fn run_build(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+        build: &crate::backend::BuildExecution<'_>,
+        log: impl FnMut(&[u8]),
+    ) -> io::Result<crate::backend::BuildResult> {
+        self.owner.verify().map_err(io::Error::other)?;
+        if build.target_name() != Some(config.name()) {
+            return Err(io::Error::other(
+                "MicroVM selected target does not match deployment",
+            ));
+        }
+        let deadline = Instant::now()
+            .checked_add(build.timeout().min(config.execution_timeout()))
+            .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
+        let derivation =
+            std::str::from_utf8(build.build().derivation_path()).map_err(io::Error::other)?;
+        let attempt =
+            crate::persistence::read_shared_build_attempt(self.owner.database(), derivation)
+                .map_err(io::Error::other)?
+                .ok_or_else(|| io::Error::other("MicroVM attempt is missing"))?;
+        let request = crate::persistence::microvm_attempt_request(
+            self.owner.database(),
+            attempt.attempt_id,
+            config.name(),
+        )
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("MicroVM attempt is not active"))?;
+        if &request != build.build() {
+            return Err(io::Error::other(
+                "MicroVM admitted request does not match execution",
+            ));
+        }
+        let result = self.run_until(config, attempt.attempt_id, deadline, log)?;
+        if result.outcome != crate::nomad::protocol::BuildOutcome::Built {
+            return Err(io::Error::other("MicroVM build failed"));
+        }
+        crate::backend::BuildResult::new(
+            crate::backend::BuildStatus::Built,
+            request.expected_outputs().to_vec(),
+            crate::backend::OutputTrust::TrustedExecutor,
+        )
+    }
+
     pub fn run_configured(
         &self,
         config: &crate::service::config::MicrovmBackendConfig,
         attempt_id: i64,
+        log: impl FnMut(&[u8]),
+    ) -> io::Result<BuildResultMetadata> {
+        let deadline = Instant::now()
+            .checked_add(config.execution_timeout())
+            .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
+        self.run_until(config, attempt_id, deadline, log)
+    }
+
+    fn run_until(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+        attempt_id: i64,
+        deadline: Instant,
         log: impl FnMut(&[u8]),
     ) -> io::Result<BuildResultMetadata> {
         self.owner.verify().map_err(io::Error::other)?;
@@ -41,9 +98,9 @@ impl Execution<'_> {
                 "MicroVM request is not compatible with deployment",
             ));
         }
-        let deadline = Instant::now()
-            .checked_add(config.execution_timeout())
-            .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("MicroVM execution deadline expired"));
+        }
         let (intent, payload) = config.launch(attempt_id)?;
         if !crate::persistence::reserve_microvm_launch(
             self.owner.database(),
