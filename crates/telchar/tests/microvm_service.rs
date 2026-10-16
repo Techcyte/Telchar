@@ -75,23 +75,27 @@ chunk_bytes = 1024
         let configuration_file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             configuration_file.path(),
-            r#"
-[backends.local]
-name = "local"
-system = "x86_64-linux"
-maximum_concurrent_builds = 1
-"#,
+            format!("[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{deployment}\n[[backends.microvm]]\n{}", deployment.replace("name = \"arm\"", "name = \"arm-secondary\"")),
         )
         .unwrap();
         let configuration =
             telchar::service::config::ServiceConfig::load_from_default(configuration_file.path())
                 .unwrap();
-        let backends = telchar::backend::routing::ConfiguredBackends::with_microvm_services(
-            &configuration,
-            None,
-            services.clone(),
-        )
-        .unwrap();
+        let backends =
+            telchar::backend::routing::ConfiguredBackends::new(&configuration, None).unwrap();
+        assert!(
+            backends
+                .executor(
+                    database.clone(),
+                    Arc::new(telchar::shared_build::SharedBuildRegistry::new())
+                )
+                .unwrap()
+                .selected_target("aarch64-linux", &[])
+                .is_err()
+        );
+        let backends = backends
+            .attach_microvm_services(&configuration, services.clone())
+            .unwrap();
         let executor = backends
             .executor(
                 database.clone(),

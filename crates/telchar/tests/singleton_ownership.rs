@@ -9,7 +9,7 @@ fn tls_owner_acquires_and_renews_the_database_lease() {
     let fixture = PostgresFixture::start_tls();
     telchar::persistence::migrate(fixture.url()).expect("database migrates over TLS");
 
-    let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
     )
@@ -147,7 +147,7 @@ fn expired_owner_cannot_mutate_durable_state_after_takeover() {
 fn renewal_extends_lease_only_for_current_owner() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
-    let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
     )

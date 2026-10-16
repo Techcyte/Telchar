@@ -124,7 +124,7 @@ impl SingletonOwnership {
         &self.database
     }
 
-    pub fn renew(&mut self) -> Result<(), SingletonOwnershipError> {
+    pub fn renew(&self) -> Result<(), SingletonOwnershipError> {
         renew_lease(
             &self.database,
             self.owner_kind,

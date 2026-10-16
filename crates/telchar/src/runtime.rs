@@ -16,8 +16,8 @@ use telchar_telemetry::Telemetry;
 mod daemon_runtime;
 
 use daemon_runtime::{
-    SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection, serve_connection,
-    shutdown_daemon_services,
+    MicrovmShutdown, SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection,
+    serve_connection, shutdown_daemon_services,
 };
 
 pub(crate) fn validate_database_tls() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -52,7 +52,7 @@ fn run_executor() -> io::Result<()> {
         .to_owned();
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
-    let mut ownership =
+    let ownership =
         telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
             &database_url,
             config.ownership_lease_duration(),
@@ -423,6 +423,37 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
+    let deployments = singleton_ownership
+        .maintain_during(config.ownership_renewal_interval(), || {
+            if config.microvm_backends().is_empty() {
+                return Ok(Vec::new());
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut deployments = Vec::new();
+                for policy in config.microvm_backends() {
+                    deployments.push((policy.clone(), policy.provider().await?));
+                }
+                Ok::<_, io::Error>(deployments)
+            })
+        })
+        .map_err(io::Error::other)??;
+    let singleton_ownership = Arc::new(singleton_ownership);
+    let microvm_services = match config.microvm_bind() {
+        Some(bind) => telchar::microvm::service::Service::start_many(
+            deployments,
+            Arc::clone(&singleton_ownership),
+            std::net::TcpListener::bind(bind)?,
+            gateway_store
+                .endpoint()
+                .cloned()
+                .ok_or_else(|| invalid("MicroVM requires a gateway store endpoint"))?,
+        )?,
+        None => Vec::new(),
+    };
+    let _microvm_shutdown = MicrovmShutdown(&microvm_services);
     let disk_probe = telchar::service::disk_reserve::OsDiskReserveProbe;
     let static_ssh_health =
         telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
@@ -433,7 +464,8 @@ fn run_daemon() -> io::Result<()> {
             .build_helper()
             .map(std::path::Path::to_path_buf),
         static_ssh_health.clone(),
-    )?;
+    )?
+    .attach_microvm_services(&config, microvm_services.clone())?;
     let active_shared_builds = telchar::persistence::read_active_shared_builds(&database, 256)
         .map_err(|_| invalid("shared build recovery failed"))?;
     let recovery_started = std::time::Instant::now();
@@ -649,6 +681,9 @@ fn run_daemon() -> io::Result<()> {
     let mut ec2_static_ssh = Vec::new();
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
+        for service in &microvm_services {
+            service.check()?;
+        }
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
             shutdown_daemon_services(
                 &mut callback_service,
@@ -788,7 +823,7 @@ fn run_daemon() -> io::Result<()> {
             }
         }
         if std::time::Instant::now() >= next_ownership_check {
-            if let Err(error) = singleton_ownership.check() {
+            if let Err(error) = singleton_ownership.renew() {
                 tracing::error!(
                     event = "database.singleton_ownership.lost",
                     operation = "check",

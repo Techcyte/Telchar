@@ -12,6 +12,18 @@ use telchar::service::ipc::IpcListener;
 
 use super::{invalid, protocol_session_limits};
 
+pub(super) struct MicrovmShutdown<'a>(pub &'a [Arc<telchar::microvm::service::Service>]);
+
+impl Drop for MicrovmShutdown<'_> {
+    fn drop(&mut self) {
+        for service in self.0 {
+            if let Err(error) = service.shutdown() {
+                tracing::error!(event = "microvm.shutdown.failed", error = %error, "MicroVM shutdown failed");
+            }
+        }
+    }
+}
+
 pub(super) fn shutdown_daemon_services(
     callback: &mut Option<telchar::nomad::callback_service::NomadCallbackService>,
     maintenance: &mut telchar::service::daemon_services::MaintenanceService,

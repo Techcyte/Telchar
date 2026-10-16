@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct Deployment {
+pub(super) struct Deployment {
     name: String,
     system: String,
     account_id: String,
@@ -28,13 +28,17 @@ struct Deployment {
 
 /// Validated deployment policy; parsing does not attest AWS credentials or image contents.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MicrovmBackendConfig(Deployment);
+pub struct MicrovmBackendConfig(Deployment, BackendTarget);
 
 impl MicrovmBackendConfig {
     pub fn parse(raw: &str) -> io::Result<Self> {
         let deployment: Deployment = toml::from_str(raw).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid MicroVM configuration")
         })?;
+        Self::validate(deployment)
+    }
+
+    pub(super) fn validate(deployment: Deployment) -> io::Result<Self> {
         let d = &deployment;
         let component = |value: &str| {
             !value.is_empty()
@@ -102,7 +106,8 @@ impl MicrovmBackendConfig {
                 "invalid MicroVM callback address",
             ));
         }
-        Ok(Self(deployment))
+        let target = BackendTarget::new(&d.name, BackendKind::Microvm, &d.system, [] as [&str; 0])?;
+        Ok(Self(deployment, target))
     }
 
     pub async fn provider(&self) -> io::Result<crate::microvm::Provider> {
@@ -132,6 +137,10 @@ impl MicrovmBackendConfig {
         )
         .await
         .map_err(io::Error::other)
+    }
+
+    pub fn target(&self) -> &BackendTarget {
+        &self.1
     }
 
     pub fn name(&self) -> &str {

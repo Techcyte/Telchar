@@ -1,10 +1,11 @@
 # Lambda MicroVM backend experiment
 
-**No selectable production Telchar MicroVM backend exists.** Historical disposable
+**MicroVM integration is experimental, not production-ready.** Historical disposable
 fixtures exercise authenticated WSS, NAR transfers and validated output
 registration locally and on actual AWS ARM64 MicroVMs. Partial production
 implementation is described below; its durable ledger is included in gateway
-schema migrations, but routing and execution recovery are not integrated.
+schema migrations. Daemon configuration/startup and routing consume the execution
+service; output-only recovery never adopts or relaunches MicroVM executions.
 AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
 
 ## Production implementation status
@@ -29,7 +30,12 @@ Implemented boundaries include:
   on cancellation/ownership loss, and an owned execution/cleanup service with
   shared scheduler handles and fail-closed lifecycle health. Independent cleanup
   rotates bounded batches without releasing uncertain reservations.
-- Standalone validated deployment policy and configured provider construction
+- Strict `[[backends.microvm]]` deployment policies with explicit
+  `backends.microvm_bind` for the operator-proxied callback listener. Daemon
+  startup verifies providers before attaching services; unattached/unhealthy
+  targets cannot execute. All policies share bounded admission and shut down
+  together, while each policy owns cleanup. Policy changes require restart.
+- Validated deployment policy and configured provider construction
   using signed STS account verification and pinned credentials. Local signed HTTP
   fixtures use fake credentials; they are not AWS qualification.
 - `telchar-microvm-worker` with explicit trust/store/binding inputs, bounded WSS
@@ -39,14 +45,14 @@ Implemented boundaries include:
   Nix builder containment.
 
 These are partial components, not a deployable service. Missing release gates
-include daemon startup and shared-listener/configuration/routing integration,
+include full daemon process qualification, transient permits across reload,
 backend-alias capacity identity, fixed-output and remaining transfer-failure
 qualification, staging disk admission, store-I/O deadline/fencing guarantees,
-output-only restart recovery, and cleanup across removed configurations/restarts.
+full output-only restart qualification, and cleanup across removed configurations/restarts.
 Provider credential refresh/re-attestation and image/egress correspondence,
 administrative reconciliation and audit, metrics, NixOS wiring, and a secure ARM
-production image also remain unfinished. The service component does not make
-MicroVM configuration selectable in the daemon. Mandatory
+production image also remain unfinished. Configuration acceptance is not a
+production release claim. Mandatory
 sandbox/build-user/secret isolation and snapshot cryptographic safety remain
 unresolved production gates. Do not deploy the experimental images as a substitute.
 

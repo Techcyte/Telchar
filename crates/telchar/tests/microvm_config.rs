@@ -23,6 +23,43 @@ metadata_bytes = 1048576
 chunk_bytes = 262144
 "#;
 
+fn service_configuration(text: &str) -> std::io::Result<telchar::service::config::ServiceConfig> {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("service.toml");
+    std::fs::write(&path, text).unwrap();
+    telchar::service::config::ServiceConfig::load_from_default(&path)
+}
+
+#[test]
+fn service_configuration_accepts_bounded_microvm_fleet() {
+    let text =
+        format!("[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{CONFIG}");
+    let config = service_configuration(&text).expect("MicroVM fleet configuration");
+    let targets = config.backend_targets().collect::<Vec<_>>();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].name(), "arm");
+    assert_eq!(targets[0].kind(), telchar::backend::BackendKind::Microvm);
+    assert_eq!(targets[0].system(), "aarch64-linux");
+    assert!(config.system_features().contains_key("aarch64-linux"));
+    assert!(config.validate_static_ssh_reload(&config).is_ok());
+    let changed =
+        service_configuration(&text.replace("image_version = \"1\"", "image_version = \"2\""))
+            .unwrap();
+    assert!(config.validate_static_ssh_reload(&changed).is_err());
+    for invalid in [
+        text.replace("microvm_bind = \"127.0.0.1:7444\"", ""),
+        text.replace("127.0.0.1:7444", "127.0.0.1:0"),
+        text.replace("aarch64-linux", "x86_64-linux"),
+        format!("{text}\n[[backends.microvm]]\n{CONFIG}"),
+        format!(
+            "{text}\n[backends.local]\nname = \"arm\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1"
+        ),
+        "[backends]\nmicrovm_bind = \"127.0.0.1:7444\"".to_owned(),
+    ] {
+        assert!(service_configuration(&invalid).is_err());
+    }
+}
+
 #[test]
 fn deployment_configuration_preserves_execution_authority() {
     let config = MicrovmBackendConfig::parse(CONFIG).unwrap();

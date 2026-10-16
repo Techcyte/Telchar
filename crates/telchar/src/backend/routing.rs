@@ -187,23 +187,32 @@ impl ConfiguredBackends {
             targets.push(backend.target().clone());
             maximums.push(backend.maximum_concurrent_builds());
         }
+        for policy in config.microvm_backends() {
+            targets.push(policy.target().clone());
+            maximums.push(policy.maximum_concurrent_builds());
+        }
         let mut microvm = Vec::with_capacity(services.len());
         for service in services {
             service.check()?;
             let policy = service.configuration();
-            if targets.iter().any(|target| target.name() == policy.name()) {
+            if microvm.iter().any(|(name, _)| name == policy.name())
+                || targets.iter().any(|target| {
+                    target.name() == policy.name() && target.kind() != BackendKind::Microvm
+                })
+                || config
+                    .microvm_backends()
+                    .iter()
+                    .any(|configured| configured.name() == policy.name() && configured != policy)
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "duplicate backend name",
                 ));
             }
-            targets.push(crate::backend::BackendTarget::new(
-                policy.name(),
-                BackendKind::Microvm,
-                "aarch64-linux",
-                [] as [&str; 0],
-            )?);
-            maximums.push(policy.maximum_concurrent_builds());
+            if !targets.iter().any(|target| target.name() == policy.name()) {
+                targets.push(policy.target().clone());
+                maximums.push(policy.maximum_concurrent_builds());
+            }
             microvm.push((policy.name().to_owned(), service));
         }
         Ok(Self {
@@ -219,6 +228,22 @@ impl ConfiguredBackends {
                 microvm,
             }),
         })
+    }
+
+    pub fn attach_microvm_services(
+        self,
+        config: &ServiceConfig,
+        services: Vec<Arc<crate::microvm::service::Service>>,
+    ) -> io::Result<Self> {
+        Self::compose(
+            config,
+            self.inner.static_ssh.clone(),
+            self.inner.gateway_store.clone(),
+            self.inner.local_build_helper.clone(),
+            self.inner.static_ssh_health.clone(),
+            Arc::clone(&self.inner.schedulable_static_ssh),
+            services,
+        )
     }
 
     pub(crate) fn retain_microvm_services(
