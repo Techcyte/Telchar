@@ -148,15 +148,18 @@ impl MicrovmCleanupService {
                 "invalid MicroVM cleanup bounds",
             ));
         }
+        let mut after_intent = None;
         BackgroundService::start(interval, "MicroVM cleanup maintenance failed", move || {
             owner.verify().map_err(io::Error::other)?;
             let pending = crate::persistence::pending_microvm_cleanup(
                 owner.database(),
                 &backend_name,
                 batch_size,
+                after_intent.as_deref(),
             )
             .map_err(io::Error::other)?;
             for cleanup in pending {
+                after_intent = Some(cleanup.intent_id.clone());
                 owner.verify().map_err(io::Error::other)?;
                 if provider.cleanup(&owner, &cleanup).is_err() {
                     // Provider uncertainty retains the durable obligation for a later pass.

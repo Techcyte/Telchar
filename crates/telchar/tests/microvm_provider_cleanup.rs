@@ -105,6 +105,28 @@ fn exchange(
         "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id) VALUES ('cleanup-intent', $1, 'cleanup-fixture', '116392764028', 'us-west-2', 'image-fixture', '1', $2, $2, 'cleanup-token', $2, clock_timestamp() + interval '1 minute', 600, 'closed', 'microvm-exact')",
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("cleanup obligation persists");
+    if operation == "maintenance" {
+        let other = "/nix/store/cccccccccccccccccccccccccccccccc-cleanup.drv";
+        telchar::persistence::claim_shared_build(
+            &database,
+            other,
+            &[2; 32],
+            "cleanup-fixture",
+            telchar::backend::BackendKind::Local,
+            telchar::backend::BackendKind::Local.capabilities(),
+            None,
+            &["/nix/store/dddddddddddddddddddddddddddddddd-cleanup"],
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(&database, other).unwrap();
+        let other_attempt = telchar::persistence::read_shared_build_attempt(&database, other)
+            .unwrap()
+            .unwrap();
+        fixture.connect().execute(
+            "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id, created_at) SELECT 'blocked-intent', $1, backend_name, account_id, 'us-east-1', image_arn, image_version, configuration_digest, request_digest, 'blocked-token', credential_verifier, admission_cutoff, maximum_duration_seconds, phase, 'microvm-blocked', created_at - interval '1 second' FROM microvm_launches WHERE intent_id = 'cleanup-intent'",
+            &[&other_attempt.attempt_id],
+        ).unwrap();
+    }
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
@@ -149,10 +171,22 @@ fn exchange(
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             service.check().expect("cleanup service healthy");
-            let pending =
-                telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1)
-                    .unwrap();
-            if pending.is_empty() {
+            let pending = telchar::persistence::pending_microvm_cleanup(
+                &database,
+                "cleanup-fixture",
+                10,
+                None,
+            )
+            .unwrap();
+            assert!(
+                pending
+                    .iter()
+                    .any(|item| item.intent_id == "blocked-intent")
+            );
+            if !pending
+                .iter()
+                .any(|item| item.intent_id == "cleanup-intent")
+            {
                 break;
             }
             assert!(
@@ -166,7 +200,7 @@ fn exchange(
         Ok(true)
     } else if operation.ends_with("cleanup") {
         let cleanup =
-            telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1)
+            telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1, None)
                 .expect("pending identity")
                 .remove(0);
         let result = provider.cleanup(&owner, &cleanup);
@@ -179,6 +213,7 @@ fn exchange(
                 owner.database(),
                 "cleanup-fixture",
                 1,
+                None,
             )
             .unwrap();
             assert_eq!(pending.len(), 1);
@@ -191,7 +226,8 @@ fn exchange(
                 telchar::persistence::pending_microvm_cleanup(
                     owner.database(),
                     "cleanup-fixture",
-                    1
+                    1,
+                    None
                 )
                 .unwrap()
                 .is_empty()

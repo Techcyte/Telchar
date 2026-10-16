@@ -40,6 +40,7 @@ pub fn pending_microvm_cleanup(
     database: &(impl DatabaseSource + ?Sized),
     backend_name: &str,
     limit: usize,
+    after_intent: Option<&str>,
 ) -> Result<Vec<MicrovmCleanup>, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(pending_microvm_cleanup));
@@ -56,8 +57,9 @@ pub fn pending_microvm_cleanup(
            AND l.reservation_released_at IS NULL
            AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
                 OR b.state NOT IN ('running', 'collecting'))
-         ORDER BY l.created_at, l.intent_id LIMIT $2",
-            &[&backend_name, &(limit as i64)],
+         ORDER BY CASE WHEN $3::text IS NULL THEN false ELSE l.intent_id <= $3 END,
+                  l.intent_id LIMIT $2",
+            &[&backend_name, &(limit as i64), &after_intent],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(rows
