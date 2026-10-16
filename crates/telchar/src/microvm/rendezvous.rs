@@ -254,19 +254,35 @@ impl ExecutionSessions {
 }
 
 impl ExecutionSession<'_> {
-    pub fn receive(&self) -> Result<AdmittedConnection, ProviderError> {
-        let remaining = self
-            .deadline
-            .checked_duration_since(Instant::now())
-            .ok_or(ProviderError)?;
-        let connection = self
-            .receiver
-            .recv_timeout(remaining)
-            .map_err(|_| ProviderError)?;
-        if Instant::now() >= self.deadline {
-            return Err(ProviderError);
+    pub fn receive_checked(
+        &self,
+        mut verify: impl FnMut() -> Result<(), ProviderError>,
+    ) -> Result<AdmittedConnection, ProviderError> {
+        loop {
+            verify()?;
+            let remaining = self
+                .deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(ProviderError)?;
+            match self
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(connection) => {
+                    verify()?;
+                    if Instant::now() >= self.deadline {
+                        return Err(ProviderError);
+                    }
+                    return Ok(connection);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(ProviderError),
+            }
         }
-        Ok(connection)
+    }
+
+    pub fn receive(&self) -> Result<AdmittedConnection, ProviderError> {
+        self.receive_checked(|| Ok(()))
     }
 }
 

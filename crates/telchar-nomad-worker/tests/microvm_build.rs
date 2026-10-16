@@ -188,7 +188,9 @@ fn run_build() {
                 std::time::Instant::now() + Duration::from_secs(15),
             )
             .unwrap();
-        let socket = waiting.receive().unwrap();
+        let socket = waiting
+            .receive_checked(|| owner.verify().map_err(|_| telchar::microvm::ProviderError))
+            .unwrap();
         let limits = Limits {
             maximum_paths: 10,
             maximum_nar_bytes: 1024 * 1024,

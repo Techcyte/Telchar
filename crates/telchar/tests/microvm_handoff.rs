@@ -118,6 +118,42 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
     drop(first);
     drop(second);
     assert!(!fixture.connect().query_one("SELECT session_consumed_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-2'", &[]).unwrap().get::<_, bool>(0));
+    let cancelled = sessions
+        .register("intent-2", Instant::now() + Duration::from_secs(3))
+        .unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                telchar::persistence::cancel_microvm_launch(owner.database(), "intent-2").unwrap()
+            );
+        });
+        let started = Instant::now();
+        assert!(
+            cancelled
+                .receive_checked(|| {
+                    owner
+                        .verify()
+                        .map_err(|_| telchar::microvm::ProviderError)?;
+                    if telchar::persistence::microvm_session_backend(
+                        owner.database(),
+                        "intent-2",
+                        &capabilities[2].verifier(),
+                    )
+                    .unwrap()
+                    .is_none()
+                    {
+                        return Err(telchar::microvm::ProviderError);
+                    }
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancelled wait stops promptly"
+        );
+    });
     let expired = sessions.register("expired", Instant::now());
     assert!(expired.is_err());
     let timeout = sessions
