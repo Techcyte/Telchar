@@ -83,15 +83,16 @@ fn dedicated_worker_builds_and_returns_registered_output() {
     let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
     telchar::persistence::migrate(&database).unwrap();
     let local = telchar::backend::BackendKind::Local;
-    telchar::persistence::claim_shared_build(
+    telchar::persistence::claim_shared_build_with_request(
         &database,
         drv,
-        &[1; 32],
+        &request.shared_build_digest(),
         "build",
         local,
         local.capabilities(),
         None,
         &[output],
+        &request,
     )
     .unwrap();
     telchar::persistence::start_shared_build(&database, drv).unwrap();
@@ -125,6 +126,11 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         Duration::from_secs(60),
     )
     .unwrap();
+    assert!(
+        telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+            .unwrap()
+            .is_none()
+    );
     let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gateway_address = gateway.local_addr().unwrap();
     let gateway_store = endpoint.clone();
@@ -147,7 +153,20 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             metadata_bytes: 8192,
             chunk_bytes: 256 * 1024,
         };
-        Session::new(&request, gateway_store, staging, limits)
+        let admitted =
+            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+                .unwrap()
+                .expect("consumed active intent has admitted request");
+        assert_eq!(
+            admitted.shared_build_digest(),
+            request.shared_build_digest()
+        );
+        assert!(
+            telchar::persistence::microvm_session_request(owner.database(), "another-intent")
+                .unwrap()
+                .is_none()
+        );
+        Session::new(&admitted, gateway_store, staging, limits)
             .unwrap()
             .run(
                 socket,

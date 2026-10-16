@@ -175,6 +175,47 @@ pub fn reserve_microvm_launch(
     Ok(inserted == 1)
 }
 
+/// Loads execution authority only for a consumed session on its active attempt.
+pub fn microvm_session_request(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(microvm_session_request));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_opt(
+            "SELECT b.build_request::text, b.request_digest, b.derivation_path
+         FROM microvm_launches l
+         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE l.intent_id = $1 AND l.phase = 'bound'
+           AND l.session_consumed_at IS NOT NULL AND l.reservation_released_at IS NULL
+           AND b.state = 'running' AND a.state = 'running'
+           AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let encoded: Option<String> = row.try_get(0).map_err(|_| MicrovmLaunchError)?;
+    let request: crate::build::BuildRequest =
+        serde_json::from_str(&encoded.ok_or(MicrovmLaunchError)?)
+            .map_err(|_| MicrovmLaunchError)?;
+    let digest: Vec<u8> = row.try_get(1).map_err(|_| MicrovmLaunchError)?;
+    let derivation: String = row.try_get(2).map_err(|_| MicrovmLaunchError)?;
+    request
+        .validate_for_execution()
+        .map_err(|_| MicrovmLaunchError)?;
+    if request.shared_build_digest().as_slice() != digest
+        || request.derivation_path() != derivation.as_bytes()
+    {
+        return Err(MicrovmLaunchError);
+    }
+    Ok(Some(request))
+}
+
 pub fn microvm_session_backend(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
