@@ -19,6 +19,7 @@ fn execution_closes_admission_without_releasing_provider_reservation() {
     launch_exchange(true, "execution-timeout");
     launch_exchange(false, "execution-failure");
     launch_exchange(false, "configured");
+    launch_exchange(false, "configured-missing");
 }
 
 #[test]
@@ -59,6 +60,23 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("attempt reads")
         .expect("attempt exists");
+    if ownership == "configured" {
+        let source = r#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","provider"),("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"),("system","aarch64-linux")])"#;
+        let target = telchar::backend::BackendTarget::new(
+            "provider-fixture",
+            telchar::backend::BackendKind::Local,
+            "aarch64-linux",
+            Vec::<String>::new(),
+        )
+        .unwrap();
+        let request = telchar::build::BuildRequest::from_stored_derivation(
+            derivation.as_bytes(),
+            source.as_bytes(),
+            &[target],
+        )
+        .unwrap();
+        fixture.connect().execute("UPDATE shared_builds SET build_request = $1::text::jsonb, request_digest = $2 WHERE derivation_path = $3", &[&serde_json::to_string(&request).unwrap(), &&request.shared_build_digest()[..], &derivation]).unwrap();
+    }
     let capability = telchar::microvm::Capability::generate().unwrap();
     let payload = capability
         .launch_payload(
@@ -103,7 +121,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
         maximum_duration_seconds: 600,
     };
-    if ownership != "configured" {
+    if !ownership.starts_with("configured") {
         assert!(
             telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
                 .expect("capacity reserves")
@@ -213,7 +231,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             &payload
         };
         let started = std::time::Instant::now();
-        let result = if ownership.starts_with("execution-") || ownership == "configured" {
+        let result = if ownership.starts_with("execution-") || ownership.starts_with("configured") {
             let sessions = telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap();
             let executor = telchar::microvm::execution::Execution {
                 provider: &provider,
@@ -232,7 +250,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     chunk_bytes: 1024,
                 },
             };
-            if ownership == "configured" {
+            if ownership.starts_with("configured") {
                 let policy = telchar::service::config::MicrovmBackendConfig::parse(
                     r#"
 name = "provider-fixture"
@@ -263,6 +281,19 @@ chunk_bytes = 1024
                         .run_configured(&policy, attempt.attempt_id, |_| {})
                         .is_err()
                 );
+                if ownership == "configured-missing" {
+                    let count: i64 = fixture
+                        .connect()
+                        .query_one("SELECT count(*) FROM microvm_launches", &[])
+                        .unwrap()
+                        .get(0);
+                    assert_eq!(count, 0, "missing admitted request must not reserve");
+                    assert!(
+                        server.join().unwrap().is_empty(),
+                        "missing request must not dispatch"
+                    );
+                    return;
+                }
                 let row = fixture.connect().query_one("SELECT intent_id, phase, configuration_digest, reservation_released_at IS NULL FROM microvm_launches", &[]).unwrap();
                 assert_ne!(row.get::<_, String>(0), "intent-fixture");
                 assert_eq!(row.get::<_, String>(1), "ambiguous");

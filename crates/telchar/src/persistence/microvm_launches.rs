@@ -176,6 +176,24 @@ pub fn reserve_microvm_launch(
 }
 
 /// Loads execution authority only for a consumed session on its active attempt.
+pub fn microvm_attempt_request(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+    backend_name: &str,
+) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_opt(
+            "SELECT b.build_request::text, b.request_digest, b.derivation_path
+         FROM shared_build_attempts a JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE a.attempt_id = $1 AND a.backend_name = $2 AND b.backend_name = $2
+           AND a.state = 'running' AND b.state = 'running'",
+            &[&attempt_id, &backend_name],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    row.map(|row| decode_microvm_request(&row)).transpose()
+}
+
 pub fn microvm_session_request(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
@@ -199,6 +217,12 @@ pub fn microvm_session_request(
     let Some(row) = row else {
         return Ok(None);
     };
+    decode_microvm_request(&row).map(Some)
+}
+
+fn decode_microvm_request(
+    row: &postgres::Row,
+) -> Result<crate::build::BuildRequest, MicrovmLaunchError> {
     let encoded: Option<String> = row.try_get(0).map_err(|_| MicrovmLaunchError)?;
     let request: crate::build::BuildRequest =
         serde_json::from_str(&encoded.ok_or(MicrovmLaunchError)?)
@@ -213,7 +237,7 @@ pub fn microvm_session_request(
     {
         return Err(MicrovmLaunchError);
     }
-    Ok(Some(request))
+    Ok(request)
 }
 
 pub fn microvm_execution_active(

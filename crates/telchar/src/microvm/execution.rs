@@ -29,6 +29,18 @@ impl Execution<'_> {
         log: impl FnMut(&[u8]),
     ) -> io::Result<BuildResultMetadata> {
         self.owner.verify().map_err(io::Error::other)?;
+        let request = crate::persistence::microvm_attempt_request(
+            self.owner.database(),
+            attempt_id,
+            config.name(),
+        )
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("MicroVM attempt is not active"))?;
+        if request.system() != "aarch64-linux" || !request.required_system_features().is_empty() {
+            return Err(io::Error::other(
+                "MicroVM request is not compatible with deployment",
+            ));
+        }
         let deadline = Instant::now()
             .checked_add(config.execution_timeout())
             .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
