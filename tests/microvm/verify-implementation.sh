@@ -26,7 +26,7 @@ cargo test --locked -p telchar \
   --test microvm_launches --test microvm_payload --test microvm_pending \
   --test microvm_provider --test microvm_provider_cleanup --test microvm_rendezvous \
   --test microvm_config --test microvm_handoff --test microvm_identity \
-  --test microvm_listener --test microvm_outputs \
+  --test microvm_listener --test microvm_outputs --test microvm_service \
   --test persistence_migrations -- --test-threads=1
 cargo test --locked -p telchar-nomad-worker \
   --test microvm_admission --test microvm_connector --test microvm_deadline \

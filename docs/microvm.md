@@ -20,6 +20,18 @@ Implemented boundaries include:
 - Separate `/microvm` WebSocket admission with expiring verifier-only credentials,
   authenticated early waiting and pending-connection bounds. TLS termination is
   operator-owned; Nomad authentication remains separate.
+- Gateway sessions reconstruct manifests from exact persisted admitted requests,
+  transfer bounded inputs, validate output authority/NARs/references/content
+  addresses, and require gateway registration before success. Dedicated-worker
+  contracts cover classic and multi-output builds with real TLS, PostgreSQL and
+  isolated canonical stores on x86-64; sandboxing is disabled in these fixtures.
+- Exact-intent handoff, bounded callback admission, active transport interruption
+  on cancellation/ownership loss, and an owned execution/cleanup service with
+  shared scheduler handles and fail-closed lifecycle health. Independent cleanup
+  rotates bounded batches without releasing uncertain reservations.
+- Standalone validated deployment policy and configured provider construction
+  using signed STS account verification and pinned credentials. Local signed HTTP
+  fixtures use fake credentials; they are not AWS qualification.
 - `telchar-microvm-worker` with explicit trust/store/binding inputs, bounded WSS
   transport and existing worker transfer/build mechanics.
 - `deploy/microvm/execution.py` runtime hooks, protected execution binding and
@@ -27,11 +39,14 @@ Implemented boundaries include:
   Nix builder containment.
 
 These are partial components, not a deployable service. Missing release gates
-include production gateway transfer/promotion composition with successful worker
-executable qualification, strict selectable configuration/routing and capacity
-identity, output-only restart recovery, independent cleanup maintenance,
-provider account/credential/egress correspondence, administrative reconciliation
-and audit, metrics, NixOS wiring, and a secure ARM production image. Mandatory
+include daemon startup and shared-listener/configuration/routing integration,
+backend-alias capacity identity, fixed-output and remaining transfer-failure
+qualification, staging disk admission, store-I/O deadline/fencing guarantees,
+output-only restart recovery, and cleanup across removed configurations/restarts.
+Provider credential refresh/re-attestation and image/egress correspondence,
+administrative reconciliation and audit, metrics, NixOS wiring, and a secure ARM
+production image also remain unfinished. The service component does not make
+MicroVM configuration selectable in the daemon. Mandatory
 sandbox/build-user/secret isolation and snapshot cryptographic safety remain
 unresolved production gates. Do not deploy the experimental images as a substitute.
 
@@ -50,8 +65,8 @@ bash tests/microvm/verify-implementation.sh
 
 This runs formatting, workspace all-target compilation, focused PostgreSQL/HTTP/
 TLS/worker tests and Python runtime tests including a private Nix daemon. The
-private Nix supervision fixture disables sandboxing; it does not qualify
-production containment or the complete worker/gateway path. The checkpoint does
+private Nix supervision and dedicated-worker fixtures disable sandboxing; they do
+not qualify production containment, ARM image execution or daemon routing. The checkpoint does
 not run full workspace tests, Clippy, stock-client VM contracts or live AWS
 qualification. Local checks use isolated state and require nonroot Linux process
 and socket permissions. Preserve the pinned flake dependencies and test TLS
