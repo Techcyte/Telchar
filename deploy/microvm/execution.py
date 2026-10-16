@@ -1,4 +1,5 @@
 """Image-local fresh Nix daemon and worker lifetime supervision."""
+import argparse
 import contextlib
 import ipaddress
 import json
@@ -136,3 +137,34 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         stop(readiness)
         stop(worker)
         stop(daemon)
+
+
+def main():
+    from runtime import make_server
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--listen", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8080)
+    for name in ("daemon", "ready", "worker", "binding", "trust", "store"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    state = ExecutionState([args.daemon], [args.worker, args.binding, args.trust, args.store],
+                           [args.ready], args.binding)
+    server = make_server((args.listen, args.port), state, lambda: True)
+
+    def shutdown(_signal, _frame):
+        state.terminate()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    try:
+        server.serve_forever()
+    finally:
+        state.terminate()
+        state.join()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

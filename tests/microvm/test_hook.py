@@ -3,6 +3,9 @@ import concurrent.futures
 import http.client
 import importlib.util
 import json
+import os
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -90,6 +93,78 @@ class HookTests(unittest.TestCase):
             self.assertEqual(state.status(), "failed")
             self.assertTrue(state.start_hook(hook))
             self.assertEqual(state.status(), "failed")
+
+    def test_runtime_process_serves_hook_and_supervises_image_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "worker-started"
+            scripts = {}
+            for name, body in {
+                "daemon": "import time; time.sleep(30)",
+                "ready": "raise SystemExit(0)",
+                "worker": f"import pathlib,time; pathlib.Path({str(marker)!r}).touch(); time.sleep(30)",
+            }.items():
+                script = root / name
+                script.write_text(f"#!{sys.executable}\n{body}\n")
+                script.chmod(0o700)
+                scripts[name] = str(script)
+            trust = root / "trust.der"
+            trust.write_bytes(b"image-owned-trust")
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            process = subprocess.Popen([
+                sys.executable, str(ROOT / "deploy/microvm/execution.py"),
+                "--listen", "127.0.0.1", "--port", str(port),
+                "--daemon", scripts["daemon"], "--ready", scripts["ready"],
+                "--worker", scripts["worker"], "--binding", str(root / "binding"),
+                "--trust", str(trust), "--store", "unix:///isolated-nix.sock",
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+
+            def request(route, body="{}"):
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=.5)
+                try:
+                    connection.request("POST", "/aws/lambda-microvms/runtime/v1/" + route, body)
+                    response = connection.getresponse()
+                    return response.status, json.loads(response.read())
+                finally:
+                    connection.close()
+
+            try:
+                deadline = time.monotonic() + 2
+                while True:
+                    try:
+                        self.assertEqual(request("ready")[0], 200)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline or process.poll() is not None:
+                            self.fail("runtime process did not start HTTP listener")
+                        time.sleep(.02)
+                self.assertFalse(marker.exists())
+                payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+                           "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 5}
+                hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
+                self.assertEqual(request("run", json.dumps(hook))[0], 200)
+                self.assertEqual(request("run", json.dumps(hook))[0], 200)
+                self.assertEqual(request("run", json.dumps({**hook, "microvmId": "foreign"}))[0], 409)
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(marker.exists())
+                self.assertEqual(request("terminate")[0], 200)
+                deadline = time.monotonic() + 2
+                while request("terminate")[1]["status"] == "running" and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(request("terminate")[1]["status"], "failed")
+            finally:
+                process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                self.assertEqual(stdout, b"")
+                self.assertEqual(stderr, b"")
 
     def test_invalid_hook_cannot_write_binding_or_start_processes(self):
         with tempfile.TemporaryDirectory() as directory:
