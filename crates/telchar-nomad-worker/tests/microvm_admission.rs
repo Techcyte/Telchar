@@ -80,7 +80,10 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
                     pending.reserve().unwrap(),
                 );
                 match result {
-                    Ok(mut socket) => {
+                    Ok(connection) => {
+                        assert_eq!(connection.intent_id(), expected_intent);
+                        let (intent_id, mut socket) = connection.into_parts();
+                        assert_eq!(intent_id, expected_intent);
                         socket
                             .send(tungstenite::Message::Binary(b"admitted".to_vec().into()))
                             .unwrap();

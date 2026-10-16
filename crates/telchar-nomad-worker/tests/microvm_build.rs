@@ -200,15 +200,7 @@ fn run_build() {
                 .unwrap()
                 .is_none()
         );
-        run_admitted(
-            socket,
-            &owner,
-            "build-intent",
-            gateway_store,
-            staging,
-            limits,
-            |_| {},
-        )
+        run_admitted(socket, &owner, gateway_store, staging, limits, |_| {})
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

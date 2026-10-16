@@ -163,13 +163,28 @@ struct Bootstrap {
     bearer: String,
 }
 
+pub struct AdmittedConnection {
+    intent_id: String,
+    socket: WebSocket<SessionStream>,
+}
+
+impl AdmittedConnection {
+    pub fn intent_id(&self) -> &str {
+        &self.intent_id
+    }
+
+    pub fn into_parts(self) -> (String, WebSocket<SessionStream>) {
+        (self.intent_id, self.socket)
+    }
+}
+
 pub fn accept_session(
     stream: TcpStream,
     owner: &SingletonOwnership,
     expected_intent: &str,
     deadline: Instant,
     mut pending: PendingConnection<'_>,
-) -> Result<WebSocket<SessionStream>, ProviderError> {
+) -> Result<AdmittedConnection, ProviderError> {
     owner.verify().map_err(|_| ProviderError)?;
     let stream = SessionStream {
         inner: stream,
@@ -234,7 +249,10 @@ pub fn accept_session(
             &bootstrap.provider_id,
             &bootstrap.bearer,
         )? {
-            return Ok(socket);
+            return Ok(AdmittedConnection {
+                intent_id: bootstrap.intent_id,
+                socket,
+            });
         }
         if !crate::persistence::microvm_session_awaits_binding(
             owner.database(),
@@ -251,7 +269,10 @@ pub fn accept_session(
                 &bootstrap.provider_id,
                 &bootstrap.bearer,
             )? {
-                return Ok(socket);
+                return Ok(AdmittedConnection {
+                    intent_id: bootstrap.intent_id,
+                    socket,
+                });
             }
             return Err(ProviderError);
         }

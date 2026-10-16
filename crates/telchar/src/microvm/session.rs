@@ -22,17 +22,17 @@ pub struct Limits {
 }
 
 pub fn run_admitted(
-    socket: WebSocket<super::rendezvous::SessionStream>,
+    connection: super::rendezvous::AdmittedConnection,
     owner: &crate::service::singleton_ownership::SingletonOwnership,
-    intent_id: &str,
     store: GatewayStoreEndpoint,
     staging: PathBuf,
     limits: Limits,
     log: impl FnMut(&[u8]),
 ) -> io::Result<BuildResultMetadata> {
+    let (intent_id, socket) = connection.into_parts();
     let load = || {
         owner.verify().map_err(io::Error::other)?;
-        crate::persistence::microvm_session_request(owner.database(), intent_id)
+        crate::persistence::microvm_session_request(owner.database(), &intent_id)
             .map_err(io::Error::other)?
             .ok_or_else(|| io::Error::other("MicroVM execution is not active"))
     };
