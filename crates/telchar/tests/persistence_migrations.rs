@@ -49,6 +49,17 @@ fn microvm_identity_survives_database_restart() {
     assert_eq!(row.get::<_, String>(1), "microvm");
     assert_eq!(row.get::<_, String>(2), "output-only");
     assert_eq!(row.get::<_, String>(3), "explicit");
+    let database =
+        telchar::persistence::Database::connect(fixture.url()).expect("database reconnects");
+    let build = telchar::persistence::read_shared_build(&database, derivation)
+        .expect("typed MicroVM build reads")
+        .expect("build exists");
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
+        .expect("typed MicroVM attempt reads")
+        .expect("attempt exists");
+    assert_eq!(build.backend_kind.as_str(), "microvm");
+    assert_eq!(attempt.backend_kind, build.backend_kind);
+    assert_eq!(build.capabilities, build.backend_kind.capabilities());
 }
 
 #[test]

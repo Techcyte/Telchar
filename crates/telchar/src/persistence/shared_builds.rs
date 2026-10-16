@@ -1499,6 +1499,7 @@ fn backend_kind_name(kind: BackendKind) -> &'static str {
         BackendKind::Local => "local",
         BackendKind::StaticSsh => "static-ssh",
         BackendKind::Nomad => "nomad",
+        BackendKind::Microvm => "microvm",
     }
 }
 
@@ -1507,6 +1508,7 @@ fn parse_backend_kind(value: &str) -> Option<BackendKind> {
         "local" => Some(BackendKind::Local),
         "static-ssh" => Some(BackendKind::StaticSsh),
         "nomad" => Some(BackendKind::Nomad),
+        "microvm" => Some(BackendKind::Microvm),
         _ => None,
     }
 }

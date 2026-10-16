@@ -25,6 +25,7 @@ struct ConfiguredBackendsInner {
     static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
     schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     nomad: Vec<NomadBackendConfig>,
+    microvm: Vec<(String, Arc<crate::microvm::service::Service>)>,
 }
 
 impl ConfiguredBackends {
@@ -142,6 +143,7 @@ impl ConfiguredBackends {
                 static_ssh_health,
                 schedulable_static_ssh,
                 nomad: config.nomad_backends().to_vec(),
+                microvm: Vec::new(),
             }),
         })
     }
@@ -216,6 +218,9 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
     }
 
     fn recover_outputs(&mut self, build: &crate::persistence::SharedBuild) -> io::Result<bool> {
+        if build.backend_kind == BackendKind::Microvm {
+            return Ok(false);
+        }
         let config = self
             .inner
             .static_ssh
@@ -318,7 +323,7 @@ impl BuildBackend for BackendExecutor {
                     shared_build_key,
                 )))
             }
-            BackendKind::Local | BackendKind::StaticSsh => Ok(None),
+            BackendKind::Local | BackendKind::StaticSsh | BackendKind::Microvm => Ok(None),
         }
     }
 
@@ -482,6 +487,18 @@ impl BuildBackend for BackendExecutor {
             "backend execution started"
         );
         let mut backend: Box<dyn BuildBackend> = match target_kind {
+            BackendKind::Microvm => {
+                let (_, service) = self
+                    .backends
+                    .inner
+                    .microvm
+                    .iter()
+                    .find(|(name, _)| name == &target_name)
+                    .ok_or_else(|| {
+                        io::Error::other("selected MicroVM service is not configured")
+                    })?;
+                Box::new(Arc::clone(service))
+            }
             BackendKind::Local => match (
                 &self.backends.inner.local_build_helper,
                 &self.backends.inner.gateway_store,

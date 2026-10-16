@@ -21,6 +21,7 @@ pub enum BackendKind {
     Local,
     StaticSsh,
     Nomad,
+    Microvm,
 }
 
 impl BackendKind {
@@ -29,6 +30,7 @@ impl BackendKind {
             Self::Local => "local",
             Self::StaticSsh => "static_ssh",
             Self::Nomad => "nomad",
+            Self::Microvm => "microvm",
         }
     }
 
@@ -37,6 +39,11 @@ impl BackendKind {
             Self::Local | Self::StaticSsh => BackendCapabilities::new(
                 ExecutionRecovery::OutputOnly,
                 CancellationCapability::ConnectionBound,
+                LogRecovery::LiveOnly,
+            ),
+            Self::Microvm => BackendCapabilities::new(
+                ExecutionRecovery::OutputOnly,
+                CancellationCapability::Explicit,
                 LogRecovery::LiveOnly,
             ),
             Self::Nomad => BackendCapabilities::new(
