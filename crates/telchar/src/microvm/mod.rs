@@ -34,6 +34,45 @@ impl Capability {
     pub fn verifier(&self) -> [u8; 32] {
         self.verifier
     }
+
+    pub fn launch_payload(
+        &self,
+        endpoint: &str,
+        address: std::net::SocketAddr,
+        intent_id: &str,
+        lifetime_seconds: i32,
+    ) -> Result<String, ProviderError> {
+        let url = url::Url::parse(endpoint).map_err(|_| ProviderError)?;
+        if url.scheme() != "wss"
+            || url.host_str().is_none()
+            || url.path() != "/microvm"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.port_or_known_default() == Some(0)
+            || address.port() == 0
+            || address.ip().is_unspecified()
+            || intent_id.is_empty()
+            || intent_id.len() > 128
+            || !(1..=28800).contains(&lifetime_seconds)
+        {
+            return Err(ProviderError);
+        }
+        let payload = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "endpoint": endpoint,
+            "address": address.to_string(),
+            "intent_id": intent_id,
+            "bearer": self.bearer,
+            "lifetime_seconds": lifetime_seconds,
+        }))
+        .map_err(|_| ProviderError)?;
+        if payload.len() > 16384 {
+            return Err(ProviderError);
+        }
+        Ok(payload)
+    }
 }
 
 fn capability_verifier(entropy: &[u8]) -> [u8; 32] {
