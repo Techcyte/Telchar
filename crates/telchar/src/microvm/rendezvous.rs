@@ -254,6 +254,21 @@ impl ExecutionSessions {
 }
 
 impl ExecutionSession<'_> {
+    pub fn receive_active(
+        &self,
+        owner: &SingletonOwnership,
+    ) -> Result<AdmittedConnection, ProviderError> {
+        self.receive_checked(|| {
+            owner.verify().map_err(|_| ProviderError)?;
+            if !crate::persistence::microvm_execution_active(owner.database(), &self.intent_id)
+                .map_err(|_| ProviderError)?
+            {
+                return Err(ProviderError);
+            }
+            Ok(())
+        })
+    }
+
     pub fn receive_checked(
         &self,
         mut verify: impl FnMut() -> Result<(), ProviderError>,

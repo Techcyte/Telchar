@@ -101,9 +101,9 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
             assert_eq!(server.join().unwrap(), accepted);
             if accepted {
                 let connection = if index == 0 {
-                    first.receive()
+                    first.receive_active(&owner)
                 } else {
-                    second.receive()
+                    second.receive_active(&owner)
                 }
                 .unwrap();
                 assert_eq!(connection.intent_id(), format!("intent-{index}"));
@@ -129,26 +129,7 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
             );
         });
         let started = Instant::now();
-        assert!(
-            cancelled
-                .receive_checked(|| {
-                    owner
-                        .verify()
-                        .map_err(|_| telchar::microvm::ProviderError)?;
-                    if telchar::persistence::microvm_session_backend(
-                        owner.database(),
-                        "intent-2",
-                        &capabilities[2].verifier(),
-                    )
-                    .unwrap()
-                    .is_none()
-                    {
-                        return Err(telchar::microvm::ProviderError);
-                    }
-                    Ok(())
-                })
-                .is_err()
-        );
+        assert!(cancelled.receive_active(&owner).is_err());
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "cancelled wait stops promptly"

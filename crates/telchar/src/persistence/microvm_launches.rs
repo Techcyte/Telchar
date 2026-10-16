@@ -216,6 +216,29 @@ pub fn microvm_session_request(
     Ok(Some(request))
 }
 
+pub fn microvm_execution_active(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let _database_operation =
+        telemetry::DatabaseOperation::start(stringify!(microvm_execution_active));
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_opt(
+            "SELECT 1 FROM microvm_launches l
+         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN shared_builds b ON b.derivation_path = a.derivation_path
+         WHERE l.intent_id = $1 AND l.phase IN ('dispatching', 'bound')
+           AND l.reservation_released_at IS NULL
+           AND (l.session_consumed_at IS NOT NULL OR l.admission_cutoff > clock_timestamp())
+           AND b.state = 'running' AND a.state = 'running'
+           AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(row.is_some())
+}
+
 pub fn microvm_session_backend(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
