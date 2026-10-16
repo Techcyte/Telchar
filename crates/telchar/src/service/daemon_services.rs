@@ -132,6 +132,55 @@ impl StaticSshHealthService {
     }
 }
 
+pub struct MicrovmCleanupService(BackgroundService);
+
+impl MicrovmCleanupService {
+    pub fn start(
+        owner: std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
+        provider: crate::microvm::Provider,
+        backend_name: String,
+        interval: Duration,
+        batch_size: usize,
+    ) -> io::Result<Self> {
+        if backend_name.is_empty() || !(1..=1000).contains(&batch_size) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid MicroVM cleanup bounds",
+            ));
+        }
+        BackgroundService::start(interval, "MicroVM cleanup maintenance failed", move || {
+            owner.verify().map_err(io::Error::other)?;
+            let pending = crate::persistence::pending_microvm_cleanup(
+                owner.database(),
+                &backend_name,
+                batch_size,
+            )
+            .map_err(io::Error::other)?;
+            for cleanup in pending {
+                owner.verify().map_err(io::Error::other)?;
+                if provider.cleanup(&owner, &cleanup).is_err() {
+                    // Provider uncertainty retains the durable obligation for a later pass.
+                    tracing::warn!(
+                        event = "microvm.cleanup.pending",
+                        "MicroVM cleanup remains pending"
+                    );
+                }
+                owner.verify().map_err(io::Error::other)?;
+            }
+            Ok(true)
+        })
+        .map(Self)
+    }
+
+    pub fn check(&mut self) -> io::Result<()> {
+        self.0.check().map(|_| ())
+    }
+
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        self.0.shutdown()
+    }
+}
+
 pub struct MaintenanceService(BackgroundService);
 
 impl MaintenanceService {

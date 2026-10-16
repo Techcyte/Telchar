@@ -19,7 +19,7 @@ fn exchange(
         body.len()
     );
     let server = std::thread::spawn(move || {
-        let count = if operation == "lifecycle-cleanup" {
+        let count = if matches!(operation, "lifecycle-cleanup" | "maintenance") {
             3
         } else {
             1
@@ -49,9 +49,10 @@ fn exchange(
                 headers.push(byte[0]);
                 assert!(headers.len() < 32768);
             }
-            let response = if operation == "lifecycle-cleanup" && index == 1 {
+            let response = if matches!(operation, "lifecycle-cleanup" | "maintenance") && index == 1
+            {
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
-            } else if operation == "lifecycle-cleanup" && index == 2 {
+            } else if matches!(operation, "lifecycle-cleanup" | "maintenance") && index == 2 {
                 let body = observation("microvm-exact", "TERMINATED");
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -136,7 +137,34 @@ fn exchange(
         .build();
     let provider =
         telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
-    let result = if operation.ends_with("cleanup") {
+    let result = if operation == "maintenance" {
+        let mut service = telchar::service::daemon_services::MicrovmCleanupService::start(
+            std::sync::Arc::new(owner),
+            provider,
+            "cleanup-fixture".to_owned(),
+            Duration::from_millis(25),
+            1,
+        )
+        .expect("cleanup service starts");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            service.check().expect("cleanup service healthy");
+            let pending =
+                telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1)
+                    .unwrap();
+            if pending.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "independent cleanup releases observed termination"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        service.shutdown().expect("cleanup service joins");
+        service.shutdown().expect("shutdown is idempotent");
+        Ok(true)
+    } else if operation.ends_with("cleanup") {
         let cleanup =
             telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1)
                 .expect("pending identity")
@@ -288,6 +316,30 @@ fn ownership_loss_during_observation_prevents_termination_and_release() {
         1
     );
     assert!(!requests.contains("DELETE "));
+}
+
+#[test]
+fn maintenance_observes_termination_independently_of_execution() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "maintenance",
+    );
+    assert!(result.unwrap());
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("GET "))
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("DELETE "))
+            .count(),
+        1
+    );
 }
 
 #[test]
