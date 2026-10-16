@@ -67,6 +67,10 @@ impl Service {
         })
     }
 
+    pub fn configuration(&self) -> &MicrovmBackendConfig {
+        &self.config
+    }
+
     pub fn check(&self) -> io::Result<()> {
         self.owner.verify().map_err(io::Error::other)?;
         let mut lifecycle = loop {

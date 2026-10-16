@@ -71,6 +71,34 @@ chunk_bytes = 1024
             .unwrap(),
         );
         service.check().unwrap();
+        use telchar::backend::BuildBackend;
+        let configuration_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(configuration_file.path(), "").unwrap();
+        let configuration =
+            telchar::service::config::ServiceConfig::load_from_default(configuration_file.path())
+                .unwrap();
+        let backends = telchar::backend::routing::ConfiguredBackends::with_microvm_services(
+            &configuration,
+            None,
+            vec![Arc::clone(&service)],
+        )
+        .unwrap();
+        let executor = backends
+            .executor(
+                database.clone(),
+                Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+            )
+            .unwrap();
+        let target = executor.selected_target("aarch64-linux", &[]).unwrap();
+        assert_eq!(target.name(), "arm");
+        assert_eq!(target.kind(), telchar::backend::BackendKind::Microvm);
+        assert!(executor.selected_target("aarch64-linux", &["kvm"]).is_err());
+        let permit = executor
+            .reserve_target("aarch64-linux", &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(permit.target(), &target);
+        drop(permit);
         if fenced {
             fixture.expire_singleton_ownership("daemon");
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -118,6 +146,7 @@ chunk_bytes = 1024
             service.shutdown().unwrap();
         }
         assert!(service.check().is_err());
+        assert!(executor.selected_target("aarch64-linux", &[]).is_err());
         assert!(TcpStream::connect(address).is_err());
     }
 }
