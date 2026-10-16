@@ -20,6 +20,7 @@ fn execution_closes_admission_without_releasing_provider_reservation() {
     launch_exchange(false, "execution-failure");
     launch_exchange(false, "configured");
     launch_exchange(false, "configured-missing");
+    launch_exchange(true, "configured-cancelled");
 }
 
 #[test]
@@ -60,7 +61,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("attempt reads")
         .expect("attempt exists");
-    if ownership == "configured" {
+    if matches!(ownership, "configured" | "configured-cancelled") {
         let source = r#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","provider"),("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"),("system","aarch64-linux")])"#;
         let target = telchar::backend::BackendTarget::new(
             "provider-fixture",
@@ -276,7 +277,7 @@ chunk_bytes = 1024
 "#,
                 )
                 .unwrap();
-                if ownership == "configured" {
+                if matches!(ownership, "configured" | "configured-cancelled") {
                     let request = telchar::persistence::microvm_attempt_request(
                         owner.database(),
                         attempt.attempt_id,
@@ -299,6 +300,20 @@ chunk_bytes = 1024
                         .get(0);
                     assert_eq!(count, 0);
                     build.set_target_name(policy.name()).unwrap();
+                    if ownership == "configured-cancelled" {
+                        let mut control = fixture.connect();
+                        let started = std::time::Instant::now();
+                        let error = executor.execute_build(&policy, &build, &mut |_| Ok(()), &mut || {
+                            Ok(control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound')", &[]).unwrap().get(0))
+                        }).unwrap_err();
+                        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+                        assert!(started.elapsed() < Duration::from_secs(1));
+                        let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches", &[]).unwrap();
+                        assert_eq!(row.get::<_, String>(0), "closed");
+                        assert!(row.get::<_, bool>(1));
+                        assert_eq!(server.join().unwrap().len(), 1);
+                        return;
+                    }
                     assert!(executor.run_build(&policy, &build, |_| {}).is_err());
                 } else {
                     assert!(

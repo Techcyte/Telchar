@@ -393,6 +393,23 @@ pub fn bind_microvm_launch(
     Ok(bound == 1)
 }
 
+pub fn cancel_microvm_attempt(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+) -> Result<bool, MicrovmLaunchError> {
+    let row = connect(database)
+        .map_err(|_| MicrovmLaunchError)?
+        .query_opt(
+            "SELECT intent_id FROM microvm_launches WHERE attempt_id = $1",
+            &[&attempt_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    match row {
+        Some(row) => cancel_microvm_launch(database, &row.get::<_, String>(0)),
+        None => Ok(false),
+    }
+}
+
 pub fn cancel_microvm_launch(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

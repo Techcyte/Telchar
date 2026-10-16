@@ -22,6 +22,95 @@ pub struct Execution<'a> {
 }
 
 impl Execution<'_> {
+    pub fn execute_build(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+        build: &crate::backend::BuildExecution<'_>,
+        logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        cancelled: &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<crate::backend::BuildResult> {
+        self.owner.verify().map_err(io::Error::other)?;
+        if build.target_name() != Some(config.name()) {
+            return Err(io::Error::other(
+                "MicroVM selected target does not match deployment",
+            ));
+        }
+        if cancelled()? {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "MicroVM build cancelled",
+            ));
+        }
+        let derivation =
+            std::str::from_utf8(build.build().derivation_path()).map_err(io::Error::other)?;
+        let attempt =
+            crate::persistence::read_shared_build_attempt(self.owner.database(), derivation)
+                .map_err(io::Error::other)?
+                .ok_or_else(|| io::Error::other("MicroVM attempt is missing"))?;
+        if attempt.backend_name != config.name() {
+            return Err(io::Error::other(
+                "MicroVM attempt backend does not match deployment",
+            ));
+        }
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
+            let worker = std::thread::Builder::new()
+                .name("microvm-execution".into())
+                .spawn_scoped(scope, move || {
+                    self.run_build(config, build, |bytes| {
+                        for chunk in bytes.chunks(64 * 1024) {
+                            let _ = sender.try_send(chunk.to_vec());
+                        }
+                    })
+                })?;
+            let mut failure = None;
+            while !worker.is_finished() {
+                match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(bytes) if failure.is_none() => {
+                        if let Err(error) = logs(&bytes) {
+                            failure = Some(error);
+                        }
+                    }
+                    _ => {}
+                }
+                if failure.is_none() {
+                    match cancelled() {
+                        Ok(false) => {}
+                        Ok(true) => {
+                            failure = Some(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "MicroVM build cancelled",
+                            ))
+                        }
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                if failure.is_some() {
+                    self.owner.verify().map_err(io::Error::other)?;
+                    crate::persistence::cancel_microvm_attempt(
+                        self.owner.database(),
+                        attempt.attempt_id,
+                    )
+                    .map_err(io::Error::other)?;
+                }
+            }
+            let result = worker
+                .join()
+                .map_err(|_| io::Error::other("MicroVM execution thread failed"))?;
+            while let Ok(bytes) = receiver.try_recv() {
+                if failure.is_none()
+                    && let Err(error) = logs(&bytes)
+                {
+                    failure = Some(error);
+                }
+            }
+            match failure {
+                Some(error) => Err(error),
+                None => result,
+            }
+        })
+    }
+
     pub fn run_build(
         &self,
         config: &crate::service::config::MicrovmBackendConfig,
