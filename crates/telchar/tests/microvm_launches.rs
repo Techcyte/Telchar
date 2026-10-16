@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use telchar::backend::BackendKind;
 
-fn prepared_launch() -> PostgresFixture {
+fn prepared_launch() -> (PostgresFixture, telchar::persistence::Database) {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    telchar::persistence::migrate(&database).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv";
     telchar::persistence::claim_shared_build(
-        fixture.url(),
+        &database,
         derivation,
         &[1; 32],
         "launch-fixture",
@@ -21,20 +22,20 @@ fn prepared_launch() -> PostgresFixture {
         &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-launch"],
     )
     .expect("fixture build claims");
-    telchar::persistence::start_shared_build(fixture.url(), derivation)
+    telchar::persistence::start_shared_build(&database, derivation)
         .expect("fixture attempt starts");
-    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
         .expect("attempt reads")
         .expect("attempt exists");
     assert!(
         telchar::persistence::reserve_microvm_launch(
-            fixture.url(),
+            &database,
             &launch_intent(attempt.attempt_id, "intent-one"),
             1,
         )
         .expect("launch reserves durable capacity")
     );
-    fixture
+    (fixture, database)
 }
 
 fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::MicrovmLaunchIntent {
@@ -57,7 +58,7 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 
 #[test]
 fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer() {
-    let fixture = prepared_launch();
+    let (fixture, database) = prepared_launch();
     let capability = telchar::microvm::Capability::generate().expect("OS entropy");
     let other = telchar::microvm::Capability::generate().expect("independent entropy");
     assert_ne!(capability.bearer(), other.bearer());
@@ -70,11 +71,10 @@ fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer
         )
         .expect("only verifier persists");
     assert!(
-        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
-            .expect("dispatch")
+        telchar::persistence::dispatch_microvm_launch(&database, "intent-one").expect("dispatch")
     );
     assert!(
-        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
             .expect("bind")
     );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
@@ -126,35 +126,29 @@ fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer
 
 #[test]
 fn admission_consumes_exact_bound_capability_once_across_restart() {
-    let mut fixture = prepared_launch();
+    let (mut fixture, database) = prepared_launch();
     assert!(
-        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
-            .expect("dispatch")
+        telchar::persistence::dispatch_microvm_launch(&database, "intent-one").expect("dispatch")
     );
     assert!(
-        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
             .expect("bind")
     );
     for (id, verifier) in [("microvm-other", [3; 32]), ("microvm-exact", [4; 32])] {
         assert!(
-            !telchar::persistence::admit_microvm_session(
-                fixture.url(),
-                "intent-one",
-                id,
-                &verifier
-            )
-            .expect("wrong credential rejected")
+            !telchar::persistence::admit_microvm_session(&database, "intent-one", id, &verifier)
+                .expect("wrong credential rejected")
         );
     }
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let callers: Vec<_> = (0..2)
         .map(|_| {
-            let url = fixture.url().to_owned();
+            let database = database.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
                 telchar::persistence::admit_microvm_session(
-                    &url,
+                    &database,
                     "intent-one",
                     "microvm-exact",
                     &[3; 32],
@@ -171,7 +165,7 @@ fn admission_consumes_exact_bound_capability_once_across_restart() {
     fixture.restart();
     assert!(
         !telchar::persistence::admit_microvm_session(
-            fixture.url(),
+            &database,
             "intent-one",
             "microvm-exact",
             &[3; 32]
@@ -190,19 +184,15 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
         "terminal",
         "fenced",
     ] {
-        let fixture = prepared_launch();
+        let (fixture, database) = prepared_launch();
         if gate != "prepared" {
             assert!(
-                telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+                telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
                     .expect("dispatch")
             );
             assert!(
-                telchar::persistence::bind_microvm_launch(
-                    fixture.url(),
-                    "intent-one",
-                    "microvm-exact"
-                )
-                .expect("bind")
+                telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+                    .expect("bind")
             );
         }
         match gate {
@@ -210,7 +200,7 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
                 fixture.connect().batch_execute("UPDATE microvm_launches SET created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute'").expect("expired fixture");
             }
             "cancelled" => {
-                telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+                telchar::persistence::cancel_microvm_launch(&database, "intent-one")
                     .expect("cancel");
             }
             "released" => {
@@ -223,7 +213,7 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
             }
             "terminal" => {
                 telchar::persistence::complete_shared_build_failure(
-                    fixture.url(),
+                    &database,
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
                     "fixture-failure",
                     &serde_json::json!({}),
@@ -242,7 +232,7 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
             fixture.expire_singleton_ownership("daemon");
         }
         let result = telchar::persistence::admit_microvm_session(
-            owner.database_url(),
+            owner.database(),
             "intent-one",
             "microvm-exact",
             &[3; 32],
@@ -266,7 +256,7 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
 
 #[test]
 fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
-    let mut fixture = prepared_launch();
+    let (mut fixture, database) = prepared_launch();
     let first_attempt: i64 = fixture
         .connect()
         .query_one(
@@ -277,7 +267,7 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
         .get(0);
     let derivation = "/nix/store/cccccccccccccccccccccccccccccccc-other.drv";
     telchar::persistence::claim_shared_build(
-        fixture.url(),
+        &database,
         derivation,
         &[2; 32],
         "launch-fixture",
@@ -287,9 +277,8 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
         &["/nix/store/dddddddddddddddddddddddddddddddd-other"],
     )
     .expect("second build claims");
-    telchar::persistence::start_shared_build(fixture.url(), derivation)
-        .expect("second attempt starts");
-    let second_attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+    telchar::persistence::start_shared_build(&database, derivation).expect("second attempt starts");
+    let second_attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
         .expect("second attempt reads")
         .expect("second attempt exists")
         .attempt_id;
@@ -300,15 +289,19 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
     ]
     .into_iter()
     .map(|(attempt, id)| {
-        let url = fixture.url().to_owned();
+        let database = database.clone();
         let barrier = barrier.clone();
         std::thread::spawn(move || {
             let intent = launch_intent(attempt, id);
             barrier.wait();
             (
                 intent,
-                telchar::persistence::reserve_microvm_launch(&url, &launch_intent(attempt, id), 1)
-                    .expect("capacity reservation resolves"),
+                telchar::persistence::reserve_microvm_launch(
+                    &database,
+                    &launch_intent(attempt, id),
+                    1,
+                )
+                .expect("capacity reservation resolves"),
             )
         })
     })
@@ -329,35 +322,35 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
         .expect("one waiter")
         .0;
     assert!(
-        telchar::persistence::dispatch_microvm_launch(fixture.url(), &winner.intent_id)
+        telchar::persistence::dispatch_microvm_launch(&database, &winner.intent_id)
             .expect("winner dispatches")
     );
     assert!(
-        telchar::persistence::cancel_microvm_launch(fixture.url(), &winner.intent_id)
+        telchar::persistence::cancel_microvm_launch(&database, &winner.intent_id)
             .expect("winner becomes ambiguous")
     );
     fixture.restart();
     assert!(
-        !telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 1)
+        !telchar::persistence::reserve_microvm_launch(&database, loser, 1)
             .expect("ambiguous reservation blocks capacity")
     );
     assert!(
-        telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 2)
+        telchar::persistence::reserve_microvm_launch(&database, loser, 2)
             .expect("explicit second slot available")
     );
     assert!(
-        !telchar::persistence::reserve_microvm_launch(fixture.url(), loser, 3)
+        !telchar::persistence::reserve_microvm_launch(&database, loser, 3)
             .expect("same attempt cannot reserve again")
     );
     assert!(
-        telchar::persistence::cancel_microvm_launch(fixture.url(), &loser.intent_id)
+        telchar::persistence::cancel_microvm_launch(&database, &loser.intent_id)
             .expect("unused reservation releases")
     );
 }
 
 #[test]
 fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
-    let fixture = prepared_launch();
+    let (fixture, database) = prepared_launch();
     let attempt: i64 = fixture
         .connect()
         .query_one(
@@ -367,16 +360,16 @@ fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
         .expect("unreserved attempt exists")
         .get(0);
     let mut intent = launch_intent(attempt, "guarded");
-    assert!(telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 0).is_err());
+    assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 0).is_err());
     intent.admission_cutoff = std::time::SystemTime::now() - Duration::from_secs(1);
     assert!(
-        !telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
+        !telchar::persistence::reserve_microvm_launch(&database, &intent, 1)
             .expect("expired intent rejected")
     );
     intent.admission_cutoff = std::time::SystemTime::now() + Duration::from_secs(60);
     intent.backend_name = "different-backend".to_owned();
     assert!(
-        !telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
+        !telchar::persistence::reserve_microvm_launch(&database, &intent, 1)
             .expect("mismatched backend rejected")
     );
     intent.backend_name = "launch-fixture".to_owned();
@@ -386,9 +379,7 @@ fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
     )
     .expect("owner acquires");
     fixture.expire_singleton_ownership("daemon");
-    assert!(
-        telchar::persistence::reserve_microvm_launch(owner.database_url(), &intent, 1).is_err()
-    );
+    assert!(telchar::persistence::reserve_microvm_launch(owner.database(), &intent, 1).is_err());
     let count: i64 = fixture
         .connect()
         .query_one("SELECT count(*) FROM microvm_launches", &[])
@@ -399,22 +390,21 @@ fn reservation_rejects_expiry_backend_mismatch_and_stale_ownership() {
 
 #[test]
 fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity() {
-    let mut fixture = prepared_launch();
+    let (mut fixture, database) = prepared_launch();
     assert!(
-        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
-            .expect("dispatch")
+        telchar::persistence::dispatch_microvm_launch(&database, "intent-one").expect("dispatch")
     );
     assert!(
-        telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
             .expect("binding")
     );
     assert!(
-        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10, None)
+        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
             .expect("active launch reads")
             .is_empty()
     );
     telchar::persistence::complete_shared_build_failure(
-        fixture.url(),
+        &database,
         "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
         "fixture-failure",
         &serde_json::json!({}),
@@ -423,7 +413,7 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     .expect("terminal build");
     fixture.restart();
     let cleanup =
-        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10, None)
+        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
             .expect("cleanup reads");
     assert_eq!(cleanup.len(), 1);
     assert_eq!(cleanup[0].intent_id, "intent-one");
@@ -438,7 +428,7 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     fixture.expire_singleton_ownership("daemon");
     assert!(
         telchar::persistence::record_microvm_termination(
-            owner.database_url(),
+            owner.database(),
             "intent-one",
             "microvm-exact",
         )
@@ -446,32 +436,20 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
         "expired owner cannot release capacity"
     );
     assert!(
-        !telchar::persistence::record_microvm_termination(
-            fixture.url(),
-            "intent-one",
-            "microvm-other"
-        )
-        .expect("wrong identity rejected")
+        !telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-other")
+            .expect("wrong identity rejected")
     );
     assert!(
-        telchar::persistence::record_microvm_termination(
-            fixture.url(),
-            "intent-one",
-            "microvm-exact"
-        )
-        .expect("exact observation recorded")
+        telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-exact")
+            .expect("exact observation recorded")
     );
     assert!(
-        !telchar::persistence::record_microvm_termination(
-            fixture.url(),
-            "intent-one",
-            "microvm-exact"
-        )
-        .expect("duplicate observation has no release")
+        !telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-exact")
+            .expect("duplicate observation has no release")
     );
     fixture.restart();
     assert!(
-        telchar::persistence::pending_microvm_cleanup(fixture.url(), "launch-fixture", 10, None)
+        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
             .expect("released list reads")
             .is_empty()
     );
@@ -483,36 +461,32 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
 #[test]
 fn exact_binding_is_single_assignment_and_late_response_is_cleanup_only() {
     for cancelled in [false, true] {
-        let mut fixture = prepared_launch();
+        let (mut fixture, database) = prepared_launch();
         assert!(
             !telchar::persistence::bind_microvm_launch(
-                fixture.url(),
+                &database,
                 "intent-one",
                 "microvm-before-dispatch"
             )
             .expect("prepared launch rejects binding")
         );
         assert!(
-            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
                 .expect("launch dispatches")
         );
         if cancelled {
             assert!(
-                telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+                telchar::persistence::cancel_microvm_launch(&database, "intent-one")
                     .expect("launch cancels before API response")
             );
         }
         assert!(
-            telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-exact")
+            telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
                 .expect("exact API response persists")
         );
         assert!(
-            !telchar::persistence::bind_microvm_launch(
-                fixture.url(),
-                "intent-one",
-                "microvm-other"
-            )
-            .expect("different identity cannot replace binding")
+            !telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-other")
+                .expect("different identity cannot replace binding")
         );
         fixture.restart();
         let row = fixture.connect().query_one(
@@ -530,14 +504,14 @@ fn exact_binding_is_single_assignment_and_late_response_is_cleanup_only() {
 #[test]
 fn binding_after_cutoff_or_terminal_build_records_cleanup_without_admission() {
     for terminal in [false, true] {
-        let fixture = prepared_launch();
+        let (fixture, database) = prepared_launch();
         assert!(
-            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
                 .expect("launch dispatches")
         );
         if terminal {
             telchar::persistence::complete_shared_build_failure(
-                fixture.url(),
+                &database,
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv",
                 "launch-expired",
                 &serde_json::json!({}),
@@ -550,7 +524,7 @@ fn binding_after_cutoff_or_terminal_build_records_cleanup_without_admission() {
             ).expect("admission cutoff expires");
         }
         assert!(
-            telchar::persistence::bind_microvm_launch(fixture.url(), "intent-one", "microvm-late")
+            telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-late")
                 .expect("late response retained for cleanup")
         );
         let row = fixture.connect().query_one(
@@ -564,22 +538,22 @@ fn binding_after_cutoff_or_terminal_build_records_cleanup_without_admission() {
 
 #[test]
 fn concurrent_binding_records_only_one_exact_identity() {
-    let fixture = prepared_launch();
+    let (fixture, database) = prepared_launch();
     assert!(
-        telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("launch dispatches")
     );
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let callers: Vec<_> = ["microvm-first", "microvm-second"]
         .into_iter()
         .map(|id| {
-            let url = fixture.url().to_owned();
+            let database = database.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
                 (
                     id,
-                    telchar::persistence::bind_microvm_launch(&url, "intent-one", id)
+                    telchar::persistence::bind_microvm_launch(&database, "intent-one", id)
                         .expect("binding resolves"),
                 )
             })
@@ -609,13 +583,13 @@ fn concurrent_binding_records_only_one_exact_identity() {
 
 #[test]
 fn cancellation_closes_prepared_launch_and_releases_only_unused_capacity() {
-    let fixture = prepared_launch();
+    let (fixture, database) = prepared_launch();
     assert!(
-        telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+        telchar::persistence::cancel_microvm_launch(&database, "intent-one")
             .expect("prepared launch cancels")
     );
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("cancelled launch cannot dispatch")
     );
     let row = fixture.connect().query_one(
@@ -624,7 +598,7 @@ fn cancellation_closes_prepared_launch_and_releases_only_unused_capacity() {
     assert_eq!(row.get::<_, String>(0), "closed");
     assert!(row.get::<_, bool>(1));
     assert!(
-        !telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::cancel_microvm_launch(&database, "intent-one")
             .expect("duplicate cancellation has no transition")
     );
 }
@@ -632,9 +606,9 @@ fn cancellation_closes_prepared_launch_and_releases_only_unused_capacity() {
 #[test]
 fn cancellation_retains_dispatched_and_bound_reservations() {
     for provider_id in [None, Some("microvm-exact")] {
-        let mut fixture = prepared_launch();
+        let (mut fixture, database) = prepared_launch();
         assert!(
-            telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+            telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
                 .expect("launch dispatches")
         );
         if let Some(provider_id) = provider_id {
@@ -643,7 +617,7 @@ fn cancellation_retains_dispatched_and_bound_reservations() {
             ).expect("API binding fixture records");
         }
         assert!(
-            telchar::persistence::cancel_microvm_launch(fixture.url(), "intent-one")
+            telchar::persistence::cancel_microvm_launch(&database, "intent-one")
                 .expect("dispatched launch cancels")
         );
         fixture.restart();
@@ -665,16 +639,14 @@ fn cancellation_retains_dispatched_and_bound_reservations() {
 
 #[test]
 fn cancellation_rejects_expired_ownership() {
-    let fixture = prepared_launch();
+    let (fixture, _database) = prepared_launch();
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
     )
     .expect("owner acquires");
     fixture.expire_singleton_ownership("daemon");
-    assert!(
-        telchar::persistence::cancel_microvm_launch(owner.database_url(), "intent-one").is_err()
-    );
+    assert!(telchar::persistence::cancel_microvm_launch(owner.database(), "intent-one").is_err());
     let row = fixture.connect().query_one(
         "SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
     ).expect("fenced launch reads");
@@ -684,19 +656,19 @@ fn cancellation_rejects_expired_ownership() {
 
 #[test]
 fn cancellation_and_dispatch_race_preserves_ambiguous_capacity() {
-    let fixture = prepared_launch();
-    let dispatch_url = fixture.url().to_owned();
-    let cancel_url = dispatch_url.clone();
+    let (fixture, database) = prepared_launch();
+    let dispatch_database = database.clone();
+    let cancel_database = dispatch_database.clone();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let dispatch_barrier = barrier.clone();
     let dispatch = std::thread::spawn(move || {
         dispatch_barrier.wait();
-        telchar::persistence::dispatch_microvm_launch(&dispatch_url, "intent-one")
+        telchar::persistence::dispatch_microvm_launch(&dispatch_database, "intent-one")
             .expect("racing dispatch resolves")
     });
     let cancel = std::thread::spawn(move || {
         barrier.wait();
-        telchar::persistence::cancel_microvm_launch(&cancel_url, "intent-one")
+        telchar::persistence::cancel_microvm_launch(&cancel_database, "intent-one")
             .expect("racing cancellation resolves")
     });
     let dispatched = dispatch.join().expect("dispatch joins");
@@ -710,40 +682,40 @@ fn cancellation_and_dispatch_race_preserves_ambiguous_capacity() {
     );
     assert_eq!(row.get::<_, bool>(1), !dispatched);
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("cancelled execution never redispatches")
     );
 }
 
 #[test]
 fn launch_reservation_survives_build_failure_and_database_restart() {
-    let mut fixture = prepared_launch();
+    let (mut fixture, database) = prepared_launch();
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-launch.drv";
     fixture.connect().execute(
         "UPDATE microvm_launches SET reservation_released_at = clock_timestamp() WHERE intent_id = 'intent-one'", &[],
     ).expect("reservation releases for negative case");
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("released reservation cannot dispatch")
     );
     fixture.connect().execute(
         "UPDATE microvm_launches SET reservation_released_at = NULL, created_at = clock_timestamp() - interval '2 minutes', admission_cutoff = clock_timestamp() - interval '1 minute' WHERE intent_id = 'intent-one'", &[],
     ).expect("cutoff expires for negative case");
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("expired intent cannot dispatch")
     );
     fixture.connect().execute(
         "UPDATE microvm_launches SET admission_cutoff = clock_timestamp() + interval '1 minute' WHERE intent_id = 'intent-one'", &[],
     ).expect("cutoff restores for concurrency case");
-    let first_url = fixture.url().to_owned();
-    let second_url = first_url.clone();
+    let first_database = database.clone();
+    let second_database = first_database.clone();
     let first = std::thread::spawn(move || {
-        telchar::persistence::dispatch_microvm_launch(&first_url, "intent-one")
+        telchar::persistence::dispatch_microvm_launch(&first_database, "intent-one")
             .expect("first dispatch resolves")
     });
     let second = std::thread::spawn(move || {
-        telchar::persistence::dispatch_microvm_launch(&second_url, "intent-one")
+        telchar::persistence::dispatch_microvm_launch(&second_database, "intent-one")
             .expect("second dispatch resolves")
     });
     assert_eq!(
@@ -752,7 +724,7 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         1
     );
     telchar::persistence::complete_shared_build_failure(
-        fixture.url(),
+        &database,
         derivation,
         "launch-ambiguous",
         &serde_json::json!({}),
@@ -766,7 +738,7 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
     assert!(row.get::<_, bool>(0));
     assert_eq!(row.get::<_, String>(1), "dispatching");
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("restart cannot redispatch")
     );
     fixture
@@ -777,7 +749,7 @@ fn launch_reservation_survives_build_failure_and_database_restart() {
         )
         .expect("terminal attempt exercises dispatch gate");
     assert!(
-        !telchar::persistence::dispatch_microvm_launch(fixture.url(), "intent-one")
+        !telchar::persistence::dispatch_microvm_launch(&database, "intent-one")
             .expect("terminal attempt cannot dispatch")
     );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
