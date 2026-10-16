@@ -2,6 +2,7 @@
 
 pub mod outputs;
 pub mod rendezvous;
+pub mod session;
 
 use std::time::Duration;
 

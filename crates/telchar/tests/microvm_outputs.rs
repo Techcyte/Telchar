@@ -101,4 +101,180 @@ fn receipts_require_authoritative_registration() {
         }
         assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
     }
+    gateway_session(&endpoint, staging.path(), &metadata, &nar);
+}
+
+fn gateway_session(
+    endpoint: &GatewayStoreEndpoint,
+    staging: &std::path::Path,
+    input: &PathManifestEntry,
+    nar: &[u8],
+) {
+    use std::net::TcpListener;
+    use std::time::Duration;
+    use telchar::microvm::session::{Limits, Session};
+    use telchar::nomad::protocol::*;
+    let output = "/nix/store/dddddddddddddddddddddddddddddddd-session-output";
+    let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-session.drv";
+    let manifest = InputManifest {
+        derivation_path: drv.into(),
+        build: BuildSpecification {
+            derivation_path: drv.as_bytes().to_vec(),
+            outputs: vec![NamedOutput {
+                name: b"out".to_vec(),
+                path: output.as_bytes().to_vec(),
+                hash_algorithm: vec![],
+                hash: vec![],
+            }],
+            input_sources: vec![input.path.as_bytes().to_vec()],
+            system: "aarch64-linux".into(),
+            required_system_features: vec![],
+            builder: b"/bin/sh".to_vec(),
+            arguments: vec![],
+            environment: vec![(b"out".to_vec(), output.as_bytes().to_vec())],
+        },
+        paths: vec![input.clone()],
+        outputs: vec![output.into()],
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let limits = ProtocolLimits::new(8192, 256);
+    let mut output_info = input.clone();
+    output_info.path = output.into();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(move || {
+            let (mut socket, _) = tungstenite::connect(format!("ws://{address}")).unwrap();
+            let read = |socket: &mut tungstenite::WebSocket<_>| {
+                let body = socket.read().unwrap().into_data();
+                read_frame(&mut body.as_ref(), limits).unwrap()
+            };
+            let send = |socket: &mut tungstenite::WebSocket<_>, kind, metadata, payload| {
+                let mut body = Vec::new();
+                write_frame(&mut body, &Frame::new(kind, metadata, payload), limits).unwrap();
+                socket
+                    .send(tungstenite::Message::Binary(body.into()))
+                    .unwrap();
+            };
+            let received = read(&mut socket);
+            assert_eq!(received.kind(), FrameKind::InputManifest);
+            let manifest: InputManifest = decode_metadata(received.metadata(), 8192).unwrap();
+            send(
+                &mut socket,
+                FrameKind::ValidPaths,
+                encode_metadata(&PathSet { paths: vec![] }, 8192).unwrap(),
+                vec![],
+            );
+            send(
+                &mut socket,
+                FrameKind::InputRequest,
+                encode_metadata(
+                    &PathSet {
+                        paths: vec![input.path.clone()],
+                    },
+                    8192,
+                )
+                .unwrap(),
+                vec![],
+            );
+            let mut transferred = Vec::new();
+            loop {
+                let frame = read(&mut socket);
+                assert_eq!(frame.kind(), FrameKind::InputNar);
+                let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                assert_eq!(chunk.offset, transferred.len() as u64);
+                transferred.extend_from_slice(frame.payload());
+                if chunk.final_chunk {
+                    break;
+                }
+            }
+            assert_eq!(transferred, nar);
+            send(
+                &mut socket,
+                FrameKind::BuildStarted,
+                encode_metadata(
+                    &BuildStarted {
+                        derivation_path: manifest.derivation_path,
+                    },
+                    8192,
+                )
+                .unwrap(),
+                vec![],
+            );
+            send(
+                &mut socket,
+                FrameKind::LogChunk,
+                encode_metadata(&LogChunk { sequence: 0 }, 8192).unwrap(),
+                b"building\n".to_vec(),
+            );
+            send(
+                &mut socket,
+                FrameKind::OutputMetadata,
+                encode_metadata(&output_info, 8192).unwrap(),
+                vec![],
+            );
+            send(
+                &mut socket,
+                FrameKind::OutputNar,
+                encode_metadata(
+                    &NarMetadata {
+                        path: output.into(),
+                        nar_hash: output_info.nar_hash,
+                        nar_size: nar.len() as u64,
+                        offset: 0,
+                        final_chunk: true,
+                    },
+                    8192,
+                )
+                .unwrap(),
+                nar.to_vec(),
+            );
+            let receipt = read(&mut socket);
+            assert_eq!(receipt.kind(), FrameKind::OutputReceipt);
+            let receipt: OutputReceipt = decode_metadata(receipt.metadata(), 8192).unwrap();
+            assert!(receipt.accepted);
+            assert_eq!(receipt.path, output);
+            send(
+                &mut socket,
+                FrameKind::BuildResult,
+                encode_metadata(
+                    &BuildResultMetadata {
+                        outcome: BuildOutcome::Built,
+                        diagnostic: None,
+                    },
+                    8192,
+                )
+                .unwrap(),
+                vec![],
+            );
+        });
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let socket = tungstenite::accept(stream).unwrap();
+        let mut logs = Vec::new();
+        let result = Session::new(
+            manifest,
+            endpoint.clone(),
+            staging.into(),
+            Limits {
+                maximum_paths: 10,
+                maximum_nar_bytes: 1024,
+                maximum_total_bytes: 2048,
+                metadata_bytes: 8192,
+                chunk_bytes: 256,
+            },
+        )
+        .unwrap()
+        .run(socket, || Ok(()), |bytes| logs.extend_from_slice(bytes))
+        .unwrap();
+        assert_eq!(result.outcome, BuildOutcome::Built);
+        assert_eq!(logs, b"building\n");
+        worker.join().unwrap();
+    });
+    let mut store = GatewayStoreConnection::connect(endpoint).unwrap();
+    assert!(store.is_valid_path(output.as_bytes()).unwrap());
 }
