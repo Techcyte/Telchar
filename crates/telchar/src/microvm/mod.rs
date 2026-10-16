@@ -75,6 +75,46 @@ impl Capability {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchPayload {
+    version: u8,
+    endpoint: String,
+    address: std::net::SocketAddr,
+    intent_id: String,
+    bearer: String,
+    lifetime_seconds: i32,
+}
+
+fn validate_launch_payload(
+    payload: &str,
+    intent: &crate::persistence::MicrovmLaunchIntent,
+) -> Result<(), ProviderError> {
+    if payload.len() > 16384 {
+        return Err(ProviderError);
+    }
+    let hook: LaunchPayload = serde_json::from_str(payload).map_err(|_| ProviderError)?;
+    let verifier = bearer_verifier(&hook.bearer).ok_or(ProviderError)?;
+    if hook.version != 1
+        || hook.intent_id != intent.intent_id
+        || hook.lifetime_seconds != intent.maximum_duration_seconds
+        || verifier != intent.credential_verifier
+    {
+        return Err(ProviderError);
+    }
+    Capability {
+        bearer: hook.bearer,
+        verifier,
+    }
+    .launch_payload(
+        &hook.endpoint,
+        hook.address,
+        &hook.intent_id,
+        hook.lifetime_seconds,
+    )?;
+    Ok(())
+}
+
 fn capability_verifier(entropy: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"telchar-microvm-capability-v1\0");
@@ -242,6 +282,7 @@ impl Provider {
         payload: &str,
     ) -> Result<Option<String>, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
+        validate_launch_payload(payload, intent)?;
         if self.client.config().region().map(|region| region.as_ref())
             != Some(intent.region.as_str())
             || launch_request_digest(

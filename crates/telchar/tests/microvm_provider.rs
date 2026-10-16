@@ -15,6 +15,18 @@ fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
 }
 
 #[test]
+fn launch_rejects_hook_coordinates_that_disagree_with_reservation() {
+    for mismatch in [
+        "hook-intent",
+        "hook-lifetime",
+        "hook-capability",
+        "hook-schema",
+    ] {
+        launch_exchange(true, mismatch);
+    }
+}
+
+#[test]
 fn uncertain_http_outcomes_never_retry_or_release_capacity() {
     for fault in ["dropped", "malformed", "timeout"] {
         launch_exchange(false, fault);
@@ -40,6 +52,29 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
         .expect("attempt reads")
         .expect("attempt exists");
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    let payload = capability
+        .launch_payload(
+            "wss://gateway.example/microvm",
+            "127.0.0.1:443".parse().unwrap(),
+            "intent-fixture",
+            600,
+        )
+        .unwrap();
+    let mut hook: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    match ownership {
+        "hook-intent" => hook["intent_id"] = "foreign".into(),
+        "hook-lifetime" => hook["lifetime_seconds"] = 601.into(),
+        "hook-capability" => {
+            hook["bearer"] = telchar::microvm::Capability::generate()
+                .unwrap()
+                .bearer()
+                .into()
+        }
+        "hook-schema" => hook["extra"] = true.into(),
+        _ => {}
+    }
+    let payload = hook.to_string();
     let intent = telchar::persistence::MicrovmLaunchIntent {
         intent_id: "intent-fixture".to_owned(),
         attempt_id: attempt.attempt_id,
@@ -53,11 +88,11 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             "image-fixture",
             "1",
             "intent-fixture",
-            "{}",
+            &payload,
             600,
         ),
         client_token: "intent-fixture".to_owned(),
-        credential_verifier: [3; 32],
+        credential_verifier: capability.verifier(),
         admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
         maximum_duration_seconds: 600,
     };
@@ -166,7 +201,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         let payload = if ownership == "payload-mismatch" {
             "{\"extra\":true}"
         } else {
-            "{}"
+            &payload
         };
         let started = std::time::Instant::now();
         let result = provider.launch_reserved(&owner, &intent, payload);
@@ -197,7 +232,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let requests = server.join().expect("server joins");
     let rejected_before_dispatch = matches!(
         ownership,
-        "expired" | "payload-mismatch" | "region-mismatch"
+        "expired"
+            | "payload-mismatch"
+            | "region-mismatch"
+            | "hook-intent"
+            | "hook-lifetime"
+            | "hook-capability"
+            | "hook-schema"
     );
     assert_eq!(requests.len(), if rejected_before_dispatch { 0 } else { 1 });
     if !rejected_before_dispatch {
@@ -219,7 +260,8 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     assert_eq!(
         row.get::<_, String>(0),
         match ownership {
-            "expired" | "payload-mismatch" | "region-mismatch" => "prepared",
+            "expired" | "payload-mismatch" | "region-mismatch" | "hook-intent"
+            | "hook-lifetime" | "hook-capability" | "hook-schema" => "prepared",
             "response-expired" => "dispatching",
             _ if success => "bound",
             _ => "ambiguous",
