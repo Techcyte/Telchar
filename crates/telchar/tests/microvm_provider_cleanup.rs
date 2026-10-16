@@ -82,10 +82,11 @@ fn exchange(
         }
         requests
     });
-    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let database = telchar::persistence::Database::connect(fixture.url()).expect("database pool");
+    telchar::persistence::migrate(&database).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cleanup.drv";
     telchar::persistence::claim_shared_build(
-        fixture.url(),
+        &database,
         derivation,
         &[1; 32],
         "cleanup-fixture",
@@ -95,8 +96,8 @@ fn exchange(
         &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cleanup"],
     )
     .expect("build claims");
-    telchar::persistence::start_shared_build(fixture.url(), derivation).expect("attempt starts");
-    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+    telchar::persistence::start_shared_build(&database, derivation).expect("attempt starts");
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
         .expect("attempt reads")
         .expect("attempt exists");
     fixture.connect().execute(
@@ -137,7 +138,7 @@ fn exchange(
         telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
     let result = if operation.ends_with("cleanup") {
         let cleanup =
-            telchar::persistence::pending_microvm_cleanup(fixture.url(), "cleanup-fixture", 1)
+            telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1)
                 .expect("pending identity")
                 .remove(0);
         let result = provider.cleanup(&owner, &cleanup);
@@ -147,7 +148,7 @@ fn exchange(
             assert!(!result.expect("terminate acknowledgment retains capacity"));
             assert!(!released);
             let pending = telchar::persistence::pending_microvm_cleanup(
-                owner.database_url(),
+                owner.database(),
                 "cleanup-fixture",
                 1,
             )
@@ -160,7 +161,7 @@ fn exchange(
             );
             assert!(
                 telchar::persistence::pending_microvm_cleanup(
-                    owner.database_url(),
+                    owner.database(),
                     "cleanup-fixture",
                     1
                 )
