@@ -1,5 +1,6 @@
 //! AWS control-plane operations for exact MicroVM executions.
 
+pub mod outputs;
 pub mod rendezvous;
 
 use std::time::Duration;
