@@ -23,6 +23,7 @@ pub struct Limits {
 
 pub struct Session {
     manifest: InputManifest,
+    request: crate::build::BuildRequest,
     store: GatewayStoreEndpoint,
     transfer: TransferSession,
     outputs: Outputs,
@@ -31,7 +32,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(
-        manifest: InputManifest,
+        request: &crate::build::BuildRequest,
         store: GatewayStoreEndpoint,
         staging: PathBuf,
         limits: Limits,
@@ -43,6 +44,34 @@ impl Session {
         {
             return Err(io::Error::other("MicroVM transfer limits are invalid"));
         }
+        use crate::store::closure::StoreClosureBackend;
+        request.validate_for_execution()?;
+        let paths = crate::store::closure::GatewayStoreClosureBackend::new(store.clone())
+            .input_closure(request.input_sources())?
+            .into_iter()
+            .map(|path| PathManifestEntry {
+                path: path.store_path,
+                nar_hash: path.nar_hash,
+                nar_size: path.nar_size,
+                references: path.references,
+                deriver: path.deriver,
+                content_address: path.content_address,
+            })
+            .collect();
+        let text = |bytes: &[u8]| {
+            String::from_utf8(bytes.to_vec())
+                .map_err(|_| io::Error::other("MicroVM admitted path is invalid"))
+        };
+        let manifest = InputManifest {
+            derivation_path: text(request.derivation_path())?,
+            build: crate::nomad::protocol::BuildSpecification::from(request),
+            paths,
+            outputs: request
+                .expected_outputs()
+                .iter()
+                .map(|(_, path)| text(path))
+                .collect::<io::Result<_>>()?,
+        };
         let transfer = TransferSession::new(
             manifest.clone(),
             limits.maximum_paths,
@@ -62,6 +91,7 @@ impl Session {
         )?;
         Ok(Self {
             manifest,
+            request: request.clone(),
             store,
             transfer,
             outputs,
@@ -159,13 +189,12 @@ impl Session {
                         return Err(io::Error::other("MicroVM output deriver is not admitted"));
                     }
                     let authority = self
-                        .manifest
-                        .build
-                        .outputs
+                        .request
+                        .output_authorities()
                         .iter()
-                        .find(|output| output.path == metadata.path.as_bytes())
+                        .find(|output| output.path() == metadata.path.as_bytes())
                         .ok_or_else(|| io::Error::other("MicroVM output is not admitted"))?;
-                    if authority.hash_algorithm.is_empty() && metadata.content_address.is_some() {
+                    if authority.expected_content_address() != metadata.content_address {
                         return Err(io::Error::other(
                             "MicroVM output content address is not admitted",
                         ));

@@ -124,26 +124,6 @@ fn gateway_session(
     use telchar::nomad::protocol::*;
     let output = "/nix/store/dddddddddddddddddddddddddddddddd-session-output";
     let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-session.drv";
-    let manifest = InputManifest {
-        derivation_path: drv.into(),
-        build: BuildSpecification {
-            derivation_path: drv.as_bytes().to_vec(),
-            outputs: vec![NamedOutput {
-                name: b"out".to_vec(),
-                path: output.as_bytes().to_vec(),
-                hash_algorithm: vec![],
-                hash: vec![],
-            }],
-            input_sources: vec![input.path.as_bytes().to_vec()],
-            system: "aarch64-linux".into(),
-            required_system_features: vec![],
-            builder: b"/bin/sh".to_vec(),
-            arguments: vec![],
-            environment: vec![(b"out".to_vec(), output.as_bytes().to_vec())],
-        },
-        paths: vec![input.clone()],
-        outputs: vec![output.into()],
-    };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let limits = ProtocolLimits::new(8192, 256);
@@ -285,8 +265,24 @@ fn gateway_session(
             .unwrap();
         let socket = tungstenite::accept(stream).unwrap();
         let mut logs = Vec::new();
+        let derivation = format!(
+            r#"Derive([("out","{output}","","")],[],["{}"],"aarch64-linux","/bin/sh",[],[("out","{output}"),("system","aarch64-linux"),("builder","/bin/sh"),("name","session")])"#,
+            input.path
+        );
+        let request = telchar::build::BuildRequest::from_stored_derivation(
+            drv.as_bytes(),
+            derivation.as_bytes(),
+            &[telchar::backend::BackendTarget::new(
+                "fixture",
+                telchar::backend::BackendKind::Local,
+                "aarch64-linux",
+                [] as [&str; 0],
+            )
+            .unwrap()],
+        )
+        .unwrap();
         let result = Session::new(
-            manifest,
+            &request,
             endpoint.clone(),
             staging.into(),
             Limits {

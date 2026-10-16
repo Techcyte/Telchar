@@ -3,9 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use telchar::microvm::session::{Limits, Session};
-use telchar::nomad::protocol::{
-    BuildOutcome, BuildSpecification, InputManifest, NamedOutput, PathManifestEntry,
-};
+use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 const FIXTURE: &str = concat!(
@@ -59,41 +57,29 @@ fn dedicated_worker_builds_and_returns_registered_output() {
     assert!(added.stderr.is_empty());
     let input = String::from_utf8(added.stdout).unwrap().trim().to_owned();
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
-    let info = store.query_path_info(input.as_bytes()).unwrap().unwrap();
+    assert!(store.query_path_info(input.as_bytes()).unwrap().is_some());
     let output = "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output";
     let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv";
     assert!(!store.is_valid_path(output.as_bytes()).unwrap());
-    let manifest = InputManifest {
-        derivation_path: drv.into(),
-        build: BuildSpecification {
-            derivation_path: drv.as_bytes().to_vec(),
-            outputs: vec![NamedOutput {
-                name: b"out".to_vec(),
-                path: output.as_bytes().to_vec(),
-                hash_algorithm: vec![],
-                hash: vec![],
-            }],
-            input_sources: vec![input.as_bytes().to_vec()],
-            system: "x86_64-linux".into(),
-            required_system_features: vec![],
-            builder: b"/bin/sh".to_vec(),
-            arguments: vec![
-                b"-c".to_vec(),
-                format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"")
-                    .into_bytes(),
-            ],
-            environment: vec![(b"out".to_vec(), output.as_bytes().to_vec())],
-        },
-        paths: vec![PathManifestEntry {
-            path: input,
-            nar_hash: info.nar_hash_hex().into(),
-            nar_size: info.nar_size(),
-            references: vec![],
-            deriver: None,
-            content_address: None,
-        }],
-        outputs: vec![output.into()],
-    };
+    let script = serde_json::to_string(&format!(
+        "read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\""
+    ))
+    .unwrap();
+    let derivation = format!(
+        r#"Derive([("out","{output}","","")],[],["{input}"],"x86_64-linux","/bin/sh",["-c",{script}],[("out","{output}"),("system","x86_64-linux"),("builder","/bin/sh"),("name","dedicated")])"#
+    );
+    let request = telchar::build::BuildRequest::from_stored_derivation(
+        drv.as_bytes(),
+        derivation.as_bytes(),
+        &[telchar::backend::BackendTarget::new(
+            "fixture",
+            telchar::backend::BackendKind::Local,
+            "x86_64-linux",
+            [] as [&str; 0],
+        )
+        .unwrap()],
+    )
+    .unwrap();
     let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
     telchar::persistence::migrate(&database).unwrap();
     let local = telchar::backend::BackendKind::Local;
@@ -160,7 +146,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             metadata_bytes: 8192,
             chunk_bytes: 256 * 1024,
         };
-        Session::new(manifest, gateway_store, staging, limits)
+        Session::new(&request, gateway_store, staging, limits)
             .unwrap()
             .run(
                 socket,
