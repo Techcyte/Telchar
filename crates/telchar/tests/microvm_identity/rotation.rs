@@ -51,18 +51,31 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
 
 #[test]
 fn provider_reattests_rotated_credentials_before_cleanup() {
-    rotation("116392764028", "none");
-    rotation("999999999999", "none");
+    for operation in ["get", "delete"] {
+        rotation("116392764028", "none", operation);
+        rotation("999999999999", "none", operation);
+    }
 }
 
 #[test]
 fn credential_failure_never_falls_back_to_attested_snapshot() {
     for fault in ["unavailable", "timeout", "expired"] {
-        rotation("116392764028", fault);
+        for operation in ["get", "delete"] {
+            rotation("116392764028", fault, operation);
+        }
     }
 }
 
-fn rotation(account: &'static str, fault: &'static str) {
+#[test]
+fn failed_reattestation_never_authorizes_provider_operation() {
+    for fault in ["identity-unavailable", "identity-timeout"] {
+        for operation in ["get", "delete"] {
+            rotation("116392764028", fault, operation);
+        }
+    }
+}
+
+fn rotation(account: &'static str, fault: &'static str, operation: &'static str) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -101,6 +114,18 @@ fn rotation(account: &'static str, fault: &'static str) {
             let mut body = vec![0; length];
             socket.read_exact(&mut body).unwrap();
             let identity = headers.starts_with("post ");
+            if identity && headers.contains("credential=rotated-key/") {
+                if fault == "identity-unavailable" {
+                    requests.push(headers);
+                    socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+                    continue;
+                }
+                if fault == "identity-timeout" {
+                    requests.push(headers);
+                    std::thread::sleep(Duration::from_millis(1200));
+                    continue;
+                }
+            }
             let body = if identity {
                 assert!(
                     String::from_utf8(body)
@@ -114,14 +139,21 @@ fn rotation(account: &'static str, fault: &'static str) {
                     response
                 }
             } else {
-                assert!(headers.starts_with("get "));
-                serde_json::json!({
-                    "microvmId": "microvm-exact", "state": "TERMINATED",
-                    "endpoint": "https://unused.invalid", "imageArn": "image-fixture",
-                    "imageVersion": "1", "maximumDurationInSeconds": 600,
-                    "startedAt": 1, "terminatedAt": 2,
-                })
-                .to_string()
+                assert!(
+                    headers
+                        .starts_with(&format!("{operation} /2025-09-09/microvms/microvm-exact "))
+                );
+                if operation == "delete" {
+                    "{}".to_owned()
+                } else {
+                    serde_json::json!({
+                        "microvmId": "microvm-exact", "state": "TERMINATED",
+                        "endpoint": "https://unused.invalid", "imageArn": "image-fixture",
+                        "imageVersion": "1", "maximumDurationInSeconds": 600,
+                        "startedAt": 1, "terminatedAt": 2,
+                    })
+                    .to_string()
+                }
             };
             requests.push(headers);
             write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", if identity { "text/xml" } else { "application/json" }, body.len()).unwrap();
@@ -163,7 +195,13 @@ fn rotation(account: &'static str, fault: &'static str) {
         .unwrap();
     rotated.store(true, Ordering::SeqCst);
     let started = std::time::Instant::now();
-    let result = runtime.block_on(provider.is_terminated("microvm-exact"));
+    let result = if operation == "delete" {
+        runtime
+            .block_on(provider.terminate("microvm-exact"))
+            .map(|()| true)
+    } else {
+        runtime.block_on(provider.is_terminated("microvm-exact"))
+    };
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "refresh bounded"
@@ -171,8 +209,17 @@ fn rotation(account: &'static str, fault: &'static str) {
     if fault != "none" {
         assert!(result.is_err(), "unusable source must fail closed");
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 1, "no HTTP after startup attestation");
+        let identity_failure = fault.starts_with("identity-");
+        assert_eq!(
+            requests.len(),
+            if identity_failure { 2 } else { 1 },
+            "no provider request or attestation retry"
+        );
         assert!(requests[0].contains("credential=initial-key/"));
+        if identity_failure {
+            assert!(requests[1].starts_with("post "));
+            assert!(requests[1].contains("credential=rotated-key/"));
+        }
         return;
     }
     if account == "116392764028" {
@@ -193,7 +240,7 @@ fn rotation(account: &'static str, fault: &'static str) {
     assert!(requests[1].starts_with("post "));
     assert!(requests[1].contains("credential=rotated-key/"));
     if account == "116392764028" {
-        assert!(requests[2].starts_with("get "));
+        assert!(requests[2].starts_with(&format!("{operation} ")));
         assert!(requests[2].contains("credential=rotated-key/"));
     }
 }
