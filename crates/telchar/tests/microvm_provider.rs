@@ -47,13 +47,18 @@ fn launch_exchange(success: bool, ownership: &'static str) {
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
     let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider.drv";
+    let kind = if ownership.starts_with("configured") {
+        telchar::backend::BackendKind::Microvm
+    } else {
+        telchar::backend::BackendKind::Local
+    };
     telchar::persistence::claim_shared_build(
         fixture.url(),
         derivation,
         &[1; 32],
         "provider-fixture",
-        telchar::backend::BackendKind::Local,
-        telchar::backend::BackendKind::Local.capabilities(),
+        kind,
+        kind.capabilities(),
         None,
         &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"],
     )
@@ -69,7 +74,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         let source = r#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","provider"),("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"),("system","aarch64-linux")])"#;
         let target = telchar::backend::BackendTarget::new(
             "provider-fixture",
-            telchar::backend::BackendKind::Local,
+            kind,
             "aarch64-linux",
             Vec::<String>::new(),
         )
@@ -258,8 +263,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                 },
             };
             if ownership.starts_with("configured") {
-                let policy = telchar::service::config::MicrovmBackendConfig::parse(
-                    r#"
+                let deployment = r#"
 name = "provider-fixture"
 system = "aarch64-linux"
 account_id = "116392764028"
@@ -280,9 +284,9 @@ maximum_nar_bytes = 1024
 maximum_total_bytes = 2048
 metadata_bytes = 8192
 chunk_bytes = 1024
-"#,
-                )
-                .unwrap();
+"#;
+                let policy =
+                    telchar::service::config::MicrovmBackendConfig::parse(deployment).unwrap();
                 if matches!(
                     ownership,
                     "configured" | "configured-cancelled" | "configured-shutdown"
@@ -321,7 +325,37 @@ chunk_bytes = 1024
                             )
                             .unwrap(),
                         );
-                        let mut backend = std::sync::Arc::clone(&service);
+                        let configuration_file = tempfile::NamedTempFile::new().unwrap();
+                        std::fs::write(configuration_file.path(), format!(
+                            "[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{deployment}"
+                        )).unwrap();
+                        let configuration =
+                            telchar::service::config::ServiceConfig::load_from_default(
+                                configuration_file.path(),
+                            )
+                            .unwrap();
+                        let backends = telchar::backend::routing::ConfiguredBackends::new(
+                            &configuration,
+                            Some(executor.store.clone()),
+                        )
+                        .unwrap()
+                        .attach_microvm_services(
+                            &configuration,
+                            vec![std::sync::Arc::clone(&service)],
+                        )
+                        .unwrap();
+                        let mut backend = backends
+                            .executor(
+                                owner.database().clone(),
+                                std::sync::Arc::new(
+                                    telchar::shared_build::SharedBuildRegistry::new(),
+                                ),
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            backend.selected_target("aarch64-linux", &[]).unwrap(),
+                            *policy.target()
+                        );
                         let mut control = fixture.connect();
                         let started = std::time::Instant::now();
                         let error = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || {
