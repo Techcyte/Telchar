@@ -575,11 +575,28 @@ fn daemon_lifecycle(exit: DaemonExit) {
             }
             assert_eq!(read_word(&mut request_stream), 0);
             assert_eq!(read_word(&mut request_stream), 0);
-            let launches: i64 = connect()
-                .query_one("SELECT count(*) FROM microvm_launches", &[])
-                .unwrap()
-                .get(0);
-            assert_eq!(launches, 1, "daemon persists one provider launch intent");
+            let launches = connect()
+                .query("SELECT phase, provider_id, reservation_released_at IS NULL AS reserved FROM microvm_launches", &[])
+                .unwrap();
+            assert_eq!(
+                launches.len(),
+                1,
+                "daemon persists one provider launch intent"
+            );
+            assert_eq!(launches[0].get::<_, String>("phase"), "ambiguous");
+            assert!(
+                launches[0]
+                    .get::<_, Option<String>>("provider_id")
+                    .is_none()
+            );
+            assert!(launches[0].get::<_, bool>("reserved"));
+            let attachment = connect()
+                .query_one(
+                    "SELECT state FROM request_attachments WHERE session_id = 'microvm-ipc'",
+                    &[],
+                )
+                .unwrap();
+            assert_eq!(attachment.get::<_, String>(0), "detached");
         }
         drop(request_stream);
         drop(client);
