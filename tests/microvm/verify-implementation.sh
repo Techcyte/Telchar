@@ -28,6 +28,8 @@ cargo test --locked -p telchar \
   --test microvm_config --test microvm_handoff --test microvm_identity \
   --test microvm_listener --test microvm_outputs --test microvm_service \
   --test persistence_migrations -- --test-threads=1
+cargo build --locked -p telchar --bin telchar
+export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
 cargo test --locked -p telchar-nomad-worker \
   --test microvm_admission --test microvm_connector --test microvm_deadline \
   --test microvm_process --test microvm_session --test microvm_build \

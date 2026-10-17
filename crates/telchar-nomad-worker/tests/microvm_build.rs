@@ -6,6 +6,8 @@ use telchar::microvm::session::Limits;
 use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
+mod microvm_daemon;
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../tests/microvm/canonical-store.sh"
@@ -14,6 +16,14 @@ const FIXTURE: &str = concat!(
 fn provider_response(
     binding: Option<std::sync::mpsc::SyncSender<serde_json::Value>>,
 ) -> (telchar::microvm::Provider, std::thread::JoinHandle<()>) {
+    let attest = binding.is_some();
+    let (endpoint, response) = provider_server(binding);
+    provider_client(endpoint, response, attest)
+}
+
+fn provider_server(
+    binding: Option<std::sync::mpsc::SyncSender<serde_json::Value>>,
+) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -89,6 +99,14 @@ fn provider_response(
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
+    (endpoint, response)
+}
+
+fn provider_client(
+    endpoint: String,
+    response: std::thread::JoinHandle<()>,
+    attest: bool,
+) -> (telchar::microvm::Provider, std::thread::JoinHandle<()>) {
     let credentials =
         aws_credential_types::Credentials::new("fixture-key", "fixture-secret", None, None, "test");
     let config = aws_sdk_lambdamicrovms::Config::builder()
@@ -137,6 +155,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-fenced",
             "configured-corrupt-output",
             "configured-fixed-output",
+            "configured-daemon",
         ] {
             run_isolated_build(case);
         }
@@ -283,114 +302,131 @@ fn run_build() {
     } else {
         telchar::backend::BackendKind::Local
     };
-    telchar::persistence::claim_shared_build_with_request(
-        &database,
-        drv,
-        &request.shared_build_digest(),
-        "build",
-        local,
-        local.capabilities(),
-        None,
-        &outputs,
-        &request,
-    )
-    .unwrap();
-    telchar::persistence::start_shared_build(&database, drv).unwrap();
-    let attempt = telchar::persistence::read_shared_build_attempt(&database, drv)
-        .unwrap()
-        .unwrap();
-    let capability = telchar::microvm::Capability::generate().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let payload = capability
-        .launch_payload(
-            &format!("wss://localhost:{}/microvm", address.port()),
-            address,
-            "build-intent",
-            60,
-        )
-        .unwrap();
-    let intent = telchar::persistence::MicrovmLaunchIntent {
-        intent_id: "build-intent".into(),
-        attempt_id: attempt.attempt_id,
-        backend_name: "build".into(),
-        account_id: "116392764028".into(),
-        region: "us-west-2".into(),
-        image_arn: "fixture".into(),
-        image_version: "1".into(),
-        configuration_digest: [1; 32],
-        request_digest: telchar::microvm::launch_request_digest(
-            "fixture",
-            "1",
-            "build-token",
-            &payload,
-            60,
-        ),
-        client_token: "build-token".into(),
-        credential_verifier: capability.verifier(),
-        admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
-        maximum_duration_seconds: 60,
-    };
-    if !configured {
-        assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
-    }
-
-    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
-        &database,
-        Duration::from_secs(60),
-    )
-    .unwrap();
-    assert!(
-        telchar::persistence::microvm_session_request(owner.database(), "build-intent")
-            .unwrap()
-            .is_none()
-    );
     let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gateway_address = gateway.local_addr().unwrap();
-    let owner = std::sync::Arc::new(owner);
-    let sessions =
-        std::sync::Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
-    let mut gateway = Some(gateway);
-    let mut callback = if configured {
-        None
-    } else {
-        Some(
-            telchar::microvm::callback_service::CallbackService::start(
-                gateway.take().unwrap(),
-                owner.clone(),
-                sessions.clone(),
-                1,
-                1,
-                Duration::from_secs(5),
-            )
-            .unwrap(),
-        )
-    };
-    let gateway_store = endpoint.clone();
-    let staging = root.clone();
-    let execution_intent = intent.clone();
+    let capability = telchar::microvm::Capability::generate().unwrap();
     let ownership_lost = matches!(case.as_str(), "fenced" | "configured-fenced");
     let (binding_sender, binding_receiver) = std::sync::mpsc::sync_channel(1);
-    let gateway_thread = std::thread::spawn(move || {
-        let (provider, response) = provider_response(configured.then_some(binding_sender));
-        let limits = Limits {
-            maximum_paths: 10,
-            maximum_nar_bytes: 1024 * 1024,
-            maximum_total_bytes: 2 * 1024 * 1024,
-            metadata_bytes: 8192,
-            chunk_bytes: 256 * 1024,
+    let gateway_thread = if case == "configured-daemon" {
+        drop(gateway);
+        let root = root.clone();
+        let database = database.clone();
+        let endpoint = endpoint.clone();
+        std::thread::spawn(move || {
+            microvm_daemon::run(
+                &root,
+                &database,
+                &endpoint,
+                address,
+                gateway_address,
+                &request,
+                binding_sender,
+            )
+        })
+    } else {
+        telchar::persistence::claim_shared_build_with_request(
+            &database,
+            drv,
+            &request.shared_build_digest(),
+            "build",
+            local,
+            local.capabilities(),
+            None,
+            &outputs,
+            &request,
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(&database, drv).unwrap();
+        let attempt = telchar::persistence::read_shared_build_attempt(&database, drv)
+            .unwrap()
+            .unwrap();
+        let payload = capability
+            .launch_payload(
+                &format!("wss://localhost:{}/microvm", address.port()),
+                address,
+                "build-intent",
+                60,
+            )
+            .unwrap();
+        let intent = telchar::persistence::MicrovmLaunchIntent {
+            intent_id: "build-intent".into(),
+            attempt_id: attempt.attempt_id,
+            backend_name: "build".into(),
+            account_id: "116392764028".into(),
+            region: "us-west-2".into(),
+            image_arn: "fixture".into(),
+            image_version: "1".into(),
+            configuration_digest: [1; 32],
+            request_digest: telchar::microvm::launch_request_digest(
+                "fixture",
+                "1",
+                "build-token",
+                &payload,
+                60,
+            ),
+            client_token: "build-token".into(),
+            credential_verifier: capability.verifier(),
+            admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+            maximum_duration_seconds: 60,
         };
-        let execution = telchar::microvm::execution::Execution {
-            provider: &provider,
-            owner: &owner,
-            sessions: &sessions,
-            store: gateway_store,
-            staging,
-            limits,
+        if !configured {
+            assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
+        }
+
+        let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            &database,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+                .unwrap()
+                .is_none()
+        );
+        let owner = std::sync::Arc::new(owner);
+        let sessions =
+            std::sync::Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+        let mut gateway = Some(gateway);
+        let mut callback = if configured {
+            None
+        } else {
+            Some(
+                telchar::microvm::callback_service::CallbackService::start(
+                    gateway.take().unwrap(),
+                    owner.clone(),
+                    sessions.clone(),
+                    1,
+                    1,
+                    Duration::from_secs(5),
+                )
+                .unwrap(),
+            )
         };
-        let result = if configured {
-            let deployment = format!(
-                r#"
+        let gateway_store = endpoint.clone();
+        let staging = root.clone();
+        let execution_intent = intent.clone();
+        std::thread::spawn(move || {
+            let (provider, response) = provider_response(configured.then_some(binding_sender));
+            let limits = Limits {
+                maximum_paths: 10,
+                maximum_nar_bytes: 1024 * 1024,
+                maximum_total_bytes: 2 * 1024 * 1024,
+                metadata_bytes: 8192,
+                chunk_bytes: 256 * 1024,
+            };
+            let execution = telchar::microvm::execution::Execution {
+                provider: &provider,
+                owner: &owner,
+                sessions: &sessions,
+                store: gateway_store,
+                staging,
+                limits,
+            };
+            let result = if configured {
+                let deployment = format!(
+                    r#"
 name = "build"
 system = "aarch64-linux"
 account_id = "116392764028"
@@ -412,90 +448,91 @@ maximum_total_bytes = 2097152
 metadata_bytes = 8192
 chunk_bytes = 262144
 "#,
-                address.port(),
-                address,
-                execution.staging.display()
-            );
-            let policy =
-                telchar::service::config::MicrovmBackendConfig::parse(&deployment).unwrap();
-            let service = Arc::new(
-                telchar::microvm::service::Service::start(
-                    policy,
-                    provider.clone(),
-                    owner.clone(),
-                    gateway.take().unwrap(),
-                    execution.store.clone(),
-                )
-                .unwrap(),
-            );
-            let configuration_file = execution.staging.join("service.toml");
-            std::fs::write(&configuration_file, format!(
+                    address.port(),
+                    address,
+                    execution.staging.display()
+                );
+                let policy =
+                    telchar::service::config::MicrovmBackendConfig::parse(&deployment).unwrap();
+                let service = Arc::new(
+                    telchar::microvm::service::Service::start(
+                        policy,
+                        provider.clone(),
+                        owner.clone(),
+                        gateway.take().unwrap(),
+                        execution.store.clone(),
+                    )
+                    .unwrap(),
+                );
+                let configuration_file = execution.staging.join("service.toml");
+                std::fs::write(&configuration_file, format!(
                 "[backends]\nmicrovm_bind = \"{gateway_address}\"\n[[backends.microvm]]\n{deployment}"
             )).unwrap();
-            let configuration =
-                telchar::service::config::ServiceConfig::load_from_default(&configuration_file)
+                let configuration =
+                    telchar::service::config::ServiceConfig::load_from_default(&configuration_file)
+                        .unwrap();
+                let backends = telchar::backend::routing::ConfiguredBackends::new(
+                    &configuration,
+                    Some(execution.store.clone()),
+                )
+                .unwrap()
+                .attach_microvm_services(&configuration, vec![service.clone()])
+                .unwrap();
+                let mut backend = backends
+                    .executor(
+                        owner.database().clone(),
+                        Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+                    )
                     .unwrap();
-            let backends = telchar::backend::routing::ConfiguredBackends::new(
-                &configuration,
-                Some(execution.store.clone()),
-            )
-            .unwrap()
-            .attach_microvm_services(&configuration, vec![service.clone()])
-            .unwrap();
-            let mut backend = backends
-                .executor(
-                    owner.database().clone(),
-                    Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+                use telchar::backend::BuildBackend;
+                let target = backend.selected_target(request.system(), &[]).unwrap();
+                assert_eq!(target.kind(), telchar::backend::BackendKind::Microvm);
+                let mut build = telchar::backend::BuildExecution::new(
+                    "configured-worker",
+                    &request,
+                    Duration::from_secs(15),
                 )
                 .unwrap();
-            use telchar::backend::BuildBackend;
-            let target = backend.selected_target(request.system(), &[]).unwrap();
-            assert_eq!(target.kind(), telchar::backend::BackendKind::Microvm);
-            let mut build = telchar::backend::BuildExecution::new(
-                "configured-worker",
-                &request,
-                Duration::from_secs(15),
-            )
-            .unwrap();
-            build.set_target_name(target.name()).unwrap();
-            let result = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || Ok(false));
-            let shutdown = service.shutdown();
+                build.set_target_name(target.name()).unwrap();
+                let result = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || Ok(false));
+                let shutdown = service.shutdown();
+                if ownership_lost {
+                    if let Err(error) = shutdown {
+                        assert_eq!(error.to_string(), "MicroVM listener failed");
+                    }
+                    assert!(backend.selected_target(request.system(), &[]).is_err());
+                } else {
+                    shutdown.unwrap();
+                }
+                result.map(|result| {
+                    assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
+                    assert_eq!(result.outputs(), request.expected_outputs());
+                    BuildOutcome::Built
+                })
+            } else {
+                execution
+                    .run_reserved(
+                        &execution_intent,
+                        &payload,
+                        std::time::Instant::now() + Duration::from_secs(15),
+                        |_| {},
+                    )
+                    .map(|result| result.outcome)
+            };
+            response.join().unwrap();
+            let shutdown = callback
+                .as_mut()
+                .map_or(Ok(()), |callback| callback.shutdown());
             if ownership_lost {
                 if let Err(error) = shutdown {
                     assert_eq!(error.to_string(), "MicroVM listener failed");
                 }
-                assert!(backend.selected_target(request.system(), &[]).is_err());
             } else {
                 shutdown.unwrap();
             }
-            result.map(|result| {
-                assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
-                assert_eq!(result.outputs(), request.expected_outputs());
-                BuildOutcome::Built
-            })
-        } else {
-            execution
-                .run_reserved(
-                    &execution_intent,
-                    &payload,
-                    std::time::Instant::now() + Duration::from_secs(15),
-                    |_| {},
-                )
-                .map(|result| result.outcome)
-        };
-        response.join().unwrap();
-        let shutdown = callback
-            .as_mut()
-            .map_or(Ok(()), |callback| callback.shutdown());
-        if ownership_lost {
-            if let Err(error) = shutdown {
-                assert_eq!(error.to_string(), "MicroVM listener failed");
-            }
-        } else {
-            shutdown.unwrap();
-        }
-        result
-    });
+            result
+        })
+    };
     let binding = root.join("binding.json");
     let trust = root.join("trust.der");
     std::fs::write(&trust, include_bytes!("fixtures/microvm-cert.der")).unwrap();
