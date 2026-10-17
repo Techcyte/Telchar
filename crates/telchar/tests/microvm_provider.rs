@@ -4,6 +4,43 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+#[derive(Debug)]
+struct LaunchCredentials {
+    database: String,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl aws_credential_types::provider::ProvideCredentials for LaunchCredentials {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::new(async move {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                let database = self.database.clone();
+                tokio::task::spawn_blocking(move || {
+                    postgres::Client::connect(&database, postgres::NoTls).unwrap()
+                        .batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+                }).await.unwrap();
+            }
+            Ok(aws_credential_types::Credentials::new(
+                "fixture-key",
+                "fixture-secret",
+                None,
+                None,
+                "test",
+            ))
+        })
+    }
+}
+
+#[test]
+fn ownership_loss_during_credentials_prevents_launch() {
+    launch_exchange(true, "credentials-expired");
+}
+
 #[test]
 fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
     launch_exchange(false, "active");
@@ -179,6 +216,11 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     assert!(length < 32768);
                     let mut body = vec![0; length];
                     socket.read_exact(&mut body).expect("request body");
+                    if ownership == "credentials-expired" && headers.starts_with("POST / HTTP") {
+                        let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                        write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                        continue;
+                    }
                     requests.push((headers, body));
                     if ownership == "response-expired" {
                         postgres::Client::connect(&control_url, postgres::NoTls).expect("fixture control connects").batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").expect("owner expires during request");
@@ -233,10 +275,35 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                 None,
                 "test",
             ))
-            .endpoint_url(endpoint)
+            .endpoint_url(endpoint.clone())
             .build();
-        let provider =
-            telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
+        let provider = if ownership == "credentials-expired" {
+            let credentials =
+                aws_credential_types::provider::SharedCredentialsProvider::new(LaunchCredentials {
+                    database: fixture.url().to_owned(),
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                });
+            let identity = aws_sdk_sts::Config::builder()
+                .behavior_version_latest()
+                .region(aws_sdk_sts::config::Region::new("us-west-2"))
+                .credentials_provider(credentials.clone())
+                .endpoint_url(endpoint)
+                .build();
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(telchar::microvm::Provider::verify_account(
+                    config,
+                    identity,
+                    credentials,
+                    "116392764028",
+                    Duration::from_secs(1),
+                ))
+                .unwrap()
+        } else {
+            telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider")
+        };
         let payload = if ownership == "payload-mismatch" {
             "{\"extra\":true}"
         } else {
@@ -478,6 +545,7 @@ chunk_bytes = 1024
     let rejected_before_dispatch = matches!(
         ownership,
         "expired"
+            | "credentials-expired"
             | "payload-mismatch"
             | "region-mismatch"
             | "hook-intent"
@@ -505,8 +573,14 @@ chunk_bytes = 1024
     assert_eq!(
         row.get::<_, String>(0),
         match ownership {
-            "expired" | "payload-mismatch" | "region-mismatch" | "hook-intent"
-            | "hook-lifetime" | "hook-capability" | "hook-schema" => "prepared",
+            "expired"
+            | "credentials-expired"
+            | "payload-mismatch"
+            | "region-mismatch"
+            | "hook-intent"
+            | "hook-lifetime"
+            | "hook-capability"
+            | "hook-schema" => "prepared",
             "response-expired" => "dispatching",
             "execution-timeout" => "closed",
             _ if success => "bound",

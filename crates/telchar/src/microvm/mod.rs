@@ -426,13 +426,16 @@ impl Provider {
             .enable_all()
             .build()
             .map_err(|_| ProviderError)?;
+        let client = runtime.block_on(self.authorized_client())?;
+        owner.verify().map_err(|_| ProviderError)?;
         if !crate::persistence::dispatch_microvm_launch_intent(database, intent)
             .map_err(|_| ProviderError)?
         {
             return Ok(None);
         }
         owner.verify().map_err(|_| ProviderError)?;
-        let response = runtime.block_on(self.launch(
+        let response = runtime.block_on(Self::launch(
+            &client,
             &intent.image_arn,
             &intent.image_version,
             &intent.client_token,
@@ -458,7 +461,7 @@ impl Provider {
     }
 
     async fn launch(
-        &self,
+        client: &Client,
         image: &str,
         version: &str,
         token: &str,
@@ -482,9 +485,7 @@ impl Provider {
             .auto_resume_enabled(false)
             .build()
             .map_err(|_| ProviderError)?;
-        let result = self
-            .authorized_client()
-            .await?
+        let result = client
             .run_microvm()
             .image_identifier(image)
             .image_version(version)
