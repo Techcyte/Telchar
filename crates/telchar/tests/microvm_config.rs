@@ -193,6 +193,150 @@ fn daemon_refuses_admission_without_provider_credentials() {
 }
 
 #[test]
+fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let directory = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+            assert!(headers.len() < 32768);
+        }
+        let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+        assert!(headers.contains("credential=fixture-key/"));
+        let length: usize = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(length < 4096);
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).unwrap();
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("Action=GetCallerIdentity")
+        );
+        let body = "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>";
+        write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = callback.local_addr().unwrap();
+    drop(callback);
+    let config = directory.path().join("service.toml");
+    let socket = directory.path().join("daemon.sock");
+    std::fs::write(
+        &config,
+        format!("[backends]\nmicrovm_bind = \"{address}\"\n[[backends.microvm]]\n{CONFIG}"),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .args([
+            "daemon",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--frontend-uid",
+            &rustix::process::getuid().as_raw().to_string(),
+        ])
+        .env_clear()
+        .env("HOME", directory.path())
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .env("AWS_ACCESS_KEY_ID", "fixture-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
+        .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
+        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_DATABASE_URL", database.url())
+        .env(
+            "TELCHAR_GATEWAY_STORE_URI",
+            "unix:///unused-microvm-test-store",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            let mut error = String::new();
+            child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut error)
+                .unwrap();
+            panic!("daemon exited {status}: {error}");
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("startup deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    server.join().unwrap();
+    assert!(std::net::TcpStream::connect(address).is_ok());
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(child.id() as i32).unwrap(),
+        rustix::process::Signal::TERM,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("shutdown deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("ERROR"));
+    assert!(!socket.exists());
+    let _listener = std::net::TcpListener::bind(address).unwrap();
+    let count: i64 = database
+        .connect()
+        .query_one("SELECT count(*) FROM singleton_ownership", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn deployment_configuration_preserves_execution_authority() {
     let config = MicrovmBackendConfig::parse(CONFIG).unwrap();
     assert_eq!(config.name(), "arm");

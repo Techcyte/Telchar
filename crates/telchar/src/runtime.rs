@@ -614,6 +614,14 @@ fn run_daemon() -> io::Result<()> {
         output_retention_seconds = output_retention.seconds(),
         "multi-system backend fleet configured"
     );
+    let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reload_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    signal_hook::flag::register(
+        signal_hook::consts::SIGTERM,
+        Arc::clone(&shutdown_requested),
+    )?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown_requested))?;
+    signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_requested))?;
     let socket = daemon_socket_argument()?;
     let expected_uid = daemon_uid_argument()?;
     prepare_socket_path(&socket)?;
@@ -664,14 +672,6 @@ fn run_daemon() -> io::Result<()> {
         },
     )?;
     let ownership_check_interval = config.ownership_renewal_interval();
-    let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reload_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    signal_hook::flag::register(
-        signal_hook::consts::SIGTERM,
-        Arc::clone(&shutdown_requested),
-    )?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown_requested))?;
-    signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_requested))?;
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
     telchar::service::metrics::record_service_session_limit(maximum_sessions as u64);

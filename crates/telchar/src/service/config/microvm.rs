@@ -120,11 +120,36 @@ impl MicrovmBackendConfig {
         )
         .await
         .map_err(|_| io::Error::other("MicroVM credential configuration timed out"))?;
+        let endpoint = |service: &str| -> io::Result<String> {
+            #[cfg(debug_assertions)]
+            if let Some(endpoint) = std::env::var_os("TELCHAR_TEST_MICROVM_ENDPOINT") {
+                let endpoint = endpoint
+                    .into_string()
+                    .map_err(|_| invalid("invalid MicroVM test endpoint"))?;
+                let url = url::Url::parse(&endpoint)
+                    .map_err(|_| invalid("invalid MicroVM test endpoint"))?;
+                if url.scheme() != "http"
+                    || !url
+                        .host_str()
+                        .and_then(|host| host.parse::<std::net::Ipv4Addr>().ok())
+                        .is_some_and(|ip| ip.is_loopback())
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                    || url.path() != "/"
+                {
+                    return Err(invalid("invalid MicroVM test endpoint"));
+                }
+                return Ok(endpoint);
+            }
+            Ok(format!("https://{service}.{}.amazonaws.com", self.0.region))
+        };
         let config = aws_sdk_lambdamicrovms::config::Builder::from(&shared)
-            .endpoint_url(format!("https://lambda.{}.amazonaws.com", self.0.region))
+            .endpoint_url(endpoint("lambda")?)
             .build();
         let identity = aws_sdk_sts::config::Builder::from(&shared)
-            .endpoint_url(format!("https://sts.{}.amazonaws.com", self.0.region))
+            .endpoint_url(endpoint("sts")?)
             .build();
         crate::microvm::Provider::verify_account(
             config,
