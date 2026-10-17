@@ -194,15 +194,27 @@ fn daemon_refuses_admission_without_provider_credentials() {
 
 #[test]
 fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
-    daemon_lifecycle(false);
+    daemon_lifecycle(DaemonExit::Terminated);
 }
 
 #[test]
 fn daemon_closes_attested_listener_after_ownership_loss() {
-    daemon_lifecycle(true);
+    daemon_lifecycle(DaemonExit::Fenced);
 }
 
-fn daemon_lifecycle(fenced: bool) {
+#[test]
+fn daemon_rejects_signed_identity_for_another_account() {
+    daemon_lifecycle(DaemonExit::AccountMismatch);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DaemonExit {
+    Terminated,
+    Fenced,
+    AccountMismatch,
+}
+
+fn daemon_lifecycle(exit: DaemonExit) {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -254,12 +266,19 @@ fn daemon_lifecycle(fenced: bool) {
                 .unwrap()
                 .contains("Action=GetCallerIdentity")
         );
-        let body = "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>";
+        let account = if exit == DaemonExit::AccountMismatch {
+            "000000000000"
+        } else {
+            "116392764028"
+        };
+        let body = format!(
+            "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>{account}</Account><Arn>arn:aws:iam::{account}:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>"
+        );
         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
     let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = callback.local_addr().unwrap();
-    drop(callback);
+    let callback = (exit == DaemonExit::AccountMismatch).then_some(callback);
     let config = directory.path().join("service.toml");
     let socket = directory.path().join("daemon.sock");
     std::fs::write(
@@ -295,6 +314,9 @@ fn daemon_lifecycle(fenced: bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
         if let Some(status) = child.try_wait().unwrap() {
+            if exit == DaemonExit::AccountMismatch {
+                break;
+            }
             let mut error = String::new();
             child
                 .stderr
@@ -312,10 +334,12 @@ fn daemon_lifecycle(fenced: bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
     server.join().unwrap();
-    assert!(std::net::TcpStream::connect(address).is_ok());
-    if fenced {
+    if exit != DaemonExit::AccountMismatch {
+        assert!(std::net::TcpStream::connect(address).is_ok());
+    }
+    if exit == DaemonExit::Fenced {
         database.expire_singleton_ownership("daemon");
-    } else {
+    } else if exit == DaemonExit::Terminated {
         rustix::process::kill_process(
             rustix::process::Pid::from_raw(child.id() as i32).unwrap(),
             rustix::process::Signal::TERM,
@@ -333,9 +357,19 @@ fn daemon_lifecycle(fenced: bool) {
     }
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.success(), !fenced, "{stderr}");
+    assert_eq!(
+        output.status.success(),
+        exit == DaemonExit::Terminated,
+        "{stderr}"
+    );
     assert!(output.stdout.is_empty());
-    if fenced {
+    if exit == DaemonExit::AccountMismatch {
+        assert!(
+            stderr.contains("MicroVM provider operation failed"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("Address already in use"), "{stderr}");
+    } else if exit == DaemonExit::Fenced {
         assert!(
             stderr.contains("telchar: singleton ownership operation failed"),
             "{stderr}"
@@ -344,6 +378,7 @@ fn daemon_lifecycle(fenced: bool) {
         assert!(!stderr.contains("ERROR"), "{stderr}");
     }
     assert!(!socket.exists());
+    drop(callback);
     let _listener = std::net::TcpListener::bind(address).unwrap();
     let count: i64 = database
         .connect()
