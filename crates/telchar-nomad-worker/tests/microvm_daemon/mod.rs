@@ -28,9 +28,12 @@ pub fn run(
     binding: std::sync::mpsc::SyncSender<serde_json::Value>,
 ) -> std::io::Result<BuildOutcome> {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    let crashes = case == "configured-daemon-crash";
     let fails = matches!(
         case.as_str(),
-        "configured-daemon-failure" | "configured-daemon-corrupt-output"
+        "configured-daemon-failure"
+            | "configured-daemon-corrupt-output"
+            | "configured-daemon-crash"
     );
     let (endpoint, provider) = super::provider_server(Some(binding));
     let home = root.join("daemon");
@@ -215,7 +218,21 @@ chunk_bytes = 262144
     } else {
         None
     };
-    if case == "configured-daemon-detached" {
+    if crashes {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound' AND provider_id = 'microvm-build')", &[]).unwrap().get::<_, bool>(0) {
+            assert!(Instant::now() < deadline, "provider binding deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            control
+                .query_one("SELECT state FROM shared_builds", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            "running"
+        );
+    } else if case == "configured-daemon-detached" {
         let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while control
@@ -266,7 +283,7 @@ chunk_bytes = 262144
     }
     drop(stream);
     drop(client);
-    if case == "configured-daemon-restart" {
+    if case == "configured-daemon-restart" || crashes {
         let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
         let generation: i64 = control
             .query_one(
@@ -356,7 +373,7 @@ chunk_bytes = 262144
         .lines()
         .filter(|line| line.contains(" ERROR "))
         .collect::<Vec<_>>();
-    if fails {
+    if fails && !crashes {
         assert_eq!(errors.len(), 2, "{stderr}");
         assert!(
             errors[0].contains("event=\"worker.build_derivation.failed\""),

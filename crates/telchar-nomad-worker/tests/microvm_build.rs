@@ -29,7 +29,10 @@ fn provider_server(
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
     let attest = binding.is_some();
-    let restart = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-restart");
+    let restart = matches!(
+        std::env::var("MICROVM_TEST_CASE").as_deref(),
+        Ok("configured-daemon-restart" | "configured-daemon-crash")
+    );
     let response = std::thread::spawn(move || {
         for identity in if restart {
             vec![true, false, true]
@@ -166,6 +169,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-coalesced",
             "configured-daemon-detached",
             "configured-daemon-restart",
+            "configured-daemon-crash",
         ] {
             run_isolated_build(case);
         }
@@ -568,6 +572,20 @@ chunk_bytes = 262144
             "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 15
         })
     };
+    if case == "configured-daemon-crash" {
+        let error = gateway_thread.join().unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "BuildDerivation execution failed");
+        let mut connection = GatewayStoreConnection::connect(&endpoint).unwrap();
+        for output in &outputs {
+            assert!(
+                connection
+                    .query_path_info(output.as_bytes())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        return;
+    }
     if case == "configured-daemon-coalesced" {
         let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
