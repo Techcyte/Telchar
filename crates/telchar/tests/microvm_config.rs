@@ -404,11 +404,97 @@ fn daemon_lifecycle(exit: DaemonExit) {
             },
         )
         .unwrap();
+        let mut request_stream = stream.try_clone().unwrap();
         let client = nix_worker_protocol::WorkerClient::connect(stream).unwrap();
         assert_eq!(
             client.profile().version,
             nix_worker_protocol::LATEST_WORKER_VERSION
         );
+        if exit == DaemonExit::Terminated {
+            fn word(stream: &mut impl Write, value: u64) {
+                stream.write_all(&value.to_le_bytes()).unwrap();
+            }
+            fn bytes(stream: &mut impl Write, value: &[u8]) {
+                word(stream, value.len() as u64);
+                stream.write_all(value).unwrap();
+                stream
+                    .write_all(&[0; 7][..(8 - value.len() % 8) % 8])
+                    .unwrap();
+            }
+            fn read_word(stream: &mut impl Read) -> u64 {
+                let mut value = [0; 8];
+                stream.read_exact(&mut value).unwrap();
+                u64::from_le_bytes(value)
+            }
+            fn read_bytes(stream: &mut impl Read) -> Vec<u8> {
+                let length = read_word(stream) as usize;
+                assert!(length < 4096);
+                let mut value = vec![0; length];
+                stream.read_exact(&mut value).unwrap();
+                stream
+                    .read_exact(&mut [0; 7][..(8 - length % 8) % 8])
+                    .unwrap();
+                value
+            }
+            word(&mut request_stream, 36);
+            bytes(
+                &mut request_stream,
+                b"/nix/store/00000000000000000000000000000000-ipc-build.drv",
+            );
+            word(&mut request_stream, 1);
+            for value in [
+                b"out".as_slice(),
+                b"/nix/store/11111111111111111111111111111111-ipc-build",
+                b"",
+                b"",
+            ] {
+                bytes(&mut request_stream, value);
+            }
+            word(&mut request_stream, 0);
+            bytes(&mut request_stream, b"aarch64-linux");
+            bytes(&mut request_stream, b"/bin/sh");
+            word(&mut request_stream, 2);
+            bytes(&mut request_stream, b"-c");
+            bytes(&mut request_stream, b"printf fixture > $out");
+            word(&mut request_stream, 4);
+            for (key, value) in [
+                (b"builder".as_slice(), b"/bin/sh".as_slice()),
+                (b"name", b"ipc-build"),
+                (
+                    b"out",
+                    b"/nix/store/11111111111111111111111111111111-ipc-build",
+                ),
+                (b"system", b"aarch64-linux"),
+            ] {
+                bytes(&mut request_stream, key);
+                bytes(&mut request_stream, value);
+            }
+            word(&mut request_stream, 0);
+            request_stream.flush().unwrap();
+            assert_eq!(
+                read_word(&mut request_stream),
+                nix_worker_protocol::STDERR_ERROR
+            );
+            assert_eq!(read_bytes(&mut request_stream), b"Error");
+            let _level = read_word(&mut request_stream);
+            assert_eq!(read_bytes(&mut request_stream), b"Error");
+            assert_eq!(
+                read_bytes(&mut request_stream),
+                b"gateway store retention failed"
+            );
+            assert_eq!(read_word(&mut request_stream), 0);
+            assert_eq!(read_word(&mut request_stream), 0);
+            let launches: i64 = database
+                .connect()
+                .query_one("SELECT count(*) FROM microvm_launches", &[])
+                .unwrap()
+                .get(0);
+            assert_eq!(
+                launches, 0,
+                "unavailable store must prevent provider dispatch"
+            );
+        }
+        drop(request_stream);
         drop(client);
         let session = database.connect().query_one(
             "SELECT credential_id, audit_subject, quota_subject FROM protocol_sessions WHERE session_id = 'microvm-ipc'", &[],
@@ -458,7 +544,27 @@ fn daemon_lifecycle(exit: DaemonExit) {
             "{stderr}"
         );
     } else {
-        assert!(!stderr.contains("ERROR"), "{stderr}");
+        let errors: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.contains(" ERROR "))
+            .collect();
+        assert_eq!(errors.len(), 2, "{stderr}");
+        assert!(
+            errors[0].contains("event=\"gateway.store_retention.failed\""),
+            "{stderr}"
+        );
+        assert!(
+            errors[0].contains("gateway Nix daemon connection failed"),
+            "{stderr}"
+        );
+        assert!(
+            errors[1].contains("event=\"worker.operation.rejected\""),
+            "{stderr}"
+        );
+        assert!(
+            errors[1].contains("rejection=\"gateway-store-retention\""),
+            "{stderr}"
+        );
     }
     assert!(!socket.exists());
     drop(callback);
