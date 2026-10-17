@@ -182,6 +182,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-multiple",
             "configured-failure",
             "configured-cancelled",
+            "configured-building-cancelled",
             "configured-fenced",
             "configured-corrupt-output",
             "configured-fixed-output",
@@ -320,7 +321,18 @@ fn run_build() {
     } else {
         String::new()
     };
-    let script = if build_failure {
+    let script = if case == "configured-building-cancelled" {
+        {
+            let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|path| path.join("sleep"))
+                .find(|path| path.is_file())
+                .expect("sleep available in development shell");
+            format!(
+                "printf 'builder-executing\\n' >&2; {} 10; printf 'unexpected completion' > \"$out\"",
+                sleep.display()
+            )
+        }
+    } else if build_failure {
         "exit 42".to_owned()
     } else {
         format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
@@ -800,6 +812,44 @@ chunk_bytes = 262144
             break;
         }
         upstream.send(message).unwrap();
+        if case == "configured-building-cancelled"
+            && frame.kind() == FrameKind::LogChunk
+            && frame
+                .payload()
+                .windows(b"builder-executing".len())
+                .any(|bytes| bytes == b"builder-executing")
+        {
+            let started = std::time::Instant::now();
+            assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
+            let result = gateway_thread.join().unwrap();
+            assert!(result.is_err());
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "gateway cancellation deadline"
+            );
+            drop(upstream);
+            drop(socket);
+            let worker = worker.wait_with_output().unwrap();
+            assert!(!worker.status.success());
+            assert!(worker.stdout.is_empty());
+            let diagnostic = String::from_utf8(worker.stderr).unwrap();
+            assert!(
+                diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+                "{diagnostic}"
+            );
+            assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+            assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+            let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
+            assert_eq!(row.get::<_, String>(0), "closed");
+            assert!(row.get::<_, bool>(1));
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "executing worker cancellation took {:?}",
+                started.elapsed()
+            );
+            return;
+        }
         match frame.kind() {
             FrameKind::InputRequest => {
                 let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
@@ -829,6 +879,7 @@ chunk_bytes = 262144
             _ => {}
         }
     }
+    assert_ne!(case, "configured-building-cancelled", "builder execution barrier not observed");
     let result = gateway_thread.join().unwrap();
     if corrupt_output {
         drop(upstream);
