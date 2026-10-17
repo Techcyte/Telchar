@@ -2,6 +2,9 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+#[path = "microvm_identity/rotation.rs"]
+mod rotation;
+
 #[test]
 fn provider_requires_matching_signed_account_identity() {
     for account in ["116392764028", "999999999999"] {

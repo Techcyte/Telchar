@@ -184,6 +184,14 @@ pub fn launch_request_digest(
 pub struct Provider {
     client: Client,
     account_id: Option<String>,
+    authority: Option<std::sync::Arc<ProviderAuthority>>,
+}
+
+struct ProviderAuthority {
+    source: aws_credential_types::provider::SharedCredentialsProvider,
+    identity: aws_sdk_sts::Config,
+    timeout: Duration,
+    attested: std::sync::Mutex<(aws_credential_types::Credentials, Client)>,
 }
 
 impl Provider {
@@ -200,10 +208,12 @@ impl Provider {
             return Err(ProviderError);
         }
         let provider = Self::new(config, timeout)?;
-        let credentials = tokio::time::timeout(timeout, credentials.provide_credentials())
+        let source = credentials;
+        let credentials = tokio::time::timeout(timeout, source.provide_credentials())
             .await
             .map_err(|_| ProviderError)?
             .map_err(|_| ProviderError)?;
+        let identity_config = identity.clone();
         let identity = aws_sdk_sts::Client::from_conf(
             identity
                 .to_builder()
@@ -231,10 +241,16 @@ impl Provider {
             .client
             .config()
             .to_builder()
-            .credentials_provider(credentials)
+            .credentials_provider(credentials.clone())
             .build();
         let mut provider = Self::new(config, timeout)?;
         provider.account_id = Some(account_id.to_owned());
+        provider.authority = Some(std::sync::Arc::new(ProviderAuthority {
+            source,
+            identity: identity_config,
+            timeout,
+            attested: std::sync::Mutex::new((credentials, provider.client.clone())),
+        }));
         Ok(provider)
     }
 
@@ -257,7 +273,48 @@ impl Provider {
         Ok(Self {
             client: Client::from_conf(config),
             account_id: None,
+            authority: None,
         })
+    }
+
+    async fn authorized_client(&self) -> Result<Client, ProviderError> {
+        use aws_credential_types::provider::ProvideCredentials;
+
+        let Some(authority) = &self.authority else {
+            return Ok(self.client.clone());
+        };
+        tokio::time::timeout(authority.timeout, async {
+            let credentials = authority
+                .source
+                .provide_credentials()
+                .await
+                .map_err(|_| ProviderError)?;
+            if credentials
+                .expiry()
+                .is_some_and(|expiry| expiry <= std::time::SystemTime::now())
+            {
+                return Err(ProviderError);
+            }
+            {
+                let attested = authority.attested.lock().map_err(|_| ProviderError)?;
+                if attested.0 == credentials {
+                    return Ok(attested.1.clone());
+                }
+            }
+            let provider = Self::verify_account(
+                self.client.config().clone(),
+                authority.identity.clone(),
+                aws_credential_types::provider::SharedCredentialsProvider::new(credentials.clone()),
+                self.account_id.as_deref().ok_or(ProviderError)?,
+                authority.timeout,
+            )
+            .await?;
+            let client = provider.client;
+            *authority.attested.lock().map_err(|_| ProviderError)? = (credentials, client.clone());
+            Ok(client)
+        })
+        .await
+        .map_err(|_| ProviderError)?
     }
 
     pub fn cleanup(
@@ -310,7 +367,8 @@ impl Provider {
             return Err(ProviderError);
         }
         let result = self
-            .client
+            .authorized_client()
+            .await?
             .get_microvm()
             .microvm_identifier(provider_id)
             .send()
@@ -329,7 +387,8 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        self.client
+        self.authorized_client()
+            .await?
             .terminate_microvm()
             .microvm_identifier(provider_id)
             .send()
@@ -424,7 +483,8 @@ impl Provider {
             .build()
             .map_err(|_| ProviderError)?;
         let result = self
-            .client
+            .authorized_client()
+            .await?
             .run_microvm()
             .image_identifier(image)
             .image_version(version)
