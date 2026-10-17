@@ -854,15 +854,13 @@ fn lock_request_leases(
         .iter()
         .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
         .collect::<Result<Vec<_>, _>>()?;
-    if leases.is_empty()
-        || leases
-            .iter()
-            .filter(|lease| {
-                lease.state == StoreLeaseState::Active
-                    && lease.purpose == StoreLeasePurpose::Derivation
-            })
-            .count()
-            > 1
+    if leases
+        .iter()
+        .filter(|lease| {
+            lease.state == StoreLeaseState::Active && lease.purpose == StoreLeasePurpose::Derivation
+        })
+        .count()
+        > 1
         || leases.iter().any(|lease| {
             lease.owner_kind != StoreLeaseOwnerKind::Request
                 || lease.owner_id != request_id

@@ -237,6 +237,35 @@ fn daemon_startup_rejection(retained_cleanup: bool) {
 
 #[test]
 fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
+    if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        let database = telchar_test_support::postgres::PostgresFixture::start();
+        let output = std::process::Command::new("bash")
+            .env("MICROVM_TEST_DATABASE", database.url())
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/microvm/canonical-store.sh"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon_starts_attested_listener_and_releases_it_on_shutdown",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     daemon_lifecycle(DaemonExit::Terminated);
 }
 
@@ -261,42 +290,14 @@ fn daemon_lifecycle(exit: DaemonExit) {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let database = (exit != DaemonExit::Terminated)
+        .then(telchar_test_support::postgres::PostgresFixture::start);
+    let database_url = database
+        .as_ref()
+        .map(|database| database.url().to_owned())
+        .unwrap_or_else(|| std::env::var("MICROVM_TEST_DATABASE").unwrap());
+    let connect = || postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let store = (exit == DaemonExit::Terminated)
-        .then(|| telchar::fixture::nix::NixFixture::create().unwrap());
-    let store_daemon = store.as_ref().map(|store| {
-        store
-            .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
-            .unwrap()
-    });
-    if let Some(daemon) = &store_daemon {
-        daemon
-            .worker_client_profile()
-            .expect("isolated store handshake");
-        let mut client = nix_worker_protocol::WorkerClient::connect(
-            std::os::unix::net::UnixStream::connect(daemon.socket_path()).unwrap(),
-        )
-        .unwrap();
-        let info =
-            client.query_path_info(b"/nix/store/00000000000000000000000000000000-ipc-build.drv");
-        let diagnostic = Command::new("nix-store")
-            .envs(store.as_ref().unwrap().environment())
-            .args([
-                "--store",
-                &daemon.store_url(),
-                "--query",
-                "--hash",
-                "/nix/store/00000000000000000000000000000000-ipc-build.drv",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            info.is_ok(),
-            "isolated derivation query: {info:?}: {}",
-            String::from_utf8_lossy(&diagnostic.stderr)
-        );
-    }
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -422,13 +423,11 @@ fn daemon_lifecycle(exit: DaemonExit) {
         .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
         .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
         .env("TELCHAR_CONFIG", config)
-        .env("TELCHAR_DATABASE_URL", database.url())
+        .env("TELCHAR_DATABASE_URL", &database_url)
         .env(
             "TELCHAR_GATEWAY_STORE_URI",
-            store_daemon
-                .as_ref()
-                .map(|daemon| format!("unix://{}", daemon.socket_path().display()))
-                .unwrap_or_else(|| "unix:///unused-microvm-test-store".into()),
+            std::env::var("MICROVM_TEST_STORE_URI")
+                .unwrap_or_else(|_| "unix:///unused-microvm-test-store".into()),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -576,8 +575,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
             }
             assert_eq!(read_word(&mut request_stream), 0);
             assert_eq!(read_word(&mut request_stream), 0);
-            let launches: i64 = database
-                .connect()
+            let launches: i64 = connect()
                 .query_one("SELECT count(*) FROM microvm_launches", &[])
                 .unwrap()
                 .get(0);
@@ -585,7 +583,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
         }
         drop(request_stream);
         drop(client);
-        let session = database.connect().query_one(
+        let session = connect().query_one(
             "SELECT credential_id, audit_subject, quota_subject FROM protocol_sessions WHERE session_id = 'microvm-ipc'", &[],
         ).unwrap();
         assert_eq!(
@@ -596,7 +594,10 @@ fn daemon_lifecycle(exit: DaemonExit) {
         assert_eq!(session.get::<_, String>(2), "microvm-fixture");
     }
     if exit == DaemonExit::Fenced {
-        database.expire_singleton_ownership("daemon");
+        database
+            .as_ref()
+            .unwrap()
+            .expire_singleton_ownership("daemon");
     } else if exit == DaemonExit::Terminated {
         rustix::process::kill_process(
             rustix::process::Pid::from_raw(child.id() as i32).unwrap(),
@@ -640,11 +641,11 @@ fn daemon_lifecycle(exit: DaemonExit) {
             .collect();
         assert_eq!(errors.len(), 2, "{stderr}");
         assert!(
-            errors[0].contains("event=\"gateway.store_retention.failed\""),
+            errors[0].contains("event=\"worker.build_derivation.failed\""),
             "{stderr}"
         );
         assert!(
-            errors[0].contains("gateway Nix daemon connection failed"),
+            errors[0].contains("reason=\"execution-failure\""),
             "{stderr}"
         );
         assert!(
@@ -652,15 +653,14 @@ fn daemon_lifecycle(exit: DaemonExit) {
             "{stderr}"
         );
         assert!(
-            errors[1].contains("rejection=\"gateway-store-retention\""),
+            errors[1].contains("reason=\"BuildDerivation execution failed\""),
             "{stderr}"
         );
     }
     assert!(!socket.exists());
     drop(callback);
     let _listener = std::net::TcpListener::bind(address).unwrap();
-    let count: i64 = database
-        .connect()
+    let count: i64 = connect()
         .query_one("SELECT count(*) FROM singleton_ownership", &[])
         .unwrap()
         .get(0);
