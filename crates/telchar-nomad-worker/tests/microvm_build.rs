@@ -879,7 +879,10 @@ chunk_bytes = 262144
             _ => {}
         }
     }
-    assert_ne!(case, "configured-building-cancelled", "builder execution barrier not observed");
+    assert_ne!(
+        case, "configured-building-cancelled",
+        "builder execution barrier not observed"
+    );
     let result = gateway_thread.join().unwrap();
     if corrupt_output {
         drop(upstream);

@@ -78,6 +78,125 @@ impl SessionDeadline {
     }
 }
 
+pub(super) struct BuildMonitor {
+    finished: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BuildMonitor {
+    pub(super) fn start(
+        socket: &super::WorkerSocket,
+        store: std::os::unix::net::UnixStream,
+        deadline: Instant,
+    ) -> io::Result<Self> {
+        let stream = match socket.get_ref() {
+            tungstenite::stream::MaybeTlsStream::Plain(stream) => stream,
+            tungstenite::stream::MaybeTlsStream::Rustls(stream) => &stream.sock,
+            _ => return Err(super::invalid("MicroVM session transport is unsupported")),
+        }
+        .try_clone()?;
+        let (finished, completion) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("microvm-build-monitor".to_owned())
+            .spawn(move || {
+                use rustix::event::{PollFd, PollFlags, Timespec, poll};
+                let timeout = Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 50_000_000,
+                };
+                loop {
+                    match completion.try_recv() {
+                        Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    }
+                    let mut descriptors = [PollFd::new(&stream, PollFlags::RDHUP)];
+                    let observation = poll(&mut descriptors, Some(&timeout));
+                    if observation == Err(rustix::io::Errno::INTR) && Instant::now() < deadline {
+                        continue;
+                    }
+                    if Instant::now() >= deadline
+                        || observation.is_err()
+                        || descriptors[0].revents().intersects(
+                            PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL,
+                        )
+                    {
+                        let _ = store.shutdown(std::net::Shutdown::Both);
+                        return;
+                    }
+                }
+            })?;
+        Ok(Self {
+            finished,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for BuildMonitor {
+    fn drop(&mut self) {
+        let _ = self.finished.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    #[test]
+    fn build_deadline_interrupts_store_with_callback_connected() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let socket = tungstenite::WebSocket::from_raw_socket(
+            tungstenite::stream::MaybeTlsStream::Plain(callback),
+            tungstenite::protocol::Role::Client,
+            None,
+        );
+        let (store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let started = Instant::now();
+        let _monitor =
+            BuildMonitor::start(&socket, store, started + Duration::from_millis(100)).unwrap();
+        assert_eq!(server.read(&mut [0]).unwrap(), 0);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn completed_build_retires_monitor_without_shutting_store() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let socket = tungstenite::WebSocket::from_raw_socket(
+            tungstenite::stream::MaybeTlsStream::Plain(callback),
+            tungstenite::protocol::Role::Client,
+            None,
+        );
+        let (mut store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let monitor = BuildMonitor::start(
+            &socket,
+            store.try_clone().unwrap(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        drop(monitor);
+        drop(peer);
+        store.write_all(b"ok").unwrap();
+        let mut bytes = [0; 2];
+        server.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ok");
+    }
+}
+
 impl Drop for SessionDeadline {
     fn drop(&mut self) {
         let _ = self.finished.send(());

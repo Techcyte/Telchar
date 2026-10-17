@@ -2596,6 +2596,7 @@ dependencies = [
  "opentelemetry-proto",
  "postgres",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

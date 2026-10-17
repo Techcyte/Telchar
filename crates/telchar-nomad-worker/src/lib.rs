@@ -154,6 +154,17 @@ impl WorkerSession {
             arguments: &specification.arguments,
             environment: &specification.environment,
         };
+        let _monitor = self
+            .deadline_monitor
+            .as_ref()
+            .map(|_| {
+                microvm::BuildMonitor::start(
+                    &self.socket,
+                    store.shutdown_handle()?,
+                    self.connection_deadline,
+                )
+            })
+            .transpose()?;
         let socket = &mut self.socket;
         let protocol = &mut self.protocol;
         let mut sequence = 0_u64;

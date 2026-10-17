@@ -21,6 +21,7 @@ sha2 = "0.11"
 hmac = "0.13"
 url = "2"
 rustls.workspace = true
+rustix = { version = "1.1.4", features = ["event"] }
 
 [dev-dependencies]
 aws-sdk-sts = { version = "1.116.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
