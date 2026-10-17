@@ -212,5 +212,50 @@ chunk_bytes = 262144
         .read_to_string(&mut stderr)?;
     assert!(stdout.is_empty());
     assert!(!stderr.contains("ERROR"), "{stderr}");
+    let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+    let builds = control
+        .query(
+            "SELECT state, backend_kind, execution_recovery, expected_outputs FROM shared_builds",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(builds.len(), 1);
+    assert_eq!(builds[0].get::<_, String>("state"), "succeeded");
+    assert_eq!(builds[0].get::<_, String>("backend_kind"), "microvm");
+    assert_eq!(
+        builds[0].get::<_, String>("execution_recovery"),
+        "output-only"
+    );
+    let mut expected_outputs = request
+        .expected_outputs()
+        .iter()
+        .map(|(_, path)| String::from_utf8(path.clone()).unwrap())
+        .collect::<Vec<_>>();
+    expected_outputs.sort();
+    let mut recorded_outputs = builds[0].get::<_, Vec<String>>("expected_outputs");
+    recorded_outputs.sort();
+    assert_eq!(recorded_outputs, expected_outputs);
+    let attempts = control
+        .query("SELECT state, backend_kind FROM shared_build_attempts", &[])
+        .unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].get::<_, String>("state"), "succeeded");
+    assert_eq!(attempts[0].get::<_, String>("backend_kind"), "microvm");
+    let attachment = control
+        .query_one(
+            "SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-build'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(attachment.get::<_, String>(0), "detached");
+    assert_eq!(
+        control
+            .query_one("SELECT count(*) FROM singleton_ownership", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert!(!socket.exists());
+    assert!(std::net::TcpListener::bind(gateway).is_ok());
     Ok(BuildOutcome::Built)
 }

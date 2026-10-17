@@ -156,6 +156,8 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-corrupt-output",
             "configured-fixed-output",
             "configured-daemon",
+            "configured-daemon-multiple",
+            "configured-daemon-fixed-output",
         ] {
             run_isolated_build(case);
         }
@@ -193,11 +195,17 @@ fn run_isolated_build(case: &str) {
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
-    let multiple = matches!(case.as_str(), "multiple" | "configured-multiple");
+    let multiple = matches!(
+        case.as_str(),
+        "multiple" | "configured-multiple" | "configured-daemon-multiple"
+    );
     let configured = case.starts_with("configured");
     let build_failure = case == "configured-failure";
     let corrupt_output = case == "configured-corrupt-output";
-    let fixed_output = case == "configured-fixed-output";
+    let fixed_output = matches!(
+        case.as_str(),
+        "configured-fixed-output" | "configured-daemon-fixed-output"
+    );
     let system = if configured {
         "aarch64-linux"
     } else {
@@ -309,7 +317,7 @@ fn run_build() {
     let capability = telchar::microvm::Capability::generate().unwrap();
     let ownership_lost = matches!(case.as_str(), "fenced" | "configured-fenced");
     let (binding_sender, binding_receiver) = std::sync::mpsc::sync_channel(1);
-    let gateway_thread = if case == "configured-daemon" {
+    let gateway_thread = if case.starts_with("configured-daemon") {
         drop(gateway);
         let root = root.clone();
         let database = database.clone();
