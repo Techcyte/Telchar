@@ -182,6 +182,16 @@ chunk_bytes = 262144
         "configured-daemon-coalesced" | "configured-daemon-detached"
     );
     let follower = if coalesced {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !control
+            .query_one("SELECT EXISTS(SELECT 1 FROM shared_builds)", &[])
+            .unwrap()
+            .get::<_, bool>(0)
+        {
+            assert!(Instant::now() < deadline, "leader claim deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let mut follower = std::os::unix::net::UnixStream::connect(&socket)?;
         follower.set_read_timeout(Some(Duration::from_secs(20)))?;
         follower.set_write_timeout(Some(Duration::from_secs(5)))?;

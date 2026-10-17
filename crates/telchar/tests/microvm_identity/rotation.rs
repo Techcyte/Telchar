@@ -9,6 +9,7 @@ use std::time::Duration;
 #[derive(Debug)]
 struct Credentials {
     rotated: Arc<AtomicBool>,
+    fault: &'static str,
 }
 
 impl aws_credential_types::provider::ProvideCredentials for Credentials {
@@ -19,6 +20,19 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
         Self: 'a,
     {
         aws_credential_types::provider::future::ProvideCredentials::new(async move {
+            if self.rotated.load(Ordering::SeqCst) {
+                match self.fault {
+                    "unavailable" => {
+                        return Err(
+                            aws_credential_types::provider::error::CredentialsError::not_loaded(
+                                "fixture unavailable",
+                            ),
+                        );
+                    }
+                    "timeout" => std::future::pending::<()>().await,
+                    _ => {}
+                }
+            }
             Ok(aws_credential_types::Credentials::new(
                 if self.rotated.load(Ordering::SeqCst) {
                     "rotated-key"
@@ -27,7 +41,8 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
                 },
                 "fixture-secret",
                 None,
-                None,
+                (self.rotated.load(Ordering::SeqCst) && self.fault == "expired")
+                    .then_some(std::time::SystemTime::UNIX_EPOCH),
                 "test",
             ))
         })
@@ -36,11 +51,18 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
 
 #[test]
 fn provider_reattests_rotated_credentials_before_cleanup() {
-    rotation("116392764028");
-    rotation("999999999999");
+    rotation("116392764028", "none");
+    rotation("999999999999", "none");
 }
 
-fn rotation(account: &'static str) {
+#[test]
+fn credential_failure_never_falls_back_to_attested_snapshot() {
+    for fault in ["unavailable", "timeout", "expired"] {
+        rotation("116392764028", fault);
+    }
+}
+
+fn rotation(account: &'static str, fault: &'static str) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -112,6 +134,7 @@ fn rotation(account: &'static str) {
     let rotated = Arc::new(AtomicBool::new(false));
     let credentials = aws_credential_types::provider::SharedCredentialsProvider::new(Credentials {
         rotated: rotated.clone(),
+        fault,
     });
     let identity = aws_sdk_sts::Config::builder()
         .behavior_version_latest()
@@ -139,7 +162,19 @@ fn rotation(account: &'static str) {
         ))
         .unwrap();
     rotated.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
     let result = runtime.block_on(provider.is_terminated("microvm-exact"));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "refresh bounded"
+    );
+    if fault != "none" {
+        assert!(result.is_err(), "unusable source must fail closed");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "no HTTP after startup attestation");
+        assert!(requests[0].contains("credential=initial-key/"));
+        return;
+    }
     if account == "116392764028" {
         assert!(result.unwrap());
     } else {
