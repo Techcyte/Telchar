@@ -177,7 +177,11 @@ chunk_bytes = 262144
             false,
         )?;
     }
-    let follower = if case == "configured-daemon-coalesced" {
+    let coalesced = matches!(
+        case.as_str(),
+        "configured-daemon-coalesced" | "configured-daemon-detached"
+    );
+    let follower = if coalesced {
         let mut follower = std::os::unix::net::UnixStream::connect(&socket)?;
         follower.set_read_timeout(Some(Duration::from_secs(20)))?;
         follower.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -202,19 +206,38 @@ chunk_bytes = 262144
     } else {
         None
     };
-    let mut actual = vec![0; expected.len()];
-    stream.read_exact(&mut actual)?;
-    if actual != expected {
-        daemon.0.kill()?;
-        daemon.0.wait()?;
-        let mut diagnostic = String::new();
-        daemon
-            .0
-            .stderr
-            .take()
+    if case == "configured-daemon-detached" {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while control
+            .query_one(
+                "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+                &[],
+            )
             .unwrap()
-            .read_to_string(&mut diagnostic)?;
-        panic!("daemon result {actual:?}: {diagnostic}");
+            .get::<_, i64>(0)
+            != 2
+        {
+            assert!(Instant::now() < deadline, "follower attachment deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stream.shutdown(std::net::Shutdown::Both)?;
+        std::fs::write(root.join("requester-disconnected"), b"")?;
+    } else {
+        let mut actual = vec![0; expected.len()];
+        stream.read_exact(&mut actual)?;
+        if actual != expected {
+            daemon.0.kill()?;
+            daemon.0.wait()?;
+            let mut diagnostic = String::new();
+            daemon
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut diagnostic)?;
+            panic!("daemon result {actual:?}: {diagnostic}");
+        }
     }
     if let Some((mut follower, _client)) = follower {
         let mut follower_expected = Vec::new();
@@ -325,7 +348,7 @@ chunk_bytes = 262144
         )
         .unwrap();
     assert_eq!(attachment.get::<_, String>(0), "detached");
-    if case == "configured-daemon-coalesced" {
+    if coalesced {
         let follower = control.query_one("SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-follower'", &[]).unwrap();
         assert_eq!(follower.get::<_, String>(0), "detached");
         assert!(

@@ -161,6 +161,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-failure",
             "configured-daemon-corrupt-output",
             "configured-daemon-coalesced",
+            "configured-daemon-detached",
         ] {
             run_isolated_build(case);
         }
@@ -580,6 +581,16 @@ chunk_bytes = 262144
             assert!(
                 std::time::Instant::now() < deadline,
                 "both requesters must attach before worker startup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    if case == "configured-daemon-detached" {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !root.join("requester-disconnected").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "leader disconnect deadline"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
