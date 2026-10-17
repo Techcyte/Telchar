@@ -98,6 +98,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-cancelled",
             "configured-fenced",
             "configured-corrupt-output",
+            "configured-fixed-output",
         ] {
             run_isolated_build(case);
         }
@@ -139,6 +140,7 @@ fn run_build() {
     let configured = case.starts_with("configured");
     let build_failure = case == "configured-failure";
     let corrupt_output = case == "configured-corrupt-output";
+    let fixed_output = case == "configured-fixed-output";
     let system = if configured {
         "aarch64-linux"
     } else {
@@ -163,7 +165,30 @@ fn run_build() {
     let input = String::from_utf8(added.stdout).unwrap().trim().to_owned();
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(store.query_path_info(input.as_bytes()).unwrap().is_some());
-    let output = "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output";
+    let hash = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(b"dedicated-worker-success\n")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let fixed_path;
+    let output = if fixed_output {
+        let result = Command::new("nix-store")
+            .args(["--print-fixed-path", "sha256", &hash, "dedicated"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stderr.is_empty());
+        fixed_path = String::from_utf8(result.stdout).unwrap();
+        fixed_path.trim()
+    } else {
+        "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output"
+    };
     let secondary = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dedicated-reference";
     let outputs = if multiple {
         vec![output, secondary]
@@ -193,8 +218,13 @@ fn run_build() {
         format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
     };
     let script = serde_json::to_string(&script).unwrap();
+    let (hash_algorithm, output_hash) = if fixed_output {
+        ("sha256", hash.as_str())
+    } else {
+        ("", "")
+    };
     let derivation = format!(
-        r#"Derive([("out","{output}","",""){extra_output}],[],["{input}"],"{system}","/bin/sh",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","/bin/sh"),("name","dedicated")])"#
+        r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"],"{system}","/bin/sh",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","/bin/sh"),("name","dedicated")])"#
     );
     let request = telchar::build::BuildRequest::from_stored_derivation(
         drv.as_bytes(),
@@ -689,6 +719,15 @@ chunk_bytes = 262144
     );
     for expected in outputs {
         assert!(store.is_valid_path(expected.as_bytes()).unwrap());
+    }
+    if fixed_output {
+        let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+        assert!(
+            info.content_address()
+                .unwrap()
+                .starts_with(b"fixed:sha256:")
+        );
+        assert!(info.references().is_empty());
     }
     if multiple {
         assert_eq!(std::fs::read(secondary).unwrap(), output.as_bytes());
