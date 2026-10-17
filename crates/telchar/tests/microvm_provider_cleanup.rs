@@ -19,7 +19,9 @@ fn exchange(
         body.len()
     );
     let server = std::thread::spawn(move || {
-        let count = if matches!(operation, "lifecycle-cleanup" | "maintenance") {
+        let count = if operation == "maintenance-uncertain" {
+            5
+        } else if matches!(operation, "lifecycle-cleanup" | "maintenance") {
             3
         } else {
             1
@@ -49,10 +51,34 @@ fn exchange(
                 headers.push(byte[0]);
                 assert!(headers.len() < 32768);
             }
-            let response = if matches!(operation, "lifecycle-cleanup" | "maintenance") && index == 1
+            let response_index = if operation == "maintenance-uncertain" {
+                match index {
+                    0 | 3 => 3,
+                    1 => 0,
+                    2 => 1,
+                    4 => 2,
+                    _ => unreachable!(),
+                }
+            } else {
+                index
+            };
+            let response = if operation == "maintenance-uncertain" && response_index == 3 {
+                let body = observation("microvm-wrong", "TERMINATED");
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else if matches!(
+                operation,
+                "lifecycle-cleanup" | "maintenance" | "maintenance-uncertain"
+            ) && response_index == 1
             {
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
-            } else if matches!(operation, "lifecycle-cleanup" | "maintenance") && index == 2 {
+            } else if matches!(
+                operation,
+                "lifecycle-cleanup" | "maintenance" | "maintenance-uncertain"
+            ) && response_index == 2
+            {
                 let body = observation("microvm-exact", "TERMINATED");
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -105,7 +131,7 @@ fn exchange(
         "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id) VALUES ('cleanup-intent', $1, 'cleanup-fixture', '116392764028', 'us-west-2', 'image-fixture', '1', $2, $2, 'cleanup-token', $2, clock_timestamp() + interval '1 minute', 600, 'closed', 'microvm-exact')",
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("cleanup obligation persists");
-    if operation == "maintenance" {
+    if operation.starts_with("maintenance") {
         let other = "/nix/store/cccccccccccccccccccccccccccccccc-cleanup.drv";
         telchar::persistence::claim_shared_build(
             &database,
@@ -159,7 +185,10 @@ fn exchange(
         .build();
     let provider =
         telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
-    let result = if operation == "maintenance" {
+    if operation == "maintenance-uncertain" {
+        fixture.connect().execute("UPDATE microvm_launches SET region = 'us-west-2' WHERE intent_id = 'blocked-intent'", &[]).unwrap();
+    }
+    let result = if operation.starts_with("maintenance") {
         let mut service = telchar::service::daemon_services::MicrovmCleanupService::start(
             std::sync::Arc::new(owner),
             provider,
@@ -175,7 +204,11 @@ fn exchange(
             let pending = telchar::persistence::pending_microvm_cleanup(
                 &database,
                 "116392764028",
-                "us-east-1",
+                if operation == "maintenance-uncertain" {
+                    "us-west-2"
+                } else {
+                    "us-east-1"
+                },
                 10,
                 None,
             )
@@ -193,7 +226,8 @@ fn exchange(
                 None,
             )
             .unwrap()
-            .is_empty()
+            .iter()
+            .all(|item| item.intent_id != "cleanup-intent")
             {
                 break;
             }
@@ -391,6 +425,26 @@ fn maintenance_observes_termination_independently_of_execution() {
             .count(),
         1
     );
+}
+
+#[test]
+fn uncertain_observation_does_not_starve_account_cleanup() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "maintenance-uncertain",
+    );
+    assert!(result.unwrap());
+    let methods: Vec<_> = requests
+        .lines()
+        .filter(|line| line.starts_with("GET ") || line.starts_with("DELETE "))
+        .collect();
+    assert_eq!(methods.len(), 5);
+    assert!(methods[0].starts_with("GET /2025-09-09/microvms/microvm-blocked "));
+    assert!(methods[1].starts_with("GET /2025-09-09/microvms/microvm-exact "));
+    assert!(methods[2].starts_with("DELETE /2025-09-09/microvms/microvm-exact "));
+    assert!(methods[3].starts_with("GET /2025-09-09/microvms/microvm-blocked "));
+    assert!(methods[4].starts_with("GET /2025-09-09/microvms/microvm-exact "));
 }
 
 #[test]
