@@ -380,6 +380,46 @@ fn daemon_lifecycle(exit: DaemonExit) {
     if exit != DaemonExit::AccountMismatch {
         assert!(std::net::TcpStream::connect(address).is_ok());
     }
+    if exit != DaemonExit::AccountMismatch {
+        use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        IpcListener::send_envelope(
+            &mut stream,
+            &IpcEnvelope {
+                version: IPC_VERSION,
+                requester: RequesterMetadata {
+                    credential_id: "ssh-pubkey:microvm-fixture".into(),
+                    audit_subject: "microvm-fixture".into(),
+                    quota_subject: "microvm-fixture".into(),
+                },
+                session_id: "microvm-ipc".into(),
+                trace_context: telchar_telemetry::TraceContext::default(),
+                error: None,
+            },
+        )
+        .unwrap();
+        let client = nix_worker_protocol::WorkerClient::connect(stream).unwrap();
+        assert_eq!(
+            client.profile().version,
+            nix_worker_protocol::LATEST_WORKER_VERSION
+        );
+        drop(client);
+        let session = database.connect().query_one(
+            "SELECT credential_id, audit_subject, quota_subject FROM protocol_sessions WHERE session_id = 'microvm-ipc'", &[],
+        ).unwrap();
+        assert_eq!(
+            session.get::<_, Option<String>>(0).as_deref(),
+            Some("ssh-pubkey:microvm-fixture")
+        );
+        assert_eq!(session.get::<_, String>(1), "microvm-fixture");
+        assert_eq!(session.get::<_, String>(2), "microvm-fixture");
+    }
     if exit == DaemonExit::Fenced {
         database.expire_singleton_ownership("daemon");
     } else if exit == DaemonExit::Terminated {
