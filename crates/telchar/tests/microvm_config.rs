@@ -271,7 +271,31 @@ fn daemon_lifecycle(exit: DaemonExit) {
             .unwrap()
     });
     if let Some(daemon) = &store_daemon {
-        daemon.worker_client_profile().expect("isolated store handshake");
+        daemon
+            .worker_client_profile()
+            .expect("isolated store handshake");
+        let mut client = nix_worker_protocol::WorkerClient::connect(
+            std::os::unix::net::UnixStream::connect(daemon.socket_path()).unwrap(),
+        )
+        .unwrap();
+        let info =
+            client.query_path_info(b"/nix/store/00000000000000000000000000000000-ipc-build.drv");
+        let diagnostic = Command::new("nix-store")
+            .envs(store.as_ref().unwrap().environment())
+            .args([
+                "--store",
+                &daemon.store_url(),
+                "--query",
+                "--hash",
+                "/nix/store/00000000000000000000000000000000-ipc-build.drv",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            info.is_ok(),
+            "isolated derivation query: {info:?}: {}",
+            String::from_utf8_lossy(&diagnostic.stderr)
+        );
     }
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
