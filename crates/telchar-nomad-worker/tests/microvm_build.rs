@@ -97,6 +97,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-failure",
             "configured-cancelled",
             "configured-fenced",
+            "configured-corrupt-output",
         ] {
             run_isolated_build(case);
         }
@@ -137,6 +138,7 @@ fn run_build() {
     let multiple = matches!(case.as_str(), "multiple" | "configured-multiple");
     let configured = case.starts_with("configured");
     let build_failure = case == "configured-failure";
+    let corrupt_output = case == "configured-corrupt-output";
     let system = if configured {
         "aarch64-linux"
     } else {
@@ -583,6 +585,19 @@ chunk_bytes = 262144
             ProtocolLimits::new(8192, 256 * 1024),
         )
         .unwrap();
+        if corrupt_output && frame.kind() == FrameKind::OutputNar {
+            let mut bytes = message.into_data().to_vec();
+            let content = b"dedicated-worker-success";
+            let offset = bytes
+                .windows(content.len())
+                .position(|window| window == content)
+                .expect("output NAR contains fixture content");
+            bytes[offset] ^= 1;
+            upstream
+                .send(tungstenite::Message::Binary(bytes.into()))
+                .unwrap();
+            break;
+        }
         upstream.send(message).unwrap();
         match frame.kind() {
             FrameKind::InputRequest => {
@@ -614,6 +629,10 @@ chunk_bytes = 262144
         }
     }
     let result = gateway_thread.join().unwrap();
+    if corrupt_output {
+        drop(upstream);
+        drop(socket);
+    }
     assert!(
         !telchar::persistence::admit_microvm_session(
             &database,
@@ -624,7 +643,7 @@ chunk_bytes = 262144
         .unwrap()
     );
     let worker = worker.wait_with_output().unwrap();
-    if build_failure {
+    if build_failure || corrupt_output {
         assert!(!worker.status.success());
         assert!(worker.stdout.is_empty());
         let diagnostic = String::from_utf8(worker.stderr).unwrap();
@@ -633,7 +652,10 @@ chunk_bytes = 262144
             "{diagnostic}"
         );
         assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
-        assert_eq!(result.unwrap_err().to_string(), "MicroVM build failed");
+        let error = result.unwrap_err();
+        if build_failure {
+            assert_eq!(error.to_string(), "MicroVM build failed");
+        }
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
         let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
         let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
