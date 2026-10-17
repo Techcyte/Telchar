@@ -27,7 +27,7 @@ pub struct Service {
 
 struct Lifecycle {
     callback: Arc<Mutex<CallbackService>>,
-    cleanup: MicrovmCleanupService,
+    cleanup: Arc<Mutex<MicrovmCleanupService>>,
 }
 
 impl Service {
@@ -53,6 +53,7 @@ impl Service {
         let mut names = std::collections::BTreeSet::new();
         let mut maximum = 0usize;
         let mut admission_timeout = std::time::Duration::ZERO;
+        let mut cleanup_intervals = std::collections::BTreeMap::new();
         for (config, _) in &deployments {
             if !names.insert(config.name()) {
                 return Err(io::Error::new(
@@ -70,6 +71,10 @@ impl Service {
                     )
                 })?;
             admission_timeout = admission_timeout.max(config.admission_timeout());
+            let interval = cleanup_intervals
+                .entry((config.account_id().to_owned(), config.region().to_owned()))
+                .or_insert(config.cleanup_interval());
+            *interval = (*interval).min(config.cleanup_interval());
         }
         if maximum == 0 {
             return Err(io::Error::new(
@@ -89,15 +94,24 @@ impl Service {
         let callback = Arc::new(Mutex::new(callback));
         let stopped = Arc::new(AtomicBool::new(false));
         let mut services = Vec::with_capacity(deployments.len());
+        let mut cleanups = std::collections::BTreeMap::new();
         for (config, provider) in deployments {
-            let cleanup = MicrovmCleanupService::start(
-                Arc::clone(&owner),
-                provider.clone(),
-                config.account_id().to_owned(),
-                config.region().to_owned(),
-                config.cleanup_interval(),
-                maximum.min(1000),
-            )?;
+            let identity = (config.account_id().to_owned(), config.region().to_owned());
+            let cleanup = match cleanups.entry(identity.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let cleanup = Arc::new(Mutex::new(MicrovmCleanupService::start(
+                        Arc::clone(&owner),
+                        provider.clone(),
+                        identity.0.clone(),
+                        identity.1.clone(),
+                        cleanup_intervals[&identity],
+                        maximum.min(1000),
+                    )?));
+                    entry.insert(Arc::clone(&cleanup));
+                    cleanup
+                }
+            };
             services.push(Arc::new(Self {
                 config,
                 provider,
@@ -120,7 +134,7 @@ impl Service {
 
     pub fn check(&self) -> io::Result<()> {
         self.owner.verify().map_err(io::Error::other)?;
-        let mut lifecycle = loop {
+        let lifecycle = loop {
             if self.stopped.load(Ordering::Acquire) {
                 return Err(io::Error::other("MicroVM service stopped"));
             }
@@ -153,12 +167,16 @@ impl Service {
             }
         };
         callback.check()?;
-        lifecycle.cleanup.check()
+        lifecycle
+            .cleanup
+            .lock()
+            .map_err(|_| io::Error::other("MicroVM cleanup unavailable"))?
+            .check()
     }
 
     pub fn shutdown(&self) -> io::Result<()> {
         self.stopped.store(true, Ordering::Release);
-        let mut lifecycle = self
+        let lifecycle = self
             .lifecycle
             .lock()
             .map_err(|_| io::Error::other("MicroVM lifecycle unavailable"))?;
@@ -167,7 +185,11 @@ impl Service {
             .lock()
             .map_err(|_| io::Error::other("MicroVM listener unavailable"))?
             .shutdown();
-        let cleanup = lifecycle.cleanup.shutdown();
+        let cleanup = lifecycle
+            .cleanup
+            .lock()
+            .map_err(|_| io::Error::other("MicroVM cleanup unavailable"))?
+            .shutdown();
         callback.and(cleanup)
     }
 
