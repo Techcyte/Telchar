@@ -94,6 +94,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "fenced",
             "configured",
             "configured-multiple",
+            "configured-failure",
         ] {
             run_isolated_build(case);
         }
@@ -133,6 +134,7 @@ fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
     let multiple = matches!(case.as_str(), "multiple" | "configured-multiple");
     let configured = case.starts_with("configured");
+    let build_failure = case == "configured-failure";
     let system = if configured {
         "aarch64-linux"
     } else {
@@ -181,10 +183,12 @@ fn run_build() {
     } else {
         String::new()
     };
-    let script = serde_json::to_string(&format!(
-        "read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}"
-    ))
-    .unwrap();
+    let script = if build_failure {
+        "exit 42".to_owned()
+    } else {
+        format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
+    };
+    let script = serde_json::to_string(&script).unwrap();
     let derivation = format!(
         r#"Derive([("out","{output}","",""){extra_output}],[],["{input}"],"{system}","/bin/sh",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","/bin/sh"),("name","dedicated")])"#
     );
@@ -597,6 +601,23 @@ chunk_bytes = 262144
         .unwrap()
     );
     let worker = worker.wait_with_output().unwrap();
+    if build_failure {
+        assert!(!worker.status.success());
+        assert!(worker.stdout.is_empty());
+        let diagnostic = String::from_utf8(worker.stderr).unwrap();
+        assert!(
+            diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+            "{diagnostic}"
+        );
+        assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+        assert_eq!(result.unwrap_err().to_string(), "MicroVM build failed");
+        assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+        let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "closed");
+        assert!(row.get::<_, bool>(1));
+        return;
+    }
     assert!(
         worker.status.success(),
         "{result:?}: {}",
