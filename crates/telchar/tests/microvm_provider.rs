@@ -7,6 +7,7 @@ use std::time::Duration;
 #[derive(Debug)]
 struct LaunchCredentials {
     database: String,
+    expire_admission: bool,
     calls: std::sync::atomic::AtomicUsize,
 }
 
@@ -20,9 +21,15 @@ impl aws_credential_types::provider::ProvideCredentials for LaunchCredentials {
         aws_credential_types::provider::future::ProvideCredentials::new(async move {
             if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
                 let database = self.database.clone();
+                let expire_admission = self.expire_admission;
                 tokio::task::spawn_blocking(move || {
+                    let sql = if expire_admission {
+                        "UPDATE microvm_launches SET created_at = clock_timestamp() - interval '2 seconds', admission_cutoff = clock_timestamp() - interval '1 second' WHERE intent_id = 'intent-fixture'"
+                    } else {
+                        "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'"
+                    };
                     postgres::Client::connect(&database, postgres::NoTls).unwrap()
-                        .batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+                        .batch_execute(sql).unwrap();
                 }).await.unwrap();
             }
             Ok(aws_credential_types::Credentials::new(
@@ -39,6 +46,11 @@ impl aws_credential_types::provider::ProvideCredentials for LaunchCredentials {
 #[test]
 fn ownership_loss_during_credentials_prevents_launch() {
     launch_exchange(true, "credentials-expired");
+}
+
+#[test]
+fn admission_expiry_during_credentials_prevents_launch() {
+    launch_exchange(true, "credentials-cutoff");
 }
 
 #[test]
@@ -216,7 +228,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     assert!(length < 32768);
                     let mut body = vec![0; length];
                     socket.read_exact(&mut body).expect("request body");
-                    if ownership == "credentials-expired" && headers.starts_with("POST / HTTP") {
+                    if ownership.starts_with("credentials-") && headers.starts_with("POST / HTTP") {
                         let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                         continue;
@@ -277,10 +289,11 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             ))
             .endpoint_url(endpoint.clone())
             .build();
-        let provider = if ownership == "credentials-expired" {
+        let provider = if ownership.starts_with("credentials-") {
             let credentials =
                 aws_credential_types::provider::SharedCredentialsProvider::new(LaunchCredentials {
                     database: fixture.url().to_owned(),
+                    expire_admission: ownership == "credentials-cutoff",
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 });
             let identity = aws_sdk_sts::Config::builder()
@@ -511,7 +524,7 @@ chunk_bytes = 1024
             started.elapsed() < Duration::from_secs(3),
             "bounded launch: {ownership}"
         );
-        if ownership.starts_with("execution-") {
+        if ownership.starts_with("execution-") || ownership == "credentials-cutoff" {
             assert_eq!(result.unwrap(), None);
         } else if ownership != "active" {
             assert!(result.is_err(), "expired owner cannot dispatch or bind");
@@ -530,6 +543,7 @@ chunk_bytes = 1024
         if matches!(
             ownership,
             "active"
+                | "credentials-cutoff"
                 | "dropped"
                 | "malformed"
                 | "timeout"
@@ -545,6 +559,7 @@ chunk_bytes = 1024
     let rejected_before_dispatch = matches!(
         ownership,
         "expired"
+            | "credentials-cutoff"
             | "credentials-expired"
             | "payload-mismatch"
             | "region-mismatch"
@@ -574,6 +589,7 @@ chunk_bytes = 1024
         row.get::<_, String>(0),
         match ownership {
             "expired"
+            | "credentials-cutoff"
             | "credentials-expired"
             | "payload-mismatch"
             | "region-mismatch"
