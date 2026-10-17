@@ -96,6 +96,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-multiple",
             "configured-failure",
             "configured-cancelled",
+            "configured-fenced",
         ] {
             run_isolated_build(case);
         }
@@ -298,7 +299,7 @@ fn run_build() {
     let gateway_store = endpoint.clone();
     let staging = root.clone();
     let execution_intent = intent.clone();
-    let ownership_lost = case == "fenced";
+    let ownership_lost = matches!(case.as_str(), "fenced" | "configured-fenced");
     let (binding_sender, binding_receiver) = std::sync::mpsc::sync_channel(1);
     let gateway_thread = std::thread::spawn(move || {
         let (provider, response) = provider_response(configured.then_some(binding_sender));
@@ -388,7 +389,15 @@ chunk_bytes = 262144
             .unwrap();
             build.set_target_name(target.name()).unwrap();
             let result = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || Ok(false));
-            service.shutdown().unwrap();
+            let shutdown = service.shutdown();
+            if ownership_lost {
+                if let Err(error) = shutdown {
+                    assert_eq!(error.to_string(), "MicroVM listener failed");
+                }
+                assert!(backend.selected_target(request.system(), &[]).is_err());
+            } else {
+                shutdown.unwrap();
+            }
             result.map(|result| {
                 assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
                 assert_eq!(result.outputs(), request.expected_outputs());
@@ -527,10 +536,10 @@ chunk_bytes = 262144
     socket.send(upstream.read().unwrap()).unwrap();
     if matches!(
         case.as_str(),
-        "cancelled" | "fenced" | "configured-cancelled"
+        "cancelled" | "fenced" | "configured-cancelled" | "configured-fenced"
     ) {
         let started = std::time::Instant::now();
-        if case != "fenced" {
+        if !ownership_lost {
             assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
         } else {
             let mut database = postgres::Client::connect(&database, postgres::NoTls).unwrap();
@@ -558,7 +567,10 @@ chunk_bytes = 262144
             let row = control.query_one(
                 "SELECT phase, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id],
             ).unwrap();
-            assert_eq!(row.get::<_, String>(0), "closed");
+            assert_eq!(
+                row.get::<_, String>(0),
+                if ownership_lost { "bound" } else { "closed" }
+            );
             assert!(row.get::<_, bool>(1));
             assert!(row.get::<_, bool>(2));
         }
