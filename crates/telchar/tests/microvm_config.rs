@@ -99,6 +99,100 @@ fn operator_process_reports_microvm_without_provider_or_database_access() {
 }
 
 #[test]
+fn daemon_refuses_admission_without_provider_credentials() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("service.toml");
+    let socket = directory.path().join("daemon.sock");
+    let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = callback.local_addr().unwrap();
+    std::fs::write(
+        &config,
+        format!("[backends]\nmicrovm_bind = \"{address}\"\n[[backends.microvm]]\n{CONFIG}"),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .args([
+            "daemon",
+            "--socket",
+            socket.to_str().unwrap(),
+            "--frontend-uid",
+            &rustix::process::getuid().as_raw().to_string(),
+        ])
+        .env_clear()
+        .env("HOME", directory.path())
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .env("AWS_CONFIG_FILE", directory.path().join("absent-config"))
+        .env(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            directory.path().join("absent-credentials"),
+        )
+        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_DATABASE_URL", database.url())
+        .env(
+            "TELCHAR_GATEWAY_STORE_URI",
+            "unix:///unused-microvm-test-store",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("credential rejection exceeded startup deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut stdout)
+        .unwrap();
+    assert!(!status.success());
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("MicroVM provider operation failed"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("Address already in use"),
+        "attestation must precede callback binding: {stderr}"
+    );
+    assert!(
+        !socket.exists(),
+        "IPC must not open before provider attestation"
+    );
+    drop(callback);
+    let _callback = std::net::TcpListener::bind(address).unwrap();
+    let count: i64 = database
+        .connect()
+        .query_one("SELECT count(*) FROM singleton_ownership", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0, "failed startup releases ownership");
+}
+
+#[test]
 fn deployment_configuration_preserves_execution_authority() {
     let config = MicrovmBackendConfig::parse(CONFIG).unwrap();
     assert_eq!(config.name(), "arm");
