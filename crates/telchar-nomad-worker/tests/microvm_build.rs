@@ -87,7 +87,14 @@ fn provider_response(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        for case in ["single", "multiple", "cancelled", "fenced", "configured"] {
+        for case in [
+            "single",
+            "multiple",
+            "cancelled",
+            "fenced",
+            "configured",
+            "configured-multiple",
+        ] {
             run_isolated_build(case);
         }
         return;
@@ -124,8 +131,8 @@ fn run_isolated_build(case: &str) {
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
-    let multiple = case == "multiple";
-    let configured = case == "configured";
+    let multiple = matches!(case.as_str(), "multiple" | "configured-multiple");
+    let configured = case.starts_with("configured");
     let system = if configured {
         "aarch64-linux"
     } else {
@@ -602,6 +609,18 @@ chunk_bytes = 262144
         String::from_utf8_lossy(&worker.stderr)
     );
     assert_eq!(result.unwrap(), BuildOutcome::Built);
+    let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+    let row = control.query_one(
+        "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",
+        &[&intent_id],
+    ).unwrap();
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(row.get::<_, String>(1), "microvm-build");
+    assert!(row.get::<_, bool>(2));
+    assert!(
+        row.get::<_, bool>(3),
+        "build success cannot release provider capacity"
+    );
     for expected in outputs {
         assert!(store.is_valid_path(expected.as_bytes()).unwrap());
     }
