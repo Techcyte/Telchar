@@ -36,7 +36,7 @@ fn provider_server(
     let cleanup = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-crash");
     let response = std::thread::spawn(move || {
         let exchanges = if cleanup {
-            vec![true, false, true, false]
+            vec![true, false, true, false, false, false]
         } else if restart {
             vec![true, false, true]
         } else if attest {
@@ -86,10 +86,21 @@ fn provider_server(
                     .to_ascii_lowercase()
                     .contains("authorization: aws4-hmac-sha256 credential=fixture-key/")
             );
-            if cleanup && index == 3 {
-                assert!(header.starts_with("GET /2025-09-09/microvms/microvm-build HTTP/1.1"));
+            if cleanup && index >= 3 {
+                let method = if index == 4 { "DELETE" } else { "GET" };
+                assert!(header.starts_with(&format!(
+                    "{method} /2025-09-09/microvms/microvm-build HTTP/1.1"
+                )));
                 assert!(body.is_empty());
-                let body = serde_json::json!({"microvmId":"microvm-build", "state":"TERMINATED", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1, "terminatedAt":2}).to_string();
+                let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
+                let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+                assert!(control.query_one("SELECT reservation_released_at IS NULL FROM microvm_launches WHERE provider_id = 'microvm-build'", &[]).unwrap().get::<_, bool>(0), "capacity released before terminal observation");
+                let state = if index == 3 { "RUNNING" } else { "TERMINATED" };
+                let body = if index == 4 {
+                    "{}".to_owned()
+                } else {
+                    serde_json::json!({"microvmId":"microvm-build", "state":state, "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1, "terminatedAt":2}).to_string()
+                };
                 write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                 continue;
             }
