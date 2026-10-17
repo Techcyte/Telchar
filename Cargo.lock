@@ -2588,6 +2588,7 @@ version = "2026.9.2"
 dependencies = [
  "aws-credential-types",
  "aws-sdk-lambdamicrovms",
+ "aws-sdk-sts",
  "base64 0.23.1",
  "hmac",
  "nix-worker-protocol",

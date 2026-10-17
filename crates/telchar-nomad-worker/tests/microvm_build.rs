@@ -18,70 +18,108 @@ fn provider_response(
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
+    let attest = binding.is_some();
     let response = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline);
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("provider accept: {error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut header = Vec::new();
-        while !header.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            stream.read_exact(&mut byte).unwrap();
-            header.push(byte[0]);
-            assert!(header.len() < 32768);
-        }
-        let header = String::from_utf8(header).unwrap();
-        let length: usize = header
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse().unwrap())
-            })
-            .unwrap();
-        assert!(length < 32768);
-        let mut body = vec![0; length];
-        stream.read_exact(&mut body).unwrap();
-        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        if let Some(binding) = binding {
-            let payload: serde_json::Value =
-                serde_json::from_str(request["runHookPayload"].as_str().unwrap()).unwrap();
-            binding.send(payload).unwrap();
+        for identity in if attest {
+            vec![true, false]
         } else {
-            assert_eq!(request["clientToken"], "build-token");
+            vec![false]
+        } {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("provider accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+                assert!(header.len() < 32768);
+            }
+            let header = String::from_utf8(header).unwrap();
+            let length: usize = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            assert!(length < 32768);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            assert!(
+                header
+                    .to_ascii_lowercase()
+                    .contains("authorization: aws4-hmac-sha256 credential=fixture-key/")
+            );
+            if identity {
+                assert!(header.starts_with("POST / "));
+                assert!(
+                    String::from_utf8(body)
+                        .unwrap()
+                        .contains("Action=GetCallerIdentity")
+                );
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                continue;
+            }
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if let Some(binding) = &binding {
+                let payload: serde_json::Value =
+                    serde_json::from_str(request["runHookPayload"].as_str().unwrap()).unwrap();
+                binding.send(payload).unwrap();
+            } else {
+                assert_eq!(request["clientToken"], "build-token");
+            }
+            let body = serde_json::json!({"microvmId":"microvm-build", "state":"PENDING", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
-        let body = serde_json::json!({"microvmId":"microvm-build", "state":"PENDING", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1}).to_string();
-        write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
+    let credentials =
+        aws_credential_types::Credentials::new("fixture-key", "fixture-secret", None, None, "test");
     let config = aws_sdk_lambdamicrovms::Config::builder()
         .behavior_version_latest()
         .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
-        .credentials_provider(aws_credential_types::Credentials::new(
-            "fixture-key",
-            "fixture-secret",
-            None,
-            None,
-            "test",
-        ))
-        .endpoint_url(endpoint)
+        .credentials_provider(credentials.clone())
+        .endpoint_url(&endpoint)
         .build();
-    (
-        telchar::microvm::Provider::new(config, Duration::from_secs(2)).unwrap(),
-        response,
-    )
+    let provider = if attest {
+        let identity = aws_sdk_sts::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_sts::config::Region::new("us-west-2"))
+            .credentials_provider(credentials.clone())
+            .endpoint_url(endpoint)
+            .build();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(telchar::microvm::Provider::verify_account(
+                config,
+                identity,
+                aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
+                "116392764028",
+                Duration::from_secs(2),
+            ))
+            .unwrap()
+    } else {
+        telchar::microvm::Provider::new(config, Duration::from_secs(2)).unwrap()
+    };
+    (provider, response)
 }
 
 #[test]
