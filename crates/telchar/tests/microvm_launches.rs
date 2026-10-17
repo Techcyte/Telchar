@@ -295,6 +295,18 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
 
 #[test]
 fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
+    for (backend, account, region, expected) in [
+        ("launch-fixture", "116392764028", "us-west-2", 1),
+        ("alias", "116392764028", "us-west-2", 1),
+        ("alias", "000000000000", "us-west-2", 2),
+        ("alias", "116392764028", "us-east-1", 2),
+        ("launch-fixture", "000000000000", "us-east-1", 1),
+    ] {
+        reservation_competitors(backend, account, region, expected);
+    }
+}
+
+fn reservation_competitors(backend: &str, account: &str, region: &str, expected: usize) {
     let (mut fixture, database) = prepared_launch();
     let first_attempt: i64 = fixture
         .connect()
@@ -309,7 +321,7 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
         &database,
         derivation,
         &[2; 32],
-        "launch-fixture",
+        backend,
         BackendKind::Local,
         BackendKind::Local.capabilities(),
         None,
@@ -322,34 +334,35 @@ fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
         .expect("second attempt exists")
         .attempt_id;
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let callers: Vec<_> = [
-        (first_attempt, "reserve-one"),
-        (second_attempt, "reserve-two"),
-    ]
-    .into_iter()
-    .map(|(attempt, id)| {
-        let database = database.clone();
-        let barrier = barrier.clone();
-        std::thread::spawn(move || {
-            let intent = launch_intent(attempt, id);
-            barrier.wait();
-            (
-                intent,
-                telchar::persistence::reserve_microvm_launch(
-                    &database,
-                    &launch_intent(attempt, id),
-                    1,
-                )
-                .expect("capacity reservation resolves"),
-            )
+    let first = launch_intent(first_attempt, "reserve-one");
+    let mut second = launch_intent(second_attempt, "reserve-two");
+    second.backend_name = backend.into();
+    second.account_id = account.into();
+    second.region = region.into();
+    let callers: Vec<_> = [first, second]
+        .into_iter()
+        .map(|intent| {
+            let database = database.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let reserved = telchar::persistence::reserve_microvm_launch(&database, &intent, 1)
+                    .expect("capacity reservation resolves");
+                (intent, reserved)
+            })
         })
-    })
-    .collect();
+        .collect();
     let results: Vec<_> = callers
         .into_iter()
         .map(|caller| caller.join().expect("reservation joins"))
         .collect();
-    assert_eq!(results.iter().filter(|(_, reserved)| *reserved).count(), 1);
+    assert_eq!(
+        results.iter().filter(|(_, reserved)| *reserved).count(),
+        expected
+    );
+    if expected == 2 {
+        return;
+    }
     let winner = &results
         .iter()
         .find(|(_, reserved)| *reserved)
