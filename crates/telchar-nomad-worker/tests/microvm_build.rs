@@ -31,7 +31,9 @@ fn provider_server(
     let attest = binding.is_some();
     let restart = matches!(
         std::env::var("MICROVM_TEST_CASE").as_deref(),
-        Ok("configured-daemon-restart" | "configured-daemon-crash")
+        Ok("configured-daemon-restart"
+            | "configured-daemon-crash"
+            | "configured-daemon-output-recovery")
     );
     let cleanup = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-crash");
     let response = std::thread::spawn(move || {
@@ -192,6 +194,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-detached",
             "configured-daemon-restart",
             "configured-daemon-crash",
+            "configured-daemon-output-recovery",
         ] {
             run_isolated_build(case);
         }

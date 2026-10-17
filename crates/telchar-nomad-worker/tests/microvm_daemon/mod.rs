@@ -29,6 +29,7 @@ pub fn run(
 ) -> std::io::Result<BuildOutcome> {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
     let crashes = case == "configured-daemon-crash";
+    let recovers_outputs = case == "configured-daemon-output-recovery";
     let fails = matches!(
         case.as_str(),
         "configured-daemon-failure"
@@ -167,6 +168,13 @@ chunk_bytes = 262144
         bytes(&mut wire, value);
     }
     word(&mut wire, 0);
+    let mut terminal_barrier = if recovers_outputs {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        control.batch_execute("CREATE FUNCTION hold_terminal_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state = 'succeeded' THEN PERFORM pg_advisory_xact_lock(78564321); END IF; RETURN NEW; END $$; CREATE TRIGGER hold_terminal_result BEFORE UPDATE ON shared_builds FOR EACH ROW EXECUTE FUNCTION hold_terminal_result(); SELECT pg_advisory_lock(78564321);").unwrap();
+        Some(control)
+    } else {
+        None
+    };
     stream.write_all(&wire)?;
     stream.flush()?;
     let mut expected = Vec::new();
@@ -218,7 +226,28 @@ chunk_bytes = 262144
     } else {
         None
     };
-    if crashes {
+    if recovers_outputs {
+        let control = terminal_barrier.as_mut().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !control.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objid = 78564321 AND NOT granted)", &[]).unwrap().get::<_, bool>(0) {
+            assert!(Instant::now() < deadline, "terminal write barrier deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut gateway = telchar::store::daemon::GatewayStoreConnection::connect(store)?;
+        for (_, output) in request.expected_outputs() {
+            assert!(
+                gateway.query_path_info(output)?.is_some(),
+                "output registered before crash"
+            );
+        }
+        assert_ne!(
+            control
+                .query_one("SELECT state FROM shared_builds", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            "succeeded"
+        );
+    } else if crashes {
         let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound' AND provider_id = 'microvm-build')", &[]).unwrap().get::<_, bool>(0) {
@@ -283,7 +312,7 @@ chunk_bytes = 262144
     }
     drop(stream);
     drop(client);
-    if case == "configured-daemon-restart" || crashes {
+    if case == "configured-daemon-restart" || crashes || recovers_outputs {
         let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
         let generation: i64 = control
             .query_one(
@@ -294,6 +323,17 @@ chunk_bytes = 262144
             .get(0);
         daemon.0.kill()?;
         assert!(!daemon.0.wait()?.success());
+        if let Some(mut barrier) = terminal_barrier.take() {
+            barrier.batch_execute("SELECT pg_advisory_unlock(78564321); DROP TRIGGER hold_terminal_result ON shared_builds; DROP FUNCTION hold_terminal_result();").unwrap();
+            assert_ne!(
+                barrier
+                    .query_one("SELECT state FROM shared_builds", &[])
+                    .unwrap()
+                    .get::<_, String>(0),
+                "succeeded",
+                "terminal transaction committed despite crash"
+            );
+        }
         let mut stdout = String::new();
         let mut stderr = String::new();
         daemon
