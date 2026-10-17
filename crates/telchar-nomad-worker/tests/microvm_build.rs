@@ -29,8 +29,11 @@ fn provider_server(
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
     let attest = binding.is_some();
+    let restart = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-restart");
     let response = std::thread::spawn(move || {
-        for identity in if attest {
+        for identity in if restart {
+            vec![true, false, true]
+        } else if attest {
             vec![true, false]
         } else {
             vec![false]
@@ -162,6 +165,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-corrupt-output",
             "configured-daemon-coalesced",
             "configured-daemon-detached",
+            "configured-daemon-restart",
         ] {
             run_isolated_build(case);
         }

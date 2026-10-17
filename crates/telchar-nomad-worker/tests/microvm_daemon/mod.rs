@@ -77,29 +77,28 @@ chunk_bytes = 262144
     assert!(uid.stderr.is_empty());
     let binary = std::env::var_os("TELCHAR_TEST_DAEMON_BIN")
         .expect("TELCHAR_TEST_DAEMON_BIN must identify the freshly built daemon");
-    let mut daemon = Daemon(
-        Command::new(binary)
-            .args(["daemon", "--socket"])
-            .arg(&socket)
-            .args([
-                "--frontend-uid",
-                String::from_utf8(uid.stdout).unwrap().trim(),
-            ])
-            .env_clear()
-            .env("HOME", &home)
-            .env("AWS_EC2_METADATA_DISABLED", "true")
-            .env("AWS_ACCESS_KEY_ID", "fixture-key")
-            .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
-            .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
-            .env("TELCHAR_CONFIG", config)
-            .env("TELCHAR_DATABASE_URL", database)
-            .env("TELCHAR_GATEWAY_STORE_URI", store.to_string())
-            .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?,
-    );
+    let mut command = Command::new(binary);
+    command
+        .args(["daemon", "--socket"])
+        .arg(&socket)
+        .args([
+            "--frontend-uid",
+            String::from_utf8(uid.stdout).unwrap().trim(),
+        ])
+        .env_clear()
+        .env("HOME", &home)
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .env("AWS_ACCESS_KEY_ID", "fixture-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
+        .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
+        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_DATABASE_URL", database)
+        .env("TELCHAR_GATEWAY_STORE_URI", store.to_string())
+        .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut daemon = Daemon(command.spawn()?);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
         assert!(Instant::now() < deadline, "daemon startup deadline");
@@ -267,6 +266,65 @@ chunk_bytes = 262144
     }
     drop(stream);
     drop(client);
+    if case == "configured-daemon-restart" {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        let generation: i64 = control
+            .query_one(
+                "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        daemon.0.kill()?;
+        assert!(!daemon.0.wait()?.success());
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        daemon
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut stdout)?;
+        daemon
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)?;
+        assert!(stdout.is_empty());
+        assert!(
+            !stderr.lines().any(|line| line.contains(" ERROR ")),
+            "{stderr}"
+        );
+        control.batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+        daemon = Daemon(command.spawn()?);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = daemon.0.try_wait()? {
+                let mut diagnostic = String::new();
+                daemon
+                    .0
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut diagnostic)?;
+                panic!("replacement exited {status}: {diagnostic}");
+            }
+            let replaced = control
+                .query_opt(
+                    "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+                    &[],
+                )
+                .unwrap()
+                .is_some_and(|row| row.get::<_, i64>(0) > generation);
+            if replaced && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "replacement startup deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(control.query_one("SELECT count(*) FROM microvm_launches WHERE provider_id = 'microvm-build' AND reservation_released_at IS NULL", &[]).unwrap().get::<_, i64>(0), 1);
+    }
     provider.join().unwrap();
     let signal = Command::new("kill")
         .args(["-TERM", &daemon.0.id().to_string()])
