@@ -95,6 +95,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured",
             "configured-multiple",
             "configured-failure",
+            "configured-cancelled",
         ] {
             run_isolated_build(case);
         }
@@ -524,12 +525,13 @@ chunk_bytes = 262144
     let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
     upstream.send(socket.read().unwrap()).unwrap();
     socket.send(upstream.read().unwrap()).unwrap();
-    if matches!(case.as_str(), "cancelled" | "fenced") {
+    if matches!(
+        case.as_str(),
+        "cancelled" | "fenced" | "configured-cancelled"
+    ) {
         let started = std::time::Instant::now();
-        if case == "cancelled" {
-            assert!(
-                telchar::persistence::cancel_microvm_launch(&database, "build-intent").unwrap()
-            );
+        if case != "fenced" {
+            assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
         } else {
             let mut database = postgres::Client::connect(&database, postgres::NoTls).unwrap();
             assert_eq!(database.execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'", &[]).unwrap(), 1);
@@ -551,6 +553,15 @@ chunk_bytes = 262144
             "{case} idle session did not stop promptly"
         );
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        if configured {
+            let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            let row = control.query_one(
+                "SELECT phase, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id],
+            ).unwrap();
+            assert_eq!(row.get::<_, String>(0), "closed");
+            assert!(row.get::<_, bool>(1));
+            assert!(row.get::<_, bool>(2));
+        }
         return;
     }
     loop {
