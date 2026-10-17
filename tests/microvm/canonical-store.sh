@@ -20,6 +20,9 @@ mkdir "$root/upper" "$root/work" "$root/store" "$root/state" "$root/log" "$root/
 export NIX_STATE_DIR="$root/state" NIX_LOG_DIR="$root/log" NIX_CONF_DIR="$root/conf" TMPDIR="$root/tmp"
 export NIX_USER_CONF_FILES=/dev/null NIX_STORE_DIR=/nix/store NIX_DAEMON_SOCKET_PATH="$root/socket"
 export NIX_CONFIG=$'sandbox = false\nbuild-users-group =\nsubstituters =\ntrusted-users = root\n'
+if [[ ${MICROVM_TEST_CASE:-} == configured ]]; then
+    export NIX_CONFIG+=$'extra-platforms = aarch64-linux\n'
+fi
 export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STORE_URI="unix://$root/socket"
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
