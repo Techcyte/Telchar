@@ -75,7 +75,7 @@ chunk_bytes = 1024
         let configuration_file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             configuration_file.path(),
-            format!("[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{deployment}\n[[backends.microvm]]\n{}", deployment.replace("name = \"arm\"", "name = \"arm-secondary\"")),
+            format!("[backends]\npermit_wait_seconds = 1\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{deployment}\n[[backends.microvm]]\n{}", deployment.replace("name = \"arm\"", "name = \"arm-secondary\"")),
         )
         .unwrap();
         let configuration =
@@ -111,7 +111,10 @@ chunk_bytes = 1024
             .unwrap()
             .unwrap();
         assert_eq!(permit.target(), &target);
-        drop(permit);
+        let second_permit = executor
+            .reserve_target("aarch64-linux", &[])
+            .unwrap()
+            .unwrap();
         let reloadable = telchar::backend::routing::ReloadableBackends::new(backends.clone());
         let mut current = configuration.clone();
         let mut health = telchar::service::daemon_services::StaticSshHealthService::start(
@@ -140,6 +143,21 @@ chunk_bytes = 1024
             reloaded.selected_target("aarch64-linux", &[]).unwrap(),
             target
         );
+        assert_eq!(
+            reloaded
+                .reserve_target("aarch64-linux", &[])
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        drop(permit);
+        let replacement_permit = reloaded
+            .reserve_target("aarch64-linux", &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(replacement_permit.target(), &target);
+        drop(replacement_permit);
+        drop(second_permit);
         health.shutdown().unwrap();
         if fenced {
             fixture.expire_singleton_ownership("daemon");

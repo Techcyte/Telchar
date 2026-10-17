@@ -254,7 +254,7 @@ impl ConfiguredBackends {
         if current.inner.microvm.is_empty() {
             return Ok(self);
         }
-        Self::compose(
+        let mut replacement = Self::compose(
             config,
             self.inner.static_ssh.clone(),
             self.inner.gateway_store.clone(),
@@ -267,7 +267,10 @@ impl ConfiguredBackends {
                 .iter()
                 .map(|(_, service)| Arc::clone(service))
                 .collect(),
-        )
+        )?;
+        let inner = Arc::get_mut(&mut replacement.inner).expect("exclusive routing construction");
+        inner.pool = inner.pool.clone().retain_capacity(&current.inner.pool)?;
+        Ok(replacement)
     }
 
     pub fn targets(&self) -> impl Iterator<Item = &crate::backend::BackendTarget> {
