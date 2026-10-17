@@ -100,11 +100,44 @@ fn operator_process_reports_microvm_without_provider_or_database_access() {
 
 #[test]
 fn daemon_refuses_admission_without_provider_credentials() {
+    daemon_startup_rejection(false);
+}
+
+#[test]
+fn daemon_refuses_unconfigured_cleanup_authority() {
+    daemon_startup_rejection(true);
+}
+
+fn daemon_startup_rejection(retained_cleanup: bool) {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
     let database = telchar_test_support::postgres::PostgresFixture::start();
+    if retained_cleanup {
+        telchar::persistence::migrate(database.url()).unwrap();
+        let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cleanup.drv";
+        let kind = telchar::backend::BackendKind::Microvm;
+        telchar::persistence::claim_shared_build(
+            database.url(),
+            derivation,
+            &[1; 32],
+            "removed-policy",
+            kind,
+            kind.capabilities(),
+            None,
+            &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cleanup"],
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(database.url(), derivation).unwrap();
+        let attempt = telchar::persistence::read_shared_build_attempt(database.url(), derivation)
+            .unwrap()
+            .unwrap();
+        database.connect().execute(
+            "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id) VALUES ('retained', $1, 'removed-policy', '000000000000', 'us-west-2', 'fixture', '1', $2, $2, 'retained-token', $2, clock_timestamp() + interval '1 minute', 600, 'closed', 'microvm-retained')",
+            &[&attempt.attempt_id, &&[1_u8; 32][..]],
+        ).unwrap();
+    }
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("service.toml");
     let socket = directory.path().join("daemon.sock");
@@ -150,7 +183,7 @@ fn daemon_refuses_admission_without_provider_credentials() {
         if Instant::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("credential rejection exceeded startup deadline");
+            panic!("startup rejection exceeded deadline");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -170,10 +203,20 @@ fn daemon_refuses_admission_without_provider_credentials() {
         .unwrap();
     assert!(!status.success());
     assert!(stdout.is_empty());
-    assert!(
-        stderr.contains("MicroVM provider operation failed"),
-        "{stderr}"
-    );
+    let expected = if retained_cleanup {
+        "MicroVM cleanup requires configured account and region"
+    } else {
+        "MicroVM provider operation failed"
+    };
+    assert!(stderr.contains(expected), "{stderr}");
+    if retained_cleanup {
+        assert!(
+            !stderr.contains("MicroVM provider operation failed"),
+            "{stderr}"
+        );
+        let retained: bool = database.connect().query_one("SELECT reservation_released_at IS NULL AND provider_id = 'microvm-retained' FROM microvm_launches WHERE intent_id = 'retained'", &[]).unwrap().get(0);
+        assert!(retained, "startup refusal preserves cleanup obligation");
+    }
     assert!(
         !stderr.contains("Address already in use"),
         "attestation must precede callback binding: {stderr}"
