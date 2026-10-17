@@ -256,6 +256,13 @@ impl BackendPool {
                 "backend pool is invalid",
             ));
         }
+        let mut names = std::collections::BTreeSet::new();
+        if targets.iter().any(|target| !names.insert(target.name())) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "duplicate backend name",
+            ));
+        }
         for (target, maximum) in targets.iter().zip(&maximums) {
             crate::service::metrics::backend_configured(
                 target.name(),
