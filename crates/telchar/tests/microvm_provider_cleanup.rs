@@ -4,6 +4,37 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+#[derive(Debug)]
+struct CleanupCredentials {
+    database: String,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl aws_credential_types::provider::ProvideCredentials for CleanupCredentials {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::new(async move {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                let database = self.database.clone();
+                tokio::task::spawn_blocking(move || {
+                    postgres::Client::connect(&database, postgres::NoTls).unwrap().batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+                }).await.unwrap();
+            }
+            Ok(aws_credential_types::Credentials::new(
+                "fixture-key",
+                "fixture-secret",
+                None,
+                None,
+                "test",
+            ))
+        })
+    }
+}
+
 fn exchange(
     status: &str,
     body: &str,
@@ -19,7 +50,9 @@ fn exchange(
         body.len()
     );
     let server = std::thread::spawn(move || {
-        let count = if operation == "maintenance-uncertain" {
+        let count = if operation == "credentials-expired-cleanup" {
+            3
+        } else if operation == "maintenance-uncertain" {
             5
         } else if matches!(operation, "lifecycle-cleanup" | "maintenance") {
             3
@@ -34,7 +67,7 @@ fn exchange(
                     Ok((socket, _)) => break socket,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         if std::time::Instant::now() >= deadline {
-                            return String::new();
+                            return requests;
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -62,7 +95,13 @@ fn exchange(
             } else {
                 index
             };
-            let response = if operation == "maintenance-uncertain" && response_index == 3 {
+            let response = if operation == "credentials-expired-cleanup" && index == 0 {
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else if operation == "maintenance-uncertain" && response_index == 3 {
                 let body = observation("microvm-wrong", "TERMINATED");
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -181,10 +220,31 @@ fn exchange(
             None,
             "test",
         ))
-        .endpoint_url(endpoint)
+        .endpoint_url(endpoint.clone())
         .build();
-    let provider =
-        telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider");
+    let provider = if operation == "credentials-expired-cleanup" {
+        let identity = aws_sdk_sts::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_sts::config::Region::new("us-west-2"))
+            .endpoint_url(endpoint)
+            .build();
+        let credentials =
+            aws_credential_types::provider::SharedCredentialsProvider::new(CleanupCredentials {
+                database: fixture.url().to_owned(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+        runtime
+            .block_on(telchar::microvm::Provider::verify_account(
+                config,
+                identity,
+                credentials,
+                "116392764028",
+                Duration::from_secs(1),
+            ))
+            .expect("account verifies")
+    } else {
+        telchar::microvm::Provider::new(config, Duration::from_secs(1)).expect("provider")
+    };
     if operation == "maintenance-uncertain" {
         fixture.connect().execute("UPDATE microvm_launches SET region = 'us-west-2' WHERE intent_id = 'blocked-intent'", &[]).unwrap();
     }
@@ -401,6 +461,27 @@ fn ownership_loss_during_observation_prevents_termination_and_release() {
         1
     );
     assert!(!requests.contains("DELETE "));
+}
+
+#[test]
+fn ownership_loss_during_termination_credentials_prevents_delete() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "credentials-expired-cleanup",
+    );
+    assert!(
+        !requests.contains("DELETE "),
+        "fenced owner sent termination"
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| line.starts_with("GET "))
+            .count(),
+        1
+    );
 }
 
 #[test]

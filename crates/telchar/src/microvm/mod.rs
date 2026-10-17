@@ -348,7 +348,9 @@ impl Provider {
         let terminated = runtime.block_on(self.is_terminated(&cleanup.provider_id))?;
         owner.verify().map_err(|_| ProviderError)?;
         if !terminated {
-            runtime.block_on(self.terminate(&cleanup.provider_id))?;
+            let client = runtime.block_on(self.authorized_client())?;
+            owner.verify().map_err(|_| ProviderError)?;
+            runtime.block_on(Self::terminate_with_client(&client, &cleanup.provider_id))?;
             return Ok(false);
         }
         crate::persistence::record_microvm_termination(
@@ -381,14 +383,21 @@ impl Provider {
     }
 
     pub async fn terminate(&self, provider_id: &str) -> Result<(), ProviderError> {
+        let client = self.authorized_client().await?;
+        Self::terminate_with_client(&client, provider_id).await
+    }
+
+    async fn terminate_with_client(
+        client: &Client,
+        provider_id: &str,
+    ) -> Result<(), ProviderError> {
         if provider_id.is_empty()
             || provider_id.len() > 256
             || provider_id.chars().any(char::is_control)
         {
             return Err(ProviderError);
         }
-        self.authorized_client()
-            .await?
+        client
             .terminate_microvm()
             .microvm_identifier(provider_id)
             .send()
