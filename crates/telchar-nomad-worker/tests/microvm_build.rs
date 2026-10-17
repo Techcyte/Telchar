@@ -160,6 +160,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-fixed-output",
             "configured-daemon-failure",
             "configured-daemon-corrupt-output",
+            "configured-daemon-coalesced",
         ] {
             run_isolated_build(case);
         }
@@ -562,6 +563,27 @@ chunk_bytes = 262144
             "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 15
         })
     };
+    if case == "configured-daemon-coalesced" {
+        let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let attached = control
+                .query_one(
+                    "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0);
+            if attached == 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "both requesters must attach before worker startup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     worker_binding.as_object_mut().unwrap().remove("version");
     worker_binding["provider_id"] = "microvm-build".into();
     let intent_id = worker_binding["intent_id"].as_str().unwrap().to_owned();

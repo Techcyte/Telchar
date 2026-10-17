@@ -177,6 +177,31 @@ chunk_bytes = 262144
             false,
         )?;
     }
+    let follower = if case == "configured-daemon-coalesced" {
+        let mut follower = std::os::unix::net::UnixStream::connect(&socket)?;
+        follower.set_read_timeout(Some(Duration::from_secs(20)))?;
+        follower.set_write_timeout(Some(Duration::from_secs(5)))?;
+        IpcListener::send_envelope(
+            &mut follower,
+            &IpcEnvelope {
+                version: IPC_VERSION,
+                requester: RequesterMetadata {
+                    credential_id: "ssh-pubkey:microvm-follower".into(),
+                    audit_subject: "microvm-follower".into(),
+                    quota_subject: "microvm-follower".into(),
+                },
+                session_id: "microvm-daemon-follower".into(),
+                trace_context: telchar_telemetry::TraceContext::default(),
+                error: None,
+            },
+        )?;
+        let client = nix_worker_protocol::WorkerClient::connect(follower.try_clone()?)?;
+        follower.write_all(&wire)?;
+        follower.flush()?;
+        Some((follower, client))
+    } else {
+        None
+    };
     let mut actual = vec![0; expected.len()];
     stream.read_exact(&mut actual)?;
     if actual != expected {
@@ -190,6 +215,22 @@ chunk_bytes = 262144
             .unwrap()
             .read_to_string(&mut diagnostic)?;
         panic!("daemon result {actual:?}: {diagnostic}");
+    }
+    if let Some((mut follower, _client)) = follower {
+        let mut follower_expected = Vec::new();
+        nix_worker_protocol::write_stderr_frame(
+            &mut follower_expected,
+            nix_worker_protocol::StderrFrame::Next {
+                message: b"identical build already in progress\n".to_vec(),
+            },
+        )?;
+        follower_expected.extend_from_slice(&expected);
+        let mut actual = vec![0; follower_expected.len()];
+        follower.read_exact(&mut actual)?;
+        assert_eq!(
+            actual, follower_expected,
+            "follower receives shared success"
+        );
     }
     drop(stream);
     drop(client);
@@ -284,6 +325,21 @@ chunk_bytes = 262144
         )
         .unwrap();
     assert_eq!(attachment.get::<_, String>(0), "detached");
+    if case == "configured-daemon-coalesced" {
+        let follower = control.query_one("SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-follower'", &[]).unwrap();
+        assert_eq!(follower.get::<_, String>(0), "detached");
+        assert!(
+            stderr.contains("event=\"shared_build.coalescing.follower\""),
+            "{stderr}"
+        );
+        assert_eq!(
+            control
+                .query_one("SELECT count(*) FROM microvm_launches", &[])
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+    }
     assert_eq!(
         control
             .query_one("SELECT count(*) FROM singleton_ownership", &[])
