@@ -163,7 +163,8 @@ fn exchange(
         let mut service = telchar::service::daemon_services::MicrovmCleanupService::start(
             std::sync::Arc::new(owner),
             provider,
-            "cleanup-fixture".to_owned(),
+            "116392764028".to_owned(),
+            "us-west-2".to_owned(),
             Duration::from_millis(25),
             1,
         )
@@ -173,7 +174,8 @@ fn exchange(
             service.check().expect("cleanup service healthy");
             let pending = telchar::persistence::pending_microvm_cleanup(
                 &database,
-                "cleanup-fixture",
+                "116392764028",
+                "us-east-1",
                 10,
                 None,
             )
@@ -183,9 +185,15 @@ fn exchange(
                     .iter()
                     .any(|item| item.intent_id == "blocked-intent")
             );
-            if !pending
-                .iter()
-                .any(|item| item.intent_id == "cleanup-intent")
+            if telchar::persistence::pending_microvm_cleanup(
+                &database,
+                "116392764028",
+                "us-west-2",
+                10,
+                None,
+            )
+            .unwrap()
+            .is_empty()
             {
                 break;
             }
@@ -199,10 +207,15 @@ fn exchange(
         service.shutdown().expect("shutdown is idempotent");
         Ok(true)
     } else if operation.ends_with("cleanup") {
-        let cleanup =
-            telchar::persistence::pending_microvm_cleanup(&database, "cleanup-fixture", 1, None)
-                .expect("pending identity")
-                .remove(0);
+        let cleanup = telchar::persistence::pending_microvm_cleanup(
+            &database,
+            "116392764028",
+            "us-west-2",
+            1,
+            None,
+        )
+        .expect("pending identity")
+        .remove(0);
         let result = provider.cleanup(&owner, &cleanup);
         let released: bool = fixture.connect().query_one("SELECT reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'cleanup-intent'", &[]).expect("reservation reads").get(0);
         assert_eq!(released, result.as_ref().is_ok_and(|released| *released));
@@ -211,7 +224,8 @@ fn exchange(
             assert!(!released);
             let pending = telchar::persistence::pending_microvm_cleanup(
                 owner.database(),
-                "cleanup-fixture",
+                "116392764028",
+                "us-west-2",
                 1,
                 None,
             )
@@ -225,7 +239,8 @@ fn exchange(
             assert!(
                 telchar::persistence::pending_microvm_cleanup(
                     owner.database(),
-                    "cleanup-fixture",
+                    "116392764028",
+                    "us-west-2",
                     1,
                     None
                 )

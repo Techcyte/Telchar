@@ -138,11 +138,12 @@ impl MicrovmCleanupService {
     pub fn start(
         owner: std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
         provider: crate::microvm::Provider,
-        backend_name: String,
+        account_id: String,
+        region: String,
         interval: Duration,
         batch_size: usize,
     ) -> io::Result<Self> {
-        if backend_name.is_empty() || !(1..=1000).contains(&batch_size) {
+        if account_id.is_empty() || region.is_empty() || !(1..=1000).contains(&batch_size) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid MicroVM cleanup bounds",
@@ -153,7 +154,8 @@ impl MicrovmCleanupService {
             owner.verify().map_err(io::Error::other)?;
             let pending = crate::persistence::pending_microvm_cleanup(
                 owner.database(),
-                &backend_name,
+                &account_id,
+                &region,
                 batch_size,
                 after_intent.as_deref(),
             )

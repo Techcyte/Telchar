@@ -93,7 +93,8 @@ impl Service {
             let cleanup = MicrovmCleanupService::start(
                 Arc::clone(&owner),
                 provider.clone(),
-                config.name().to_owned(),
+                config.account_id().to_owned(),
+                config.region().to_owned(),
                 config.cleanup_interval(),
                 maximum.min(1000),
             )?;

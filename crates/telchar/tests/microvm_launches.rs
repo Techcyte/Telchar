@@ -451,9 +451,15 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
             .expect("binding")
     );
     assert!(
-        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
-            .expect("active launch reads")
-            .is_empty()
+        telchar::persistence::pending_microvm_cleanup(
+            &database,
+            "116392764028",
+            "us-west-2",
+            10,
+            None
+        )
+        .expect("active launch reads")
+        .is_empty()
     );
     telchar::persistence::complete_shared_build_failure(
         &database,
@@ -464,9 +470,14 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     )
     .expect("terminal build");
     fixture.restart();
-    let cleanup =
-        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
-            .expect("cleanup reads");
+    let cleanup = telchar::persistence::pending_microvm_cleanup(
+        &database,
+        "116392764028",
+        "us-west-2",
+        10,
+        None,
+    )
+    .expect("cleanup reads");
     assert_eq!(cleanup.len(), 1);
     assert_eq!(cleanup[0].intent_id, "intent-one");
     assert_eq!(cleanup[0].provider_id, "microvm-exact");
@@ -501,9 +512,15 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     );
     fixture.restart();
     assert!(
-        telchar::persistence::pending_microvm_cleanup(&database, "launch-fixture", 10, None)
-            .expect("released list reads")
-            .is_empty()
+        telchar::persistence::pending_microvm_cleanup(
+            &database,
+            "116392764028",
+            "us-west-2",
+            10,
+            None
+        )
+        .expect("released list reads")
+        .is_empty()
     );
     let row = fixture.connect().query_one("SELECT phase, reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[]).expect("release persists");
     assert_eq!(row.get::<_, String>(0), "closed");

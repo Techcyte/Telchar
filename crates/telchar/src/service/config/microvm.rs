@@ -171,6 +171,12 @@ impl MicrovmBackendConfig {
     pub fn name(&self) -> &str {
         &self.0.name
     }
+    pub fn account_id(&self) -> &str {
+        &self.0.account_id
+    }
+    pub fn region(&self) -> &str {
+        &self.0.region
+    }
     pub fn maximum_concurrent_builds(&self) -> usize {
         self.0.maximum_concurrent_builds
     }

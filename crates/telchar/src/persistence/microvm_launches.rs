@@ -38,7 +38,8 @@ pub struct MicrovmCleanup {
 
 pub fn pending_microvm_cleanup(
     database: &(impl DatabaseSource + ?Sized),
-    backend_name: &str,
+    account_id: &str,
+    region: &str,
     limit: usize,
     after_intent: Option<&str>,
 ) -> Result<Vec<MicrovmCleanup>, MicrovmLaunchError> {
@@ -53,13 +54,13 @@ pub fn pending_microvm_cleanup(
             "SELECT l.intent_id, l.provider_id, l.account_id, l.region
          FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
-         WHERE l.backend_name = $1 AND l.provider_id IS NOT NULL
+         WHERE l.account_id = $1 AND l.region = $4 AND l.provider_id IS NOT NULL
            AND l.reservation_released_at IS NULL
            AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
                 OR b.state NOT IN ('running', 'collecting'))
          ORDER BY CASE WHEN $3::text IS NULL THEN false ELSE l.intent_id <= $3 END,
                   l.intent_id LIMIT $2",
-            &[&backend_name, &(limit as i64), &after_intent],
+            &[&account_id, &(limit as i64), &after_intent, &region],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(rows
