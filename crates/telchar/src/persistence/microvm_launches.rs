@@ -124,8 +124,8 @@ pub fn reserve_microvm_launch(
     let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
     transaction
         .query_one(
-            "SELECT pg_advisory_xact_lock(hashtextextended('microvm_launches:' || $1, 0))",
-            &[&intent.backend_name],
+            "SELECT pg_advisory_xact_lock(hashtextextended('microvm_launches:reservations', 0))",
+            &[],
         )
         .map_err(|_| MicrovmLaunchError)?;
     let active = transaction
@@ -141,10 +141,15 @@ pub fn reserve_microvm_launch(
     if active.is_none() {
         return Ok(false);
     }
-    let reserved: i64 = transaction.query_one(
-        "SELECT count(*) FROM microvm_launches WHERE backend_name = $1 AND reservation_released_at IS NULL",
-        &[&intent.backend_name],
-    ).map_err(|_| MicrovmLaunchError)?.get(0);
+    let reserved: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM microvm_launches
+         WHERE (backend_name = $1 OR (account_id = $2 AND region = $3))
+           AND reservation_released_at IS NULL",
+            &[&intent.backend_name, &intent.account_id, &intent.region],
+        )
+        .map_err(|_| MicrovmLaunchError)?
+        .get(0);
     if reserved >= maximum {
         return Ok(false);
     }

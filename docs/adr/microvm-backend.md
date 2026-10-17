@@ -213,6 +213,11 @@ A normal backend permit governs active dispatch, but an in-memory permit cannot
 represent unresolved remote cost after process death. Add a durable per-backend
 execution reservation linked to the intent. Reserve transactionally before
 marking dispatching, counting all nonreleased reservations across generations.
+Reservation admission counts rows sharing either the backend name or the exact
+AWS account/region, so renaming a policy cannot bypass retained obligations.
+The requesting policy's limit applies to this combined count; aliases with
+different limits do not define a separate account-wide quota. A short shared
+transaction lock serializes reservation decisions; provider I/O is outside it.
 The existing fair scheduler still selects work; this reservation is an external
 execution safety gate, not another queue or a second quota charged to followers.
 

@@ -57,6 +57,45 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn renamed_backend_retains_account_region_quarantine_across_restart() {
+    let (mut fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    let derivation = "/nix/store/cccccccccccccccccccccccccccccccc-alias.drv";
+    telchar::persistence::claim_shared_build(
+        &database,
+        derivation,
+        &[2; 32],
+        "renamed",
+        BackendKind::Microvm,
+        BackendKind::Microvm.capabilities(),
+        None,
+        &["/nix/store/dddddddddddddddddddddddddddddddd-alias"],
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(&database, derivation).unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, derivation)
+        .unwrap()
+        .unwrap();
+    let mut intent = launch_intent(attempt.attempt_id, "alias-intent");
+    intent.backend_name = "renamed".into();
+    fixture.restart();
+    assert!(
+        !telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap(),
+        "renaming cannot bypass retained account/region reservation"
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
+}
+
+#[test]
 fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer() {
     let (fixture, database) = prepared_launch();
     let capability = telchar::microvm::Capability::generate().expect("OS entropy");
