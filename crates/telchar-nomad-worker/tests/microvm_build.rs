@@ -183,6 +183,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-failure",
             "configured-cancelled",
             "configured-building-cancelled",
+            "configured-building-deadline",
             "configured-fenced",
             "configured-corrupt-output",
             "configured-fixed-output",
@@ -321,7 +322,11 @@ fn run_build() {
     } else {
         String::new()
     };
-    let script = if case == "configured-building-cancelled" {
+    let building_interrupted = matches!(
+        case.as_str(),
+        "configured-building-cancelled" | "configured-building-deadline"
+    );
+    let script = if building_interrupted {
         {
             let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap())
                 .map(|path| path.join("sleep"))
@@ -656,6 +661,9 @@ chunk_bytes = 262144
     }
     worker_binding.as_object_mut().unwrap().remove("version");
     worker_binding["provider_id"] = "microvm-build".into();
+    if case == "configured-building-deadline" {
+        worker_binding["lifetime_seconds"] = 3.into();
+    }
     let intent_id = worker_binding["intent_id"].as_str().unwrap().to_owned();
     use sha2::Digest;
     let verifier: [u8; 32] =
@@ -812,7 +820,7 @@ chunk_bytes = 262144
             break;
         }
         upstream.send(message).unwrap();
-        if case == "configured-building-cancelled"
+        if building_interrupted
             && frame.kind() == FrameKind::LogChunk
             && frame
                 .payload()
@@ -820,16 +828,29 @@ chunk_bytes = 262144
                 .any(|bytes| bytes == b"builder-executing")
         {
             let started = std::time::Instant::now();
-            assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
-            let result = gateway_thread.join().unwrap();
-            assert!(result.is_err());
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "gateway cancellation deadline"
-            );
-            drop(upstream);
-            drop(socket);
-            let worker = worker.wait_with_output().unwrap();
+            let worker = if case == "configured-building-deadline" {
+                let worker = worker.wait_with_output().unwrap();
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "worker deadline waited for build completion"
+                );
+                drop(upstream);
+                drop(socket);
+                assert!(gateway_thread.join().unwrap().is_err());
+                worker
+            } else {
+                assert!(
+                    telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap()
+                );
+                assert!(gateway_thread.join().unwrap().is_err());
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "gateway cancellation deadline"
+                );
+                drop(upstream);
+                drop(socket);
+                worker.wait_with_output().unwrap()
+            };
             assert!(!worker.status.success());
             assert!(worker.stdout.is_empty());
             let diagnostic = String::from_utf8(worker.stderr).unwrap();
@@ -879,8 +900,8 @@ chunk_bytes = 262144
             _ => {}
         }
     }
-    assert_ne!(
-        case, "configured-building-cancelled",
+    assert!(
+        !building_interrupted,
         "builder execution barrier not observed"
     );
     let result = gateway_thread.join().unwrap();
