@@ -33,14 +33,18 @@ fn provider_server(
         std::env::var("MICROVM_TEST_CASE").as_deref(),
         Ok("configured-daemon-restart" | "configured-daemon-crash")
     );
+    let cleanup = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-crash");
     let response = std::thread::spawn(move || {
-        for identity in if restart {
+        let exchanges = if cleanup {
+            vec![true, false, true, false]
+        } else if restart {
             vec![true, false, true]
         } else if attest {
             vec![true, false]
         } else {
             vec![false]
-        } {
+        };
+        for (index, identity) in exchanges.into_iter().enumerate() {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {
@@ -73,7 +77,7 @@ fn provider_server(
                     name.eq_ignore_ascii_case("content-length")
                         .then(|| value.trim().parse().unwrap())
                 })
-                .unwrap();
+                .unwrap_or(0);
             assert!(length < 32768);
             let mut body = vec![0; length];
             stream.read_exact(&mut body).unwrap();
@@ -82,6 +86,13 @@ fn provider_server(
                     .to_ascii_lowercase()
                     .contains("authorization: aws4-hmac-sha256 credential=fixture-key/")
             );
+            if cleanup && index == 3 {
+                assert!(header.starts_with("GET /2025-09-09/microvms/microvm-build HTTP/1.1"));
+                assert!(body.is_empty());
+                let body = serde_json::json!({"microvmId":"microvm-build", "state":"TERMINATED", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1, "terminatedAt":2}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                continue;
+            }
             if identity {
                 assert!(header.starts_with("POST / "));
                 assert!(

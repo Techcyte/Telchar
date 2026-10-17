@@ -94,7 +94,7 @@ chunk_bytes = 262144
         .env("AWS_ACCESS_KEY_ID", "fixture-key")
         .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
         .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
-        .env("TELCHAR_CONFIG", config)
+        .env("TELCHAR_CONFIG", &config)
         .env("TELCHAR_DATABASE_URL", database)
         .env("TELCHAR_GATEWAY_STORE_URI", store.to_string())
         .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots)
@@ -314,6 +314,16 @@ chunk_bytes = 262144
             "{stderr}"
         );
         control.batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+        if crashes {
+            let configuration = std::fs::read_to_string(&config)?;
+            std::fs::write(
+                &config,
+                configuration.replace(
+                    "cleanup_interval_seconds = 60",
+                    "cleanup_interval_seconds = 1",
+                ),
+            )?;
+        }
         daemon = Daemon(command.spawn()?);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -340,7 +350,15 @@ chunk_bytes = 262144
             assert!(Instant::now() < deadline, "replacement startup deadline");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(control.query_one("SELECT count(*) FROM microvm_launches WHERE provider_id = 'microvm-build' AND reservation_released_at IS NULL", &[]).unwrap().get::<_, i64>(0), 1);
+        if crashes {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !control.query_one("SELECT reservation_released_at IS NOT NULL FROM microvm_launches WHERE provider_id = 'microvm-build'", &[]).unwrap().get::<_, bool>(0) {
+                assert!(Instant::now() < deadline, "replacement cleanup deadline");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            assert_eq!(control.query_one("SELECT count(*) FROM microvm_launches WHERE provider_id = 'microvm-build' AND reservation_released_at IS NULL", &[]).unwrap().get::<_, i64>(0), 1);
+        }
     }
     provider.join().unwrap();
     let signal = Command::new("kill")
