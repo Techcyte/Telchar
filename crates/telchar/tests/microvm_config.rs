@@ -263,6 +263,16 @@ fn daemon_lifecycle(exit: DaemonExit) {
     use std::time::{Duration, Instant};
     let database = telchar_test_support::postgres::PostgresFixture::start();
     let directory = tempfile::tempdir().unwrap();
+    let store = (exit == DaemonExit::Terminated)
+        .then(|| telchar::fixture::nix::NixFixture::create().unwrap());
+    let store_daemon = store.as_ref().map(|store| {
+        store
+            .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
+            .unwrap()
+    });
+    if let Some(daemon) = &store_daemon {
+        daemon.worker_client_profile().expect("isolated store handshake");
+    }
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -318,6 +328,50 @@ fn daemon_lifecycle(exit: DaemonExit) {
             "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>{account}</Account><Arn>arn:aws:iam::{account}:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>"
         );
         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+        if exit == DaemonExit::Terminated {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "daemon must dispatch admitted build"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+                assert!(headers.len() < 32768);
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(
+                headers.starts_with("post /2025-09-09/microvms "),
+                "{headers}"
+            );
+            assert!(headers.contains("credential=fixture-key/"));
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(length < 32768);
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(request["runHookPayload"].as_str().is_some());
+            socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+        }
     });
     let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = callback.local_addr().unwrap();
@@ -347,7 +401,10 @@ fn daemon_lifecycle(exit: DaemonExit) {
         .env("TELCHAR_DATABASE_URL", database.url())
         .env(
             "TELCHAR_GATEWAY_STORE_URI",
-            "unix:///unused-microvm-test-store",
+            store_daemon
+                .as_ref()
+                .map(|daemon| format!("unix://{}", daemon.socket_path().display()))
+                .unwrap_or_else(|| "unix:///unused-microvm-test-store".into()),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -376,7 +433,6 @@ fn daemon_lifecycle(exit: DaemonExit) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    server.join().unwrap();
     if exit != DaemonExit::AccountMismatch {
         assert!(std::net::TcpStream::connect(address).is_ok());
     }
@@ -478,10 +534,22 @@ fn daemon_lifecycle(exit: DaemonExit) {
             assert_eq!(read_bytes(&mut request_stream), b"Error");
             let _level = read_word(&mut request_stream);
             assert_eq!(read_bytes(&mut request_stream), b"Error");
-            assert_eq!(
-                read_bytes(&mut request_stream),
-                b"gateway store retention failed"
-            );
+            let rejection = read_bytes(&mut request_stream);
+            if rejection != b"BuildDerivation execution failed" {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                let mut diagnostic = String::new();
+                child
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut diagnostic)
+                    .unwrap();
+                panic!(
+                    "unexpected rejection {:?}: {diagnostic}",
+                    String::from_utf8_lossy(&rejection)
+                );
+            }
             assert_eq!(read_word(&mut request_stream), 0);
             assert_eq!(read_word(&mut request_stream), 0);
             let launches: i64 = database
@@ -489,10 +557,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
                 .query_one("SELECT count(*) FROM microvm_launches", &[])
                 .unwrap()
                 .get(0);
-            assert_eq!(
-                launches, 0,
-                "unavailable store must prevent provider dispatch"
-            );
+            assert_eq!(launches, 1, "daemon persists one provider launch intent");
         }
         drop(request_stream);
         drop(client);
@@ -524,6 +589,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    server.join().unwrap();
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
