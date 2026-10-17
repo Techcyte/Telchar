@@ -483,6 +483,14 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     assert_eq!(cleanup[0].provider_id, "microvm-exact");
     assert_eq!(cleanup[0].account_id, "116392764028");
     assert_eq!(cleanup[0].region, "us-west-2");
+    for (account, region) in [("000000000000", "us-west-2"), ("116392764028", "us-east-1")] {
+        assert!(
+            telchar::persistence::pending_microvm_cleanup(&database, account, region, 10, None,)
+                .unwrap()
+                .is_empty(),
+            "cleanup must not cross account/region authority"
+        );
+    }
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
