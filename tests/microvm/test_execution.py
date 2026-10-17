@@ -63,6 +63,20 @@ class ExecutionTests(unittest.TestCase):
         self.assert_stopped(self.root / "child.pid")
         self.assert_stopped(self.root / "daemon.pid")
 
+    def test_deadline_stops_descendant_that_creates_session(self):
+        child = self.command("escaped", "import os, pathlib, time\n"
+                             "os.setsid()\n"
+                             f"pathlib.Path({str(self.root / 'escaped.pid')!r}).write_text(str(os.getpid()))\n"
+                             "time.sleep(5)\n")
+        worker = self.command("worker", "import subprocess, time\n"
+                              f"subprocess.Popen({child!r})\n"
+                              "time.sleep(5)\n")
+        started = time.monotonic()
+        self.assertFalse(execution.supervise(self.daemon(), worker, self.ready(), 1))
+        self.assertLess(time.monotonic() - started, 2)
+        self.assert_stopped(self.root / "daemon.pid")
+        self.assert_stopped(self.root / "escaped.pid")
+
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
         self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2))
