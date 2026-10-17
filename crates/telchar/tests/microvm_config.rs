@@ -61,6 +61,44 @@ fn service_configuration_accepts_bounded_microvm_fleet() {
 }
 
 #[test]
+fn operator_process_reports_microvm_without_provider_or_database_access() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("service.toml");
+    std::fs::write(
+        &path,
+        format!("[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n[[backends.microvm]]\n{CONFIG}"),
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .args(["operator", "config-check"])
+        .env_clear()
+        .env("TELCHAR_CONFIG", &path)
+        .env("HOME", directory.path())
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["backend_count"], 1);
+    assert_eq!(
+        report["backends"],
+        serde_json::json!([{
+            "name": "arm", "kind": "microvm", "system": "aarch64-linux",
+            "features": [], "capacity": 2
+        }])
+    );
+}
+
+#[test]
 fn deployment_configuration_preserves_execution_authority() {
     let config = MicrovmBackendConfig::parse(CONFIG).unwrap();
     assert_eq!(config.name(), "arm");
