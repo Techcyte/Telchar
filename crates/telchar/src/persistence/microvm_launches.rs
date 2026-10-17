@@ -36,6 +36,29 @@ pub struct MicrovmCleanup {
     pub region: String,
 }
 
+pub fn microvm_cleanup_is_configured(
+    database: &(impl DatabaseSource + ?Sized),
+    identities: &[(&str, &str)],
+) -> Result<bool, MicrovmLaunchError> {
+    let accounts: Vec<_> = identities.iter().map(|(account, _)| *account).collect();
+    let regions: Vec<_> = identities.iter().map(|(_, region)| *region).collect();
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_one(
+            "SELECT NOT EXISTS (
+            SELECT 1 FROM microvm_launches l
+            WHERE l.reservation_released_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM unnest($1::text[], $2::text[]) AS configured(account_id, region)
+                WHERE configured.account_id = l.account_id AND configured.region = l.region
+              )
+        )",
+            &[&accounts, &regions],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(row.get(0))
+}
+
 pub fn pending_microvm_cleanup(
     database: &(impl DatabaseSource + ?Sized),
     account_id: &str,

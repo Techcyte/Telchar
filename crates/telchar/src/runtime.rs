@@ -423,6 +423,21 @@ fn run_daemon() -> io::Result<()> {
         result = "success",
         "released request roots reconciled"
     );
+    let cleanup_identities: Vec<_> = config
+        .microvm_backends()
+        .iter()
+        .map(|policy| (policy.account_id(), policy.region()))
+        .collect();
+    if !telchar::persistence::microvm_cleanup_is_configured(
+        singleton_ownership.database(),
+        &cleanup_identities,
+    )
+    .map_err(io::Error::other)?
+    {
+        return Err(invalid(
+            "MicroVM cleanup requires configured account and region",
+        ));
+    }
     let deployments = singleton_ownership
         .maintain_during(config.ownership_renewal_interval(), || {
             if config.microvm_backends().is_empty() {

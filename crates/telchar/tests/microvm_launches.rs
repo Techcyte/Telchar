@@ -57,6 +57,29 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn cleanup_configuration_covers_unreleased_launches() {
+    let (_fixture, database) = prepared_launch();
+    for identities in [
+        vec![],
+        vec![("000000000000", "us-west-2")],
+        vec![("116392764028", "us-east-1")],
+    ] {
+        assert!(
+            !telchar::persistence::microvm_cleanup_is_configured(&database, &identities).unwrap()
+        );
+    }
+    assert!(
+        telchar::persistence::microvm_cleanup_is_configured(
+            &database,
+            &[("116392764028", "us-west-2")]
+        )
+        .unwrap()
+    );
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    assert!(telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+}
+
+#[test]
 fn renamed_backend_retains_account_region_quarantine_across_restart() {
     let (mut fixture, database) = prepared_launch();
     assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
