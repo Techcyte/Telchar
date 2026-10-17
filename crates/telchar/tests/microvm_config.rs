@@ -194,6 +194,15 @@ fn daemon_refuses_admission_without_provider_credentials() {
 
 #[test]
 fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
+    daemon_lifecycle(false);
+}
+
+#[test]
+fn daemon_closes_attested_listener_after_ownership_loss() {
+    daemon_lifecycle(true);
+}
+
+fn daemon_lifecycle(fenced: bool) {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -304,11 +313,15 @@ fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
     }
     server.join().unwrap();
     assert!(std::net::TcpStream::connect(address).is_ok());
-    rustix::process::kill_process(
-        rustix::process::Pid::from_raw(child.id() as i32).unwrap(),
-        rustix::process::Signal::TERM,
-    )
-    .unwrap();
+    if fenced {
+        database.expire_singleton_ownership("daemon");
+    } else {
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(child.id() as i32).unwrap(),
+            rustix::process::Signal::TERM,
+        )
+        .unwrap();
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
@@ -319,13 +332,17 @@ fn daemon_starts_attested_listener_and_releases_it_on_shutdown() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.success(), !fenced, "{stderr}");
     assert!(output.stdout.is_empty());
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("ERROR"));
+    if fenced {
+        assert!(
+            stderr.contains("telchar: singleton ownership operation failed"),
+            "{stderr}"
+        );
+    } else {
+        assert!(!stderr.contains("ERROR"), "{stderr}");
+    }
     assert!(!socket.exists());
     let _listener = std::net::TcpListener::bind(address).unwrap();
     let count: i64 = database
