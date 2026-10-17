@@ -158,6 +158,8 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon",
             "configured-daemon-multiple",
             "configured-daemon-fixed-output",
+            "configured-daemon-failure",
+            "configured-daemon-corrupt-output",
         ] {
             run_isolated_build(case);
         }
@@ -200,8 +202,14 @@ fn run_build() {
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
     );
     let configured = case.starts_with("configured");
-    let build_failure = case == "configured-failure";
-    let corrupt_output = case == "configured-corrupt-output";
+    let build_failure = matches!(
+        case.as_str(),
+        "configured-failure" | "configured-daemon-failure"
+    );
+    let corrupt_output = matches!(
+        case.as_str(),
+        "configured-corrupt-output" | "configured-daemon-corrupt-output"
+    );
     let fixed_output = matches!(
         case.as_str(),
         "configured-fixed-output" | "configured-daemon-fixed-output"
@@ -766,7 +774,9 @@ chunk_bytes = 262144
         );
         assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
         let error = result.unwrap_err();
-        if build_failure {
+        if case.starts_with("configured-daemon") {
+            assert_eq!(error.to_string(), "BuildDerivation execution failed");
+        } else if build_failure {
             assert_eq!(error.to_string(), "MicroVM build failed");
         }
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());

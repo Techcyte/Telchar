@@ -27,6 +27,11 @@ pub fn run(
     request: &telchar::build::BuildRequest,
     binding: std::sync::mpsc::SyncSender<serde_json::Value>,
 ) -> std::io::Result<BuildOutcome> {
+    let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    let fails = matches!(
+        case.as_str(),
+        "configured-daemon-failure" | "configured-daemon-corrupt-output"
+    );
     let (endpoint, provider) = super::provider_server(Some(binding));
     let home = root.join("daemon");
     std::fs::create_dir(&home)?;
@@ -163,11 +168,15 @@ chunk_bytes = 262144
     stream.write_all(&wire)?;
     stream.flush()?;
     let mut expected = Vec::new();
-    nix_worker_protocol::write_build_derivation_success_response(
-        &mut expected,
-        client.profile().version,
-        false,
-    )?;
+    if fails {
+        nix_worker_protocol::write_worker_error(&mut expected, "BuildDerivation execution failed")?;
+    } else {
+        nix_worker_protocol::write_build_derivation_success_response(
+            &mut expected,
+            client.profile().version,
+            false,
+        )?;
+    }
     let mut actual = vec![0; expected.len()];
     stream.read_exact(&mut actual)?;
     if actual != expected {
@@ -211,7 +220,34 @@ chunk_bytes = 262144
         .unwrap()
         .read_to_string(&mut stderr)?;
     assert!(stdout.is_empty());
-    assert!(!stderr.contains("ERROR"), "{stderr}");
+    let errors = stderr
+        .lines()
+        .filter(|line| line.contains(" ERROR "))
+        .collect::<Vec<_>>();
+    if fails {
+        assert_eq!(errors.len(), 2, "{stderr}");
+        assert!(
+            errors[0].contains("event=\"worker.build_derivation.failed\""),
+            "{stderr}"
+        );
+        let reason = if case == "configured-daemon-corrupt-output" {
+            "reason=\"invalid-data\""
+        } else {
+            "reason=\"execution-failure\""
+        };
+        assert!(errors[0].contains(reason), "{stderr}");
+        assert!(
+            errors[1].contains("event=\"worker.operation.rejected\""),
+            "{stderr}"
+        );
+        assert!(
+            errors[1].contains("reason=\"BuildDerivation execution failed\""),
+            "{stderr}"
+        );
+    } else {
+        assert!(errors.is_empty(), "{stderr}");
+    }
+    let terminal_state = if fails { "failed" } else { "succeeded" };
     let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
     let builds = control
         .query(
@@ -220,7 +256,7 @@ chunk_bytes = 262144
         )
         .unwrap();
     assert_eq!(builds.len(), 1);
-    assert_eq!(builds[0].get::<_, String>("state"), "succeeded");
+    assert_eq!(builds[0].get::<_, String>("state"), terminal_state);
     assert_eq!(builds[0].get::<_, String>("backend_kind"), "microvm");
     assert_eq!(
         builds[0].get::<_, String>("execution_recovery"),
@@ -239,7 +275,7 @@ chunk_bytes = 262144
         .query("SELECT state, backend_kind FROM shared_build_attempts", &[])
         .unwrap();
     assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0].get::<_, String>("state"), "succeeded");
+    assert_eq!(attempts[0].get::<_, String>("state"), terminal_state);
     assert_eq!(attempts[0].get::<_, String>("backend_kind"), "microvm");
     let attachment = control
         .query_one(
@@ -257,5 +293,9 @@ chunk_bytes = 262144
     );
     assert!(!socket.exists());
     assert!(std::net::TcpListener::bind(gateway).is_ok());
-    Ok(BuildOutcome::Built)
+    if fails {
+        Err(std::io::Error::other("BuildDerivation execution failed"))
+    } else {
+        Ok(BuildOutcome::Built)
+    }
 }
