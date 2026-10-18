@@ -54,7 +54,7 @@ class NixExecutionTests(unittest.TestCase):
 
     def run_build(self, body):
         daemon_log = self.root / "daemon.log"
-        daemon = self.command("daemon", f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(str(os.getpid()))\n"
+        daemon = self.command("daemon", f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
                               f"log = os.open({str(daemon_log)!r}, os.O_CREAT | os.O_WRONLY, 0o600)\n"
                               "os.dup2(log, 2)\n"
                               f"os.execve({self.daemon!r}, [{self.daemon!r}], environment)\n")

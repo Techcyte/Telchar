@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -96,6 +97,50 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         raise ValueError("invalid execution lifetime")
     cancelled = cancelled if cancelled is not None else threading.Event()
     deadline = time.monotonic() + lifetime
+    process = None
+    try:
+        specification = json.dumps([daemon_command, worker_command, ready_command, deadline])
+        process = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--execution-init", specification],
+            start_new_session=True, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        while time.monotonic() < deadline and not cancelled.is_set():
+            result = process.poll()
+            if result is not None:
+                return result == 0
+            time.sleep(min(.025, max(0, deadline - time.monotonic())))
+        return False
+    except OSError:
+        return False
+    finally:
+        if process is not None:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            process.wait()
+
+
+def enter_execution(specification):
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    os.unshare(os.CLONE_NEWPID)
+    child = os.fork()
+    if child == 0:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+        return run_execution(*specification)
+
+    def terminate(_signal, _frame):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(child, signal.SIGKILL)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+    _, status = os.waitpid(child, 0)
+    return os.waitstatus_to_exitcode(status) == 0
+
+
+def run_execution(daemon_command, worker_command, ready_command, deadline):
+    if os.getpid() != 1:
+        return False
+    cancelled = threading.Event()
     daemon = worker = readiness = None
     try:
         daemon = subprocess.Popen(daemon_command, start_new_session=True,
@@ -167,4 +212,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--execution-init":
+        try:
+            result = enter_execution(json.loads(sys.argv[2]))
+        except (ValueError, TypeError, OSError):
+            result = False
+        raise SystemExit(0 if result else 1)
     main()

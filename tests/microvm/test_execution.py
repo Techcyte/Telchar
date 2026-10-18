@@ -35,7 +35,7 @@ class ExecutionTests(unittest.TestCase):
 
     def daemon(self):
         return self.command("daemon", "import os, pathlib, time\n"
-                            f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(str(os.getpid()))\n"
+                            f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
                             "time.sleep(30)\n")
 
     def ready(self):
@@ -51,7 +51,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_deadline_kills_worker_descendant_and_daemon(self):
         child = self.command("child", "import os, pathlib, time\n"
-                             f"pathlib.Path({str(self.root / 'child.pid')!r}).write_text(str(os.getpid()))\n"
+                             f"pathlib.Path({str(self.root / 'child.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
                              "time.sleep(30)\n")
         worker = self.command("worker", "import subprocess, time\n"
                               f"subprocess.Popen({child!r})\n"
@@ -66,7 +66,7 @@ class ExecutionTests(unittest.TestCase):
     def test_deadline_stops_descendant_that_creates_session(self):
         child = self.command("escaped", "import os, pathlib, time\n"
                              "os.setsid()\n"
-                             f"pathlib.Path({str(self.root / 'escaped.pid')!r}).write_text(str(os.getpid()))\n"
+                             f"pathlib.Path({str(self.root / 'escaped.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
                              "time.sleep(5)\n")
         worker = self.command("worker", "import subprocess, time\n"
                               f"subprocess.Popen({child!r})\n"
@@ -92,7 +92,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_hanging_readiness_obeys_execution_deadline(self):
         ready = self.command("ready", "import os, pathlib, time\n"
-                             f"pathlib.Path({str(self.root / 'ready.pid')!r}).write_text(str(os.getpid()))\n"
+                             f"pathlib.Path({str(self.root / 'ready.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
                              "time.sleep(30)\n")
         worker = self.command("worker", "raise SystemExit(0)\n")
         started = time.monotonic()
