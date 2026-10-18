@@ -145,10 +145,16 @@ does not support the FIPS module; this composition makes no FIPS claim.
 
 Pinned Nixpkgs selects OpenSSL 3.6.3, whereas the inspected Amazon source is
 3.5.8 with other distribution patches applied before the snapsafe patch. Direct
-application to the pinned version is therefore unqualified. ARM derivation
+application to checksum-verified upstream 3.6.3 with `patch --dry-run --fuzz=0`
+fails on two RAND engine-call hunks and one test-build hunk. The engine-call
+sites include integer-range checks and casts absent from the patch context;
+3.6.3 also has provider-direct random calls outside the patched EVP route.
+A port requires semantic review, not merely accepting offsets. ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
-Nix 2.34.8 and curl 8.21.0 use composed derivations whose top-level `buildInputs`
-are not a complete dependency inventory. Adding a patched library to image
+Nix 2.34.8's `nix-util` and `nix-main` consume OpenSSL, while `nix-store`
+consumes curl; curl 8.21.0 propagates OpenSSL 3.6.3. Top-level `buildInputs`
+alone are not a complete dependency inventory. These are package-definition and
+evaluation findings, not realized ELF linkage evidence. Adding a patched library to image
 contents alone does not redirect Nix store references. An image-local package-set
 change would need dependency reconstruction and realized ELF/closure inspection,
 followed by patch tests and actual device/generation qualification. No such
