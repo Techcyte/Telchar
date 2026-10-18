@@ -149,7 +149,14 @@ application to checksum-verified upstream 3.6.3 with `patch --dry-run --fuzz=0`
 fails on two RAND engine-call hunks and one test-build hunk. The engine-call
 sites include integer-range checks and casts absent from the patch context;
 3.6.3 also has provider-direct random calls outside the patched EVP route.
-A port requires semantic review, not merely accepting offsets. ARM derivation
+A port requires semantic review, not merely accepting offsets. The unchanged
+patch does pass the same zero-fuzz dry run against the 3.5.8 tarball embedded in
+the checksum-verified Amazon source RPM (tarball SHA256
+`a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2`),
+without preceding distribution patches. This establishes source applicability
+only; provider-direct randomness also exists in that source, so matching the
+version does not establish coverage of every random-provider configuration.
+ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
 Nix 2.34.8's `nix-util` and `nix-main` consume OpenSSL, while `nix-store`
 consumes curl; curl 8.21.0 propagates OpenSSL 3.6.3. Top-level `buildInputs`
