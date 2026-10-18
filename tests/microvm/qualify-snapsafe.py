@@ -19,11 +19,36 @@ def verified_file(path, expected, limit):
     return path.resolve()
 
 
+def probe(tree):
+    library = ctypes.CDLL(str(tree / "libcrypto.so.3"))
+    random_bytes = library.RAND_bytes
+    random_bytes.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    random_bytes.restype = ctypes.c_int
+    output = ctypes.create_string_buffer(32)
+    if random_bytes(output, len(output)) != 1:
+        raise RuntimeError("shared RAND_bytes failed")
+    print("SHARED_RAND_BYTES=passed", flush=True)
+    try:
+        supported = library.RAND_snapsafe_is_supported
+    except AttributeError as error:
+        raise RuntimeError("shared library does not export RAND_snapsafe_is_supported") from error
+    supported.argtypes = []
+    supported.restype = ctypes.c_int
+    support = supported()
+    if support not in (0, 1):
+        raise RuntimeError(f"invalid snapshot support result: {support}")
+    if not pathlib.Path("/dev/sysgenid").exists() and support != 0:
+        raise RuntimeError("snapshot support reported without generation device")
+    print(f"SNAPSAFE_DEVICE_SUPPORTED={support}", flush=True)
+    print("Real device generation and snapshot restoration remain unqualified.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=pathlib.Path)
     parser.add_argument("patch", type=pathlib.Path)
     parser.add_argument("artifacts", type=pathlib.Path)
+    parser.add_argument("--export-probe", action="store_true")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("this qualification requires native x86-64 Linux")
@@ -45,28 +70,17 @@ def main():
             raise ValueError("expanded source exceeds size limit")
         package.extractall(work, filter="data")
     tree = work / "openssl-3.5.8"
-    for command in (
-        ["patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch)],
-        ["./Configure", "linux-x86_64", "shared", "no-fips"],
-        ["make", "-j1", "build_libs"],
-    ):
-        subprocess.run(command, cwd=tree, check=True)
-    library = ctypes.CDLL(str(tree / "libcrypto.so.3"))
-    random_bytes = library.RAND_bytes
-    random_bytes.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    random_bytes.restype = ctypes.c_int
-    output = ctypes.create_string_buffer(32)
-    if random_bytes(output, len(output)) != 1:
-        raise RuntimeError("shared RAND_bytes failed")
-    print("SHARED_RAND_BYTES=passed", flush=True)
-    try:
-        supported = library.RAND_snapsafe_is_supported
-    except AttributeError as error:
-        raise RuntimeError("shared library does not export RAND_snapsafe_is_supported") from error
-    supported.argtypes = []
-    supported.restype = ctypes.c_int
-    print(f"SNAPSAFE_DEVICE_SUPPORTED={supported()}", flush=True)
-    print("Real device generation and snapshot restoration remain unqualified.", flush=True)
+    patches = [patch]
+    if args.export_probe:
+        patches.append(pathlib.Path(__file__).with_name("snapsafe-export.patch").resolve())
+    for source in patches:
+        subprocess.run(
+            ["patch", "--batch", "--fuzz=0", "-p1", "-i", str(source)],
+            cwd=tree, check=True,
+        )
+    subprocess.run(["./Configure", "linux-x86_64", "shared", "no-fips"], cwd=tree, check=True)
+    subprocess.run(["make", "-j1", "build_libs"], cwd=tree, check=True)
+    probe(tree)
 
 
 if __name__ == "__main__":

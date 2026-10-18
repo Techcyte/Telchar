@@ -175,7 +175,20 @@ and builds libraries serially. It then loads that exact `libcrypto.so.3`, calls
 symbol is a qualification failure, not permission to assume device support.
 This experiment does not alter image dependencies or qualify restored generation
 behavior. Archive and patch are operator-supplied preserved source artifacts;
-the script does not download or trust arbitrary replacements.
+the script does not download or trust arbitrary replacements. Its optional
+`--export-probe` applies `tests/microvm/snapsafe-export.patch`, adding only the
+missing export entry. Relinking a preserved copy with that entry makes the probe
+callable and returns unsupported on a host without `/dev/sysgenid`; this is not
+positive device or restore qualification. The unchanged-patch failure remains
+reproducible without the option.
+
+Pinned Nixpkgs also provides an `openssl_3_5` recipe (3.5.7), a possible starting
+point for isolated matching-version packaging rather than porting random logic
+to 3.6. Its first Linux patch, `nix-ssl-cert-file.patch`, fails zero-fuzz
+application against 3.5.8 because surrounding certificate-load formatting
+differs. Remaining recipe patches and a complete package build are unqualified;
+a version/source override alone is not yet a validated package strategy.
+
 ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
 Nix 2.34.8's `nix-util` and `nix-main` consume OpenSSL, while `nix-store`
