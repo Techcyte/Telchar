@@ -195,8 +195,14 @@ apply with zero fuzz to the AWS-patched 3.5.8 source.
 `pkgs`, the checksum-verified `archive`, and AWS `patch`. It retains Nixpkgs
 package hooks and checks, adds the probe export and context-adjusted patches,
 and disables parallel building. Native x86 derivation evaluation succeeds with
-`doCheck = true`; this package has not been built or installed. No image imports
-this recipe, and no ARM or complete closure linkage claim follows from evaluation.
+`doCheck = true`; package build/install qualification remains incomplete. No image
+imports this recipe, and no ARM or complete closure linkage claim follows from
+evaluation. `bash tests/microvm/build-package.sh DERIVATION ARTIFACT_DIRECTORY`
+runs a local build using a retained copy-on-write canonical store and private Nix
+database, with remote builders and substitutions disabled. It requires the
+verified resource envelope and already realized build dependencies. This fixture
+disables Nix sandboxing and is not production sandbox evidence. Preserve its
+reported artifact directory and host dependency paths for later output inspection.
 
 ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
