@@ -186,8 +186,17 @@ Pinned Nixpkgs also provides an `openssl_3_5` recipe (3.5.7), a possible startin
 point for isolated matching-version packaging rather than porting random logic
 to 3.6. Its first Linux patch, `nix-ssl-cert-file.patch`, fails zero-fuzz
 application against 3.5.8 because surrounding certificate-load formatting
-differs. Remaining recipe patches and a complete package build are unqualified;
-a version/source override alone is not yet a validated package strategy.
+differs. Its kernel-detection patch also needs context adjustment for the
+intervening Windows-store block. Qualification patches preserve both Nix changes
+with matching context; these and the unchanged system-certificate-path patch
+apply with zero fuzz to the AWS-patched 3.5.8 source.
+
+`tests/microvm/snapsafe-package.nix` provides an isolated Linux recipe taking
+`pkgs`, the checksum-verified `archive`, and AWS `patch`. It retains Nixpkgs
+package hooks and checks, adds the probe export and context-adjusted patches,
+and disables parallel building. Native x86 derivation evaluation succeeds with
+`doCheck = true`; this package has not been built or installed. No image imports
+this recipe, and no ARM or complete closure linkage claim follows from evaluation.
 
 ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
