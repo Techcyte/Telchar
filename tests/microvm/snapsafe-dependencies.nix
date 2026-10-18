@@ -5,6 +5,15 @@ let
   packages = pkgs.extend (_: _: { openssl = library; });
   components = packages.nixVersions.nixComponents_2_34;
   inputs = package: (package.buildInputs or [ ]) ++ (package.propagatedBuildInputs or [ ]);
+  roots = [ packages.nix packages.python3 packages.coreutils packages.bash ];
+  dependencies = builtins.genericClosure {
+    startSet = map (package: { key = package.drvPath; inherit package; }) roots;
+    operator = entry:
+      map (package: { key = package.drvPath; inherit package; })
+        (builtins.filter (package: package ? drvPath) (inputs entry.package));
+  };
+  crypto = builtins.filter
+    (entry: (entry.package.pname or "") == "openssl") dependencies;
   consumes = package: dependency:
     builtins.any (input: (input.drvPath or null) == dependency.drvPath) (inputs package);
   describe = package: {
@@ -27,4 +36,7 @@ assert consumes components.nix-store packages.curl;
   nixUtil = describe components.nix-util;
   nixMain = describe components.nix-main;
   nixStore = describe components.nix-store;
+  targetInputCount = builtins.length dependencies;
+  targetOpenSSL = map (entry: describe entry.package) crypto;
+  targetOpenSSLMatches = builtins.all (entry: entry.key == library.drvPath) crypto;
 }

@@ -221,9 +221,12 @@ production override or realized image-linkage qualification is implemented.
 `tests/microvm/snapsafe-dependencies.nix` evaluates an isolated package-set
 extension and asserts exact patched-library derivation inputs for Python,
 OpenSSH, curl, Nix util and Nix main, plus the replaced curl input for Nix store.
-ARM evaluation succeeds for those edges. This is not a complete transitive
-consumer inventory, a build, or ABI/runtime validation; it does not modify the
-execution image or gateway packages.
+ARM evaluation succeeds for those edges. Traversing declared `buildInputs` and
+`propagatedBuildInputs` from Nix, Python, coreutils and bash visits 95 derivations
+and finds only the patched OpenSSL derivation. This graph excludes embedded
+references, native inputs and the separately supplied worker; it is not a runtime
+closure inventory, a build, or ABI/runtime validation. The experiment does not
+modify the execution image or gateway packages.
 
 The sections below describe historical experiments, not production qualification.
 
