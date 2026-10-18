@@ -95,6 +95,23 @@ experimental bootstrap composition in `nix/microvm-probe.nix`. It does not packa
 `telchar-microvm-worker` with `execution.py`; its daemon starts before snapshot.
 Do not treat that image as the qualified runtime described above.
 
+`nix/microvm-execution.nix` provides a separate ARM64-only dedicated execution
+composition. Call it with ARM64 `pkgs`, a `worker` package containing
+`bin/telchar-microvm-worker` (the existing `telchar-nomad-worker` package builds
+that binary), and an operator-owned DER root certificate as `trust`. Trust is
+public image material, not a private key or runtime credential. The composition
+registers its store closure, then runs `execution.py`; no Nix daemon or worker
+starts until an accepted run hook. The hook binding lives under a root-only
+`/run/telchar-microvm` directory. Both image compositions consume the sandbox and
+sixteen nonroot build-user definitions in `nix/microvm-store.nix`.
+
+This composition is tagged `unqualified`, not exported as a production flake
+image. Evaluation checks derivation construction only: ARM image build, actual
+hook-to-worker execution, sandbox/procfs/secret isolation and snapshot/OpenSSL
+qualification remain required. Neither the tag nor fresh-process startup is a
+security attestation. The experimental image remains separate for historical
+probe reproduction.
+
 The sections below describe historical experiments, not production qualification.
 
 ## What exists
