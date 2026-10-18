@@ -194,10 +194,14 @@ apply with zero fuzz to the AWS-patched 3.5.8 source.
 `tests/microvm/snapsafe-package.nix` provides an isolated Linux recipe taking
 `pkgs`, the checksum-verified `archive`, and AWS `patch`. It retains Nixpkgs
 package hooks and checks, adds the probe export and context-adjusted patches,
-and disables parallel building. Native x86 derivation evaluation succeeds with
-`doCheck = true`; package build/install qualification remains incomplete. No image
-imports this recipe, and no ARM or complete closure linkage claim follows from
-evaluation. `bash tests/microvm/build-package.sh DERIVATION ARTIFACT_DIRECTORY`
+and disables parallel building. A contained native x86 build completed checks,
+installation and fixup; the upstream harness reported PASS (346 files, 4512 tests),
+with disabled-feature/platform skips. Compiler, Perl generator and inherited
+post-patch warnings remain, so this is not pristine qualification. The installed
+CLI resolves both SSL libraries from this package; an exact installed-library
+probe passes `RAND_bytes` and reports device support zero. This establishes
+package construction and negative-device probing, not snapshot safety. No image
+imports this recipe, and no ARM or complete image-closure linkage claim follows. `bash tests/microvm/build-package.sh DERIVATION ARTIFACT_DIRECTORY`
 runs a local build using a retained copy-on-write canonical store and private Nix
 database, with remote builders and substitutions disabled. It requires the
 verified resource envelope and already realized build dependencies. This fixture
