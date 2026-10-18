@@ -217,7 +217,13 @@ evaluation findings, not realized ELF linkage evidence. Adding a patched library
 contents alone does not redirect Nix store references. An image-local package-set
 change would need dependency reconstruction and realized ELF/closure inspection,
 followed by patch tests and actual device/generation qualification. No such
-override or realized-linkage qualification is implemented.
+production override or realized image-linkage qualification is implemented.
+`tests/microvm/snapsafe-dependencies.nix` evaluates an isolated package-set
+extension and asserts exact patched-library derivation inputs for Python,
+OpenSSH, curl, Nix util and Nix main, plus the replaced curl input for Nix store.
+ARM evaluation succeeds for those edges. This is not a complete transitive
+consumer inventory, a build, or ABI/runtime validation; it does not modify the
+execution image or gateway packages.
 
 The sections below describe historical experiments, not production qualification.
 
