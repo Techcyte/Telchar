@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -76,6 +77,35 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
         self.assert_stopped(self.root / "daemon.pid")
         self.assert_stopped(self.root / "escaped.pid")
+
+    def test_cancellation_stops_escaped_descendant_before_deadline(self):
+        marker = self.root / "escaped.pid"
+        worker = self.command("worker", "import os, pathlib, time\n"
+                              "if os.fork() == 0:\n"
+                              "    os.setsid()\n"
+                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                              "time.sleep(5)\n")
+        cancelled = threading.Event()
+        result = []
+        thread = threading.Thread(target=lambda: result.append(
+            execution.supervise(self.daemon(), worker, self.ready(), 10, cancelled)))
+        thread.start()
+        try:
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(marker.exists(), "escaped descendant never started")
+            started = time.monotonic()
+            cancelled.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive(), "cancellation waited for execution deadline")
+            self.assertEqual(result, [False])
+            self.assertLess(time.monotonic() - started, 2)
+            self.assert_stopped(marker)
+            self.assert_stopped(self.root / "daemon.pid")
+        finally:
+            cancelled.set()
+            thread.join(timeout=12)
 
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
