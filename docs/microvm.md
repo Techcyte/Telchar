@@ -137,8 +137,10 @@ need qualification.
 The patch adds generation checks around EVP random generation/nonces and RAND
 engine calls, with a ten-iteration detection limit. It declares
 `RAND_snapsafe_is_supported()` in a public header, but does not add that symbol to
-`util/libcrypto.num`; shared-library availability must be checked rather than
-assumed. Its own tests can substitute a synthetic generation counter when the
+`util/libcrypto.num`. A native x86-64 shared build of the unchanged patch confirms
+that `RAND_bytes` works but dynamic lookup of `RAND_snapsafe_is_supported` fails
+with an undefined symbol. Shared consumers cannot use that declared probe to
+reject unsupported devices without additional packaging/source work. Its own tests can substitute a synthetic generation counter when the
 kernel device is absent, and several reseed tests use fake providers. Those tests
 can qualify the patch logic, not actual snapshot restoration. The patch explicitly
 does not support the FIPS module; this composition makes no FIPS claim.
@@ -157,10 +159,23 @@ without preceding distribution patches. This establishes source applicability
 only; provider-direct randomness also exists in that source, so matching the
 version does not establish coverage of every random-provider configuration.
 A local x86-64 static, non-FIPS build of that patched source completed and
-`test_rand` reported seven recipe tests passing; FIPS preparation was skipped.
-The added AWS test source emitted deprecated-engine API warnings and an unused
-variable warning, so this is not pristine build qualification. It is also not
-ARM, shared-library, full OpenSSL-suite or real snapshot-generation evidence.
+`test_rand` reported PASS for a seven-test recipe, which includes a skipped FIPS
+case; the separate FIPS preparation recipe was also skipped. The added AWS test
+source emitted 23 deprecated-engine/RAND API warnings and one unused-variable
+warning. Build-variable generation also emitted Perl uninitialized-value and
+missing-value diagnostics, so this is not pristine build qualification. It is
+not ARM, shared-library, full OpenSSL-suite or real snapshot-generation evidence.
+
+`tests/microvm/qualify-snapsafe.py ARCHIVE PATCH ARTIFACTS` provides a separate
+native x86-64 shared-library experiment under the same required containment and
+flake development shell. It verifies the exact 3.5.8 archive and AWS patch
+checksums, extracts into a unique preserved directory, applies with zero fuzz,
+and builds libraries serially. It then loads that exact `libcrypto.so.3`, calls
+`RAND_bytes`, and requires the public `RAND_snapsafe_is_supported` symbol. Missing
+symbol is a qualification failure, not permission to assume device support.
+This experiment does not alter image dependencies or qualify restored generation
+behavior. Archive and patch are operator-supplied preserved source artifacts;
+the script does not download or trust arbitrary replacements.
 ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
 Nix 2.34.8's `nix-util` and `nix-main` consume OpenSSL, while `nix-store`
