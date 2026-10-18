@@ -134,6 +134,26 @@ source inspection, not approval of a Nix port or proof of runtime compliance;
 patch applicability, dependency linkage and restored-generation behavior still
 need qualification.
 
+The patch adds generation checks around EVP random generation/nonces and RAND
+engine calls, with a ten-iteration detection limit. It declares
+`RAND_snapsafe_is_supported()` in a public header, but does not add that symbol to
+`util/libcrypto.num`; shared-library availability must be checked rather than
+assumed. Its own tests can substitute a synthetic generation counter when the
+kernel device is absent, and several reseed tests use fake providers. Those tests
+can qualify the patch logic, not actual snapshot restoration. The patch explicitly
+does not support the FIPS module; this composition makes no FIPS claim.
+
+Pinned Nixpkgs selects OpenSSL 3.6.3, whereas the inspected Amazon source is
+3.5.8 with other distribution patches applied before the snapsafe patch. Direct
+application to the pinned version is therefore unqualified. ARM derivation
+inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
+Nix 2.34.8 and curl 8.21.0 use composed derivations whose top-level `buildInputs`
+are not a complete dependency inventory. Adding a patched library to image
+contents alone does not redirect Nix store references. An image-local package-set
+change would need dependency reconstruction and realized ELF/closure inspection,
+followed by patch tests and actual device/generation qualification. No such
+override or realized-linkage qualification is implemented.
+
 The sections below describe historical experiments, not production qualification.
 
 ## What exists
