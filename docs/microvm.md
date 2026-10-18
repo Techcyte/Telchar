@@ -121,6 +121,19 @@ descriptors, and requires AWS-patched OpenSSL for applications using OpenSSL.
 The Nix closure does not yet establish compliance with that requirement. Starting
 TLS/build processes after the run hook alone is not grounds to waive it.
 
+The Amazon Linux source RPM
+[`openssl-3.5.8-1.amzn2023.0.3.src.rpm`](https://cdn.amazonlinux.com/al2023/blobstore/24b99be684592c7891e7dde95f1525de96981c4abfcbe7aeb868ec5b3b098ed7/openssl-3.5.8-1.amzn2023.0.3.src.rpm)
+contains `0500-snapsafe-provider.patch`; its SHA256 is
+`24b99be684592c7891e7dde95f1525de96981c4abfcbe7aeb868ec5b3b098ed7`.
+The RPM spec applies that patch specifically to the snapsafe subpackage, not
+ordinary `openssl-libs`. The patch uses `/dev/sysgenid` and reseeding state in
+OpenSSL's random-provider chain. Its initialization treats an absent device as
+unsupported rather than failing. Consequently, ordinary local cryptographic
+tests without that device cannot establish snapshot reseeding safety. This is
+source inspection, not approval of a Nix port or proof of runtime compliance;
+patch applicability, dependency linkage and restored-generation behavior still
+need qualification.
+
 The sections below describe historical experiments, not production qualification.
 
 ## What exists
