@@ -66,6 +66,8 @@ class LifecycleTests(unittest.TestCase):
         self.state.join()
         self.assertEqual(self.marker.read_text(), "run\n")
         self.assertEqual(self.state.status(), "succeeded")
+        for route in ("ready", "validate", "suspend", "resume"):
+            self.assertEqual(self.request(runtime.PREFIX + route)[0], 409, route)
         self.assertEqual(self.request(runtime.PREFIX + "run", self.run_payload("other"))[0], 409)
 
     def test_invalid_requests_cannot_start_probe(self):

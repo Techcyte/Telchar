@@ -156,6 +156,8 @@ class HookTests(unittest.TestCase):
                 while request("terminate")[1]["status"] == "running" and time.monotonic() < deadline:
                     time.sleep(.02)
                 self.assertEqual(request("terminate")[1]["status"], "failed")
+                for route in ("ready", "validate", "suspend", "resume"):
+                    self.assertEqual(request(route)[0], 409, route)
             finally:
                 process.terminate()
                 try:

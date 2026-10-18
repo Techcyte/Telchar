@@ -125,9 +125,9 @@ def make_server(address, state, daemon_ready):
                     return
                 self.reply(200 if accepted else 409)
             elif self.path in (PREFIX + "ready", PREFIX + "validate", PREFIX + "resume"):
-                self.reply(409 if state.status() == "running" else (200 if daemon_ready() else 503))
+                self.reply(409 if state.status() != "idle" else (200 if daemon_ready() else 503))
             elif self.path == PREFIX + "suspend":
-                self.reply(409 if state.status() == "running" else 200)
+                self.reply(409 if state.status() != "idle" else 200)
             else:
                 state.terminate()
                 self.reply(200)

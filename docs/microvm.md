@@ -109,8 +109,17 @@ This composition is tagged `unqualified`, not exported as a production flake
 image. Evaluation checks derivation construction only: ARM image build, actual
 hook-to-worker execution, sandbox/procfs/secret isolation and snapshot/OpenSSL
 qualification remain required. Neither the tag nor fresh-process startup is a
-security attestation. The experimental image remains separate for historical
-probe reproduction.
+security attestation. Lifecycle `ready`, `validate`, `suspend` and `resume`
+accept only idle state; completed or failed execution cannot become a reusable
+snapshot through those hooks. This guard does not erase secrets from memory or
+establish provider snapshot behavior. The experimental image remains separate
+for historical probe reproduction.
+
+AWS's [snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
+states that snapshots include process memory, disk, connections and file
+descriptors, and requires AWS-patched OpenSSL for applications using OpenSSL.
+The Nix closure does not yet establish compliance with that requirement. Starting
+TLS/build processes after the run hook alone is not grounds to waive it.
 
 The sections below describe historical experiments, not production qualification.
 
