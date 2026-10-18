@@ -4,6 +4,7 @@ import contextlib
 import ipaddress
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -102,7 +103,7 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         specification = json.dumps([daemon_command, worker_command, ready_command, deadline])
         process = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--execution-init", specification],
-            start_new_session=True, stdin=subprocess.DEVNULL,
+            start_new_session=True, stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         while time.monotonic() < deadline and not cancelled.is_set():
             result = process.poll()
@@ -114,6 +115,8 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         return False
     finally:
         if process is not None:
+            if process.stdin is not None:
+                process.stdin.close()
             with contextlib.suppress(ProcessLookupError):
                 process.terminate()
             process.wait()
@@ -124,6 +127,7 @@ def enter_execution(specification):
     os.unshare(os.CLONE_NEWPID)
     child = os.fork()
     if child == 0:
+        os.close(0)
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
         return run_execution(*specification)
 
@@ -133,8 +137,15 @@ def enter_execution(specification):
 
     signal.signal(signal.SIGTERM, terminate)
     signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
-    _, status = os.waitpid(child, 0)
-    return os.waitstatus_to_exitcode(status) == 0
+    while True:
+        finished, status = os.waitpid(child, os.WNOHANG)
+        if finished:
+            return os.waitstatus_to_exitcode(status) == 0
+        readable, _, _ = select.select([0], [], [], .025)
+        if readable:
+            terminate(None, None)
+            os.waitpid(child, 0)
+            return False
 
 
 def run_execution(daemon_command, worker_command, ready_command, deadline):

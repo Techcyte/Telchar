@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -106,6 +107,39 @@ class ExecutionTests(unittest.TestCase):
         finally:
             cancelled.set()
             thread.join(timeout=12)
+
+    def test_supervisor_death_stops_escaped_descendant(self):
+        marker = self.root / "escaped.pid"
+        worker = self.command("worker", "import os, pathlib, time\n"
+                              "if os.fork() == 0:\n"
+                              "    os.setsid()\n"
+                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                              "time.sleep(5)\n")
+        command = self.command("supervisor", "import runpy\n"
+                               f"execution = runpy.run_path({str(ROOT / 'deploy/microvm/execution.py')!r})\n"
+                               f"execution['supervise']({self.daemon()!r}, {worker!r}, {self.ready()!r}, 10)\n")
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            try:
+                deadline = time.monotonic() + 2
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(marker.exists(), "escaped descendant never started")
+                process.kill()
+                stdout, stderr = process.communicate(timeout=2)
+                self.assertEqual(stdout, b"")
+                self.assertEqual(stderr, b"")
+                deadline = time.monotonic() + 1
+                status = Path(f"/proc/{int(marker.read_text())}/stat")
+                while status.exists() and time.monotonic() < deadline:
+                    if status.read_text().split()[2] == "Z":
+                        break
+                    time.sleep(.01)
+                self.assert_stopped(marker)
+                self.assert_stopped(self.root / "daemon.pid")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=2)
 
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
