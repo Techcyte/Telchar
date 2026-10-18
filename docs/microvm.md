@@ -34,24 +34,34 @@ Implemented boundaries include:
   `backends.microvm_bind` for the operator-proxied callback listener. Daemon
   startup verifies providers before attaching services; unattached/unhealthy
   targets cannot execute. All policies share bounded admission and shut down
-  together, while each policy owns cleanup. Policy changes require restart.
+  together, with one cleanup lifecycle per exact account/region shared by aliases.
+  Policy changes require restart.
 - Validated deployment policy and configured provider construction
-  using signed STS account verification and pinned credentials. Local signed HTTP
+  using signed STS account verification. Each operation resolves its credential
+  source; changed credentials require re-attestation before using that exact
+  credential snapshot. Local signed HTTP
   fixtures use fake credentials; they are not AWS qualification.
 - `telchar-microvm-worker` with explicit trust/store/binding inputs, bounded WSS
   transport and existing worker transfer/build mechanics.
 - `deploy/microvm/execution.py` runtime hooks, protected execution binding and
-  fresh daemon/worker supervision. Process-group cleanup is not proof of escaped
-  Nix builder containment.
+  fresh daemon/worker supervision inside an execution PID namespace. Local Linux
+  tests cover escaped `setsid()` descendants on deadline, cancellation, outer
+  supervisor loss and namespace-helper loss. Missing namespace capability rejects
+  execution before daemon, readiness or worker commands start. These tests do not
+  establish native ARM sandbox or secret isolation.
 
-These are partial components, not a deployable service. Missing release gates
-include full daemon process qualification, transient permits across reload,
-backend-alias capacity identity, fixed-output and remaining transfer-failure
-qualification, staging disk admission, store-I/O deadline/fencing guarantees,
-full output-only restart qualification, and cleanup across removed configurations/restarts.
-Provider credential refresh/re-attestation and image/egress correspondence,
-administrative reconciliation and audit, metrics, NixOS wiring, and a secure ARM
-production image also remain unfinished. Configuration acceptance is not a
+These are partial components, not a deployable service. Local daemon-process
+contracts cover classic, multiple and flat fixed outputs, corruption/failure,
+coalescing/detachment, output-only crash recovery and independent cleanup with a
+simulated provider. Reload permits share accounting; durable reservations retain
+same-name or exact account/region quarantine across aliases. Startup refuses
+retained obligations without configured account/region authority.
+
+Remaining release gates include distinct-build fairness/quota qualification,
+recursive fixed outputs and remaining transfer failures, staging disk admission,
+store-I/O deadline/fencing guarantees, native executing-builder recovery,
+provider image/egress correspondence, administrative reconciliation and audit,
+metrics, NixOS wiring, and a secure ARM production image. Configuration acceptance is not a
 production release claim. Mandatory
 sandbox/build-user/secret isolation and snapshot cryptographic safety remain
 unresolved production gates. Do not deploy the experimental images as a substitute.
@@ -72,11 +82,18 @@ bash tests/microvm/verify-implementation.sh
 This runs formatting, workspace all-target compilation, focused PostgreSQL/HTTP/
 TLS/worker tests and Python runtime tests including a private Nix daemon. The
 private Nix supervision and dedicated-worker fixtures disable sandboxing; they do
-not qualify production containment, ARM image execution or daemon routing. The checkpoint does
+not qualify production containment or ARM image execution. Daemon routing tests
+use authenticated local IPC rather than stock OpenSSH ingress. The checkpoint does
 not run full workspace tests, Clippy, stock-client VM contracts or live AWS
 qualification. Local checks use isolated state and require nonroot Linux process
-and socket permissions. Preserve the pinned flake dependencies and test TLS
+and socket permissions, user namespaces, Python with `os.unshare`, and util-linux
+`unshare`/`setpriv`. Preserve the pinned flake dependencies and test TLS
 fixtures. No AWS credentials or resources are needed.
+
+The image in `nix/microvm-worker.nix` builds the example worker and uses the
+experimental bootstrap composition in `nix/microvm-probe.nix`. It does not package
+`telchar-microvm-worker` with `execution.py`; its daemon starts before snapshot.
+Do not treat that image as the qualified runtime described above.
 
 The sections below describe historical experiments, not production qualification.
 

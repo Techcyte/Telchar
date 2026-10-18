@@ -152,6 +152,22 @@ class ExecutionTests(unittest.TestCase):
                     process.kill()
                 process.communicate(timeout=2)
 
+    def test_missing_namespace_capability_never_starts_commands(self):
+        marker = self.root / "command-started"
+        command = self.command("command", f"import pathlib\npathlib.Path({str(marker)!r}).touch()\n")
+        probe = self.command("capability", "import pathlib, runpy\n"
+                             "status = pathlib.Path('/proc/self/status').read_text().splitlines()\n"
+                             "assert int(next(line.split()[1] for line in status if line.startswith('CapEff:')), 16) == 0\n"
+                             f"execution = runpy.run_path({str(ROOT / 'deploy/microvm/execution.py')!r})\n"
+                             f"assert execution['supervise']({command!r}, {command!r}, {command!r}, 2) is False\n")
+        result = subprocess.run(
+            ["setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", *probe],
+            capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(marker.exists(), "commands ran without namespace containment")
+
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
         self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2))
