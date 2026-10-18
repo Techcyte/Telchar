@@ -156,6 +156,11 @@ the checksum-verified Amazon source RPM (tarball SHA256
 without preceding distribution patches. This establishes source applicability
 only; provider-direct randomness also exists in that source, so matching the
 version does not establish coverage of every random-provider configuration.
+A local x86-64 static, non-FIPS build of that patched source completed and
+`test_rand` reported seven recipe tests passing; FIPS preparation was skipped.
+The added AWS test source emitted deprecated-engine API warnings and an unused
+variable warning, so this is not pristine build qualification. It is also not
+ARM, shared-library, full OpenSSL-suite or real snapshot-generation evidence.
 ARM derivation
 inspection identifies Python 3.13.14 and OpenSSH 10.4p1 as OpenSSL consumers;
 Nix 2.34.8's `nix-util` and `nix-main` consume OpenSSL, while `nix-store`
