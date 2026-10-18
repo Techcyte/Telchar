@@ -49,7 +49,7 @@ class ExecutionTests(unittest.TestCase):
         # A killed grandchild may remain a zombie until the host reaps it.
         status = Path(f"/proc/{pid}/stat")
         if status.exists():
-            self.assertEqual(status.read_text().split()[2], "Z", f"process {pid} still running")
+            self.assertIn(status.read_text().split()[2], {"Z", "X"}, f"process {pid} still running")
 
     def test_deadline_kills_worker_descendant_and_daemon(self):
         child = self.command("child", "import os, pathlib, time\n"
@@ -109,6 +109,12 @@ class ExecutionTests(unittest.TestCase):
             thread.join(timeout=12)
 
     def test_supervisor_death_stops_escaped_descendant(self):
+        self.assert_process_loss_stops_execution(False)
+
+    def test_namespace_helper_death_stops_escaped_descendant(self):
+        self.assert_process_loss_stops_execution(True)
+
+    def assert_process_loss_stops_execution(self, kill_helper):
         marker = self.root / "escaped.pid"
         worker = self.command("worker", "import os, pathlib, time\n"
                               "if os.fork() == 0:\n"
@@ -124,14 +130,19 @@ class ExecutionTests(unittest.TestCase):
                 while not marker.exists() and time.monotonic() < deadline:
                     time.sleep(.01)
                 self.assertTrue(marker.exists(), "escaped descendant never started")
-                process.kill()
+                if kill_helper:
+                    children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
+                    self.assertEqual(len(children), 1)
+                    os.kill(int(children[0]), signal.SIGKILL)
+                else:
+                    process.kill()
                 stdout, stderr = process.communicate(timeout=2)
                 self.assertEqual(stdout, b"")
                 self.assertEqual(stderr, b"")
                 deadline = time.monotonic() + 1
                 status = Path(f"/proc/{int(marker.read_text())}/stat")
                 while status.exists() and time.monotonic() < deadline:
-                    if status.read_text().split()[2] == "Z":
+                    if status.read_text().split()[2] in {"Z", "X"}:
                         break
                     time.sleep(.01)
                 self.assert_stopped(marker)

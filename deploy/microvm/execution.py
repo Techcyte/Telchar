@@ -125,11 +125,23 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
 def enter_execution(specification):
     signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
     os.unshare(os.CLONE_NEWPID)
+    read_end, write_end = os.pipe()
     child = os.fork()
     if child == 0:
+        os.close(write_end)
         os.close(0)
+
+        def watch_helper():
+            try:
+                os.read(read_end, 1)
+            finally:
+                os._exit(1)
+
+        threading.Thread(target=watch_helper, daemon=True).start()
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
         return run_execution(*specification)
+
+    os.close(read_end)
 
     def terminate(_signal, _frame):
         with contextlib.suppress(ProcessLookupError):
@@ -137,15 +149,18 @@ def enter_execution(specification):
 
     signal.signal(signal.SIGTERM, terminate)
     signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
-    while True:
-        finished, status = os.waitpid(child, os.WNOHANG)
-        if finished:
-            return os.waitstatus_to_exitcode(status) == 0
-        readable, _, _ = select.select([0], [], [], .025)
-        if readable:
-            terminate(None, None)
-            os.waitpid(child, 0)
-            return False
+    try:
+        while True:
+            finished, status = os.waitpid(child, os.WNOHANG)
+            if finished:
+                return os.waitstatus_to_exitcode(status) == 0
+            readable, _, _ = select.select([0], [], [], .025)
+            if readable:
+                terminate(None, None)
+                os.waitpid(child, 0)
+                return False
+    finally:
+        os.close(write_end)
 
 
 def run_execution(daemon_command, worker_command, ready_command, deadline):
