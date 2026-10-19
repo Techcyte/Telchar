@@ -8,6 +8,10 @@ members = [
 ]
 resolver = "2"
 
+[profile.release.package.aws-sdk-ec2]
+# Bound compiler memory for the generated EC2 client.
+opt-level = 0
+
 [workspace.package]
 license = "MIT"
 repository = "https://github.com/techcyte/telchar"
