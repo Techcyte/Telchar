@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/microvms:al2023-minimal
+FROM public.ecr.aws/lambda/microvms:al2023-minimal@sha256:c5b6c7ed901bd369018a22de329e8587dd7a848caaf21c7dab1153dc74385c36
 
 RUN dnf install -y python3.12 shadow-utils && dnf clean all
 RUN /usr/bin/python3.12 -c 'import os; assert hasattr(os, "unshare") and hasattr(os, "CLONE_NEWPID")'

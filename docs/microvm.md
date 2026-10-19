@@ -105,9 +105,11 @@ existing sandbox policy and unmodified Nix/worker closure are included; Nix
 daemon and worker start only after the run hook. No custom OpenSSL patch is used.
 
 This path has derivation evaluation and local supervisor/hook regression evidence,
-not a completed container build or ARM runtime qualification. Base-image digest
-pinning, package availability/linkage and cold-start Nix snapshot applicability
-still require verification. AWS's base does not replace Nix-store libraries.
+not a completed container build or ARM runtime qualification. The Dockerfile pins
+an anonymously retrieved AWS image index digest with an ARM64 manifest. Public
+AL2023 ARM64 repository metadata lists Python 3.12 and shadow-utils; installation
+against the image's repository configuration, linkage and cold-start Nix snapshot
+applicability still require verification. AWS's base does not replace Nix-store libraries.
 The isolated OpenSSL experiments below are historical investigation, not the
 chosen packaging approach.
 
