@@ -111,8 +111,13 @@ Amazon's package manager successfully installs Python 3.12.14 and shadow-utils
 in the extracted ARM64 base under QEMU/PRoot. That Python imports `ssl` and exposes
 `os.unshare` and `os.CLONE_NEWPID`; this checks API availability, not namespace
 permissions. The package transaction does not replace the base's OpenSSL.
-Full container construction, actual linkage inspection and cold-start Nix snapshot
-applicability still require verification. Emulation is not native sandbox evidence. AWS's base does not replace Nix-store libraries.
+The Amazon Python SSL extension resolves `/lib64/libssl.so.3` and
+`/lib64/libcrypto.so.3`; the installed base reports `openssl-snapsafe-libs`.
+Under emulation, the dedicated listener returns HTTP 200 for readiness and 400
+for an invalid run hook without writing a binding, then exits cleanly on SIGTERM.
+The sixteen build-user IDs and group membership also pass inspection.
+Full container construction and cold-start Nix snapshot applicability still
+require verification. Emulation is not native sandbox evidence. AWS's base does not replace Nix-store libraries.
 The isolated OpenSSL experiments below are historical investigation, not the
 chosen packaging approach.
 
