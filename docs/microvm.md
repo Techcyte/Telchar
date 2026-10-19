@@ -95,6 +95,22 @@ experimental bootstrap composition in `nix/microvm-probe.nix`. It does not packa
 `telchar-microvm-worker` with `execution.py`; its daemon starts before snapshot.
 Do not treat that image as the qualified runtime described above.
 
+The AWS-base packaging path is `nix/microvm-aws-context.nix`, called with ARM64
+`pkgs`, the dedicated `worker` package and public DER `trust`. Its output is a
+Docker build context using `deploy/microvm/Dockerfile` and AWS's
+`public.ecr.aws/lambda/microvms:al2023-minimal` base. Amazon-packaged Python 3.12
+runs the lifecycle listener; the Docker build checks namespace API availability.
+Dedicated build accounts are added without replacing AWS system accounts. The
+existing sandbox policy and unmodified Nix/worker closure are included; Nix
+daemon and worker start only after the run hook. No custom OpenSSL patch is used.
+
+This path has derivation evaluation and local supervisor/hook regression evidence,
+not a completed container build or ARM runtime qualification. Base-image digest
+pinning, package availability/linkage and cold-start Nix snapshot applicability
+still require verification. AWS's base does not replace Nix-store libraries.
+The isolated OpenSSL experiments below are historical investigation, not the
+chosen packaging approach.
+
 `nix/microvm-execution.nix` provides a separate ARM64-only dedicated execution
 composition. Call it with ARM64 `pkgs`, a `worker` package containing
 `bin/telchar-microvm-worker` (the existing `telchar-nomad-worker` package builds
