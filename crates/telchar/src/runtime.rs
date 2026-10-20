@@ -643,7 +643,7 @@ fn run_daemon() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let socket_guard = SocketGuard(socket);
-    let _admin_service = std::env::var_os("TELCHAR_ADMIN_SOCKET")
+    let mut admin_service = std::env::var_os("TELCHAR_ADMIN_SOCKET")
         .map(|path| daemon_runtime::AdminService::start(PathBuf::from(path), database.clone()))
         .transpose()?;
     let listener = IpcListener::from_listener(listener, expected_uid);
@@ -699,6 +699,9 @@ fn run_daemon() -> io::Result<()> {
     let mut ec2_static_ssh = Vec::new();
     let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
+        if let Some(service) = admin_service.as_mut() {
+            service.check()?;
+        }
         for service in &microvm_services {
             service.check()?;
         }
