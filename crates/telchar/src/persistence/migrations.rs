@@ -130,6 +130,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "microvm_identity_resolution",
         sql: include_str!("../../migrations/0023_microvm_identity_resolution.sql"),
     },
+    Migration {
+        version: 24,
+        name: "microvm_termination_resolution",
+        sql: include_str!("../../migrations/0024_microvm_termination_resolution.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

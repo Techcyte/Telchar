@@ -57,6 +57,116 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn administrative_termination_commits_observation_and_audit_atomically() {
+    for risk_released in [false, true] {
+        let (fixture, database) = prepared_launch();
+        assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+        assert!(
+            telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+                .unwrap()
+        );
+        assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+        let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        if risk_released {
+            assert!(
+                telchar::persistence::release_microvm_capacity_risk(
+                    owner.database(),
+                    &telchar::persistence::MicrovmRiskRelease {
+                        intent_id: "intent-one",
+                        provider_id: Some("microvm-exact"),
+                        actor_uid: 0,
+                        reason: "Capacity risk accepted",
+                        evidence_reference: "incident:risk",
+                        accept_remote_execution_risk: true,
+                    }
+                )
+                .unwrap()
+            );
+        }
+        let mut client = fixture.connect();
+        let released: Option<std::time::SystemTime> = client.query_one(
+            "SELECT reservation_released_at FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+        ).unwrap().get(0);
+        let mut observation = telchar::persistence::MicrovmTerminationObservation {
+            intent_id: "intent-one",
+            provider_id: "microvm-exact",
+            account_id: "116392764028",
+            region: "us-west-2",
+            actor_uid: 0,
+            reason: "Exact provider termination verified",
+            evidence_reference: "incident:termination",
+        };
+        assert!(
+            telchar::persistence::resolve_microvm_termination(&database, &observation).is_err()
+        );
+        observation.actor_uid = 1000;
+        assert!(
+            telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .is_err()
+        );
+        observation.actor_uid = 0;
+        observation.provider_id = "microvm-other";
+        assert!(
+            !telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .unwrap()
+        );
+        observation.provider_id = "microvm-exact";
+        observation.region = "us-east-1";
+        assert!(
+            !telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .unwrap()
+        );
+        observation.region = "us-west-2";
+        client.batch_execute("CREATE TRIGGER fixture_reject_audit BEFORE INSERT ON microvm_resolutions FOR EACH STATEMENT EXECUTE FUNCTION preserve_microvm_resolution()").unwrap();
+        assert!(
+            telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .is_err()
+        );
+        let row = client.query_one("SELECT reservation_released_at, termination_observed_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[]).unwrap();
+        assert_eq!(row.get::<_, Option<std::time::SystemTime>>(0), released);
+        assert!(row.get::<_, bool>(1));
+        client
+            .batch_execute("DROP TRIGGER fixture_reject_audit ON microvm_resolutions")
+            .unwrap();
+        assert!(
+            telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .unwrap()
+        );
+        assert!(
+            !telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .unwrap()
+        );
+        let row = client.query_one("SELECT phase, reservation_released_at, termination_observed_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "closed");
+        let final_release = row.get::<_, std::time::SystemTime>(1);
+        if let Some(released) = released {
+            assert_eq!(final_release, released);
+        }
+        assert!(row.get::<_, bool>(2));
+        assert!(telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+        let audits = client.query("SELECT provider_id, actor_uid, owner_generation, reason, evidence_reference FROM microvm_resolutions WHERE action = 'verify-termination'", &[]).unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].get::<_, String>(0), "microvm-exact");
+        assert_eq!(audits[0].get::<_, i64>(1), 0);
+        assert_eq!(audits[0].get::<_, i64>(2), owner.generation());
+        assert_eq!(audits[0].get::<_, String>(3), observation.reason);
+        assert_eq!(
+            audits[0].get::<_, String>(4),
+            observation.evidence_reference
+        );
+        client.execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second'", &[]).unwrap();
+        assert!(
+            telchar::persistence::resolve_microvm_termination(owner.database(), &observation)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn administrative_attachment_preserves_release_and_denies_admission() {
     let (fixture, database) = prepared_launch();
     assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());

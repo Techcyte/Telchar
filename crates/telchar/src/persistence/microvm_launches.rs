@@ -250,6 +250,71 @@ fn resolution_owner(
     Ok(owner.get(0))
 }
 
+/// Requires an exact TERMINATED observation under attested account and region authority.
+pub struct MicrovmTerminationObservation<'a> {
+    pub intent_id: &'a str,
+    pub provider_id: &'a str,
+    pub account_id: &'a str,
+    pub region: &'a str,
+    pub actor_uid: u32,
+    pub reason: &'a str,
+    pub evidence_reference: &'a str,
+}
+
+pub fn resolve_microvm_termination(
+    database: &(impl DatabaseSource + ?Sized),
+    observation: &MicrovmTerminationObservation<'_>,
+) -> Result<bool, MicrovmLaunchError> {
+    if observation.actor_uid != 0
+        || !valid_resolution_text(observation.intent_id, 128)
+        || !valid_resolution_text(observation.provider_id, 256)
+        || !valid_resolution_text(observation.account_id, 12)
+        || !valid_resolution_text(observation.region, 64)
+        || !valid_resolution_text(observation.reason, 1024)
+        || !valid_resolution_text(observation.evidence_reference, 1024)
+    {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let generation = resolution_owner(&mut transaction)?;
+    let changed = transaction
+        .execute(
+            "UPDATE microvm_launches SET phase = 'closed',
+         reservation_released_at = COALESCE(reservation_released_at, clock_timestamp()),
+         termination_observed_at = clock_timestamp()
+         WHERE intent_id = $1 AND provider_id = $2 AND account_id = $3 AND region = $4
+           AND termination_observed_at IS NULL",
+            &[
+                &observation.intent_id,
+                &observation.provider_id,
+                &observation.account_id,
+                &observation.region,
+            ],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    transaction
+        .execute(
+            "INSERT INTO microvm_resolutions
+         (intent_id, action, provider_id, actor_uid, owner_generation, reason, evidence_reference)
+         VALUES ($1, 'verify-termination', $2, $3, $4, $5, $6)",
+            &[
+                &observation.intent_id,
+                &observation.provider_id,
+                &i64::from(observation.actor_uid),
+                &generation,
+                &observation.reason,
+                &observation.evidence_reference,
+            ],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(true)
+}
+
 pub struct MicrovmRiskRelease<'a> {
     pub intent_id: &'a str,
     pub provider_id: Option<&'a str>,
