@@ -12,6 +12,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
+    VerifyTermination {
+        intent_id: String,
+        provider_id: String,
+        reason: String,
+        evidence_reference: String,
+    },
     AttachIdentity {
         intent_id: String,
         provider_id: String,
@@ -32,6 +38,7 @@ pub enum Request {
 pub struct Response {
     pub released: bool,
     pub attached: bool,
+    pub terminated: bool,
     pub rejected: bool,
 }
 
@@ -59,7 +66,21 @@ pub fn serve(
     authorize(&stream)?;
     let request = read_request(&mut stream, REQUEST_TIMEOUT)?;
     let attachment = matches!(&request, Request::AttachIdentity { .. });
+    let termination = matches!(&request, Request::VerifyTermination { .. });
     let result = match request {
+        Request::VerifyTermination {
+            intent_id,
+            provider_id,
+            reason,
+            evidence_reference,
+        } => verify_termination(
+            database,
+            services,
+            &intent_id,
+            &provider_id,
+            &reason,
+            &evidence_reference,
+        ),
         Request::AttachIdentity {
             intent_id,
             provider_id,
@@ -94,14 +115,45 @@ pub fn serve(
     };
     let changed = result.as_ref().copied().unwrap_or(false);
     let response = Response {
-        released: !attachment && changed,
+        released: !attachment && !termination && changed,
         attached: attachment && changed,
+        terminated: termination && changed,
         rejected: result.is_err(),
     };
     write_frame(
         &mut stream,
         &serde_json::to_vec(&response).map_err(invalid)?,
     )
+}
+
+fn verify_termination(
+    database: &crate::persistence::Database,
+    services: &[std::sync::Arc<crate::microvm::service::Service>],
+    intent_id: &str,
+    provider_id: &str,
+    reason: &str,
+    evidence_reference: &str,
+) -> io::Result<bool> {
+    let identity =
+        crate::persistence::microvm_termination_identity(database, intent_id, provider_id)
+            .map_err(io::Error::other)?
+            .ok_or_else(|| invalid("unresolved MicroVM termination unavailable"))?;
+    let service = services
+        .iter()
+        .find(|service| {
+            service.configuration().account_id() == identity.account_id
+                && service.configuration().region() == identity.region
+        })
+        .ok_or_else(|| invalid("MicroVM authority unavailable"))?;
+    service.verify_termination(&crate::persistence::MicrovmTerminationObservation {
+        intent_id,
+        provider_id,
+        account_id: &identity.account_id,
+        region: &identity.region,
+        actor_uid: 0,
+        reason,
+        evidence_reference,
+    })
 }
 
 fn attach_identity(

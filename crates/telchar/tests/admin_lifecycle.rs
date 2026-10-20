@@ -387,7 +387,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(output.stderr.is_empty(), "{output:?}");
         assert_eq!(
             output.stdout,
-            b"{\"released\":false,\"attached\":true,\"rejected\":false}\n"
+            b"{\"released\":false,\"attached\":true,\"terminated\":false,\"rejected\":false}\n"
         );
         let state = inspector.query_one("SELECT provider_id, phase, reservation_released_at IS NULL, termination_observed_at IS NULL FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert_eq!(state.get::<_, String>(0), "microvm-exact");
@@ -475,7 +475,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(output.stderr.is_empty());
         assert_eq!(
             output.stdout,
-            b"{\"released\":true,\"attached\":false,\"rejected\":false}\n"
+            b"{\"released\":true,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
         );
         let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert_eq!(audit.get::<_, i64>(0), 0);
@@ -486,7 +486,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(repeated.stderr.is_empty());
         assert_eq!(
             repeated.stdout,
-            b"{\"released\":false,\"attached\":false,\"rejected\":false}\n"
+            b"{\"released\":false,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
         );
         let state = inspector.query_one("SELECT reservation_released_at IS NOT NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert!(state.get::<_, bool>(0));

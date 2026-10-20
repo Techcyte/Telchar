@@ -435,6 +435,30 @@ pub fn pending_microvm_cleanup(
         .collect())
 }
 
+pub fn microvm_termination_identity(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<Option<MicrovmCleanup>, MicrovmLaunchError> {
+    if !valid_resolution_text(intent_id, 128) || !valid_resolution_text(provider_id, 256) {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_opt(
+            "SELECT intent_id, provider_id, account_id, region FROM microvm_launches
+         WHERE intent_id = $1 AND provider_id = $2 AND termination_observed_at IS NULL",
+            &[&intent_id, &provider_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(row.map(|row| MicrovmCleanup {
+        intent_id: row.get(0),
+        provider_id: row.get(1),
+        account_id: row.get(2),
+        region: row.get(3),
+    }))
+}
+
 pub fn pending_microvm_cleanup_identity(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

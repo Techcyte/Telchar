@@ -78,7 +78,14 @@ fn exercise(url: &str, replace_owner: bool) {
     let server = std::thread::spawn(move || {
         let mut replacement = None;
         for case in [
-            "identity", "mismatch", "released", "slow", "refresh", "fenced",
+            "identity",
+            "mismatch",
+            "released",
+            "slow",
+            "refresh",
+            "terminal-running",
+            "terminal-success",
+            "fenced",
         ] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
@@ -142,7 +149,7 @@ fn exercise(url: &str, replace_owner: bool) {
                         replacement = Some(acquired);
                     }
                 }
-                (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+                (serde_json::json!({"microvmId":"microvm-exact", "state": if case == "terminal-success" { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             if matches!(case, "slow" | "refresh") {
                 std::thread::sleep(Duration::from_secs(3));
@@ -188,7 +195,7 @@ account_id = "116392764028"
 region = "us-west-2"
 image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
 image_version = "1"
-maximum_concurrent_builds = 4
+maximum_concurrent_builds = 8
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
 admission_timeout_seconds = 15
@@ -215,7 +222,16 @@ chunk_bytes = 1024
         )
         .unwrap(),
     );
-    for case in ["mismatch", "released", "slow", "refresh", "fenced"] {
+    for case in [
+        "mismatch",
+        "released",
+        "slow",
+        "refresh",
+        "terminal-running",
+        "terminal-success",
+        "fenced",
+    ] {
+        let termination = case.starts_with("terminal-");
         *source.0.lock().unwrap() = if case == "refresh" {
             aws_credential_types::Credentials::new(
                 "rotated-key",
@@ -261,9 +277,15 @@ chunk_bytes = 1024
             maximum_duration_seconds: 600,
         };
         assert!(
-            telchar::persistence::reserve_microvm_launch(owner.database(), &intent, 4).unwrap()
+            telchar::persistence::reserve_microvm_launch(owner.database(), &intent, 8).unwrap()
         );
         assert!(telchar::persistence::dispatch_microvm_launch(owner.database(), case).unwrap());
+        if termination {
+            assert!(
+                telchar::persistence::bind_microvm_launch(owner.database(), case, "microvm-exact")
+                    .unwrap()
+            );
+        }
         assert!(telchar::persistence::cancel_microvm_launch(owner.database(), case).unwrap());
         if case == "released" {
             assert!(
@@ -304,7 +326,16 @@ chunk_bytes = 1024
         let started = Instant::now();
         let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env_clear()
-            .args(["admin", "microvm", "attach-identity", "--socket"])
+            .args([
+                "admin",
+                "microvm",
+                if termination {
+                    "verify-termination"
+                } else {
+                    "attach-identity"
+                },
+                "--socket",
+            ])
             .arg(&socket)
             .args([
                 "--intent",
@@ -323,12 +354,30 @@ chunk_bytes = 1024
             assert!(started.elapsed() < Duration::from_millis(2750));
             resumed.recv_timeout(Duration::from_secs(2)).unwrap();
         }
-        assert_eq!(output.status.success(), case == "released", "{output:?}");
-        if case == "released" {
+        assert_eq!(
+            output.status.success(),
+            matches!(case, "released" | "terminal-success"),
+            "{output:?}"
+        );
+        if case == "terminal-success" {
             assert!(output.stderr.is_empty(), "{output:?}");
             assert_eq!(
                 output.stdout,
-                b"{\"released\":false,\"attached\":true,\"rejected\":false}\n"
+                b"{\"released\":false,\"attached\":false,\"terminated\":true,\"rejected\":false}\n"
+            );
+            assert!(
+                !telchar::persistence::pending_microvm_cleanup_identity(
+                    &database,
+                    case,
+                    "microvm-exact"
+                )
+                .unwrap()
+            );
+        } else if case == "released" {
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                b"{\"released\":false,\"attached\":true,\"terminated\":false,\"rejected\":false}\n"
             );
             assert!(
                 telchar::persistence::pending_microvm_cleanup_identity(
@@ -354,7 +403,7 @@ chunk_bytes = 1024
         let row = database.connection().unwrap().query_one("SELECT provider_id, phase, reservation_released_at IS NOT NULL, (SELECT count(*) FROM microvm_resolutions WHERE intent_id = $1 AND action = 'attach-identity') FROM microvm_launches WHERE intent_id = $1", &[&case]).unwrap();
         assert_eq!(
             row.get::<_, Option<String>>(0).as_deref(),
-            if case == "released" {
+            if case == "released" || termination {
                 Some("microvm-exact")
             } else {
                 None
@@ -362,13 +411,24 @@ chunk_bytes = 1024
         );
         assert_eq!(
             row.get::<_, String>(1),
-            if case == "released" {
+            if case == "released" || termination {
                 "closed"
             } else {
                 "ambiguous"
             }
         );
-        assert_eq!(row.get::<_, bool>(2), case == "released");
+        assert_eq!(
+            row.get::<_, bool>(2),
+            matches!(case, "released" | "terminal-success")
+        );
+        if termination {
+            let observation = database.connection().unwrap().query_one("SELECT termination_observed_at IS NOT NULL, (SELECT count(*) FROM microvm_resolutions WHERE intent_id = $1 AND action = 'verify-termination' AND provider_id = 'microvm-exact' AND actor_uid = 0 AND owner_generation = $2) FROM microvm_launches WHERE intent_id = $1", &[&case, &generation]).unwrap();
+            assert_eq!(observation.get::<_, bool>(0), case == "terminal-success");
+            assert_eq!(
+                observation.get::<_, i64>(1),
+                i64::from(case == "terminal-success")
+            );
+        }
         assert_eq!(row.get::<_, i64>(3), i64::from(case == "released"));
     }
     let replacement = server.join().unwrap();

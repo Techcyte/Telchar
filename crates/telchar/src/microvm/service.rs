@@ -174,6 +174,51 @@ impl Service {
             .check()
     }
 
+    pub fn verify_termination(
+        &self,
+        observation: &crate::persistence::MicrovmTerminationObservation<'_>,
+    ) -> io::Result<bool> {
+        use crate::persistence::valid_resolution_text;
+        if observation.actor_uid != 0
+            || !valid_resolution_text(observation.intent_id, 128)
+            || !valid_resolution_text(observation.provider_id, 256)
+            || !valid_resolution_text(observation.reason, 1024)
+            || !valid_resolution_text(observation.evidence_reference, 1024)
+            || observation.account_id != self.config.account_id()
+            || observation.region != self.config.region()
+        {
+            return Err(io::Error::other("invalid MicroVM termination observation"));
+        }
+        self.verify_administrative_provider(self.provider.verify_termination(
+            observation.provider_id,
+            observation.account_id,
+            observation.region,
+        ))?;
+        crate::persistence::resolve_microvm_termination(self.owner.database(), observation)
+            .map_err(io::Error::other)
+    }
+
+    fn verify_administrative_provider(
+        &self,
+        verification: impl std::future::Future<Output = Result<(), super::ProviderError>>,
+    ) -> io::Result<()> {
+        self.check()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), verification).await
+            })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "MicroVM administrative provider verification timed out",
+                )
+            })?
+            .map_err(io::Error::other)?;
+        self.check()
+    }
+
     pub fn attach_identity(
         &self,
         attachment: &crate::persistence::MicrovmIdentityAttachment<'_>,
@@ -189,31 +234,13 @@ impl Service {
         {
             return Err(io::Error::other("invalid MicroVM identity attachment"));
         }
-        self.check()?;
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(async {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    self.provider.verify_identity(
-                        attachment.provider_id,
-                        attachment.account_id,
-                        attachment.region,
-                        attachment.image_arn,
-                        attachment.image_version,
-                    ),
-                )
-                .await
-            })
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "MicroVM administrative provider verification timed out",
-                )
-            })?
-            .map_err(io::Error::other)?;
-        self.check()?;
+        self.verify_administrative_provider(self.provider.verify_identity(
+            attachment.provider_id,
+            attachment.account_id,
+            attachment.region,
+            attachment.image_arn,
+            attachment.image_version,
+        ))?;
         crate::persistence::attach_microvm_cleanup_identity(self.owner.database(), attachment)
             .map_err(io::Error::other)
     }

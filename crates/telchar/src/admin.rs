@@ -11,7 +11,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let action = arguments
         .next()
         .ok_or_else(|| invalid("administrative action required"))?;
-    if !matches!(action.as_str(), "risk-release" | "attach-identity") {
+    if !matches!(
+        action.as_str(),
+        "risk-release" | "attach-identity" | "verify-termination"
+    ) {
         return Err(invalid("unknown administrative action").into());
     }
     let mut values = std::collections::BTreeMap::new();
@@ -50,7 +53,14 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let evidence_reference = values
         .remove("--evidence")
         .ok_or_else(|| invalid("--evidence required"))?;
-    let request = if action == "attach-identity" {
+    let request = if action == "verify-termination" {
+        telchar::service::admin::Request::VerifyTermination {
+            intent_id,
+            provider_id: provider_id.ok_or_else(|| invalid("--provider-id required"))?,
+            reason,
+            evidence_reference,
+        }
+    } else if action == "attach-identity" {
         telchar::service::admin::Request::AttachIdentity {
             intent_id,
             provider_id: provider_id.ok_or_else(|| invalid("--provider-id required"))?,

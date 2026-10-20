@@ -117,7 +117,7 @@ Omit `--provider-id` only when the persisted provider identity is absent. Exact
 identity, current daemon ownership and unresolved state are checked transactionally.
 A successful release appends an immutable audit record; it does not assert remote
 termination or erase known-instance cleanup. `released: false` means no matching
-eligible intent changed. Audited termination commands remain unimplemented.
+eligible intent changed.
 Actual daemon/CLI/PostgreSQL contracts cover kernel
 root authorization inside a private user namespace, atomic audit/no-op behavior,
 queued requests after ownership expiry, and shutdown during incomplete frames or
@@ -165,6 +165,24 @@ slow-provider rejection and ownership expiry/replacement during lookup. A separa
 whole-daemon contract covers successful cleanup-only attachment and graceful
 shutdown. Total request/shutdown bounds and live AWS correspondence remain
 unqualified.
+
+```sh
+telchar admin microvm verify-termination \
+  --socket /run/telchar/admin.sock --intent INTENT \
+  --provider-id EXACT_PROVIDER_ID \
+  --reason 'Confirm provider terminal state' --evidence 'incident:123'
+```
+
+Termination verification reads the exact persisted intent/provider account and
+region, selects matching configured authority, and requires an attested exact-ID
+`TERMINATED` response. It shares the two-second provider budget and post-lookup
+ownership check with attachment. Observation, capacity release and immutable audit
+commit together under the database fence; any previous risk-release timestamp is
+preserved. `terminated: true` reports this administrative transition, not a DELETE
+acknowledgment. Missing, mismatched or already observed identities reject the
+request. This command does not send a termination request or relaunch work.
+Mapped-root handler integration covers running-state refusal and terminal success;
+whole-daemon termination and concurrent cleanup qualification remain pending.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
