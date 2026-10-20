@@ -370,10 +370,8 @@ impl Provider {
         image_arn: &str,
         image_version: &str,
     ) -> Result<(), ProviderError> {
-        if self.account_id.as_deref() != Some(account_id)
-            || self.authority.is_none()
-            || self.client.config().region().map(|region| region.as_ref()) != Some(region)
-            || provider_id.trim().is_empty()
+        self.verify_authority(account_id, region)?;
+        if provider_id.trim().is_empty()
             || provider_id.len() > 256
             || provider_id.chars().any(char::is_control)
         {
@@ -391,6 +389,29 @@ impl Provider {
             || result.image_arn() != image_arn
             || result.image_version() != image_version
         {
+            return Err(ProviderError);
+        }
+        Ok(())
+    }
+
+    fn verify_authority(&self, account_id: &str, region: &str) -> Result<(), ProviderError> {
+        if self.account_id.as_deref() != Some(account_id)
+            || self.authority.is_none()
+            || self.client.config().region().map(|region| region.as_ref()) != Some(region)
+        {
+            return Err(ProviderError);
+        }
+        Ok(())
+    }
+
+    pub async fn verify_termination(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+        region: &str,
+    ) -> Result<(), ProviderError> {
+        self.verify_authority(account_id, region)?;
+        if !self.is_terminated(provider_id).await? {
             return Err(ProviderError);
         }
         Ok(())

@@ -63,6 +63,9 @@ fn provider_requires_matching_signed_account_identity() {
                     "wrong-id",
                     "wrong-image",
                     "wrong-version",
+                    "wrong-id",
+                    "running",
+                    "terminal",
                     "terminal",
                     "terminal",
                 ] {
@@ -99,7 +102,7 @@ fn provider_requires_matching_signed_account_identity() {
                     assert!(headers.contains("microvm-exact"));
                     let body = serde_json::json!({
                         "microvmId": if returned == "wrong-id" { "microvm-other" } else { "microvm-exact" },
-                        "state": "TERMINATED",
+                        "state": if returned == "running" { "RUNNING" } else { "TERMINATED" },
                         "endpoint": "https://unused.invalid",
                         "imageArn": if returned == "wrong-image" { "other-image" } else { "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture" },
                         "imageVersion": if returned == "wrong-version" { "2" } else { "1" },
@@ -147,6 +150,15 @@ fn provider_requires_matching_signed_account_identity() {
                 ))
                 .is_err()
         );
+        assert!(
+            runtime
+                .block_on(unattested.verify_termination(
+                    "microvm-exact",
+                    "116392764028",
+                    "us-west-2"
+                ))
+                .is_err()
+        );
         let result = runtime.block_on(telchar::microvm::Provider::verify_account(
             config,
             identity,
@@ -164,6 +176,15 @@ fn provider_requires_matching_signed_account_identity() {
                     .enable_all()
                     .build()
                     .unwrap();
+                assert!(
+                    runtime
+                        .block_on(provider.verify_termination(
+                            "microvm-exact",
+                            expected_account,
+                            region
+                        ))
+                        .is_err()
+                );
                 assert!(
                     runtime
                         .block_on(provider.verify_identity(
@@ -199,6 +220,23 @@ fn provider_requires_matching_signed_account_identity() {
                 .join()
                 .unwrap();
             }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            for expected_match in [false, false, true] {
+                assert_eq!(
+                    runtime
+                        .block_on(provider.verify_termination(
+                            "microvm-exact",
+                            "116392764028",
+                            "us-west-2"
+                        ))
+                        .is_ok(),
+                    expected_match
+                );
+            }
+            drop(runtime);
             for _ in 0..2 {
                 let provider = provider.clone();
                 std::thread::spawn(move || {
