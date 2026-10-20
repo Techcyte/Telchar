@@ -168,6 +168,15 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result.stderr, b"")
         self.assertFalse(marker.exists(), "commands ran without namespace containment")
 
+    def test_execution_procfs_matches_process_namespace(self):
+        worker = self.command("worker", "import os, pathlib\n"
+                              "pid = os.getpid()\n"
+                              "assert int(pathlib.Path('/proc/self/stat').read_text().split()[0]) == pid\n"
+                              "assert pathlib.Path('/proc/' + str(pid) + '/ns/mnt').exists()\n")
+        self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2),
+                        "execution procfs does not describe its PID namespace")
+        self.assert_stopped(self.root / "daemon.pid")
+
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
         self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2))
