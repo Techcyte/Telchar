@@ -8,6 +8,22 @@ schema migrations. Daemon configuration/startup and routing consume the executio
 service; output-only recovery never adopts or relaunches MicroVM executions.
 AWS Lambda MicroVMs are distinct from ordinary Lambda functions.
 
+## Read-only obligation inspection
+
+`telchar operator microvm [--limit N]` reads persisted capacity and known-instance
+cleanup obligations without contacting AWS or acquiring daemon ownership. It
+requires an existing migrated database. The default limit is 64; accepted range
+is 1–256. Rows are ordered by creation time and intent ID, oldest first; this is
+a bounded snapshot, not a complete inventory when more rows exist.
+
+Each row exposes intent/backend/account/region/provider identity, phase,
+`capacity_reserved` and `cleanup_pending`. A risk-released known instance remains
+visible until termination is observed. Unknown-identity risk-released intents
+are not included in this obligation view. Client tokens, credential verifiers,
+request/configuration digests and operator-supplied evidence are excluded.
+This command does not mutate state or provide administrative authority. Row and
+field bounds do not establish a total database/network deadline.
+
 ## Production implementation status
 
 The [backend ADR](adr/microvm-backend.md) defines the intended conservative release.

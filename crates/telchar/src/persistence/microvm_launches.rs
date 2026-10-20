@@ -36,6 +36,53 @@ pub struct MicrovmCleanup {
     pub region: String,
 }
 
+#[derive(serde::Serialize)]
+pub struct MicrovmObligation {
+    pub intent_id: String,
+    pub backend_name: String,
+    pub account_id: String,
+    pub region: String,
+    pub provider_id: Option<String>,
+    pub phase: String,
+    pub capacity_reserved: bool,
+    pub cleanup_pending: bool,
+}
+
+pub fn read_microvm_obligations(
+    database: &(impl DatabaseSource + ?Sized),
+    limit: usize,
+) -> Result<Vec<MicrovmObligation>, MicrovmLaunchError> {
+    if !(1..=256).contains(&limit) {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let rows = client
+        .query(
+            "SELECT intent_id, backend_name, account_id, region, provider_id, phase,
+                    reservation_released_at IS NULL,
+                    provider_id IS NOT NULL AND termination_observed_at IS NULL
+             FROM microvm_launches
+             WHERE reservation_released_at IS NULL
+                OR (provider_id IS NOT NULL AND termination_observed_at IS NULL)
+             ORDER BY created_at, intent_id LIMIT $1",
+            &[&(limit as i64)],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| MicrovmObligation {
+            intent_id: row.get(0),
+            backend_name: row.get(1),
+            account_id: row.get(2),
+            region: row.get(3),
+            provider_id: row.get(4),
+            phase: row.get(5),
+            capacity_reserved: row.get(6),
+            cleanup_pending: row.get(7),
+        })
+        .collect())
+}
+
 /// Provider correspondence must be verified before committing this cleanup-only resolution.
 pub struct MicrovmIdentityAttachment<'a> {
     pub intent_id: &'a str,

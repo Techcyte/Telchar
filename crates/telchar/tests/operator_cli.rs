@@ -109,6 +109,85 @@ fn durable_commands_report_empty_authoritative_state() {
     let report = json(&recovery);
     assert_eq!(report["builds"][0]["derivation_path"], derivation);
     assert_eq!(report["builds"][0]["recovery"], "output-only");
+
+    let attempt = telchar::persistence::read_shared_build_attempt(database.url(), derivation)
+        .unwrap()
+        .unwrap();
+    assert!(
+        telchar::persistence::reserve_microvm_launch(
+            database.url(),
+            &telchar::persistence::MicrovmLaunchIntent {
+                intent_id: "operator-intent".into(),
+                attempt_id: attempt.attempt_id,
+                backend_name: "local-main".into(),
+                account_id: "116392764028".into(),
+                region: "us-west-2".into(),
+                image_arn: "fixture-image".into(),
+                image_version: "1".into(),
+                configuration_digest: [1; 32],
+                request_digest: [2; 32],
+                client_token: "private-client-token".into(),
+                credential_verifier: [3; 32],
+                admission_cutoff: SystemTime::now() + std::time::Duration::from_secs(60),
+                maximum_duration_seconds: 600,
+            },
+            1,
+        )
+        .unwrap()
+    );
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(database.url(), "operator-intent").unwrap()
+    );
+    assert!(
+        telchar::persistence::bind_microvm_launch(
+            database.url(),
+            "operator-intent",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    assert!(
+        telchar::persistence::cancel_microvm_launch(database.url(), "operator-intent").unwrap()
+    );
+    let expected = serde_json::json!({
+        "intent_id": "operator-intent", "backend_name": "local-main",
+        "account_id": "116392764028", "region": "us-west-2",
+        "provider_id": "microvm-exact", "phase": "closed",
+        "capacity_reserved": true, "cleanup_pending": true
+    });
+    let output = operator(&config, &["microvm", "--limit", "1"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        json(&output),
+        serde_json::json!({"obligations": [expected.clone()]})
+    );
+    database
+        .connect()
+        .execute(
+            "UPDATE microvm_launches SET reservation_released_at = clock_timestamp()",
+            &[],
+        )
+        .unwrap();
+    let output = operator(&config, &["microvm"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mut released = expected;
+    released["capacity_reserved"] = false.into();
+    assert_eq!(
+        json(&output),
+        serde_json::json!({"obligations": [released]})
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(
+            database.url(),
+            "operator-intent",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    let output = operator(&config, &["microvm"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(json(&output), serde_json::json!({"obligations": []}));
 }
 
 #[test]
@@ -123,6 +202,8 @@ fn operator_rejects_mutating_and_unbounded_requests() {
 
     for arguments in [
         vec!["cancel"],
+        vec!["microvm", "--limit", "0"],
+        vec!["microvm", "--limit", "257"],
         vec!["queue", "--limit", "0"],
         vec!["queue", "--limit", "257"],
         vec!["recovery", "--limit", "not-a-number"],
