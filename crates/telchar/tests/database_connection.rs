@@ -35,6 +35,46 @@ fn database_reuses_an_established_connection() {
     assert_eq!(first_backend, second_backend);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn dropping_database_retires_background_tasks() {
+    fn pool_threads() -> std::collections::BTreeSet<std::path::PathBuf> {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                std::fs::read_to_string(path.join("comm"))
+                    .is_ok_and(|name| name.starts_with("r2d2-worker-"))
+            })
+            .collect()
+    }
+
+    let fixture = PostgresFixture::start();
+    let before = pool_threads();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    database
+        .connection()
+        .unwrap()
+        .simple_query("SELECT 1")
+        .unwrap();
+    let created = pool_threads()
+        .difference(&before)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!created.is_empty(), "pool background tasks are observed");
+    drop(database);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while created.iter().any(|path| path.exists()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dropped database retains background tasks: {:?}",
+            pool_threads()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn persistence_accepts_a_substituted_database_source() {
     let fixture = PostgresFixture::start();

@@ -2563,6 +2563,7 @@ dependencies = [
  "rustix",
  "rustls",
  "rustls-native-certs",
+ "scheduled-thread-pool",
  "serde",
  "serde_json",
  "sha2",

@@ -125,7 +125,13 @@ where
     T::TlsConnect: Send,
     <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
 {
+    let maintenance = scheduled_thread_pool::ScheduledThreadPool::builder()
+        .num_threads(3)
+        .thread_name_pattern("r2d2-worker-{}")
+        .on_drop_behavior(scheduled_thread_pool::OnPoolDropBehavior::DiscardPendingScheduled)
+        .build();
     Ok(Pool::builder()
+        .thread_pool(std::sync::Arc::new(maintenance))
         .max_size(16)
         .connection_timeout(Duration::from_secs(5))
         .build_unchecked(manager))
