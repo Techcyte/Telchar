@@ -24,17 +24,27 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
 
 #[test]
 fn root_attachment_checks_correspondence_and_post_lookup_ownership() {
-    run_case(false);
+    run_case(false, false);
 }
 
 #[test]
 fn root_attachment_rejects_replaced_owner_after_lookup() {
-    run_case(true);
+    run_case(true, false);
 }
 
-fn run_case(replace_owner: bool) {
+#[test]
+fn root_termination_rejects_expired_owner_after_lookup() {
+    run_case(false, true);
+}
+
+#[test]
+fn root_termination_rejects_replaced_owner_after_lookup() {
+    run_case(true, true);
+}
+
+fn run_case(replace_owner: bool, termination_fence: bool) {
     if let Ok(url) = std::env::var("TELCHAR_ADMIN_FIXTURE_DATABASE") {
-        exercise(&url, replace_owner);
+        exercise(&url, replace_owner, termination_fence);
         return;
     }
     assert_ne!(unsafe { libc::geteuid() }, 0);
@@ -44,10 +54,11 @@ fn run_case(replace_owner: bool) {
         .arg(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            if replace_owner {
-                "root_attachment_rejects_replaced_owner_after_lookup"
-            } else {
-                "root_attachment_checks_correspondence_and_post_lookup_ownership"
+            match (replace_owner, termination_fence) {
+                (false, false) => "root_attachment_checks_correspondence_and_post_lookup_ownership",
+                (true, false) => "root_attachment_rejects_replaced_owner_after_lookup",
+                (false, true) => "root_termination_rejects_expired_owner_after_lookup",
+                (true, true) => "root_termination_rejects_replaced_owner_after_lookup",
             },
             "--nocapture",
         ])
@@ -58,7 +69,7 @@ fn run_case(replace_owner: bool) {
     assert!(output.stderr.is_empty(), "{output:?}");
 }
 
-fn exercise(url: &str, replace_owner: bool) {
+fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
     let database = telchar::persistence::Database::connect(url).unwrap();
     telchar::persistence::migrate(&database).unwrap();
     let owner = Arc::new(
@@ -72,6 +83,7 @@ fn exercise(url: &str, replace_owner: bool) {
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let inspection = database.clone();
+    let cleanup_database = owner.database().clone();
     let provider_database_url = url.to_owned();
     let generation = owner.generation();
     let (stalled, resumed) = std::sync::mpsc::channel();
@@ -85,6 +97,7 @@ fn exercise(url: &str, replace_owner: bool) {
             "refresh",
             "terminal-running",
             "terminal-success",
+            "terminal-cleanup",
             "fenced",
         ] {
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -136,6 +149,16 @@ fn exercise(url: &str, replace_owner: bool) {
                 ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
             } else {
                 assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
+                if case == "terminal-cleanup" {
+                    assert!(
+                        telchar::persistence::record_microvm_termination(
+                            &cleanup_database,
+                            case,
+                            "microvm-exact",
+                        )
+                        .unwrap()
+                    );
+                }
                 if case == "fenced" {
                     inspection.connection().unwrap().batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
                     if replace_owner {
@@ -149,7 +172,7 @@ fn exercise(url: &str, replace_owner: bool) {
                         replacement = Some(acquired);
                     }
                 }
-                (serde_json::json!({"microvmId":"microvm-exact", "state": if case == "terminal-success" { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+                (serde_json::json!({"microvmId":"microvm-exact", "state": if matches!(case, "terminal-success" | "terminal-cleanup") || (case == "fenced" && termination_fence) { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             if matches!(case, "slow" | "refresh") {
                 std::thread::sleep(Duration::from_secs(3));
@@ -229,9 +252,10 @@ chunk_bytes = 1024
         "refresh",
         "terminal-running",
         "terminal-success",
+        "terminal-cleanup",
         "fenced",
     ] {
-        let termination = case.starts_with("terminal-");
+        let termination = case.starts_with("terminal-") || (case == "fenced" && termination_fence);
         *source.0.lock().unwrap() = if case == "refresh" {
             aws_credential_types::Credentials::new(
                 "rotated-key",
@@ -356,10 +380,24 @@ chunk_bytes = 1024
         }
         assert_eq!(
             output.status.success(),
-            matches!(case, "released" | "terminal-success"),
+            matches!(case, "released" | "terminal-success" | "terminal-cleanup"),
             "{output:?}"
         );
-        if case == "terminal-success" {
+        if case == "terminal-cleanup" {
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                b"{\"released\":false,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
+            );
+            assert!(
+                !telchar::persistence::pending_microvm_cleanup_identity(
+                    &database,
+                    case,
+                    "microvm-exact"
+                )
+                .unwrap()
+            );
+        } else if case == "terminal-success" {
             assert!(output.stderr.is_empty(), "{output:?}");
             assert_eq!(
                 output.stdout,
@@ -419,11 +457,14 @@ chunk_bytes = 1024
         );
         assert_eq!(
             row.get::<_, bool>(2),
-            matches!(case, "released" | "terminal-success")
+            matches!(case, "released" | "terminal-success" | "terminal-cleanup")
         );
         if termination {
             let observation = database.connection().unwrap().query_one("SELECT termination_observed_at IS NOT NULL, (SELECT count(*) FROM microvm_resolutions WHERE intent_id = $1 AND action = 'verify-termination' AND provider_id = 'microvm-exact' AND actor_uid = 0 AND owner_generation = $2) FROM microvm_launches WHERE intent_id = $1", &[&case, &generation]).unwrap();
-            assert_eq!(observation.get::<_, bool>(0), case == "terminal-success");
+            assert_eq!(
+                observation.get::<_, bool>(0),
+                matches!(case, "terminal-success" | "terminal-cleanup")
+            );
             assert_eq!(
                 observation.get::<_, i64>(1),
                 i64::from(case == "terminal-success")
