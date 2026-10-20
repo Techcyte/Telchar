@@ -47,7 +47,8 @@ pub fn microvm_cleanup_is_configured(
         .query_one(
             "SELECT NOT EXISTS (
             SELECT 1 FROM microvm_launches l
-            WHERE l.reservation_released_at IS NULL
+            WHERE (l.reservation_released_at IS NULL
+                   OR (l.provider_id IS NOT NULL AND l.termination_observed_at IS NULL))
               AND NOT EXISTS (
                 SELECT 1 FROM unnest($1::text[], $2::text[]) AS configured(account_id, region)
                 WHERE configured.account_id = l.account_id AND configured.region = l.region
@@ -78,7 +79,7 @@ pub fn pending_microvm_cleanup(
          FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.account_id = $1 AND l.region = $4 AND l.provider_id IS NOT NULL
-           AND l.reservation_released_at IS NULL
+           AND l.termination_observed_at IS NULL
            AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
                 OR b.state NOT IN ('running', 'collecting'))
          ORDER BY CASE WHEN $3::text IS NULL THEN false ELSE l.intent_id <= $3 END,
@@ -108,7 +109,7 @@ pub fn pending_microvm_cleanup_identity(
     let row = client.query_opt(
         "SELECT 1 FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
-         WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.reservation_released_at IS NULL
+         WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.termination_observed_at IS NULL
            AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
                 OR b.state NOT IN ('running', 'collecting'))",
         &[&intent_id, &provider_id],
@@ -125,11 +126,15 @@ pub fn record_microvm_termination(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(record_microvm_termination));
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
-    let changed = client.execute(
-        "UPDATE microvm_launches SET phase = 'closed', reservation_released_at = clock_timestamp()
-         WHERE intent_id = $1 AND provider_id = $2 AND reservation_released_at IS NULL",
-        &[&intent_id, &provider_id],
-    ).map_err(|_| MicrovmLaunchError)?;
+    let changed = client
+        .execute(
+            "UPDATE microvm_launches SET phase = 'closed',
+             reservation_released_at = COALESCE(reservation_released_at, clock_timestamp()),
+             termination_observed_at = clock_timestamp()
+         WHERE intent_id = $1 AND provider_id = $2 AND termination_observed_at IS NULL",
+            &[&intent_id, &provider_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
     Ok(changed == 1)
 }
 

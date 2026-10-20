@@ -57,6 +57,116 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn verified_termination_is_distinct_from_capacity_release() {
+    let (fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    fixture.connect().execute(
+        "UPDATE microvm_launches SET reservation_released_at = clock_timestamp() WHERE intent_id = 'intent-one'",
+        &[],
+    ).unwrap();
+    assert!(
+        telchar::persistence::pending_microvm_cleanup_identity(
+            &database,
+            "intent-one",
+            "microvm-exact"
+        )
+        .unwrap(),
+        "capacity release must not erase a known execution cleanup obligation"
+    );
+    assert!(!telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+    let pending = telchar::persistence::pending_microvm_cleanup(
+        &database,
+        "116392764028",
+        "us-west-2",
+        1,
+        None,
+    )
+    .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        !telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-other")
+            .unwrap()
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(
+        !telchar::persistence::pending_microvm_cleanup_identity(
+            &database,
+            "intent-one",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    assert!(telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+}
+
+#[test]
+fn termination_migration_preserves_observation_and_ownership_fence() {
+    let (mut fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    fixture
+        .connect()
+        .batch_execute(
+            "ALTER TABLE microvm_launches DROP COLUMN termination_observed_at CASCADE;
+         DELETE FROM telchar_schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+    assert_eq!(
+        telchar::persistence::migrate(&database)
+            .unwrap()
+            .applied_this_run,
+        1
+    );
+    fixture.restart();
+    let row = fixture.connect().query_one(
+        "SELECT termination_observed_at = reservation_released_at FROM microvm_launches WHERE intent_id = 'intent-one'",
+        &[],
+    ).unwrap();
+    assert!(row.get::<_, bool>(0));
+    assert!(
+        !telchar::persistence::pending_microvm_cleanup_identity(
+            &database,
+            "intent-one",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    fixture.connect().execute(
+        "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second'",
+        &[],
+    ).unwrap();
+    assert!(
+        telchar::persistence::record_microvm_termination(
+            owner.database(),
+            "intent-one",
+            "microvm-exact"
+        )
+        .is_err(),
+        "termination writes remain fenced even when no row would change"
+    );
+}
+
+#[test]
 fn cleanup_configuration_covers_unreleased_launches() {
     let (_fixture, database) = prepared_launch();
     for identities in [
