@@ -50,6 +50,7 @@ let
     // {
       pname = "telchar-nomad-worker";
       inherit cargoArtifacts;
+      nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
     }
   );
