@@ -16,8 +16,9 @@ Implemented boundaries include:
 - Migration `0019_microvm_launches.sql` and fenced reservation, single dispatch,
   exact provider binding, single-use admission and cleanup-recording APIs.
 - Bounded provider launch/get/terminate with SDK launch retries disabled. Ambiguous
-  launches retain capacity; only an exact observed `TERMINATED` releases a known
-  execution's cleanup reservation.
+  launches retain capacity. Ordinary cleanup releases capacity only after exact
+  observed `TERMINATED`; explicit audited risk release can release capacity without
+  completing the independent known-instance cleanup obligation.
 - Separate `/microvm` WebSocket admission with expiring verifier-only credentials,
   authenticated early waiting and pending-connection bounds. TLS termination is
   operator-owned; Nomad authentication remains separate.
@@ -91,8 +92,25 @@ identity, current daemon ownership and unresolved state are checked transactiona
 A successful release appends an immutable audit record; it does not assert remote
 termination or erase known-instance cleanup. `released: false` means no matching
 eligible intent changed. Provider identity reconciliation and audited termination
-commands remain unimplemented. Socket/CLI process lifecycle and root-success
-integration qualification remain pending; this interface is experimental.
+commands remain unimplemented. Actual daemon/CLI/PostgreSQL contracts cover kernel
+root authorization inside a private user namespace, atomic audit/no-op behavior,
+queued requests after ownership expiry, and shutdown during incomplete frames or
+running SQL. These are isolated local contracts, not host-root deployment or live
+AWS qualification.
+
+Administrative transactions use a 250 ms lock timeout and a one-second statement
+timeout. Those PostgreSQL limits do not establish a total request or shutdown
+bound when database networking or pool validation stalls. The normal daemon loop
+fails on administrative listener failure; the `--once` path does not poll that
+health check. This interface remains experimental.
+
+Risk-released intents with no provider ID still need evidence-backed identity
+reconciliation. The provider lookup exposes an instance's ID and image/version,
+not the persisted launch token or request digest; matching image/version/time is
+not proof that the instance belongs to an intent. Administrative attachment must
+verify provider correspondence and audit the launch-linking evidence, remain
+cleanup-only, and preserve any prior capacity release. The ordinary launch-binding
+API is not an administrative repair interface.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
