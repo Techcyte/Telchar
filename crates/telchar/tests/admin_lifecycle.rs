@@ -22,7 +22,7 @@ impl Drop for Daemon {
 fn root_administration_commits_audit_and_cleans_up_socket() {
     root_contract(
         "root_administration_commits_audit_and_cleans_up_socket",
-        false,
+        Scenario::Success,
     );
 }
 
@@ -30,13 +30,28 @@ fn root_administration_commits_audit_and_cleans_up_socket() {
 fn queued_administration_cannot_mutate_after_ownership_loss() {
     root_contract(
         "queued_administration_cannot_mutate_after_ownership_loss",
-        true,
+        Scenario::OwnershipLoss,
     );
 }
 
-fn root_contract(test: &str, expire_owner: bool) {
+#[test]
+fn shutdown_rolls_back_running_administrative_sql() {
+    root_contract(
+        "shutdown_rolls_back_running_administrative_sql",
+        Scenario::RunningSql,
+    );
+}
+
+#[derive(Clone, Copy)]
+enum Scenario {
+    Success,
+    OwnershipLoss,
+    RunningSql,
+}
+
+fn root_contract(test: &str, scenario: Scenario) {
     if let Ok(url) = std::env::var("TELCHAR_ADMIN_FIXTURE_DATABASE") {
-        exercise_daemon(&url, expire_owner);
+        exercise_daemon(&url, scenario);
         return;
     }
     assert_ne!(
@@ -62,7 +77,8 @@ fn root_contract(test: &str, expire_owner: bool) {
     );
 }
 
-fn exercise_daemon(url: &str, expire_owner: bool) {
+fn exercise_daemon(url: &str, scenario: Scenario) {
+    let expire_owner = matches!(scenario, Scenario::OwnershipLoss);
     assert_eq!(unsafe { libc::geteuid() }, 0);
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -218,6 +234,36 @@ fn exercise_daemon(url: &str, expire_owner: bool) {
                 "{error}"
             ),
         }
+    } else if matches!(scenario, Scenario::RunningSql) {
+        inspector.batch_execute("CREATE FUNCTION delay_admin_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER delay_admin_release BEFORE UPDATE ON microvm_launches FOR EACH ROW EXECUTE FUNCTION delay_admin_release()").unwrap();
+        let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
+        telchar::service::admin::write_request(
+            stream,
+            &telchar::service::admin::Request::RiskRelease {
+                intent_id: "admin-intent".into(),
+                provider_id: None,
+                reason: "Remote execution risk accepted".into(),
+                evidence_reference: "incident:running-sql".into(),
+                accept_remote_execution_risk: true,
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let running: bool = inspector.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event = 'PgSleep' AND query LIKE '%UPDATE microvm_launches%')", &[]).unwrap().get(0);
+            if running {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "administrative SQL did not reach trigger"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
     } else {
         let output = command.output().unwrap();
         assert!(output.status.success(), "administration failed: {output:?}");
@@ -305,6 +351,12 @@ fn exercise_daemon(url: &str, expire_owner: bool) {
             !stderr.contains("ERROR") && !stderr.contains("WARN"),
             "{stderr}"
         );
+    }
+    if matches!(scenario, Scenario::RunningSql) {
+        let state = inspector.query_one("SELECT reservation_released_at IS NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert!(state.get::<_, bool>(0));
+        assert!(state.get::<_, bool>(1));
+        assert_eq!(state.get::<_, i64>(2), 0);
     }
     assert!(!admin.exists());
     assert!(!ipc.exists());
