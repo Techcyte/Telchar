@@ -49,6 +49,123 @@ fn administrative_request_round_trip_preserves_exact_identity() {
 }
 
 #[test]
+fn trickled_bytes_do_not_extend_administrative_deadline() {
+    let (mut client, mut server) = UnixStream::pair().unwrap();
+    client.write_all(&100_u32.to_le_bytes()).unwrap();
+    let writer = std::thread::spawn(move || {
+        for _ in 0..20 {
+            if client.write_all(b" ").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let start = Instant::now();
+    assert!(read_request(&mut server, Duration::from_millis(100)).is_err());
+    assert!(start.elapsed() < Duration::from_millis(300));
+    drop(server);
+    writer.join().unwrap();
+}
+
+#[test]
+fn cli_requires_explicit_acknowledgment_and_rejects_duplicate_arguments() {
+    for (arguments, diagnostic) in [
+        (
+            vec!["admin", "microvm", "risk-release"],
+            "explicit remote execution risk acknowledgment required",
+        ),
+        (
+            vec![
+                "admin",
+                "microvm",
+                "risk-release",
+                "--intent",
+                "one",
+                "--intent",
+                "two",
+            ],
+            "duplicate administrative argument",
+        ),
+        (
+            vec!["admin", "microvm", "risk-release", "--actor-uid", "0"],
+            "unknown administrative argument",
+        ),
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env_clear()
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("telchar: {diagnostic}\n")
+        );
+    }
+}
+
+#[test]
+fn cli_sends_exact_request_and_reports_noop_without_database_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("admin.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .env_clear()
+        .args(["admin", "microvm", "risk-release", "--socket"])
+        .arg(&socket)
+        .args([
+            "--intent",
+            "intent",
+            "--provider-id",
+            "microvm-exact",
+            "--reason",
+            "Remote execution risk accepted",
+            "--evidence",
+            "incident:120",
+            "--accept-remote-execution-risk",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "CLI did not connect");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    assert_eq!(
+        read_request(&mut stream, Duration::from_secs(1)).unwrap(),
+        Request::RiskRelease {
+            intent_id: "intent".into(),
+            provider_id: Some("microvm-exact".into()),
+            reason: "Remote execution risk accepted".into(),
+            evidence_reference: "incident:120".into(),
+            accept_remote_execution_risk: true,
+        }
+    );
+    let response = br#"{"released":false,"rejected":false}"#;
+    stream
+        .write_all(&(response.len() as u32).to_le_bytes())
+        .unwrap();
+    stream.write_all(response).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "{\"released\":false,\"rejected\":false}\n"
+    );
+}
+
+#[test]
 fn nonroot_peer_cannot_reach_administrative_request_decoding() {
     assert_ne!(unsafe { libc::geteuid() }, 0, "run fixture as nonroot");
     let (_client, server) = UnixStream::pair().unwrap();
