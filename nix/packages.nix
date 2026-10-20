@@ -52,6 +52,22 @@ let
       inherit cargoArtifacts;
       nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
+      preCheck = ''
+        daemonBuildLog=$(mktemp)
+        cargoWithProfile build --locked -p telchar --bin telchar \
+          --config "profile.''${CARGO_PROFILE:-dev}.package.telchar.debug-assertions=true" \
+          --message-format json-render-diagnostics > "$daemonBuildLog"
+        daemonExecutable=$(${pkgs.jq}/bin/jq -rs \
+          '[.[] | select(.reason == "compiler-artifact" and .target.name == "telchar" and .executable != null)] | last | .executable' \
+          "$daemonBuildLog")
+        test -x "$daemonExecutable"
+        export TELCHAR_TEST_DAEMON_BIN="$TMPDIR/telchar-test-daemon"
+        cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
+      '';
+      postInstall = ''
+        test ! -e "$out/bin/telchar"
+        test ! -e "$out/bin/telchar-test-daemon"
+      '';
     }
   );
 
