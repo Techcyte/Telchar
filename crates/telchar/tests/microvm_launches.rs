@@ -57,6 +57,114 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn administrative_attachment_preserves_release_and_denies_admission() {
+    let (fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    assert!(
+        telchar::persistence::release_microvm_capacity_risk(
+            owner.database(),
+            &telchar::persistence::MicrovmRiskRelease {
+                intent_id: "intent-one",
+                provider_id: None,
+                actor_uid: 0,
+                reason: "Unresolved launch risk accepted",
+                evidence_reference: "incident:attachment",
+                accept_remote_execution_risk: true,
+            }
+        )
+        .unwrap()
+    );
+    let mut client = fixture.connect();
+    let released: std::time::SystemTime = client
+        .query_one(
+            "SELECT reservation_released_at FROM microvm_launches WHERE intent_id = 'intent-one'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let mut attachment = telchar::persistence::MicrovmIdentityAttachment {
+        intent_id: "intent-one",
+        provider_id: "microvm-exact",
+        actor_uid: 0,
+        account_id: "116392764028",
+        region: "us-west-2",
+        image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+        image_version: "1",
+        reason: "Recovered exact launch response",
+        evidence_reference: "incident:response",
+    };
+    assert!(telchar::persistence::attach_microvm_cleanup_identity(&database, &attachment).is_err());
+    attachment.image_version = "2";
+    assert!(
+        !telchar::persistence::attach_microvm_cleanup_identity(owner.database(), &attachment)
+            .unwrap()
+    );
+    attachment.image_version = "1";
+    client.batch_execute("CREATE TRIGGER fixture_reject_audit BEFORE INSERT ON microvm_resolutions FOR EACH STATEMENT EXECUTE FUNCTION preserve_microvm_resolution()").unwrap();
+    assert!(
+        telchar::persistence::attach_microvm_cleanup_identity(owner.database(), &attachment)
+            .is_err()
+    );
+    assert!(
+        client
+            .query_one(
+                "SELECT provider_id IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'",
+                &[]
+            )
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    client
+        .batch_execute("DROP TRIGGER fixture_reject_audit ON microvm_resolutions")
+        .unwrap();
+    assert!(
+        telchar::persistence::attach_microvm_cleanup_identity(owner.database(), &attachment)
+            .unwrap()
+    );
+    assert!(
+        !telchar::persistence::attach_microvm_cleanup_identity(owner.database(), &attachment)
+            .unwrap()
+    );
+    assert!(
+        telchar::persistence::pending_microvm_cleanup_identity(
+            &database,
+            "intent-one",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            owner.database(),
+            "intent-one",
+            "microvm-exact",
+            &[3; 32]
+        )
+        .unwrap()
+    );
+    let row = client.query_one("SELECT phase, reservation_released_at, termination_observed_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[]).unwrap();
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(row.get::<_, std::time::SystemTime>(1), released);
+    assert!(row.get::<_, bool>(2));
+    let audit = client.query_one("SELECT provider_id, actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE action = 'attach-identity'", &[]).unwrap();
+    assert_eq!(audit.get::<_, String>(0), "microvm-exact");
+    assert_eq!(audit.get::<_, i64>(1), 0);
+    assert_eq!(audit.get::<_, i64>(2), owner.generation());
+    assert_eq!(audit.get::<_, String>(3), "incident:response");
+    client.execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second'", &[]).unwrap();
+    assert!(
+        telchar::persistence::attach_microvm_cleanup_identity(owner.database(), &attachment)
+            .is_err()
+    );
+}
+
+#[test]
 fn risk_release_bounds_lock_contention_without_releasing_capacity() {
     let (fixture, database) = prepared_launch();
     assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
@@ -322,7 +430,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        2
+        3
     );
     fixture.restart();
     let row = fixture.connect().query_one(

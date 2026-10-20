@@ -36,33 +36,83 @@ pub struct MicrovmCleanup {
     pub region: String,
 }
 
-pub struct MicrovmRiskRelease<'a> {
+/// Provider correspondence must be verified before committing this cleanup-only resolution.
+pub struct MicrovmIdentityAttachment<'a> {
     pub intent_id: &'a str,
-    pub provider_id: Option<&'a str>,
+    pub provider_id: &'a str,
+    pub account_id: &'a str,
+    pub region: &'a str,
+    pub image_arn: &'a str,
+    pub image_version: &'a str,
     pub actor_uid: u32,
     pub reason: &'a str,
     pub evidence_reference: &'a str,
-    pub accept_remote_execution_risk: bool,
 }
 
-pub fn release_microvm_capacity_risk(
+pub fn attach_microvm_cleanup_identity(
     database: &(impl DatabaseSource + ?Sized),
-    release: &MicrovmRiskRelease<'_>,
+    attachment: &MicrovmIdentityAttachment<'_>,
 ) -> Result<bool, MicrovmLaunchError> {
-    let valid_text = |value: &str, maximum: usize| {
-        !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
-    };
-    if release.actor_uid != 0
-        || !release.accept_remote_execution_risk
-        || !valid_text(release.intent_id, 128)
-        || !valid_text(release.reason, 1024)
-        || !valid_text(release.evidence_reference, 1024)
-        || release.provider_id.is_some_and(|id| !valid_text(id, 256))
+    if attachment.actor_uid != 0
+        || !valid_resolution_text(attachment.intent_id, 128)
+        || !valid_resolution_text(attachment.provider_id, 256)
+        || !valid_resolution_text(attachment.account_id, 12)
+        || !valid_resolution_text(attachment.region, 64)
+        || !valid_resolution_text(attachment.image_arn, 2048)
+        || !valid_resolution_text(attachment.image_version, 128)
+        || !valid_resolution_text(attachment.reason, 1024)
+        || !valid_resolution_text(attachment.evidence_reference, 1024)
     {
         return Err(MicrovmLaunchError);
     }
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let generation = resolution_owner(&mut transaction)?;
+    let changed = transaction
+        .execute(
+            "UPDATE microvm_launches SET provider_id = $2, phase = 'closed'
+         WHERE intent_id = $1 AND provider_id IS NULL AND phase = 'ambiguous'
+           AND termination_observed_at IS NULL
+           AND account_id = $3 AND region = $4 AND image_arn = $5 AND image_version = $6",
+            &[
+                &attachment.intent_id,
+                &attachment.provider_id,
+                &attachment.account_id,
+                &attachment.region,
+                &attachment.image_arn,
+                &attachment.image_version,
+            ],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    transaction
+        .execute(
+            "INSERT INTO microvm_resolutions
+         (intent_id, action, provider_id, actor_uid, owner_generation, reason, evidence_reference)
+         VALUES ($1, 'attach-identity', $2, $3, $4, $5, $6)",
+            &[
+                &attachment.intent_id,
+                &attachment.provider_id,
+                &i64::from(attachment.actor_uid),
+                &generation,
+                &attachment.reason,
+                &attachment.evidence_reference,
+            ],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(true)
+}
+
+fn valid_resolution_text(value: &str, maximum: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+}
+
+fn resolution_owner(
+    transaction: &mut postgres::Transaction<'_>,
+) -> Result<i64, MicrovmLaunchError> {
     transaction
         .batch_execute("SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'")
         .map_err(|_| MicrovmLaunchError)?;
@@ -78,7 +128,36 @@ pub fn release_microvm_capacity_risk(
         )
         .map_err(|_| MicrovmLaunchError)?
         .ok_or(MicrovmLaunchError)?;
-    let generation: i64 = owner.get(0);
+    Ok(owner.get(0))
+}
+
+pub struct MicrovmRiskRelease<'a> {
+    pub intent_id: &'a str,
+    pub provider_id: Option<&'a str>,
+    pub actor_uid: u32,
+    pub reason: &'a str,
+    pub evidence_reference: &'a str,
+    pub accept_remote_execution_risk: bool,
+}
+
+pub fn release_microvm_capacity_risk(
+    database: &(impl DatabaseSource + ?Sized),
+    release: &MicrovmRiskRelease<'_>,
+) -> Result<bool, MicrovmLaunchError> {
+    if release.actor_uid != 0
+        || !release.accept_remote_execution_risk
+        || !valid_resolution_text(release.intent_id, 128)
+        || !valid_resolution_text(release.reason, 1024)
+        || !valid_resolution_text(release.evidence_reference, 1024)
+        || release
+            .provider_id
+            .is_some_and(|id| !valid_resolution_text(id, 256))
+    {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let generation = resolution_owner(&mut transaction)?;
     let changed = transaction
         .execute(
             "UPDATE microvm_launches SET reservation_released_at = clock_timestamp()
