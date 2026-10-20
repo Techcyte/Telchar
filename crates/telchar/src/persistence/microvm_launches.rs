@@ -63,6 +63,9 @@ pub fn release_microvm_capacity_risk(
     }
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    transaction
+        .batch_execute("SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'")
+        .map_err(|_| MicrovmLaunchError)?;
     let owner = transaction
         .query_opt(
             "SELECT generation FROM singleton_ownership

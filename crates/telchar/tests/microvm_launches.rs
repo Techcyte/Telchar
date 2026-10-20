@@ -57,6 +57,58 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
 }
 
 #[test]
+fn risk_release_bounds_lock_contention_without_releasing_capacity() {
+    let (fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let mut blocker = database.connection().unwrap();
+    for query in [
+        "SELECT intent_id FROM microvm_launches WHERE intent_id = 'intent-one' FOR UPDATE",
+        "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon' FOR UPDATE",
+    ] {
+        let mut transaction = blocker.transaction().unwrap();
+        transaction.query(query, &[]).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let result = telchar::persistence::release_microvm_capacity_risk(
+                    owner.database(),
+                    &telchar::persistence::MicrovmRiskRelease {
+                        intent_id: "intent-one",
+                        provider_id: None,
+                        actor_uid: 0,
+                        reason: "Remote execution risk accepted",
+                        evidence_reference: "incident:contention",
+                        accept_remote_execution_risk: true,
+                    },
+                );
+                sender.send(result).unwrap();
+            });
+            let result = receiver.recv_timeout(Duration::from_secs(2));
+            transaction.rollback().unwrap();
+            assert!(
+                matches!(result, Ok(Err(_))),
+                "request must reject while lock remains held: {result:?}"
+            );
+        });
+        let row = blocker.query_one(
+            "SELECT reservation_released_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'intent-one'",
+            &[],
+        ).unwrap();
+        assert!(row.get::<_, bool>(0));
+        assert_eq!(row.get::<_, i64>(1), 0);
+        owner
+            .renew()
+            .expect("timed-out administration releases ownership locks");
+    }
+}
+
+#[test]
 fn risk_release_requires_owner_and_exact_identity_and_preserves_cleanup() {
     let (fixture, database) = prepared_launch();
     assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
