@@ -1,0 +1,234 @@
+//! Exercises root administration through the active daemon and isolated PostgreSQL.
+
+use std::os::unix::fs::PermissionsExt;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use telchar::backend::BackendKind;
+use telchar_test_support::postgres::PostgresFixture;
+
+struct Daemon(Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            self.0.kill().unwrap();
+        }
+        self.0.wait().unwrap();
+    }
+}
+
+#[test]
+fn root_administration_commits_audit_and_cleans_up_socket() {
+    if let Ok(url) = std::env::var("TELCHAR_ADMIN_FIXTURE_DATABASE") {
+        exercise_daemon(&url);
+        return;
+    }
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "PostgreSQL fixture requires nonroot"
+    );
+    let fixture = PostgresFixture::start();
+    let output = Command::new("unshare")
+        .args(["--user", "--map-root-user"])
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "root_administration_commits_audit_and_cleans_up_socket",
+            "--nocapture",
+        ])
+        .env("TELCHAR_ADMIN_FIXTURE_DATABASE", fixture.url())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "namespace contract failed: {output:?}"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected diagnostics: {output:?}"
+    );
+}
+
+fn exercise_daemon(url: &str) {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let ipc = root.path().join("ipc.sock");
+    let admin = root.path().join("admin.sock");
+    let config = root.path().join("service.toml");
+    std::fs::write(&config, "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n[backends.local]\nname = \"local\"\nsystem = \"aarch64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
+    let mut daemon = Daemon(
+        Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env_clear()
+            .args(["daemon", "--socket"])
+            .arg(&ipc)
+            .args(["--frontend-uid", "0"])
+            .env("TELCHAR_CONFIG", &config)
+            .env("TELCHAR_DATABASE_URL", url)
+            .env("TELCHAR_ADMIN_SOCKET", &admin)
+            .env(
+                "TELCHAR_GATEWAY_STORE_URI",
+                "unix:///nonexistent-admin-fixture-store",
+            )
+            .env("TMPDIR", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !admin.exists() {
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "daemon exited before administrative readiness"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "administrative socket did not open"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::metadata(&admin).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let database = telchar::persistence::Database::connect(url).unwrap();
+    let mut inspector = database.connection().unwrap();
+    let owner = inspector
+        .query_one(
+            "SELECT owner_token, generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+            &[],
+        )
+        .unwrap();
+    let token: String = owner.get(0);
+    let generation: i64 = owner.get(1);
+    // The fixture seeds an unresolved obligation under the active daemon's fence.
+    let derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-admin.drv";
+    let fenced_url = format!(
+        "{url}{}options=-c%20telchar.owner_kind%3Ddaemon%20-c%20telchar.owner_token%3D{token}%20-c%20telchar.owner_generation%3D{generation}",
+        if url.contains('?') { "&" } else { "?" }
+    );
+    let fenced = telchar::persistence::Database::connect(&fenced_url).unwrap();
+    telchar::persistence::claim_shared_build(
+        &fenced,
+        derivation,
+        &[1; 32],
+        "local",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-admin"],
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(&fenced, derivation).unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(&fenced, derivation)
+        .unwrap()
+        .unwrap();
+    assert!(
+        telchar::persistence::reserve_microvm_launch(
+            &fenced,
+            &telchar::persistence::MicrovmLaunchIntent {
+                intent_id: "admin-intent".into(),
+                attempt_id: attempt.attempt_id,
+                backend_name: "local".into(),
+                account_id: "116392764028".into(),
+                region: "us-west-2".into(),
+                image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
+                image_version: "1".into(),
+                configuration_digest: [1; 32],
+                request_digest: [2; 32],
+                client_token: "admin-intent".into(),
+                credential_verifier: [3; 32],
+                admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+                maximum_duration_seconds: 600,
+            },
+            1
+        )
+        .unwrap()
+    );
+    assert!(telchar::persistence::dispatch_microvm_launch(&fenced, "admin-intent").unwrap());
+    assert!(telchar::persistence::cancel_microvm_launch(&fenced, "admin-intent").unwrap());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
+    command
+        .env_clear()
+        .args(["admin", "microvm", "risk-release", "--socket"])
+        .arg(&admin)
+        .args([
+            "--intent",
+            "admin-intent",
+            "--reason",
+            "Remote execution risk accepted",
+            "--evidence",
+            "incident:root",
+            "--accept-remote-execution-risk",
+        ]);
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "administration failed: {output:?}");
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, b"{\"released\":true,\"rejected\":false}\n");
+    let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
+    assert_eq!(audit.get::<_, i64>(0), 0);
+    assert_eq!(audit.get::<_, i64>(1), generation);
+    assert_eq!(audit.get::<_, String>(2), "incident:root");
+    let repeated = command.output().unwrap();
+    assert!(repeated.status.success());
+    assert!(repeated.stderr.is_empty());
+    assert_eq!(
+        repeated.stdout,
+        b"{\"released\":false,\"rejected\":false}\n"
+    );
+    let state = inspector.query_one("SELECT reservation_released_at IS NOT NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+    assert!(state.get::<_, bool>(0));
+    assert!(state.get::<_, bool>(1));
+    assert_eq!(state.get::<_, i64>(2), 1);
+    assert_eq!(
+        unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+        0
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon shutdown exceeded deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    use std::io::Read;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    daemon
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    daemon
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stdout.is_empty());
+    assert!(
+        !stderr.contains("ERROR") && !stderr.contains("WARN"),
+        "{stderr}"
+    );
+    assert!(!admin.exists());
+    assert!(!ipc.exists());
+    assert_eq!(
+        inspector
+            .query_one("SELECT count(*) FROM singleton_ownership", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+}
