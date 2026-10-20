@@ -7,6 +7,97 @@ use std::time::{Duration, Instant};
 use telchar::backend::BackendKind;
 use telchar_test_support::postgres::PostgresFixture;
 
+fn attachment_provider(config: &std::path::Path) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = callback.local_addr().unwrap();
+    let mut configuration = std::fs::read_to_string(config).unwrap();
+    configuration.push_str(&format!(
+        r#"
+[backends]
+microvm_bind = "{address}"
+[[backends.microvm]]
+name = "arm"
+system = "aarch64-linux"
+account_id = "116392764028"
+region = "us-west-2"
+image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
+image_version = "1"
+maximum_concurrent_builds = 1
+maximum_duration_seconds = 60
+execution_timeout_seconds = 50
+admission_timeout_seconds = 3
+provider_timeout_seconds = 2
+cleanup_interval_seconds = 300
+callback_url = "wss://gateway.example/microvm"
+callback_address = "192.0.2.1:443"
+staging_directory = "/unused"
+maximum_paths = 10
+maximum_nar_bytes = 1024
+maximum_total_bytes = 2048
+metadata_bytes = 1024
+chunk_bytes = 1024
+"#
+    ));
+    std::fs::write(config, configuration).unwrap();
+    drop(callback);
+    let server = std::thread::spawn(move || {
+        for identity in [true, false] {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "provider request missing");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+                assert!(headers.len() < 32768);
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.contains("credential=fixture-key/"));
+            let (body, content_type) = if identity {
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(length < 4096);
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                assert!(
+                    String::from_utf8(body)
+                        .unwrap()
+                        .contains("Action=GetCallerIdentity")
+                );
+                ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
+            } else {
+                assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
+                (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    (endpoint, server)
+}
+
 struct Daemon(Child);
 
 impl Drop for Daemon {
@@ -42,8 +133,17 @@ fn shutdown_rolls_back_running_administrative_sql() {
     );
 }
 
+#[test]
+fn daemon_attachment_preserves_cleanup_and_denies_admission() {
+    root_contract(
+        "daemon_attachment_preserves_cleanup_and_denies_admission",
+        Scenario::Attachment,
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Scenario {
+    Attachment,
     Success,
     OwnershipLoss,
     RunningSql,
@@ -86,6 +186,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
     let admin = root.path().join("admin.sock");
     let config = root.path().join("service.toml");
     std::fs::write(&config, "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n[backends.local]\nname = \"local\"\nsystem = \"aarch64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
+    let provider = matches!(scenario, Scenario::Attachment).then(|| attachment_provider(&config));
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env_clear()
@@ -100,6 +201,14 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
                 "unix:///nonexistent-admin-fixture-store",
             )
             .env("TMPDIR", root.path())
+            .env("HOME", root.path())
+            .env("AWS_EC2_METADATA_DISABLED", "true")
+            .env("AWS_ACCESS_KEY_ID", "fixture-key")
+            .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
+            .env(
+                "TELCHAR_TEST_MICROVM_ENDPOINT",
+                provider.as_ref().map_or("", |(endpoint, _)| endpoint),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -234,6 +343,60 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
                 "{error}"
             ),
         }
+    } else if matches!(scenario, Scenario::Attachment) {
+        let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env_clear()
+            .args(["admin", "microvm", "attach-identity", "--socket"])
+            .arg(&admin)
+            .args([
+                "--intent",
+                "admin-intent",
+                "--provider-id",
+                "microvm-exact",
+                "--reason",
+                "Recovered launch response",
+                "--evidence",
+                "incident:daemon-attachment",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            b"{\"released\":false,\"attached\":true,\"rejected\":false}\n"
+        );
+        let state = inspector.query_one("SELECT provider_id, phase, reservation_released_at IS NULL, termination_observed_at IS NULL FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert_eq!(state.get::<_, String>(0), "microvm-exact");
+        assert_eq!(state.get::<_, String>(1), "closed");
+        assert!(state.get::<_, bool>(2));
+        assert!(state.get::<_, bool>(3));
+        let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference, action FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert_eq!(audit.get::<_, i64>(0), 0);
+        assert_eq!(audit.get::<_, i64>(1), generation);
+        assert_eq!(audit.get::<_, String>(2), "incident:daemon-attachment");
+        assert_eq!(audit.get::<_, String>(3), "attach-identity");
+        assert!(
+            telchar::persistence::pending_microvm_cleanup_identity(
+                &database,
+                "admin-intent",
+                "microvm-exact"
+            )
+            .unwrap()
+        );
+        assert!(
+            !telchar::persistence::admit_microvm_session(
+                &fenced,
+                "admin-intent",
+                "microvm-exact",
+                &[3; 32]
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
     } else if matches!(scenario, Scenario::RunningSql) {
         inspector.batch_execute("CREATE FUNCTION delay_admin_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER delay_admin_release BEFORE UPDATE ON microvm_launches FOR EACH ROW EXECUTE FUNCTION delay_admin_release()").unwrap();
         let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
@@ -360,6 +523,9 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(state.get::<_, bool>(0));
         assert!(state.get::<_, bool>(1));
         assert_eq!(state.get::<_, i64>(2), 0);
+    }
+    if let Some((_, provider)) = provider {
+        provider.join().unwrap();
     }
     assert!(!admin.exists());
     assert!(!ipc.exists());
