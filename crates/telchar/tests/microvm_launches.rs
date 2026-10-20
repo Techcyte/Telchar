@@ -165,6 +165,87 @@ fn administrative_attachment_preserves_release_and_denies_admission() {
 }
 
 #[test]
+fn concurrent_identity_attachment_keeps_one_cleanup_obligation() {
+    let (fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(telchar::persistence::cancel_microvm_launch(&database, "intent-one").unwrap());
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let attach = |provider_id| {
+        telchar::persistence::attach_microvm_cleanup_identity(
+            owner.database(),
+            &telchar::persistence::MicrovmIdentityAttachment {
+                intent_id: "intent-one",
+                provider_id,
+                actor_uid: 0,
+                account_id: "116392764028",
+                region: "us-west-2",
+                image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                image_version: "1",
+                reason: "Recovered exact launch response",
+                evidence_reference: "incident:concurrent-response",
+            },
+        )
+        .unwrap()
+    };
+    let barrier = std::sync::Barrier::new(2);
+    let results = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            barrier.wait();
+            attach("microvm-first")
+        });
+        barrier.wait();
+        let second = attach("microvm-second");
+        [first.join().unwrap(), second]
+    });
+    assert_eq!(results.into_iter().filter(|changed| *changed).count(), 1);
+    let winner = if results[0] {
+        "microvm-first"
+    } else {
+        "microvm-second"
+    };
+    let mut client = fixture.connect();
+    let row = client.query_one(
+        "SELECT provider_id, phase, reservation_released_at IS NULL,
+                termination_observed_at IS NULL FROM microvm_launches WHERE intent_id = 'intent-one'", &[],
+    ).unwrap();
+    assert_eq!(row.get::<_, String>(0), winner);
+    assert_eq!(row.get::<_, String>(1), "closed");
+    assert!(row.get::<_, bool>(2));
+    assert!(row.get::<_, bool>(3));
+    let audits = client
+        .query(
+            "SELECT provider_id FROM microvm_resolutions WHERE action = 'attach-identity'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].get::<_, String>(0), winner);
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            owner.database(),
+            "intent-one",
+            winner,
+            &[3; 32]
+        )
+        .unwrap()
+    );
+    assert!(!telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+    assert!(
+        telchar::persistence::pending_microvm_cleanup_identity(&database, "intent-one", winner)
+            .unwrap()
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(owner.database(), "intent-one", winner)
+            .unwrap()
+    );
+    assert!(telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
+}
+
+#[test]
 fn risk_release_bounds_lock_contention_without_releasing_capacity() {
     let (fixture, database) = prepared_launch();
     assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
