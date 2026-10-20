@@ -300,6 +300,7 @@ impl Drop for SessionPermit {
 
 pub(super) struct AdminService {
     stopped: Arc<std::sync::atomic::AtomicBool>,
+    active: Arc<Mutex<Option<UnixStream>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -315,6 +316,8 @@ impl AdminService {
         listener.set_nonblocking(true)?;
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = Arc::clone(&stopped);
+        let active = Arc::new(Mutex::new(None::<UnixStream>));
+        let serving = Arc::clone(&active);
         let thread = std::thread::Builder::new()
             .name("telchar-admin".into())
             .spawn(move || {
@@ -322,7 +325,25 @@ impl AdminService {
                 while !stopping.load(std::sync::atomic::Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            if telchar::service::admin::serve(stream, &database).is_err() {
+                            {
+                                let mut active =
+                                    serving.lock().expect("admin socket mutex is not poisoned");
+                                if stopping.load(std::sync::atomic::Ordering::Acquire) {
+                                    break;
+                                }
+                                let Ok(socket) = stream.try_clone() else {
+                                    break;
+                                };
+                                *active = Some(socket);
+                            }
+                            let result = telchar::service::admin::serve(stream, &database);
+                            serving
+                                .lock()
+                                .expect("admin socket mutex is not poisoned")
+                                .take();
+                            if result.is_err()
+                                && !stopping.load(std::sync::atomic::Ordering::Acquire)
+                            {
                                 tracing::warn!(
                                     event = "admin.request.rejected",
                                     "administrative request rejected"
@@ -338,6 +359,7 @@ impl AdminService {
             })?;
         Ok(Self {
             stopped,
+            active,
             thread: Some(thread),
         })
     }
@@ -347,6 +369,14 @@ impl Drop for AdminService {
     fn drop(&mut self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(socket) = self
+            .active
+            .lock()
+            .expect("admin socket mutex is not poisoned")
+            .as_ref()
+        {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
             let _ = thread.join();

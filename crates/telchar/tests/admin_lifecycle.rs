@@ -184,11 +184,15 @@ fn exercise_daemon(url: &str) {
     assert!(state.get::<_, bool>(0));
     assert!(state.get::<_, bool>(1));
     assert_eq!(state.get::<_, i64>(2), 1);
+    use std::io::Write;
+    let mut incomplete = std::os::unix::net::UnixStream::connect(&admin).unwrap();
+    incomplete.write_all(&[1]).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
     assert_eq!(
         unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
         0
     );
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(status) = daemon.0.try_wait().unwrap() {
             assert!(status.success());
