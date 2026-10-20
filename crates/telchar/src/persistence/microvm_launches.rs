@@ -37,6 +37,47 @@ pub struct MicrovmCleanup {
 }
 
 #[derive(serde::Serialize)]
+pub struct MicrovmResolution {
+    pub resolution_id: i64,
+    pub intent_id: String,
+    pub action: String,
+    pub provider_id: Option<String>,
+    pub actor_uid: i64,
+    pub owner_generation: i64,
+    pub recorded_at_unix_seconds: f64,
+}
+
+pub fn read_microvm_resolutions(
+    database: &(impl DatabaseSource + ?Sized),
+    limit: usize,
+) -> Result<Vec<MicrovmResolution>, MicrovmLaunchError> {
+    if !(1..=256).contains(&limit) {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let rows = client
+        .query(
+            "SELECT resolution_id, intent_id, action, provider_id, actor_uid, owner_generation,
+                    EXTRACT(EPOCH FROM recorded_at)::double precision
+             FROM microvm_resolutions ORDER BY resolution_id DESC LIMIT $1",
+            &[&(limit as i64)],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| MicrovmResolution {
+            resolution_id: row.get(0),
+            intent_id: row.get(1),
+            action: row.get(2),
+            provider_id: row.get(3),
+            actor_uid: row.get(4),
+            owner_generation: row.get(5),
+            recorded_at_unix_seconds: row.get(6),
+        })
+        .collect())
+}
+
+#[derive(serde::Serialize)]
 pub struct MicrovmObligation {
     pub intent_id: String,
     pub backend_name: String,

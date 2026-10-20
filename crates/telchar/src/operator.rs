@@ -23,6 +23,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         Command::Backends => BackendReport::read(&config, &database(&config)?)?,
         Command::Recovery { limit } => RecoveryReport::read(&database(&config)?, limit)?,
+        Command::MicrovmAudit { limit } => serde_json::json!({
+            "resolutions": telchar::persistence::read_microvm_resolutions(&database(&config)?, limit)?
+        }),
         Command::Microvm { limit } => serde_json::json!({
             "obligations": telchar::persistence::read_microvm_obligations(&database(&config)?, limit)?
         }),
@@ -46,6 +49,7 @@ enum Command {
     Backends,
     Recovery { limit: usize },
     Microvm { limit: usize },
+    MicrovmAudit { limit: usize },
     ConfigCheck,
 }
 
@@ -61,6 +65,7 @@ fn parse(mut arguments: impl Iterator<Item = String>) -> io::Result<Command> {
         "queue" => bounded(arguments).map(|limit| Command::Queue { limit }),
         "recovery" => bounded(arguments).map(|limit| Command::Recovery { limit }),
         "microvm" => bounded(arguments).map(|limit| Command::Microvm { limit }),
+        "microvm-audit" => bounded(arguments).map(|limit| Command::MicrovmAudit { limit }),
         _ => Err(invalid("unknown operator command")),
     }
 }

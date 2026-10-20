@@ -24,6 +24,16 @@ request/configuration digests and operator-supplied evidence are excluded.
 This command does not mutate state or provide administrative authority. Row and
 field bounds do not establish a total database/network deadline.
 
+`telchar operator microvm-audit [--limit N]` reads immutable resolution summaries
+with the same default and maximum row limits. Rows use descending resolution ID
+(sequence allocation order, not a guarantee of transaction commit order). Each
+summary includes resolution/intent/provider identity, action, kernel-authenticated
+actor UID, owner generation and database recording time as Unix seconds. Records
+remain visible after cleanup finishes, including risk releases without a provider
+identity. Free-form reasons and evidence references are deliberately omitted: they
+may contain sensitive operator text. This is a bounded audit summary, not a full
+forensic export or a total database/network deadline guarantee.
+
 ## Production implementation status
 
 The [backend ADR](adr/microvm-backend.md) defines the intended conservative release.
