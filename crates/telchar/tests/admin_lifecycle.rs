@@ -268,7 +268,10 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         let output = command.output().unwrap();
         assert!(output.status.success(), "administration failed: {output:?}");
         assert!(output.stderr.is_empty());
-        assert_eq!(output.stdout, b"{\"released\":true,\"rejected\":false}\n");
+        assert_eq!(
+            output.stdout,
+            b"{\"released\":true,\"attached\":false,\"rejected\":false}\n"
+        );
         let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert_eq!(audit.get::<_, i64>(0), 0);
         assert_eq!(audit.get::<_, i64>(1), generation);
@@ -278,7 +281,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         assert!(repeated.stderr.is_empty());
         assert_eq!(
             repeated.stdout,
-            b"{\"released\":false,\"rejected\":false}\n"
+            b"{\"released\":false,\"attached\":false,\"rejected\":false}\n"
         );
         let state = inspector.query_one("SELECT reservation_released_at IS NOT NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert!(state.get::<_, bool>(0));

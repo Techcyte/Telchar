@@ -151,7 +151,7 @@ fn cli_sends_exact_request_and_reports_noop_without_database_configuration() {
             accept_remote_execution_risk: true,
         }
     );
-    let response = br#"{"released":false,"rejected":false}"#;
+    let response = br#"{"released":false,"attached":false,"rejected":false}"#;
     stream
         .write_all(&(response.len() as u32).to_le_bytes())
         .unwrap();
@@ -161,7 +161,34 @@ fn cli_sends_exact_request_and_reports_noop_without_database_configuration() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "{\"released\":false,\"rejected\":false}\n"
+        "{\"released\":false,\"attached\":false,\"rejected\":false}\n"
+    );
+}
+
+#[test]
+fn cli_attachment_requires_exact_provider_identity() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .env_clear()
+        .args([
+            "admin",
+            "microvm",
+            "attach-identity",
+            "--socket",
+            "/unused",
+            "--intent",
+            "intent",
+            "--reason",
+            "Recovered response",
+            "--evidence",
+            "incident:131",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "telchar: --provider-id required\n"
     );
 }
 

@@ -12,6 +12,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
+    AttachIdentity {
+        intent_id: String,
+        provider_id: String,
+        reason: String,
+        evidence_reference: String,
+    },
     RiskRelease {
         intent_id: String,
         provider_id: Option<String>,
@@ -25,6 +31,7 @@ pub enum Request {
 #[serde(deny_unknown_fields)]
 pub struct Response {
     pub released: bool,
+    pub attached: bool,
     pub rejected: bool,
 }
 
@@ -44,35 +51,88 @@ pub fn read_response(stream: &mut UnixStream) -> io::Result<Response> {
     serde_json::from_slice(&read_frame(stream, REQUEST_TIMEOUT)?).map_err(invalid)
 }
 
-pub fn serve(mut stream: UnixStream, database: &crate::persistence::Database) -> io::Result<()> {
+pub fn serve(
+    mut stream: UnixStream,
+    database: &crate::persistence::Database,
+    services: &[std::sync::Arc<crate::microvm::service::Service>],
+) -> io::Result<()> {
     authorize(&stream)?;
     let request = read_request(&mut stream, REQUEST_TIMEOUT)?;
-    let Request::RiskRelease {
-        intent_id,
-        provider_id,
-        reason,
-        evidence_reference,
-        accept_remote_execution_risk,
-    } = request;
-    let result = crate::persistence::release_microvm_capacity_risk(
-        database,
-        &crate::persistence::MicrovmRiskRelease {
-            intent_id: &intent_id,
-            provider_id: provider_id.as_deref(),
-            actor_uid: 0,
-            reason: &reason,
-            evidence_reference: &evidence_reference,
+    let attachment = matches!(&request, Request::AttachIdentity { .. });
+    let result = match request {
+        Request::AttachIdentity {
+            intent_id,
+            provider_id,
+            reason,
+            evidence_reference,
+        } => attach_identity(
+            database,
+            services,
+            &intent_id,
+            &provider_id,
+            &reason,
+            &evidence_reference,
+        ),
+        Request::RiskRelease {
+            intent_id,
+            provider_id,
+            reason,
+            evidence_reference,
             accept_remote_execution_risk,
-        },
-    );
+        } => crate::persistence::release_microvm_capacity_risk(
+            database,
+            &crate::persistence::MicrovmRiskRelease {
+                intent_id: &intent_id,
+                provider_id: provider_id.as_deref(),
+                actor_uid: 0,
+                reason: &reason,
+                evidence_reference: &evidence_reference,
+                accept_remote_execution_risk,
+            },
+        )
+        .map_err(io::Error::other),
+    };
+    let changed = result.as_ref().copied().unwrap_or(false);
     let response = Response {
-        released: result.as_ref().copied().unwrap_or(false),
+        released: !attachment && changed,
+        attached: attachment && changed,
         rejected: result.is_err(),
     };
     write_frame(
         &mut stream,
         &serde_json::to_vec(&response).map_err(invalid)?,
     )
+}
+
+fn attach_identity(
+    database: &crate::persistence::Database,
+    services: &[std::sync::Arc<crate::microvm::service::Service>],
+    intent_id: &str,
+    provider_id: &str,
+    reason: &str,
+    evidence_reference: &str,
+) -> io::Result<bool> {
+    let identity = crate::persistence::unresolved_microvm_identity(database, intent_id)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("unresolved MicroVM intent unavailable"))?;
+    let service = services
+        .iter()
+        .find(|service| {
+            service.configuration().account_id() == identity.account_id
+                && service.configuration().region() == identity.region
+        })
+        .ok_or_else(|| invalid("MicroVM authority unavailable"))?;
+    service.attach_identity(&crate::persistence::MicrovmIdentityAttachment {
+        intent_id,
+        provider_id,
+        account_id: &identity.account_id,
+        region: &identity.region,
+        image_arn: &identity.image_arn,
+        image_version: &identity.image_version,
+        actor_uid: 0,
+        reason,
+        evidence_reference,
+    })
 }
 
 fn read_frame(stream: &mut UnixStream, timeout: Duration) -> io::Result<Vec<u8>> {

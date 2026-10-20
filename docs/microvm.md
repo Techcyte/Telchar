@@ -70,7 +70,7 @@ runtime evidence, but complete image construction and snapshot cryptographic
 safety remain unresolved production gates. Do not deploy the experimental images
 as a substitute.
 
-## Local administrative risk release
+## Local administrative resolution
 
 An optional `TELCHAR_ADMIN_SOCKET` path enables a dedicated daemon-owned Unix
 socket in a private runtime directory. Socket mode is `0600`; the server also
@@ -91,8 +91,8 @@ Omit `--provider-id` only when the persisted provider identity is absent. Exact
 identity, current daemon ownership and unresolved state are checked transactionally.
 A successful release appends an immutable audit record; it does not assert remote
 termination or erase known-instance cleanup. `released: false` means no matching
-eligible intent changed. Provider identity reconciliation and audited termination
-commands remain unimplemented. Actual daemon/CLI/PostgreSQL contracts cover kernel
+eligible intent changed. Audited termination commands remain unimplemented.
+Actual daemon/CLI/PostgreSQL contracts cover kernel
 root authorization inside a private user namespace, atomic audit/no-op behavior,
 queued requests after ownership expiry, and shutdown during incomplete frames or
 running SQL. These are isolated local contracts, not host-root deployment or live
@@ -111,6 +111,30 @@ not proof that the instance belongs to an intent. Administrative attachment must
 verify provider correspondence and audit the launch-linking evidence, remain
 cleanup-only, and preserve any prior capacity release. The ordinary launch-binding
 API is not an administrative repair interface.
+
+```sh
+telchar admin microvm attach-identity \
+  --socket /run/telchar/admin.sock --intent INTENT \
+  --provider-id EXACT_PROVIDER_ID \
+  --reason 'Recovered exact launch response' \
+  --evidence 'incident:123/launch-response'
+```
+
+Attachment reads the persisted account/region/image/version, selects configured
+account/region authority, and checks exact provider metadata outside database
+transactions. It rechecks service ownership afterward and atomically closes
+admission, attaches the ID and records the audit under the database fence.
+`attached: true` reports that transition; it neither releases capacity nor permits
+worker admission, adoption or relaunch. The evidence reference is an operator
+assertion of launch linkage, not automatically fetched or independently verified.
+The first configured authority for the account/region is used; no credential
+failover or metadata-based instance discovery occurs.
+
+A mapped-root CLI/socket/Service/PostgreSQL contract with a signed simulated
+provider covers image-version rejection, attachment after risk release and
+ownership expiry during lookup. This is not yet an attachment-success test through
+the whole daemon process. Replacement-owner races, total provider/request shutdown
+bounds and live AWS correspondence remain unqualified.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation

@@ -644,7 +644,13 @@ fn run_daemon() -> io::Result<()> {
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let socket_guard = SocketGuard(socket);
     let mut admin_service = std::env::var_os("TELCHAR_ADMIN_SOCKET")
-        .map(|path| daemon_runtime::AdminService::start(PathBuf::from(path), database.clone()))
+        .map(|path| {
+            daemon_runtime::AdminService::start(
+                PathBuf::from(path),
+                database.clone(),
+                microvm_services.clone(),
+            )
+        })
         .transpose()?;
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);

@@ -308,18 +308,20 @@ impl AdminService {
     pub(super) fn start(
         path: PathBuf,
         database: telchar::persistence::Database,
+        services: Vec<Arc<telchar::microvm::service::Service>>,
     ) -> io::Result<Self> {
         prepare_socket_path(&path)?;
         let listener = std::os::unix::net::UnixListener::bind(&path)?;
         let guard = SocketGuard(path.clone());
         std::fs::set_permissions(&path, Permissions::from_mode(0o600))?;
-        Self::start_listener(listener, guard, database)
+        Self::start_listener(listener, guard, database, services)
     }
 
     fn start_listener(
         listener: std::os::unix::net::UnixListener,
         guard: SocketGuard,
         database: telchar::persistence::Database,
+        services: Vec<Arc<telchar::microvm::service::Service>>,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -341,7 +343,8 @@ impl AdminService {
                                 }
                                 *active = Some(stream.try_clone()?);
                             }
-                            let result = telchar::service::admin::serve(stream, &database);
+                            let result =
+                                telchar::service::admin::serve(stream, &database, &services);
                             serving
                                 .lock()
                                 .expect("admin socket mutex is not poisoned")
@@ -426,7 +429,8 @@ mod tests {
         )
         .unwrap();
         let mut service =
-            AdminService::start_listener(listener, SocketGuard(path.clone()), database).unwrap();
+            AdminService::start_listener(listener, SocketGuard(path.clone()), database, Vec::new())
+                .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while service.check().is_ok() {

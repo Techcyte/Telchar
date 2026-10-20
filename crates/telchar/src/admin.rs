@@ -5,15 +5,20 @@ use std::os::unix::net::UnixStream;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = std::env::args().skip(2);
-    if arguments.next().as_deref() != Some("microvm")
-        || arguments.next().as_deref() != Some("risk-release")
-    {
-        return Err(invalid("expected admin microvm risk-release").into());
+    if arguments.next().as_deref() != Some("microvm") {
+        return Err(invalid("expected admin microvm action").into());
+    }
+    let action = arguments
+        .next()
+        .ok_or_else(|| invalid("administrative action required"))?;
+    if !matches!(action.as_str(), "risk-release" | "attach-identity") {
+        return Err(invalid("unknown administrative action").into());
     }
     let mut values = std::collections::BTreeMap::new();
     let mut acknowledged = false;
     while let Some(argument) = arguments.next() {
-        if argument == "--accept-remote-execution-risk" && !acknowledged {
+        if argument == "--accept-remote-execution-risk" && action == "risk-release" && !acknowledged
+        {
             acknowledged = true;
         } else if matches!(
             argument.as_str(),
@@ -29,24 +34,37 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return Err(invalid("unknown administrative argument").into());
         }
     }
-    if !acknowledged {
+    if action == "risk-release" && !acknowledged {
         return Err(invalid("explicit remote execution risk acknowledgment required").into());
     }
     let socket = values
         .remove("--socket")
         .ok_or_else(|| invalid("--socket required"))?;
-    let request = telchar::service::admin::Request::RiskRelease {
-        intent_id: values
-            .remove("--intent")
-            .ok_or_else(|| invalid("--intent required"))?,
-        provider_id: values.remove("--provider-id"),
-        reason: values
-            .remove("--reason")
-            .ok_or_else(|| invalid("--reason required"))?,
-        evidence_reference: values
-            .remove("--evidence")
-            .ok_or_else(|| invalid("--evidence required"))?,
-        accept_remote_execution_risk: acknowledged,
+    let intent_id = values
+        .remove("--intent")
+        .ok_or_else(|| invalid("--intent required"))?;
+    let provider_id = values.remove("--provider-id");
+    let reason = values
+        .remove("--reason")
+        .ok_or_else(|| invalid("--reason required"))?;
+    let evidence_reference = values
+        .remove("--evidence")
+        .ok_or_else(|| invalid("--evidence required"))?;
+    let request = if action == "attach-identity" {
+        telchar::service::admin::Request::AttachIdentity {
+            intent_id,
+            provider_id: provider_id.ok_or_else(|| invalid("--provider-id required"))?,
+            reason,
+            evidence_reference,
+        }
+    } else {
+        telchar::service::admin::Request::RiskRelease {
+            intent_id,
+            provider_id,
+            reason,
+            evidence_reference,
+            accept_remote_execution_risk: acknowledged,
+        }
     };
     let mut stream = UnixStream::connect(socket)?;
     telchar::service::admin::write_request(&mut stream, &request)?;

@@ -174,6 +174,38 @@ impl Service {
             .check()
     }
 
+    pub fn attach_identity(
+        &self,
+        attachment: &crate::persistence::MicrovmIdentityAttachment<'_>,
+    ) -> io::Result<bool> {
+        use crate::persistence::valid_resolution_text;
+        if attachment.actor_uid != 0
+            || !valid_resolution_text(attachment.intent_id, 128)
+            || !valid_resolution_text(attachment.provider_id, 256)
+            || !valid_resolution_text(attachment.reason, 1024)
+            || !valid_resolution_text(attachment.evidence_reference, 1024)
+            || attachment.account_id != self.config.account_id()
+            || attachment.region != self.config.region()
+        {
+            return Err(io::Error::other("invalid MicroVM identity attachment"));
+        }
+        self.check()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(self.provider.verify_identity(
+                attachment.provider_id,
+                attachment.account_id,
+                attachment.region,
+                attachment.image_arn,
+                attachment.image_version,
+            ))
+            .map_err(io::Error::other)?;
+        self.check()?;
+        crate::persistence::attach_microvm_cleanup_identity(self.owner.database(), attachment)
+            .map_err(io::Error::other)
+    }
+
     pub fn shutdown(&self) -> io::Result<()> {
         self.stopped.store(true, Ordering::Release);
         let lifecycle = self

@@ -106,7 +106,38 @@ pub fn attach_microvm_cleanup_identity(
     Ok(true)
 }
 
-fn valid_resolution_text(value: &str, maximum: usize) -> bool {
+pub struct MicrovmDeploymentIdentity {
+    pub account_id: String,
+    pub region: String,
+    pub image_arn: String,
+    pub image_version: String,
+}
+
+pub fn unresolved_microvm_identity(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+) -> Result<Option<MicrovmDeploymentIdentity>, MicrovmLaunchError> {
+    if !valid_resolution_text(intent_id, 128) {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client
+        .query_opt(
+            "SELECT account_id, region, image_arn, image_version FROM microvm_launches
+         WHERE intent_id = $1 AND provider_id IS NULL AND phase = 'ambiguous'
+           AND termination_observed_at IS NULL",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    Ok(row.map(|row| MicrovmDeploymentIdentity {
+        account_id: row.get(0),
+        region: row.get(1),
+        image_arn: row.get(2),
+        image_version: row.get(3),
+    }))
+}
+
+pub(crate) fn valid_resolution_text(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
 
