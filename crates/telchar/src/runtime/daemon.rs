@@ -298,6 +298,62 @@ impl Drop for SessionPermit {
     }
 }
 
+pub(super) struct AdminService {
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AdminService {
+    pub(super) fn start(
+        path: PathBuf,
+        database: telchar::persistence::Database,
+    ) -> io::Result<Self> {
+        prepare_socket_path(&path)?;
+        let listener = std::os::unix::net::UnixListener::bind(&path)?;
+        let guard = SocketGuard(path.clone());
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = Arc::clone(&stopped);
+        let thread = std::thread::Builder::new()
+            .name("telchar-admin".into())
+            .spawn(move || {
+                let _guard = guard;
+                while !stopping.load(std::sync::atomic::Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            if telchar::service::admin::serve(stream, &database).is_err() {
+                                tracing::warn!(
+                                    event = "admin.request.rejected",
+                                    "administrative request rejected"
+                                );
+                            }
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::park_timeout(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })?;
+        Ok(Self {
+            stopped,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for AdminService {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
 pub(super) struct SocketGuard(pub(super) PathBuf);
 
 impl Drop for SocketGuard {

@@ -643,6 +643,9 @@ fn run_daemon() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, Permissions::from_mode(0o600))?;
     let socket_guard = SocketGuard(socket);
+    let _admin_service = std::env::var_os("TELCHAR_ADMIN_SOCKET")
+        .map(|path| daemon_runtime::AdminService::start(PathBuf::from(path), database.clone()))
+        .transpose()?;
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");

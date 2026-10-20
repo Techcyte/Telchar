@@ -69,6 +69,31 @@ runtime evidence, but complete image construction and snapshot cryptographic
 safety remain unresolved production gates. Do not deploy the experimental images
 as a substitute.
 
+## Local administrative risk release
+
+An optional `TELCHAR_ADMIN_SOCKET` path enables a dedicated daemon-owned Unix
+socket in a private runtime directory. Socket mode is `0600`; the server also
+requires kernel peer UID 0 before decoding any request. Frontend envelopes and
+caller-supplied actor fields confer no authority. The daemon serves one bounded
+request at a time, separately from build admission. Frames are limited to 4096
+bytes with a five-second absolute receive deadline.
+
+```sh
+telchar admin microvm risk-release \
+  --socket /run/telchar/admin.sock --intent INTENT \
+  --provider-id EXACT_PROVIDER_ID \
+  --reason 'Incident decision: remote execution risk accepted' \
+  --evidence 'incident:123' --accept-remote-execution-risk
+```
+
+Omit `--provider-id` only when the persisted provider identity is absent. Exact
+identity, current daemon ownership and unresolved state are checked transactionally.
+A successful release appends an immutable audit record; it does not assert remote
+termination or erase known-instance cleanup. `released: false` means no matching
+eligible intent changed. Provider identity reconciliation and audited termination
+commands remain unimplemented. Socket/CLI process lifecycle and root-success
+integration qualification remain pending; this interface is experimental.
+
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
 exhausted the development host's memory with concurrent linkers. Serial test
