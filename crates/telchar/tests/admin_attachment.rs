@@ -8,8 +8,17 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn root_attachment_checks_correspondence_and_post_lookup_ownership() {
+    run_case(false);
+}
+
+#[test]
+fn root_attachment_rejects_replaced_owner_after_lookup() {
+    run_case(true);
+}
+
+fn run_case(replace_owner: bool) {
     if let Ok(url) = std::env::var("TELCHAR_ADMIN_FIXTURE_DATABASE") {
-        exercise(&url);
+        exercise(&url, replace_owner);
         return;
     }
     assert_ne!(unsafe { libc::geteuid() }, 0);
@@ -19,7 +28,11 @@ fn root_attachment_checks_correspondence_and_post_lookup_ownership() {
         .arg(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "root_attachment_checks_correspondence_and_post_lookup_ownership",
+            if replace_owner {
+                "root_attachment_rejects_replaced_owner_after_lookup"
+            } else {
+                "root_attachment_checks_correspondence_and_post_lookup_ownership"
+            },
             "--nocapture",
         ])
         .env("TELCHAR_ADMIN_FIXTURE_DATABASE", fixture.url())
@@ -29,7 +42,7 @@ fn root_attachment_checks_correspondence_and_post_lookup_ownership() {
     assert!(output.stderr.is_empty(), "{output:?}");
 }
 
-fn exercise(url: &str) {
+fn exercise(url: &str, replace_owner: bool) {
     let database = telchar::persistence::Database::connect(url).unwrap();
     telchar::persistence::migrate(&database).unwrap();
     let owner = Arc::new(
@@ -43,7 +56,10 @@ fn exercise(url: &str) {
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let inspection = database.clone();
+    let provider_database_url = url.to_owned();
+    let generation = owner.generation();
     let server = std::thread::spawn(move || {
+        let mut replacement = None;
         for case in ["identity", "mismatch", "released", "fenced"] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
@@ -91,11 +107,22 @@ fn exercise(url: &str) {
                 assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
                 if case == "fenced" {
                     inspection.connection().unwrap().batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+                    if replace_owner {
+                        let acquired =
+                            telchar::service::singleton_ownership::SingletonOwnership::acquire(
+                                &provider_database_url,
+                                Duration::from_secs(30),
+                            )
+                            .unwrap();
+                        assert!(acquired.generation() > generation);
+                        replacement = Some(acquired);
+                    }
                 }
                 (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
+        replacement
     });
     let credentials =
         aws_credential_types::Credentials::new("fixture-key", "fixture-secret", None, None, "test");
@@ -298,6 +325,21 @@ chunk_bytes = 1024
         assert_eq!(row.get::<_, bool>(2), case == "released");
         assert_eq!(row.get::<_, i64>(3), i64::from(case == "released"));
     }
-    server.join().unwrap();
+    let replacement = server.join().unwrap();
     service.shutdown().unwrap();
+    drop(service);
+    drop(owner);
+    if let Some(replacement) = replacement {
+        replacement.verify().unwrap();
+        replacement.renew().unwrap();
+        let row = database
+            .connection()
+            .unwrap()
+            .query_one(
+                "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), replacement.generation());
+    }
 }
