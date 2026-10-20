@@ -3,8 +3,24 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone)]
+struct Credentials(Arc<Mutex<aws_credential_types::Credentials>>);
+
+impl aws_credential_types::provider::ProvideCredentials for Credentials {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::new(async move {
+            Ok(self.0.lock().unwrap().clone())
+        })
+    }
+}
 
 #[test]
 fn root_attachment_checks_correspondence_and_post_lookup_ownership() {
@@ -58,9 +74,12 @@ fn exercise(url: &str, replace_owner: bool) {
     let inspection = database.clone();
     let provider_database_url = url.to_owned();
     let generation = owner.generation();
+    let (stalled, resumed) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
         let mut replacement = None;
-        for case in ["identity", "mismatch", "released", "slow", "fenced"] {
+        for case in [
+            "identity", "mismatch", "released", "slow", "refresh", "fenced",
+        ] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
@@ -86,8 +105,13 @@ fn exercise(url: &str, replace_owner: bool) {
                 assert!(headers.len() < 32768);
             }
             let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
-            assert!(headers.contains("credential=fixture-key/"));
-            let (body, content_type) = if case == "identity" {
+            assert!(headers.contains(if case == "refresh" {
+                "credential=rotated-key/"
+            } else {
+                "credential=fixture-key/"
+            }));
+            let (body, content_type) = if matches!(case, "identity" | "refresh") {
+                assert!(headers.starts_with("post "));
                 let length: usize = headers
                     .lines()
                     .find_map(|line| line.strip_prefix("content-length: "))
@@ -120,8 +144,9 @@ fn exercise(url: &str, replace_owner: bool) {
                 }
                 (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
-            if case == "slow" {
+            if matches!(case, "slow" | "refresh") {
                 std::thread::sleep(Duration::from_secs(3));
+                stalled.send(()).unwrap();
                 continue;
             }
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -130,6 +155,7 @@ fn exercise(url: &str, replace_owner: bool) {
     });
     let credentials =
         aws_credential_types::Credentials::new("fixture-key", "fixture-secret", None, None, "test");
+    let source = Credentials(Arc::new(Mutex::new(credentials.clone())));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -148,7 +174,7 @@ fn exercise(url: &str, replace_owner: bool) {
                 .credentials_provider(credentials.clone())
                 .endpoint_url(&endpoint)
                 .build(),
-            aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
+            aws_credential_types::provider::SharedCredentialsProvider::new(source.clone()),
             "116392764028",
             Duration::from_secs(10),
         ))
@@ -189,7 +215,18 @@ chunk_bytes = 1024
         )
         .unwrap(),
     );
-    for case in ["mismatch", "released", "slow", "fenced"] {
+    for case in ["mismatch", "released", "slow", "refresh", "fenced"] {
+        *source.0.lock().unwrap() = if case == "refresh" {
+            aws_credential_types::Credentials::new(
+                "rotated-key",
+                "fixture-secret",
+                None,
+                None,
+                "test",
+            )
+        } else {
+            credentials.clone()
+        };
         let derivation = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-{case}.drv");
         let kind = telchar::backend::BackendKind::Microvm;
         telchar::persistence::claim_shared_build(
@@ -282,8 +319,9 @@ chunk_bytes = 1024
             .output()
             .unwrap();
         handler.join().unwrap();
-        if case == "slow" {
+        if matches!(case, "slow" | "refresh") {
             assert!(started.elapsed() < Duration::from_millis(2750));
+            resumed.recv_timeout(Duration::from_secs(2)).unwrap();
         }
         assert_eq!(output.status.success(), case == "released", "{output:?}");
         if case == "released" {
