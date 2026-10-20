@@ -44,6 +44,11 @@ pub fn run(
     std::fs::create_dir(&roots)?;
     let socket = home.join("ipc.sock");
     let config = home.join("service.toml");
+    let transfer_bytes = if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+        (64 * 1024 * 1024, 128 * 1024 * 1024)
+    } else {
+        (1048576, 2097152)
+    };
     std::fs::write(
         &config,
         format!(
@@ -67,13 +72,15 @@ callback_url = "wss://localhost:{port}/microvm"
 callback_address = "{address}"
 staging_directory = "{staging}"
 maximum_paths = 10
-maximum_nar_bytes = 1048576
-maximum_total_bytes = 2097152
+maximum_nar_bytes = {nar_bytes}
+maximum_total_bytes = {total_bytes}
 metadata_bytes = 8192
 chunk_bytes = 262144
 "#,
             port = address.port(),
-            staging = root.display()
+            staging = root.display(),
+            nar_bytes = transfer_bytes.0,
+            total_bytes = transfer_bytes.1
         ),
     )?;
     let uid = Command::new("id").arg("-u").output()?;
@@ -91,6 +98,7 @@ chunk_bytes = 262144
         ])
         .env_clear()
         .env("HOME", &home)
+        .env("TMPDIR", &home)
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("AWS_ACCESS_KEY_ID", "fixture-key")
         .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
@@ -137,7 +145,21 @@ chunk_bytes = 262144
             error: None,
         },
     )?;
-    let client = nix_worker_protocol::WorkerClient::connect(stream.try_clone()?)?;
+    let client = match nix_worker_protocol::WorkerClient::connect(stream.try_clone()?) {
+        Ok(client) => client,
+        Err(error) => {
+            daemon.0.kill()?;
+            daemon.0.wait()?;
+            let mut diagnostic = String::new();
+            daemon
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut diagnostic)?;
+            panic!("daemon handshake {error}: {diagnostic}");
+        }
+    };
     let mut wire = Vec::new();
     use nix_worker_protocol::{write_worker_byte_string as bytes, write_worker_integer as word};
     word(&mut wire, 36);
@@ -179,6 +201,14 @@ chunk_bytes = 262144
     stream.write_all(&wire)?;
     stream.flush()?;
     let mut expected = Vec::new();
+    if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+        nix_worker_protocol::write_stderr_frame(
+            &mut expected,
+            nix_worker_protocol::StderrFrame::Next {
+                message: b"sandbox-builder-executing\n".to_vec(),
+            },
+        )?;
+    }
     if fails {
         nix_worker_protocol::write_worker_error(&mut expected, "BuildDerivation execution failed")?;
     } else {
@@ -281,8 +311,8 @@ chunk_bytes = 262144
         std::fs::write(root.join("requester-disconnected"), b"")?;
     } else {
         let mut actual = vec![0; expected.len()];
-        stream.read_exact(&mut actual)?;
-        if actual != expected {
+        let read = stream.read_exact(&mut actual);
+        if read.is_err() || actual != expected {
             daemon.0.kill()?;
             daemon.0.wait()?;
             let mut diagnostic = String::new();
@@ -292,7 +322,7 @@ chunk_bytes = 262144
                 .take()
                 .unwrap()
                 .read_to_string(&mut diagnostic)?;
-            panic!("daemon result {actual:?}: {diagnostic}");
+            panic!("daemon read {read:?}, result {actual:?}: {diagnostic}");
         }
     }
     if let Some((mut follower, _client)) = follower {

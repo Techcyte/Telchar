@@ -173,6 +173,10 @@ fn provider_client(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+            run_isolated_build("configured-daemon");
+            return;
+        }
         for case in [
             "single",
             "multiple",
@@ -343,6 +347,29 @@ fn run_build() {
     } else {
         format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
     };
+    let runtime = std::env::var_os("MICROVM_TEST_RUNTIME");
+    let builder = if runtime.is_some() {
+        std::env::var("MICROVM_TEST_BUILDER").expect("packaged runtime builder")
+    } else {
+        "/bin/sh".to_owned()
+    };
+    let builder_input = if runtime.is_some() {
+        let package = std::path::Path::new(&builder)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        format!(",{}", serde_json::to_string(package).unwrap())
+    } else {
+        String::new()
+    };
+    let script = if runtime.is_some() {
+        format!(
+            "set -e; test \"$EUID\" != 0; test ! -e /run/telchar-microvm/execution.json; test ! -e /opt/telchar/execution.py; printf 'sandbox-builder-executing\\n' >&2; {script}"
+        )
+    } else {
+        script
+    };
     let script = serde_json::to_string(&script).unwrap();
     let (hash_algorithm, output_hash) = if fixed_output {
         ("sha256", hash.as_str())
@@ -350,7 +377,7 @@ fn run_build() {
         ("", "")
     };
     let derivation = format!(
-        r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"],"{system}","/bin/sh",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","/bin/sh"),("name","dedicated")])"#
+        r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"{builder_input}],"{system}","{builder}",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","{builder}"),("name","dedicated")])"#
     );
     let request = telchar::build::BuildRequest::from_stored_derivation(
         drv.as_bytes(),
@@ -606,9 +633,13 @@ chunk_bytes = 262144
     let trust = root.join("trust.der");
     std::fs::write(&trust, include_bytes!("fixtures/microvm-cert.der")).unwrap();
     let mut worker_binding = if configured {
-        binding_receiver
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
+        match binding_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(binding) => binding,
+            Err(error) => panic!(
+                "worker binding failed: {error}; gateway result: {:?}",
+                gateway_thread.join()
+            ),
+        }
     } else {
         serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
@@ -671,21 +702,31 @@ chunk_bytes = 262144
         sha2::Sha256::digest(worker_binding["bearer"].as_str().unwrap().as_bytes()).into();
     std::fs::write(&binding, serde_json::to_vec(&worker_binding).unwrap()).unwrap();
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let mut worker = Command::new("bash")
-        .arg(FIXTURE)
-        .arg("/bin/sh")
-        .args([
-            "-c",
-            "exec \"$1\" \"$2\" \"$3\" \"$MICROVM_TEST_STORE_URI\"",
-            "worker",
-        ])
-        .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
-        .arg(&binding)
-        .arg(&trust)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let packaged_runtime = runtime.is_some();
+    let mut worker = if let Some(runtime) = runtime {
+        Command::new(runtime)
+            .arg(&binding)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("bash")
+            .arg(FIXTURE)
+            .arg("/bin/sh")
+            .args([
+                "-c",
+                "exec \"$1\" \"$2\" \"$3\" \"$MICROVM_TEST_STORE_URI\"",
+                "worker",
+            ])
+            .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
+            .arg(&binding)
+            .arg(&trust)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
     listener.set_nonblocking(true).unwrap();
     let started = std::time::Instant::now();
     let stream = loop {
@@ -757,7 +798,14 @@ chunk_bytes = 262144
         .unwrap();
     let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
     upstream.send(socket.read().unwrap()).unwrap();
-    socket.send(upstream.read().unwrap()).unwrap();
+    let manifest = match upstream.read() {
+        Ok(manifest) => manifest,
+        Err(error) => panic!(
+            "gateway manifest failed: {error}; gateway result: {:?}",
+            gateway_thread.join()
+        ),
+    };
+    socket.send(manifest).unwrap();
     if matches!(
         case.as_str(),
         "cancelled" | "fenced" | "configured-cancelled" | "configured-fenced"
@@ -800,6 +848,8 @@ chunk_bytes = 262144
         }
         return;
     }
+    let mut input_requested = false;
+    let mut sandbox_build_observed = false;
     loop {
         let message = socket.read().unwrap();
         let frame = read_frame(
@@ -819,6 +869,12 @@ chunk_bytes = 262144
                 .send(tungstenite::Message::Binary(bytes.into()))
                 .unwrap();
             break;
+        }
+        if packaged_runtime && frame.kind() == FrameKind::LogChunk {
+            sandbox_build_observed |= frame
+                .payload()
+                .windows(b"sandbox-builder-executing".len())
+                .any(|bytes| bytes == b"sandbox-builder-executing");
         }
         upstream.send(message).unwrap();
         if building_interrupted
@@ -875,6 +931,7 @@ chunk_bytes = 262144
         match frame.kind() {
             FrameKind::InputRequest => {
                 let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
+                input_requested |= requested.paths.iter().any(|path| path == &input);
                 for _ in requested.paths {
                     loop {
                         let message = upstream.read().unwrap();
@@ -905,6 +962,16 @@ chunk_bytes = 262144
         !building_interrupted,
         "builder execution barrier not observed"
     );
+    if packaged_runtime {
+        assert!(
+            input_requested,
+            "packaged worker must request fixture input"
+        );
+        assert!(
+            sandbox_build_observed,
+            "packaged worker must execute builder"
+        );
+    }
     let result = gateway_thread.join().unwrap();
     if corrupt_output {
         drop(upstream);

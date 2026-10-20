@@ -25,7 +25,9 @@ Implemented boundaries include:
   transfer bounded inputs, validate output authority/NARs/references/content
   addresses, and require gateway registration before success. Dedicated-worker
   contracts cover classic and multi-output builds with real TLS, PostgreSQL and
-  isolated canonical stores on x86-64; sandboxing is disabled in these fixtures.
+  isolated canonical stores on x86-64 and ARM64; sandboxing is disabled in the
+  default transport fixtures. A separate native packaged-runtime contract uses
+  production sandbox policy and requires fresh input transfer and builder execution.
 - Exact-intent handoff, bounded callback admission, active transport interruption
   on cancellation/ownership loss, and an owned execution/cleanup service with
   shared scheduler handles and fail-closed lifecycle health. Independent cleanup
@@ -62,9 +64,10 @@ recursive fixed outputs and remaining transfer failures, staging disk admission,
 store-I/O deadline/fencing guarantees, native executing-builder recovery,
 provider image/egress correspondence, administrative reconciliation and audit,
 metrics, NixOS wiring, and a secure ARM production image. Configuration acceptance is not a
-production release claim. Mandatory
-sandbox/build-user/secret isolation and snapshot cryptographic safety remain
-unresolved production gates. Do not deploy the experimental images as a substitute.
+production release claim. Native sandbox/build-user/secret assertions have focused
+runtime evidence, but complete image construction and snapshot cryptographic
+safety remain unresolved production gates. Do not deploy the experimental images
+as a substitute.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
@@ -104,20 +107,38 @@ Dedicated build accounts are added without replacing AWS system accounts. The
 existing sandbox policy and unmodified Nix/worker closure are included; Nix
 daemon and worker start only after the run hook. No custom OpenSSL patch is used.
 
-This path has derivation evaluation and local supervisor/hook regression evidence,
-not a completed container build or ARM runtime qualification. The Dockerfile pins
-an anonymously retrieved AWS image index digest with an ARM64 manifest. Public
-Amazon's package manager successfully installs Python 3.12.14 and shadow-utils
-in the extracted ARM64 base under QEMU/PRoot. That Python imports `ssl` and exposes
-`os.unshare` and `os.CLONE_NEWPID`; this checks API availability, not namespace
-permissions. The package transaction does not replace the base's OpenSSL.
+The dedicated worker package and this context build on native ARM64. Package
+checks run all 31 reported tests, including an enclosing 23-case transport suite;
+the check-only gateway daemon is excluded from installed outputs. The Dockerfile
+pins an anonymously retrieved AWS image index digest with an ARM64 manifest.
+Amazon's package manager installs Python 3.12.14 and shadow-utils in the extracted
+ARM64 base, both under emulation and native mapped-user qualification. That Python
+imports `ssl` and exposes `os.unshare` and `os.CLONE_NEWPID`. The package transaction
+does not replace the base's OpenSSL.
 The Amazon Python SSL extension resolves `/lib64/libssl.so.3` and
 `/lib64/libcrypto.so.3`; the installed base reports `openssl-snapsafe-libs`.
 Under emulation, the dedicated listener returns HTTP 200 for readiness and 400
 for an invalid run hook without writing a binding, then exits cleanly on SIGTERM.
 The sixteen build-user IDs and group membership also pass inspection.
-Full container construction and cold-start Nix snapshot applicability still
-require verification. Emulation is not native sandbox evidence. AWS's base does not replace Nix-store libraries.
+Native qualification applies the Dockerfile steps directly to a prepared root;
+it is not an OCI-builder equivalence claim. The packaged entrypoint and accepted
+run hook start the actual daemon and dedicated worker. A sandboxed nonroot build
+cannot see the protected binding or runtime source, and procfs reflects its PID
+namespace. Separate termination qualification observes a live UID30001 builder
+outside its parent's process group and requires pidfd exit readiness after the
+terminate hook; this is distinct from the local supervisor's `setsid()` tests.
+
+The [native runtime exchange contract](../tests/microvm/runtime-exchange.md)
+connects that packaged worker to the actual configured gateway using TLS,
+PostgreSQL and authenticated IPC. Per-run worker store/database isolation plus
+input-request and builder-log assertions prevent cached outputs from standing in
+for execution. Success requires gateway-authoritative registration, exact output
+content, durable success and clean runtime shutdown. Providers remain simulated;
+this is neither stock OpenSSH nor live AWS qualification.
+
+Full OCI construction and cold-start Nix snapshot applicability still require
+verification. Emulation alone is not native sandbox evidence. AWS's base does not
+replace Nix-store libraries.
 The isolated OpenSSL experiments below are historical investigation, not the
 chosen packaging approach.
 

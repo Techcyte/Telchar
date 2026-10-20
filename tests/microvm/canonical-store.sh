@@ -30,6 +30,9 @@ mount --make-rprivate /
 mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"
 mount --bind "$MICROVM_STORE_ROOT/store" /nix/store
 nix-store --store local --init
+if test -n "${MICROVM_TEST_REGISTRATION:-}"; then
+    nix-store --store local --load-db < "$MICROVM_TEST_REGISTRATION"
+fi
 nix-daemon > "$MICROVM_STORE_ROOT/daemon.log" 2>&1 & daemon=$!
 trap '\''kill "$daemon"; wait "$daemon" || true'\'' EXIT
 for ((i=0;i<100;i++)); do test ! -S "$NIX_DAEMON_SOCKET_PATH" || break; sleep .02; done
