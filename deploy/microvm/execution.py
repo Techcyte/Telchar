@@ -1,6 +1,7 @@
 """Image-local fresh Nix daemon and worker lifetime supervision."""
 import argparse
 import contextlib
+import ctypes
 import ipaddress
 import json
 import os
@@ -124,7 +125,15 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
 
 def enter_execution(specification):
     signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
-    os.unshare(os.CLONE_NEWPID)
+    os.unshare(os.CLONE_NEWPID | os.CLONE_NEWNS)
+    libc = ctypes.CDLL(None, use_errno=True)
+    mount = libc.mount
+    mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
+    mount.restype = ctypes.c_int
+    # Private propagation prevents execution mounts from reaching the runtime.
+    if mount(None, b"/", None, (1 << 18) | (1 << 14), None) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
     read_end, write_end = os.pipe()
     child = os.fork()
     if child == 0:
@@ -138,6 +147,10 @@ def enter_execution(specification):
                 os._exit(1)
 
         threading.Thread(target=watch_helper, daemon=True).start()
+        # Procfs must describe the namespace entered by this fork.
+        if mount(b"proc", b"/proc", b"proc", 2 | 4 | 8, None) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
         return run_execution(*specification)
 

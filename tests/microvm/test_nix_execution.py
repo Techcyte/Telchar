@@ -12,6 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+observation_spec = importlib.util.spec_from_file_location("process_observation", Path(__file__).with_name("process_observation.py"))
+assert observation_spec is not None and observation_spec.loader is not None
+observation = importlib.util.module_from_spec(observation_spec)
+observation_spec.loader.exec_module(observation)
+
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("microvm_execution", ROOT / "deploy/microvm/execution.py")
 assert spec is not None and spec.loader is not None
@@ -24,6 +29,7 @@ class NixExecutionTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="telchar-supervised-nix-")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        self.proc = self.enterContext(observation.ancestor_proc(self.root))
         for name in ("store", "state", "log", "config", "tmp"):
             (self.root / name).mkdir()
         self.socket = self.root / "daemon.sock"
@@ -54,7 +60,7 @@ class NixExecutionTests(unittest.TestCase):
 
     def run_build(self, body):
         daemon_log = self.root / "daemon.log"
-        daemon = self.command("daemon", f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+        daemon = self.command("daemon", f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                               f"log = os.open({str(daemon_log)!r}, os.O_CREAT | os.O_WRONLY, 0o600)\n"
                               "os.dup2(log, 2)\n"
                               f"os.execve({self.daemon!r}, [{self.daemon!r}], environment)\n")

@@ -11,6 +11,11 @@ import time
 import unittest
 from pathlib import Path
 
+observation_spec = importlib.util.spec_from_file_location("process_observation", Path(__file__).with_name("process_observation.py"))
+assert observation_spec is not None and observation_spec.loader is not None
+observation = importlib.util.module_from_spec(observation_spec)
+observation_spec.loader.exec_module(observation)
+
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("microvm_execution", ROOT / "deploy/microvm/execution.py")
 assert spec is not None and spec.loader is not None
@@ -23,6 +28,7 @@ class ExecutionTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        self.proc = self.enterContext(observation.ancestor_proc(self.root))
         self.addCleanup(self.cleanup_processes)
 
     def cleanup_processes(self):
@@ -37,7 +43,7 @@ class ExecutionTests(unittest.TestCase):
 
     def daemon(self):
         return self.command("daemon", "import os, pathlib, time\n"
-                            f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                            f"pathlib.Path({str(self.root / 'daemon.pid')!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                             "time.sleep(30)\n")
 
     def ready(self):
@@ -53,7 +59,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_deadline_kills_worker_descendant_and_daemon(self):
         child = self.command("child", "import os, pathlib, time\n"
-                             f"pathlib.Path({str(self.root / 'child.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                             f"pathlib.Path({str(self.root / 'child.pid')!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                              "time.sleep(30)\n")
         worker = self.command("worker", "import subprocess, time\n"
                               f"subprocess.Popen({child!r})\n"
@@ -68,7 +74,7 @@ class ExecutionTests(unittest.TestCase):
     def test_deadline_stops_descendant_that_creates_session(self):
         child = self.command("escaped", "import os, pathlib, time\n"
                              "os.setsid()\n"
-                             f"pathlib.Path({str(self.root / 'escaped.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                             f"pathlib.Path({str(self.root / 'escaped.pid')!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                              "time.sleep(5)\n")
         worker = self.command("worker", "import subprocess, time\n"
                               f"subprocess.Popen({child!r})\n"
@@ -84,7 +90,7 @@ class ExecutionTests(unittest.TestCase):
         worker = self.command("worker", "import os, pathlib, time\n"
                               "if os.fork() == 0:\n"
                               "    os.setsid()\n"
-                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                               "time.sleep(5)\n")
         cancelled = threading.Event()
         result = []
@@ -119,7 +125,7 @@ class ExecutionTests(unittest.TestCase):
         worker = self.command("worker", "import os, pathlib, time\n"
                               "if os.fork() == 0:\n"
                               "    os.setsid()\n"
-                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                              f"    pathlib.Path({str(marker)!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                               "time.sleep(5)\n")
         command = self.command("supervisor", "import runpy\n"
                                f"execution = runpy.run_path({str(ROOT / 'deploy/microvm/execution.py')!r})\n"
@@ -192,7 +198,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_hanging_readiness_obeys_execution_deadline(self):
         ready = self.command("ready", "import os, pathlib, time\n"
-                             f"pathlib.Path({str(self.root / 'ready.pid')!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0])\n"
+                             f"pathlib.Path({str(self.root / 'ready.pid')!r}).write_text(pathlib.Path({str(self.proc / 'self/stat')!r}).read_text().split()[0])\n"
                              "time.sleep(30)\n")
         worker = self.command("worker", "raise SystemExit(0)\n")
         started = time.monotonic()
