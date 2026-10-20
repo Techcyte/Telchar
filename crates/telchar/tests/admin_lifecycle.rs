@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use telchar::backend::BackendKind;
 use telchar_test_support::postgres::PostgresFixture;
 
-fn attachment_provider(config: &std::path::Path) -> (String, std::thread::JoinHandle<()>) {
+fn attachment_provider(
+    config: &std::path::Path,
+    lookup_started: Option<std::sync::mpsc::Sender<()>>,
+) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -29,8 +32,8 @@ image_version = "1"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
-admission_timeout_seconds = 3
-provider_timeout_seconds = 2
+admission_timeout_seconds = 15
+provider_timeout_seconds = 10
 cleanup_interval_seconds = 300
 callback_url = "wss://gateway.example/microvm"
 callback_address = "192.0.2.1:443"
@@ -90,6 +93,11 @@ chunk_bytes = 1024
                 ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
             } else {
                 assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
+                if let Some(started) = &lookup_started {
+                    started.send(()).unwrap();
+                    std::thread::sleep(Duration::from_secs(3));
+                    continue;
+                }
                 (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -141,9 +149,18 @@ fn daemon_attachment_preserves_cleanup_and_denies_admission() {
     );
 }
 
+#[test]
+fn shutdown_rejects_running_administrative_provider_lookup() {
+    root_contract(
+        "shutdown_rejects_running_administrative_provider_lookup",
+        Scenario::ProviderLookup,
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Scenario {
     Attachment,
+    ProviderLookup,
     Success,
     OwnershipLoss,
     RunningSql,
@@ -186,7 +203,13 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
     let admin = root.path().join("admin.sock");
     let config = root.path().join("service.toml");
     std::fs::write(&config, "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n[backends.local]\nname = \"local\"\nsystem = \"aarch64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
-    let provider = matches!(scenario, Scenario::Attachment).then(|| attachment_provider(&config));
+    let (lookup_started, lookup_received) = std::sync::mpsc::channel();
+    let provider = matches!(scenario, Scenario::Attachment | Scenario::ProviderLookup).then(|| {
+        attachment_provider(
+            &config,
+            matches!(scenario, Scenario::ProviderLookup).then_some(lookup_started),
+        )
+    });
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env_clear()
@@ -397,6 +420,25 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
             0
         );
+    } else if matches!(scenario, Scenario::ProviderLookup) {
+        let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
+        telchar::service::admin::write_request(
+            stream,
+            &telchar::service::admin::Request::AttachIdentity {
+                intent_id: "admin-intent".into(),
+                provider_id: "microvm-exact".into(),
+                reason: "Recovered launch response".into(),
+                evidence_reference: "incident:provider-shutdown".into(),
+            },
+        )
+        .unwrap();
+        lookup_received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
     } else if matches!(scenario, Scenario::RunningSql) {
         inspector.batch_execute("CREATE FUNCTION delay_admin_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER delay_admin_release BEFORE UPDATE ON microvm_launches FOR EACH ROW EXECUTE FUNCTION delay_admin_release()").unwrap();
         let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
@@ -459,7 +501,12 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             0
         );
     }
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now()
+        + if matches!(scenario, Scenario::ProviderLookup) {
+            Duration::from_millis(2750)
+        } else {
+            Duration::from_secs(2)
+        };
     loop {
         if let Some(status) = daemon.0.try_wait().unwrap() {
             assert_eq!(status.success(), !expire_owner);
@@ -518,11 +565,13 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             "{stderr}"
         );
     }
-    if matches!(scenario, Scenario::RunningSql) {
-        let state = inspector.query_one("SELECT reservation_released_at IS NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+    if matches!(scenario, Scenario::RunningSql | Scenario::ProviderLookup) {
+        let state = inspector.query_one("SELECT reservation_released_at IS NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions), provider_id IS NULL, phase FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert!(state.get::<_, bool>(0));
         assert!(state.get::<_, bool>(1));
         assert_eq!(state.get::<_, i64>(2), 0);
+        assert!(state.get::<_, bool>(3));
+        assert_eq!(state.get::<_, String>(4), "ambiguous");
     }
     if let Some((_, provider)) = provider {
         provider.join().unwrap();
