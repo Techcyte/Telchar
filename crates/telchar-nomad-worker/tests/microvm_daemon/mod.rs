@@ -99,6 +99,7 @@ chunk_bytes = 262144
         .env("TELCHAR_DATABASE_URL", database)
         .env("TELCHAR_GATEWAY_STORE_URI", store.to_string())
         .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots)
+        .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

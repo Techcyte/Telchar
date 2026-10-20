@@ -251,10 +251,11 @@ fn run_build() {
         case.as_str(),
         "configured-fixed-output" | "configured-daemon-fixed-output"
     );
+    let native_system = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
     let system = if configured {
         "aarch64-linux"
     } else {
-        "x86_64-linux"
+        &native_system
     };
     let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
     let endpoint =
