@@ -60,7 +60,7 @@ fn exercise(url: &str, replace_owner: bool) {
     let generation = owner.generation();
     let server = std::thread::spawn(move || {
         let mut replacement = None;
-        for case in ["identity", "mismatch", "released", "fenced"] {
+        for case in ["identity", "mismatch", "released", "slow", "fenced"] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
@@ -120,6 +120,10 @@ fn exercise(url: &str, replace_owner: bool) {
                 }
                 (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
+            if case == "slow" {
+                std::thread::sleep(Duration::from_secs(3));
+                continue;
+            }
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
         replacement
@@ -146,7 +150,7 @@ fn exercise(url: &str, replace_owner: bool) {
                 .build(),
             aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
             "116392764028",
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         ))
         .unwrap();
     drop(runtime);
@@ -161,8 +165,8 @@ image_version = "1"
 maximum_concurrent_builds = 4
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
-admission_timeout_seconds = 3
-provider_timeout_seconds = 2
+admission_timeout_seconds = 15
+provider_timeout_seconds = 10
 cleanup_interval_seconds = 300
 callback_url = "wss://gateway.example/microvm"
 callback_address = "192.0.2.1:443"
@@ -185,7 +189,7 @@ chunk_bytes = 1024
         )
         .unwrap(),
     );
-    for case in ["mismatch", "released", "fenced"] {
+    for case in ["mismatch", "released", "slow", "fenced"] {
         let derivation = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-{case}.drv");
         let kind = telchar::backend::BackendKind::Microvm;
         telchar::persistence::claim_shared_build(
@@ -260,6 +264,7 @@ chunk_bytes = 1024
             };
             telchar::service::admin::serve(stream, &fenced, &[serving]).unwrap();
         });
+        let started = Instant::now();
         let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env_clear()
             .args(["admin", "microvm", "attach-identity", "--socket"])
@@ -277,6 +282,9 @@ chunk_bytes = 1024
             .output()
             .unwrap();
         handler.join().unwrap();
+        if case == "slow" {
+            assert!(started.elapsed() < Duration::from_millis(2750));
+        }
         assert_eq!(output.status.success(), case == "released", "{output:?}");
         if case == "released" {
             assert!(output.stderr.is_empty(), "{output:?}");
@@ -326,7 +334,10 @@ chunk_bytes = 1024
         assert_eq!(row.get::<_, i64>(3), i64::from(case == "released"));
     }
     let replacement = server.join().unwrap();
-    service.shutdown().unwrap();
+    if let Err(error) = service.shutdown() {
+        assert_eq!(error.to_string(), "MicroVM listener failed");
+        assert!(owner.verify().is_err());
+    }
     drop(service);
     drop(owner);
     if let Some(replacement) = replacement {

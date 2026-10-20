@@ -193,13 +193,25 @@ impl Service {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(self.provider.verify_identity(
-                attachment.provider_id,
-                attachment.account_id,
-                attachment.region,
-                attachment.image_arn,
-                attachment.image_version,
-            ))
+            .block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    self.provider.verify_identity(
+                        attachment.provider_id,
+                        attachment.account_id,
+                        attachment.region,
+                        attachment.image_arn,
+                        attachment.image_version,
+                    ),
+                )
+                .await
+            })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "MicroVM administrative provider verification timed out",
+                )
+            })?
             .map_err(io::Error::other)?;
         self.check()?;
         crate::persistence::attach_microvm_cleanup_identity(self.owner.database(), attachment)

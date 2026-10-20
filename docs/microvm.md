@@ -148,7 +148,10 @@ telchar admin microvm attach-identity \
 
 Attachment reads the persisted account/region/image/version, selects configured
 account/region authority, and checks exact provider metadata outside database
-transactions. It rechecks service ownership afterward and atomically closes
+transactions. Credential resolution, re-attestation and metadata lookup share a
+two-second administrative provider budget; timeout rejects attachment without a
+durable mutation. This budget does not bound database reads or writes, pool
+validation, or total request/shutdown time. It rechecks service ownership afterward and atomically closes
 admission, attaches the ID and records the audit under the database fence.
 `attached: true` reports that transition; it neither releases capacity nor permits
 worker admission, adoption or relaunch. The evidence reference is an operator
@@ -157,10 +160,11 @@ The first configured authority for the account/region is used; no credential
 failover or metadata-based instance discovery occurs.
 
 A mapped-root CLI/socket/Service/PostgreSQL contract with a signed simulated
-provider covers image-version rejection, attachment after risk release and
-ownership expiry during lookup. This is not yet an attachment-success test through
-the whole daemon process. Replacement-owner races, total provider/request shutdown
-bounds and live AWS correspondence remain unqualified.
+provider covers image-version rejection, attachment after risk release,
+slow-provider rejection and ownership expiry/replacement during lookup. A separate
+whole-daemon contract covers successful cleanup-only attachment and graceful
+shutdown. Total request/shutdown bounds and live AWS correspondence remain
+unqualified.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
