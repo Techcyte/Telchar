@@ -20,8 +20,23 @@ impl Drop for Daemon {
 
 #[test]
 fn root_administration_commits_audit_and_cleans_up_socket() {
+    root_contract(
+        "root_administration_commits_audit_and_cleans_up_socket",
+        false,
+    );
+}
+
+#[test]
+fn queued_administration_cannot_mutate_after_ownership_loss() {
+    root_contract(
+        "queued_administration_cannot_mutate_after_ownership_loss",
+        true,
+    );
+}
+
+fn root_contract(test: &str, expire_owner: bool) {
     if let Ok(url) = std::env::var("TELCHAR_ADMIN_FIXTURE_DATABASE") {
-        exercise_daemon(&url);
+        exercise_daemon(&url, expire_owner);
         return;
     }
     assert_ne!(
@@ -33,11 +48,7 @@ fn root_administration_commits_audit_and_cleans_up_socket() {
     let output = Command::new("unshare")
         .args(["--user", "--map-root-user"])
         .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "root_administration_commits_audit_and_cleans_up_socket",
-            "--nocapture",
-        ])
+        .args(["--exact", test, "--nocapture"])
         .env("TELCHAR_ADMIN_FIXTURE_DATABASE", fixture.url())
         .output()
         .unwrap();
@@ -51,7 +62,7 @@ fn root_administration_commits_audit_and_cleans_up_socket() {
     );
 }
 
-fn exercise_daemon(url: &str) {
+fn exercise_daemon(url: &str, expire_owner: bool) {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -165,37 +176,81 @@ fn exercise_daemon(url: &str) {
             "incident:root",
             "--accept-remote-execution-risk",
         ]);
-    let output = command.output().unwrap();
-    assert!(output.status.success(), "administration failed: {output:?}");
-    assert!(output.stderr.is_empty());
-    assert_eq!(output.stdout, b"{\"released\":true,\"rejected\":false}\n");
-    let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
-    assert_eq!(audit.get::<_, i64>(0), 0);
-    assert_eq!(audit.get::<_, i64>(1), generation);
-    assert_eq!(audit.get::<_, String>(2), "incident:root");
-    let repeated = command.output().unwrap();
-    assert!(repeated.status.success());
-    assert!(repeated.stderr.is_empty());
-    assert_eq!(
-        repeated.stdout,
-        b"{\"released\":false,\"rejected\":false}\n"
-    );
-    let state = inspector.query_one("SELECT reservation_released_at IS NOT NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
-    assert!(state.get::<_, bool>(0));
-    assert!(state.get::<_, bool>(1));
-    assert_eq!(state.get::<_, i64>(2), 1);
-    use std::io::Write;
-    let mut incomplete = std::os::unix::net::UnixStream::connect(&admin).unwrap();
-    incomplete.write_all(&[1]).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(
-        unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
-        0
-    );
+    let mut incomplete = None;
+    if expire_owner {
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGSTOP) },
+            0
+        );
+        let mut stopped = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(daemon.0.id() as i32, &mut stopped, libc::WUNTRACED) },
+            daemon.0.id() as i32
+        );
+        assert!(libc::WIFSTOPPED(stopped));
+        let mut queued = std::os::unix::net::UnixStream::connect(&admin).unwrap();
+        telchar::service::admin::write_request(
+            &mut queued,
+            &telchar::service::admin::Request::RiskRelease {
+                intent_id: "admin-intent".into(),
+                provider_id: None,
+                reason: "Remote execution risk accepted".into(),
+                evidence_reference: "incident:stale-owner".into(),
+                accept_remote_execution_risk: true,
+            },
+        )
+        .unwrap();
+        inspector.batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").unwrap();
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGCONT) },
+            0
+        );
+        match telchar::service::admin::read_response(&mut queued) {
+            Ok(response) => {
+                assert!(response.rejected);
+                assert!(!response.released);
+            }
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                ),
+                "{error}"
+            ),
+        }
+    } else {
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "administration failed: {output:?}");
+        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, b"{\"released\":true,\"rejected\":false}\n");
+        let audit = inspector.query_one("SELECT actor_uid, owner_generation, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert_eq!(audit.get::<_, i64>(0), 0);
+        assert_eq!(audit.get::<_, i64>(1), generation);
+        assert_eq!(audit.get::<_, String>(2), "incident:root");
+        let repeated = command.output().unwrap();
+        assert!(repeated.status.success());
+        assert!(repeated.stderr.is_empty());
+        assert_eq!(
+            repeated.stdout,
+            b"{\"released\":false,\"rejected\":false}\n"
+        );
+        let state = inspector.query_one("SELECT reservation_released_at IS NOT NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert!(state.get::<_, bool>(0));
+        assert!(state.get::<_, bool>(1));
+        assert_eq!(state.get::<_, i64>(2), 1);
+        use std::io::Write;
+        let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
+        stream.write_all(&[1]).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(status) = daemon.0.try_wait().unwrap() {
-            assert!(status.success());
+            assert_eq!(status.success(), !expire_owner);
             break;
         }
         assert!(
@@ -222,10 +277,35 @@ fn exercise_daemon(url: &str) {
         .read_to_string(&mut stderr)
         .unwrap();
     assert!(stdout.is_empty());
-    assert!(
-        !stderr.contains("ERROR") && !stderr.contains("WARN"),
-        "{stderr}"
-    );
+    if expire_owner {
+        assert!(
+            stderr.ends_with("telchar: singleton daemon ownership lost\n"),
+            "{stderr}"
+        );
+        let errors = stderr
+            .lines()
+            .filter(|line| line.contains("ERROR"))
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 2, "{stderr}");
+        assert!(
+            errors[0].contains("event=\"database.singleton_ownership.lost\""),
+            "{stderr}"
+        );
+        assert!(
+            errors[1].contains("event=\"ipc.daemon.connection_failed\""),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("WARN"), "{stderr}");
+        let state = inspector.query_one("SELECT reservation_released_at IS NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        assert!(state.get::<_, bool>(0));
+        assert!(state.get::<_, bool>(1));
+        assert_eq!(state.get::<_, i64>(2), 0);
+    } else {
+        assert!(
+            !stderr.contains("ERROR") && !stderr.contains("WARN"),
+            "{stderr}"
+        );
+    }
     assert!(!admin.exists());
     assert!(!ipc.exists());
     assert_eq!(
