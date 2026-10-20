@@ -58,7 +58,14 @@ fn provider_requires_matching_signed_account_identity() {
             write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
             drop(socket);
             if account == "116392764028" {
-                for _ in 0..2 {
+                for returned in [
+                    "exact",
+                    "wrong-id",
+                    "wrong-image",
+                    "wrong-version",
+                    "terminal",
+                    "terminal",
+                ] {
                     let until = std::time::Instant::now() + Duration::from_secs(5);
                     let mut socket = loop {
                         match listener.accept() {
@@ -91,10 +98,12 @@ fn provider_requires_matching_signed_account_identity() {
                     assert!(headers.starts_with("get "));
                     assert!(headers.contains("microvm-exact"));
                     let body = serde_json::json!({
-                        "microvmId": "microvm-exact", "state": "TERMINATED",
+                        "microvmId": if returned == "wrong-id" { "microvm-other" } else { "microvm-exact" },
+                        "state": "TERMINATED",
                         "endpoint": "https://unused.invalid",
-                        "imageArn": "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
-                        "imageVersion": "1", "maximumDurationInSeconds": 600,
+                        "imageArn": if returned == "wrong-image" { "other-image" } else { "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture" },
+                        "imageVersion": if returned == "wrong-version" { "2" } else { "1" },
+                        "maximumDurationInSeconds": 600,
                         "startedAt": 1, "terminatedAt": 2,
                     })
                     .to_string();
@@ -125,6 +134,19 @@ fn provider_requires_matching_signed_account_identity() {
             .enable_all()
             .build()
             .unwrap();
+        let unattested =
+            telchar::microvm::Provider::new(config.clone(), Duration::from_secs(2)).unwrap();
+        assert!(
+            runtime
+                .block_on(unattested.verify_identity(
+                    "microvm-exact",
+                    "116392764028",
+                    "us-west-2",
+                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                    "1",
+                ))
+                .is_err()
+        );
         let result = runtime.block_on(telchar::microvm::Provider::verify_account(
             config,
             identity,
@@ -135,6 +157,48 @@ fn provider_requires_matching_signed_account_identity() {
         assert_eq!(result.is_ok(), account == "116392764028");
         drop(runtime);
         if let Ok(provider) = result {
+            for (expected_account, region) in
+                [("999999999999", "us-west-2"), ("116392764028", "us-east-1")]
+            {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                assert!(
+                    runtime
+                        .block_on(provider.verify_identity(
+                            "microvm-exact",
+                            expected_account,
+                            region,
+                            "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                            "1",
+                        ))
+                        .is_err()
+                );
+            }
+            for expected_match in [true, false, false, false] {
+                let provider = provider.clone();
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    assert_eq!(
+                        runtime
+                            .block_on(provider.verify_identity(
+                                "microvm-exact",
+                                "116392764028",
+                                "us-west-2",
+                                "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                                "1",
+                            ))
+                            .is_ok(),
+                        expected_match
+                    );
+                })
+                .join()
+                .unwrap();
+            }
             for _ in 0..2 {
                 let provider = provider.clone();
                 std::thread::spawn(move || {

@@ -361,6 +361,41 @@ impl Provider {
         .map_err(|_| ProviderError)
     }
 
+    /// Verifies provider metadata, not the instance's linkage to a launch intent.
+    pub async fn verify_identity(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+        region: &str,
+        image_arn: &str,
+        image_version: &str,
+    ) -> Result<(), ProviderError> {
+        if self.account_id.as_deref() != Some(account_id)
+            || self.authority.is_none()
+            || self.client.config().region().map(|region| region.as_ref()) != Some(region)
+            || provider_id.trim().is_empty()
+            || provider_id.len() > 256
+            || provider_id.chars().any(char::is_control)
+        {
+            return Err(ProviderError);
+        }
+        let result = self
+            .authorized_client()
+            .await?
+            .get_microvm()
+            .microvm_identifier(provider_id)
+            .send()
+            .await
+            .map_err(|_| ProviderError)?;
+        if result.microvm_id() != provider_id
+            || result.image_arn() != image_arn
+            || result.image_version() != image_version
+        {
+            return Err(ProviderError);
+        }
+        Ok(())
+    }
+
     pub async fn is_terminated(&self, provider_id: &str) -> Result<bool, ProviderError> {
         if provider_id.is_empty()
             || provider_id.len() > 256
