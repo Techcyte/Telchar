@@ -63,6 +63,13 @@ in
       description = "Private daemon frontend socket.";
     };
 
+    adminSocketPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/telchar/admin.sock";
+      description = "Optional administrative Unix socket below /run/telchar; requires kernel peer UID 0 regardless of daemon user.";
+    };
+
     settings = lib.mkOption {
       type = toml.type;
       default = { };
@@ -172,6 +179,21 @@ in
         message = "services.telchar.socketPath must be below /run";
       }
       {
+        assertion =
+          cfg.adminSocketPath == null
+          || (
+            dirOf cfg.adminSocketPath == "/run/telchar"
+            && baseNameOf cfg.adminSocketPath != "."
+            && baseNameOf cfg.adminSocketPath != ".."
+            && cfg.adminSocketPath != cfg.socketPath
+          );
+        message = "services.telchar.adminSocketPath must name a separate socket directly below /run/telchar";
+      }
+      {
+        assertion = !(cfg.environment ? TELCHAR_ADMIN_SOCKET) || cfg.adminSocketPath == null;
+        message = "configure administrative socket through either services.telchar.adminSocketPath or environment.TELCHAR_ADMIN_SOCKET, not both";
+      }
+      {
         assertion = lib.all (
           credential:
           lib.hasPrefix "/" credential.source && !(lib.hasPrefix builtins.storeDir credential.source)
@@ -234,6 +256,9 @@ in
       }
       // lib.optionalAttrs (!protectedDatabase && cfg.database.url != null) {
         TELCHAR_DATABASE_URL = cfg.database.url;
+      }
+      // lib.optionalAttrs (cfg.adminSocketPath != null) {
+        TELCHAR_ADMIN_SOCKET = cfg.adminSocketPath;
       }
       // daemonEnvironment;
       path = [

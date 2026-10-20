@@ -105,6 +105,19 @@ caller-supplied actor fields confer no authority. The daemon serves one bounded
 request at a time, separately from build admission. Frames are limited to 4096
 bytes with a five-second absolute receive deadline.
 
+NixOS deployments can enable it explicitly without changing the daemon user:
+
+```nix
+services.telchar.adminSocketPath = "/run/telchar/admin.sock";
+```
+
+The option defaults to `null` (disabled), requires a separate socket directly
+below the service-owned `/run/telchar` directory, and sets `TELCHAR_ADMIN_SOCKET`.
+Do not also set that environment variable through `services.telchar.environment`.
+The runtime directory remains `0700` and socket remains `0600`; daemon ownership
+of these paths does not grant its nonroot UID administrative authority. No TCP
+listener, firewall rule or infrastructure is provisioned by this option.
+
 ```sh
 telchar admin microvm risk-release \
   --socket /run/telchar/admin.sock --intent INTENT \
@@ -181,8 +194,12 @@ commit together under the database fence; any previous risk-release timestamp is
 preserved. `terminated: true` reports this administrative transition, not a DELETE
 acknowledgment. Missing, mismatched or already observed identities reject the
 request. This command does not send a termination request or relaunch work.
-Mapped-root handler integration covers running-state refusal and terminal success;
-whole-daemon termination and concurrent cleanup qualification remain pending.
+Mapped-root handler integration covers running-state refusal, terminal success,
+and ownership expiry/replacement during lookup. Whole-daemon contracts cover
+retained capacity, prior risk release and duplicate refusal. If ordinary cleanup
+completes during provider lookup, the administrative CAS returns `terminated:
+false` without fabricating an audit. This deterministic persistence interleaving
+does not qualify concurrent maintenance HTTP orchestration.
 
 Before running compilation or qualification, establish a verified hard memory
 limit covering the command and its descendants. Full workspace compilation
