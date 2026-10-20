@@ -10,6 +10,7 @@ use telchar_test_support::postgres::PostgresFixture;
 fn attachment_provider(
     config: &std::path::Path,
     lookup_started: Option<std::sync::mpsc::Sender<()>>,
+    terminal: bool,
 ) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -98,7 +99,7 @@ chunk_bytes = 1024
                     std::thread::sleep(Duration::from_secs(3));
                     continue;
                 }
-                (serde_json::json!({"microvmId":"microvm-exact", "state":"RUNNING", "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+                (serde_json::json!({"microvmId":"microvm-exact", "state":if terminal { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
@@ -157,8 +158,42 @@ fn shutdown_rejects_running_administrative_provider_lookup() {
     );
 }
 
+#[test]
+fn daemon_termination_records_exact_observation() {
+    root_contract(
+        "daemon_termination_records_exact_observation",
+        Scenario::Termination {
+            released: false,
+            terminal: true,
+        },
+    );
+}
+
+#[test]
+fn daemon_termination_preserves_prior_risk_release() {
+    root_contract(
+        "daemon_termination_preserves_prior_risk_release",
+        Scenario::Termination {
+            released: true,
+            terminal: true,
+        },
+    );
+}
+
+#[test]
+fn daemon_termination_rejects_running_provider() {
+    root_contract(
+        "daemon_termination_rejects_running_provider",
+        Scenario::Termination {
+            released: false,
+            terminal: false,
+        },
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Scenario {
+    Termination { released: bool, terminal: bool },
     Attachment,
     ProviderLookup,
     Success,
@@ -204,10 +239,15 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
     let config = root.path().join("service.toml");
     std::fs::write(&config, "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n[backends.local]\nname = \"local\"\nsystem = \"aarch64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
     let (lookup_started, lookup_received) = std::sync::mpsc::channel();
-    let provider = matches!(scenario, Scenario::Attachment | Scenario::ProviderLookup).then(|| {
+    let provider = matches!(
+        scenario,
+        Scenario::Attachment | Scenario::ProviderLookup | Scenario::Termination { .. }
+    )
+    .then(|| {
         attachment_provider(
             &config,
             matches!(scenario, Scenario::ProviderLookup).then_some(lookup_started),
+            matches!(scenario, Scenario::Termination { terminal: true, .. }),
         )
     });
     let mut daemon = Daemon(
@@ -309,6 +349,12 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         .unwrap()
     );
     assert!(telchar::persistence::dispatch_microvm_launch(&fenced, "admin-intent").unwrap());
+    if matches!(scenario, Scenario::Termination { .. }) {
+        assert!(
+            telchar::persistence::bind_microvm_launch(&fenced, "admin-intent", "microvm-exact")
+                .unwrap()
+        );
+    }
     assert!(telchar::persistence::cancel_microvm_launch(&fenced, "admin-intent").unwrap());
     let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
     command
@@ -366,6 +412,96 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
                 "{error}"
             ),
         }
+    } else if let Scenario::Termination { released, terminal } = scenario {
+        if released {
+            let output = command
+                .args(["--provider-id", "microvm-exact"])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                b"{\"released\":true,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
+            );
+        }
+        let release_before: Option<std::time::SystemTime> = inspector.query_one(
+            "SELECT reservation_released_at FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]
+        ).unwrap().get(0);
+        assert_eq!(release_before.is_some(), released);
+        let mut verification = Command::new(env!("CARGO_BIN_EXE_telchar"));
+        verification
+            .env_clear()
+            .args(["admin", "microvm", "verify-termination", "--socket"])
+            .arg(&admin)
+            .args([
+                "--intent",
+                "admin-intent",
+                "--provider-id",
+                "microvm-exact",
+                "--reason",
+                "Confirm exact terminal state",
+                "--evidence",
+                "incident:daemon-termination",
+            ]);
+        let output = verification.output().unwrap();
+        assert_eq!(output.status.success(), terminal, "{output:?}");
+        if terminal {
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                b"{\"released\":false,\"attached\":false,\"terminated\":true,\"rejected\":false}\n"
+            );
+            let repeated = verification.output().unwrap();
+            assert!(!repeated.status.success(), "{repeated:?}");
+            assert!(repeated.stdout.is_empty(), "{repeated:?}");
+            assert_eq!(
+                repeated.stderr,
+                b"telchar: administrative request rejected\n"
+            );
+            let audit = inspector.query_one("SELECT actor_uid, owner_generation, provider_id, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent' AND action = 'verify-termination'", &[]).unwrap();
+            assert_eq!(audit.get::<_, i64>(0), 0);
+            assert_eq!(audit.get::<_, i64>(1), generation);
+            assert_eq!(audit.get::<_, String>(2), "microvm-exact");
+            assert_eq!(audit.get::<_, String>(3), "incident:daemon-termination");
+        } else {
+            assert!(output.stdout.is_empty(), "{output:?}");
+            assert_eq!(output.stderr, b"telchar: administrative request rejected\n");
+        }
+        let state = inspector.query_one("SELECT reservation_released_at, termination_observed_at IS NOT NULL, phase, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
+        let release_after: Option<std::time::SystemTime> = state.get(0);
+        assert_eq!(release_after.is_some(), released || terminal);
+        if released {
+            assert_eq!(release_before, release_after);
+        }
+        assert_eq!(state.get::<_, bool>(1), terminal);
+        assert_eq!(state.get::<_, String>(2), "closed");
+        assert_eq!(
+            state.get::<_, i64>(3),
+            i64::from(released) + i64::from(terminal)
+        );
+        assert_eq!(
+            telchar::persistence::pending_microvm_cleanup_identity(
+                &database,
+                "admin-intent",
+                "microvm-exact"
+            )
+            .unwrap(),
+            !terminal
+        );
+        assert!(
+            !telchar::persistence::admit_microvm_session(
+                &fenced,
+                "admin-intent",
+                "microvm-exact",
+                &[3; 32]
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
     } else if matches!(scenario, Scenario::Attachment) {
         let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env_clear()
