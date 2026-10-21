@@ -11,6 +11,24 @@ bash tests/canonical-store.sh \
   cargo test --locked -p telchar --test operation_dispatch -- --test-threads=1
 ```
 
+For all workspace packages, use the package-partitioned runner:
+
+```bash
+cargo build --locked -p telchar --bin telchar
+export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
+bash tests/workspace.sh --locked
+```
+
+Arguments to `tests/workspace.sh` are Cargo options before the test separator.
+It runs every workspace package except `telchar-nomad-worker` inside the canonical
+runner, then runs the complete worker package outside that additional overlay.
+Worker contracts create their own gateway and worker stores; wrapping them in a
+third overlay exceeds Linux filesystem stacking depth. Both groups run serially,
+with no test exclusions within either package group. Do not wrap the workspace
+runner itself in `tests/canonical-store.sh`. Release-profile qualification needs
+a daemon built with the existing test endpoint seam enabled; production release
+packages must not enable that seam.
+
 The runner requires Linux unprivileged user/mount namespaces, overlayfs, an existing
 `/nix/store` and `/nix/var/nix/daemon-socket` directory, Bash, util-linux and Nix.
 Run it as a nonroot account with an NSS username. It creates private mounts, overlays
