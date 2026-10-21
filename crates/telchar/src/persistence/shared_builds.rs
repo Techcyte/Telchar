@@ -1039,7 +1039,7 @@ pub fn complete_shared_build_failure(
 }
 
 fn create_shared_build_attempt(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     build: &SharedBuild,
 ) -> Result<SharedBuildAttempt, SharedBuildError> {
     let ordinal: i32 = transaction

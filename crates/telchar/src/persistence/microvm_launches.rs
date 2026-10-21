@@ -229,9 +229,7 @@ pub(crate) fn valid_resolution_text(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
 
-fn resolution_owner(
-    transaction: &mut postgres::Transaction<'_>,
-) -> Result<i64, MicrovmLaunchError> {
+fn resolution_owner(transaction: &mut DatabaseTransaction<'_>) -> Result<i64, MicrovmLaunchError> {
     transaction
         .batch_execute("SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'")
         .map_err(|_| MicrovmLaunchError)?;

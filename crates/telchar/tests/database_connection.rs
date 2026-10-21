@@ -131,6 +131,70 @@ fn database_checkout_bounds_stalled_validation() {
 }
 
 #[test]
+fn database_deadline_discards_an_uncommitted_transaction() {
+    use std::time::{Duration, Instant};
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    database
+        .connection()
+        .unwrap()
+        .batch_execute("CREATE TABLE deadline_rows (id integer PRIMARY KEY)")
+        .unwrap();
+    let started = Instant::now();
+    let mut connection = database.connection().unwrap();
+    let backend: i32 = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .unwrap()
+        .get(0);
+    let mut transaction = connection.transaction().unwrap();
+    transaction
+        .execute("INSERT INTO deadline_rows VALUES (1)", &[])
+        .unwrap();
+    let error = transaction.simple_query("SELECT pg_sleep(10)").unwrap_err();
+    assert!(matches!(
+        error,
+        telchar::persistence::DatabaseError::Deadline
+    ));
+    drop(transaction);
+    assert!(matches!(
+        connection.simple_query("SELECT 1"),
+        Err(telchar::persistence::DatabaseError::Closed)
+    ));
+    drop(connection);
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "query timeout and rollback must share the checkout deadline"
+    );
+
+    let mut replacement = database.connection().unwrap();
+    assert_ne!(
+        replacement
+            .query_one("SELECT pg_backend_pid()", &[])
+            .unwrap()
+            .get::<_, i32>(0),
+        backend
+    );
+    assert_eq!(
+        replacement
+            .query_one("SELECT count(*) FROM deadline_rows", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    replacement
+        .execute("INSERT INTO deadline_rows VALUES (2)", &[])
+        .unwrap();
+    assert_eq!(
+        replacement
+            .query_one("SELECT id FROM deadline_rows", &[])
+            .unwrap()
+            .get::<_, i32>(0),
+        2
+    );
+}
+
+#[test]
 fn persistence_accepts_a_substituted_database_source() {
     let fixture = PostgresFixture::start();
     let database = TestDatabase {

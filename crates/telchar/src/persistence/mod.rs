@@ -4,7 +4,8 @@ use std::fmt;
 
 use std::time::{Duration, SystemTime};
 
-use postgres::{Client, Row};
+use connection::DatabaseClient as Client;
+use postgres::Row;
 use sha2::{Digest, Sha256};
 
 use crate::backend::{
@@ -34,7 +35,10 @@ mod attachments;
 mod build_requests;
 mod callback_nonces;
 mod connection;
-pub use connection::{Database, DatabaseConnection, DatabaseSource, validate_verified_connection};
+pub use connection::{
+    Database, DatabaseConnection, DatabaseError, DatabaseSource, DatabaseTransaction,
+    validate_verified_connection,
+};
 pub(crate) use connection::{connect, validate as validate_connection};
 mod executor;
 mod leases;

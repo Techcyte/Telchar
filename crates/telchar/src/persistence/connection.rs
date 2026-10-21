@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 
 use std::ops::{Deref, DerefMut};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use postgres::{Client, Config, NoTls};
 use r2d2::{Pool, PooledConnection};
-use r2d2_postgres::PostgresConnectionManager;
+use tokio_postgres::Config;
+
+mod io;
+pub use io::{DatabaseClient, DatabaseError, DatabaseTransaction};
+use io::{Manager, Security};
 use rustls::{ClientConfig, RootCertStore};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
@@ -18,41 +21,34 @@ enum ConnectionSecurity {
 
 #[derive(Clone)]
 pub struct Database {
-    pool: DatabasePool,
+    pool: Pool<Manager>,
 }
 
-#[derive(Clone)]
-enum DatabasePool {
-    Plain(Pool<PostgresConnectionManager<NoTls>>),
-    Tls(Pool<PostgresConnectionManager<MakeRustlsConnect>>),
-}
-
-pub enum DatabaseConnection {
-    Plain(PooledConnection<PostgresConnectionManager<NoTls>>),
-    Tls(PooledConnection<PostgresConnectionManager<MakeRustlsConnect>>),
-}
+pub struct DatabaseConnection(PooledConnection<Manager>);
 
 impl Database {
     pub fn connect(database_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (config, security) = connection_config(database_url)?;
-        let pool = match security {
-            ConnectionSecurity::Plain => {
-                DatabasePool::Plain(build_pool(PostgresConnectionManager::new(config, NoTls))?)
+        let security = match security {
+            ConnectionSecurity::Plain => Security::Plain,
+            ConnectionSecurity::Tls { root_certificate } => {
+                Security::Tls(tls_connector(root_certificate)?)
             }
-            ConnectionSecurity::Tls { root_certificate } => DatabasePool::Tls(build_pool(
-                PostgresConnectionManager::new(config, tls_connector(root_certificate)?),
-            )?),
         };
-        Ok(Self { pool })
+        Ok(Self {
+            pool: build_pool(Manager { config, security })?,
+        })
     }
 
     pub fn connection(
         &self,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.pool {
-            DatabasePool::Plain(pool) => Ok(DatabaseConnection::Plain(pool.get()?)),
-            DatabasePool::Tls(pool) => Ok(DatabaseConnection::Tls(pool.get()?)),
-        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut connection = self
+            .pool
+            .get_timeout(deadline.saturating_duration_since(Instant::now()))?;
+        connection.validate(deadline)?;
+        Ok(DatabaseConnection(connection))
     }
 }
 
@@ -97,34 +93,20 @@ pub(crate) fn connect(
 }
 
 impl Deref for DatabaseConnection {
-    type Target = Client;
+    type Target = DatabaseClient;
 
     fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Plain(connection) => connection,
-            Self::Tls(connection) => connection,
-        }
+        &self.0
     }
 }
 
 impl DerefMut for DatabaseConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Plain(connection) => connection,
-            Self::Tls(connection) => connection,
-        }
+        &mut self.0
     }
 }
 
-fn build_pool<T>(
-    manager: PostgresConnectionManager<T>,
-) -> Result<Pool<PostgresConnectionManager<T>>, r2d2::Error>
-where
-    T: postgres::tls::MakeTlsConnect<postgres::Socket> + Clone + Send + Sync + 'static,
-    T::Stream: Send + Sync,
-    T::TlsConnect: Send,
-    <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
-{
+fn build_pool(manager: Manager) -> Result<Pool<Manager>, r2d2::Error> {
     let maintenance = scheduled_thread_pool::ScheduledThreadPool::builder()
         .num_threads(3)
         .thread_name_pattern("r2d2-worker-{}")
@@ -133,6 +115,8 @@ where
     Ok(Pool::builder()
         .thread_pool(std::sync::Arc::new(maintenance))
         .max_size(16)
+        // Validation runs after checkout under the caller's remaining absolute budget.
+        .test_on_check_out(false)
         .connection_timeout(Duration::from_secs(5))
         .build_unchecked(manager))
 }

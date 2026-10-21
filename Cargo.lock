@@ -1920,16 +1920,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "r2d2_postgres"
-version = "0.18.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efd4b47636dbca581cd057e2f27a5d39be741ea4f85fd3c29e415c55f71c7595"
-dependencies = [
- "postgres",
- "r2d2",
-]
-
-[[package]]
 name = "rand"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2558,7 +2548,6 @@ dependencies = [
  "opentelemetry_sdk",
  "postgres",
  "r2d2",
- "r2d2_postgres",
  "reqwest",
  "rustix",
  "rustls",
@@ -2572,6 +2561,7 @@ dependencies = [
  "telchar-test-support",
  "tempfile",
  "tokio",
+ "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-stream",
  "toml",

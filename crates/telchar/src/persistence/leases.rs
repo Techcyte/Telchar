@@ -826,21 +826,21 @@ fn release_unattached_request_leases_inner(
 }
 
 fn lock_active_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     lock_request_leases(transaction, request_id, false)
 }
 
 fn lock_active_request_leases_for_reconciliation(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     lock_request_leases(transaction, request_id, true)
 }
 
 fn lock_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
     allow_terminal_outputs: bool,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
@@ -885,7 +885,7 @@ fn lock_request_leases(
 }
 
 fn release_locked_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
     locked: &[StoreLeaseRecord],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
