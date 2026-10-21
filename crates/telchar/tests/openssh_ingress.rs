@@ -359,7 +359,7 @@ impl Fixture {
     }
 
     fn start_with_maximum_sessions(maximum_sessions: usize) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = Path::new("/tmp").join(format!(
             "telchar-openssh-integration-{}-{}",
             std::process::id(),
             unique_suffix()
