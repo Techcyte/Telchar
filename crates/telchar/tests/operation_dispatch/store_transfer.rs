@@ -118,10 +118,20 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
     assert!(derivation.status.success());
     let derivation = String::from_utf8(derivation.stdout).unwrap();
     let derivation = derivation.trim();
+    let config = tempfile::NamedTempFile::new().expect("native backend configuration creates");
+    fs::write(
+        config.path(),
+        format!(
+            "[backends.local]\nname = \"local\"\nsystem = \"{}-{}\"\nmaximum_concurrent_builds = 1\n",
+            std::env::consts::ARCH,
+            std::env::consts::OS,
+        ),
+    )
+    .expect("native backend configuration writes");
     let mut frontend = FrontendFixture::spawn_with_store(
         Some(5_000),
         "unix:///nix/var/nix/daemon-socket/socket",
-        [],
+        [("TELCHAR_CONFIG", config.path().display().to_string())],
     );
     let _ = frontend.frontend.kill();
     let _ = frontend.frontend.wait();
