@@ -281,7 +281,7 @@ fn temporary_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock follows epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    Path::new("/tmp").join(format!(
         "telchar-executor-service-{}-{nanos}-{sequence}",
         std::process::id()
     ))
