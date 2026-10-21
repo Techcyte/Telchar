@@ -254,7 +254,7 @@ fn derivation_lease_precedes_helper_execution() {
 
 #[test]
 fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
-    let root = std::env::temp_dir().join(format!(
+    let root = std::path::Path::new("/tmp").join(format!(
         "telchar-operation-input-root-order-{}-{}",
         std::process::id(),
         FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -331,7 +331,7 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
 
 #[test]
 fn input_lease_persistence_failure_rolls_back_input_roots() {
-    let root = std::env::temp_dir().join(format!(
+    let root = std::path::Path::new("/tmp").join(format!(
         "telchar-operation-input-lease-failure-{}-{}",
         std::process::id(),
         FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
