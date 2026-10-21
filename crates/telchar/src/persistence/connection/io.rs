@@ -153,7 +153,11 @@ pub struct DatabaseClient {
 impl DatabaseClient {
     pub(super) fn validate(&mut self, deadline: Instant) -> Result<(), DatabaseError> {
         self.driver.deadline = deadline;
-        self.simple_query("").map(|_| ())
+        let result = self.simple_query("").map(|_| ());
+        if result.is_err() {
+            self.driver.connection.take();
+        }
+        result
     }
 
     pub fn query<T>(

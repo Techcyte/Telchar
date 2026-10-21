@@ -35,6 +35,29 @@ fn database_reuses_an_established_connection() {
     assert_eq!(first_backend, second_backend);
 }
 
+#[test]
+fn database_replaces_stale_connections_after_restart() {
+    let mut fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    database
+        .connection()
+        .unwrap()
+        .batch_execute("CREATE TABLE restart_rows (id integer PRIMARY KEY); INSERT INTO restart_rows VALUES (1)")
+        .unwrap();
+
+    fixture.restart();
+
+    assert_eq!(
+        database
+            .connection()
+            .expect("checkout replaces stale connections")
+            .query_one("SELECT id FROM restart_rows", &[])
+            .unwrap()
+            .get::<_, i32>(0),
+        1
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn dropping_database_retires_background_tasks() {

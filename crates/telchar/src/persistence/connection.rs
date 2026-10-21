@@ -44,11 +44,16 @@ impl Database {
         &self,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut connection = self
-            .pool
-            .get_timeout(deadline.saturating_duration_since(Instant::now()))?;
-        connection.validate(deadline)?;
-        Ok(DatabaseConnection(connection))
+        loop {
+            let mut connection = self
+                .pool
+                .get_timeout(deadline.saturating_duration_since(Instant::now()))?;
+            match connection.validate(deadline) {
+                Ok(()) => return Ok(DatabaseConnection(connection)),
+                Err(error) if Instant::now() >= deadline => return Err(error.into()),
+                Err(_) => {}
+            }
+        }
     }
 }
 
