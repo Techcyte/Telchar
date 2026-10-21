@@ -226,7 +226,7 @@ impl FrontendFixture {
         running_disconnect_policy: Option<&str>,
         once: bool,
     ) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = std::path::Path::new("/tmp").join(format!(
             "telchar-operation-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
