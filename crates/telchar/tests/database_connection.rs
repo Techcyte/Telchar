@@ -75,6 +75,61 @@ fn dropping_database_retires_background_tasks() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn database_checkout_bounds_stalled_validation() {
+    use std::time::{Duration, Instant};
+
+    struct ResumeBackend(i32);
+
+    impl Drop for ResumeBackend {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0, libc::SIGCONT) };
+        }
+    }
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    let mut held = (0..16)
+        .map(|_| database.connection().unwrap())
+        .collect::<Vec<_>>();
+    let mut connection = held.pop().unwrap();
+    let backend = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .unwrap()
+        .get::<_, i32>(0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let within_deadline = std::thread::scope(|scope| {
+        let resume = ResumeBackend(backend);
+        assert_eq!(unsafe { libc::kill(backend, libc::SIGSTOP) }, 0);
+        let stopped_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{backend}/status")).unwrap();
+            if status.lines().any(|line| line.starts_with("State:\tT")) {
+                break;
+            }
+            assert!(Instant::now() < stopped_deadline, "backend did not stop");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(connection);
+        let checkout = scope.spawn(|| {
+            let started = Instant::now();
+            let result = database.connection();
+            sender.send((started.elapsed(), result.is_err())).unwrap();
+        });
+        let observed = receiver.recv_timeout(Duration::from_secs(6));
+        assert_eq!(unsafe { libc::kill(backend, libc::SIGCONT) }, 0);
+        drop(resume);
+        checkout.join().unwrap();
+        observed
+    });
+    let (elapsed, rejected) = within_deadline.expect(
+        "database checkout exceeded its five-second budget while validating a stalled backend",
+    );
+    assert!(rejected, "stalled connection must not be checked out");
+    assert!(elapsed < Duration::from_secs(6));
+}
+
 #[test]
 fn persistence_accepts_a_substituted_database_source() {
     let fixture = PostgresFixture::start();
