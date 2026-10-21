@@ -410,6 +410,14 @@ impl Drop for AdminService {
     }
 }
 
+pub(super) struct SocketGuard(pub(super) PathBuf);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,13 +450,5 @@ mod tests {
         }
         assert!(!path.exists());
         assert!(service.check().is_err());
-    }
-}
-
-pub(super) struct SocketGuard(pub(super) PathBuf);
-
-impl Drop for SocketGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }

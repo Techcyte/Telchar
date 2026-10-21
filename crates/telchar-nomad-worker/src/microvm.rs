@@ -141,62 +141,6 @@ impl Drop for BuildMonitor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::time::Duration;
-
-    #[test]
-    fn build_deadline_interrupts_store_with_callback_connected() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (_peer, _) = listener.accept().unwrap();
-        let socket = tungstenite::WebSocket::from_raw_socket(
-            tungstenite::stream::MaybeTlsStream::Plain(callback),
-            tungstenite::protocol::Role::Client,
-            None,
-        );
-        let (store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let started = Instant::now();
-        let _monitor =
-            BuildMonitor::start(&socket, store, started + Duration::from_millis(100)).unwrap();
-        assert_eq!(server.read(&mut [0]).unwrap(), 0);
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn completed_build_retires_monitor_without_shutting_store() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (peer, _) = listener.accept().unwrap();
-        let socket = tungstenite::WebSocket::from_raw_socket(
-            tungstenite::stream::MaybeTlsStream::Plain(callback),
-            tungstenite::protocol::Role::Client,
-            None,
-        );
-        let (mut store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let monitor = BuildMonitor::start(
-            &socket,
-            store.try_clone().unwrap(),
-            Instant::now() + Duration::from_secs(1),
-        )
-        .unwrap();
-        drop(monitor);
-        drop(peer);
-        store.write_all(b"ok").unwrap();
-        let mut bytes = [0; 2];
-        server.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"ok");
-    }
-}
-
 impl Drop for SessionDeadline {
     fn drop(&mut self) {
         let _ = self.finished.send(());
@@ -292,4 +236,60 @@ pub fn connect(
         watchdog.join().map_err(|_| failed())?;
         result
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    #[test]
+    fn build_deadline_interrupts_store_with_callback_connected() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let socket = tungstenite::WebSocket::from_raw_socket(
+            tungstenite::stream::MaybeTlsStream::Plain(callback),
+            tungstenite::protocol::Role::Client,
+            None,
+        );
+        let (store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let started = Instant::now();
+        let _monitor =
+            BuildMonitor::start(&socket, store, started + Duration::from_millis(100)).unwrap();
+        assert_eq!(server.read(&mut [0]).unwrap(), 0);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn completed_build_retires_monitor_without_shutting_store() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let callback = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let socket = tungstenite::WebSocket::from_raw_socket(
+            tungstenite::stream::MaybeTlsStream::Plain(callback),
+            tungstenite::protocol::Role::Client,
+            None,
+        );
+        let (mut store, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let monitor = BuildMonitor::start(
+            &socket,
+            store.try_clone().unwrap(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        drop(monitor);
+        drop(peer);
+        store.write_all(b"ok").unwrap();
+        let mut bytes = [0; 2];
+        server.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ok");
+    }
 }
