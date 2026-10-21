@@ -16,7 +16,15 @@ fn gateway_payload_runs_image_hook_with_exact_capability_and_identity() {
         )
         .unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut process = Command::new("python3")
+    let mut process = Command::new("unshare")
+        .args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--propagation",
+            "private",
+            "python3",
+        ])
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(
