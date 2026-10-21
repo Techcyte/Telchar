@@ -322,7 +322,7 @@ fn daemon_command_with_uid(
 }
 
 fn temporary_root() -> PathBuf {
-    std::env::temp_dir().join(format!(
+    Path::new("/tmp").join(format!(
         "telchar-ipc-process-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
