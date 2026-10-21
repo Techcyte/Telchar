@@ -30,7 +30,7 @@ impl SocketFixture {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock is after epoch")
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
+            let root = Path::new("/tmp").join(format!(
                 "telchar-gateway-daemon-{}-{suffix}-{attempt}",
                 std::process::id()
             ));
