@@ -94,6 +94,7 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
             "mismatch",
             "released",
             "slow",
+            "budget",
             "refresh",
             "terminal-running",
             "terminal-success",
@@ -174,7 +175,7 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
                 }
                 (serde_json::json!({"microvmId":"microvm-exact", "state": if matches!(case, "terminal-success" | "terminal-cleanup") || (case == "fenced" && termination_fence) { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
-            if matches!(case, "slow" | "refresh") {
+            if matches!(case, "slow" | "budget" | "refresh") {
                 std::thread::sleep(Duration::from_secs(3));
                 stalled.send(()).unwrap();
                 continue;
@@ -249,6 +250,7 @@ chunk_bytes = 1024
         "mismatch",
         "released",
         "slow",
+        "budget",
         "refresh",
         "terminal-running",
         "terminal-success",
@@ -345,104 +347,138 @@ chunk_bytes = 1024
                     Err(error) => panic!("{error}"),
                 }
             };
-            telchar::service::admin::serve(
+            let result = telchar::service::admin::serve(
                 stream,
                 &fenced,
                 &[serving],
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            )
-            .unwrap();
+            );
+            if case == "budget" {
+                assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+            } else {
+                result.unwrap();
+            }
         });
         let started = Instant::now();
-        let output = Command::new(env!("CARGO_BIN_EXE_telchar"))
-            .env_clear()
-            .args([
-                "admin",
-                "microvm",
-                if termination {
-                    "verify-termination"
-                } else {
-                    "attach-identity"
-                },
-                "--socket",
-            ])
-            .arg(&socket)
-            .args([
-                "--intent",
-                case,
-                "--provider-id",
-                "microvm-exact",
-                "--reason",
-                "Recovered exact launch response",
-                "--evidence",
-                "incident:launch-response",
-            ])
-            .output()
+        let output = if case == "budget" {
+            let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(6)))
+                .unwrap();
+            let request = serde_json::to_vec(&telchar::service::admin::Request::AttachIdentity {
+                intent_id: case.into(),
+                provider_id: "microvm-exact".into(),
+                reason: "Recovered exact launch response".into(),
+                evidence_reference: "incident:launch-response".into(),
+            })
             .unwrap();
+            client
+                .write_all(&(request.len() as u32).to_le_bytes())
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(3500));
+            client.write_all(&request).unwrap();
+            let mut response = [0];
+            assert_eq!(client.read(&mut response).unwrap(), 0);
+            assert!(started.elapsed() < Duration::from_millis(5500));
+            None
+        } else {
+            Some(
+                Command::new(env!("CARGO_BIN_EXE_telchar"))
+                    .env_clear()
+                    .args([
+                        "admin",
+                        "microvm",
+                        if termination {
+                            "verify-termination"
+                        } else {
+                            "attach-identity"
+                        },
+                        "--socket",
+                    ])
+                    .arg(&socket)
+                    .args([
+                        "--intent",
+                        case,
+                        "--provider-id",
+                        "microvm-exact",
+                        "--reason",
+                        "Recovered exact launch response",
+                        "--evidence",
+                        "incident:launch-response",
+                    ])
+                    .output()
+                    .unwrap(),
+            )
+        };
         handler.join().unwrap();
-        if matches!(case, "slow" | "refresh") {
-            assert!(started.elapsed() < Duration::from_millis(2750));
+        if case == "budget" {
             resumed.recv_timeout(Duration::from_secs(2)).unwrap();
         }
-        assert_eq!(
-            output.status.success(),
-            matches!(case, "released" | "terminal-success" | "terminal-cleanup"),
-            "{output:?}"
-        );
-        if case == "terminal-cleanup" {
-            assert!(output.stderr.is_empty(), "{output:?}");
+        if let Some(output) = output {
+            if matches!(case, "slow" | "refresh") {
+                assert!(started.elapsed() < Duration::from_millis(2750));
+                resumed.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
             assert_eq!(
+                output.status.success(),
+                matches!(case, "released" | "terminal-success" | "terminal-cleanup"),
+                "{output:?}"
+            );
+            if case == "terminal-cleanup" {
+                assert!(output.stderr.is_empty(), "{output:?}");
+                assert_eq!(
                 output.stdout,
                 b"{\"released\":false,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
             );
-            assert!(
-                !telchar::persistence::pending_microvm_cleanup_identity(
-                    &database,
-                    case,
-                    "microvm-exact"
-                )
-                .unwrap()
-            );
-        } else if case == "terminal-success" {
-            assert!(output.stderr.is_empty(), "{output:?}");
-            assert_eq!(
+                assert!(
+                    !telchar::persistence::pending_microvm_cleanup_identity(
+                        &database,
+                        case,
+                        "microvm-exact"
+                    )
+                    .unwrap()
+                );
+            } else if case == "terminal-success" {
+                assert!(output.stderr.is_empty(), "{output:?}");
+                assert_eq!(
                 output.stdout,
                 b"{\"released\":false,\"attached\":false,\"terminated\":true,\"rejected\":false}\n"
             );
-            assert!(
-                !telchar::persistence::pending_microvm_cleanup_identity(
-                    &database,
-                    case,
-                    "microvm-exact"
-                )
-                .unwrap()
-            );
-        } else if case == "released" {
-            assert!(output.stderr.is_empty(), "{output:?}");
-            assert_eq!(
+                assert!(
+                    !telchar::persistence::pending_microvm_cleanup_identity(
+                        &database,
+                        case,
+                        "microvm-exact"
+                    )
+                    .unwrap()
+                );
+            } else if case == "released" {
+                assert!(output.stderr.is_empty(), "{output:?}");
+                assert_eq!(
                 output.stdout,
                 b"{\"released\":false,\"attached\":true,\"terminated\":false,\"rejected\":false}\n"
             );
-            assert!(
-                telchar::persistence::pending_microvm_cleanup_identity(
-                    &database,
-                    case,
-                    "microvm-exact"
-                )
-                .unwrap()
-            );
-            assert!(
-                !telchar::persistence::admit_microvm_session(
-                    owner.database(),
-                    case,
-                    "microvm-exact",
-                    &[3; 32]
-                )
-                .unwrap()
-            );
-        } else {
-            assert!(output.stdout.is_empty());
-            assert_eq!(output.stderr, b"telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n");
+                assert!(
+                    telchar::persistence::pending_microvm_cleanup_identity(
+                        &database,
+                        case,
+                        "microvm-exact"
+                    )
+                    .unwrap()
+                );
+                assert!(
+                    !telchar::persistence::admit_microvm_session(
+                        owner.database(),
+                        case,
+                        "microvm-exact",
+                        &[3; 32]
+                    )
+                    .unwrap()
+                );
+            } else {
+                assert!(output.stdout.is_empty());
+                assert_eq!(output.stderr, b"telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n");
+            }
         }
         let row = database.connection().unwrap().query_one("SELECT provider_id, phase, reservation_released_at IS NOT NULL, (SELECT count(*) FROM microvm_resolutions WHERE intent_id = $1 AND action = 'attach-identity') FROM microvm_launches WHERE intent_id = $1", &[&case]).unwrap();
         assert_eq!(
