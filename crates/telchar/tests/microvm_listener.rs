@@ -5,6 +5,74 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
+#[test]
+fn rejected_bootstrap_exports_bounded_admission_metrics() {
+    const CHILD: &str = "TELCHAR_TEST_ADMISSION_METRICS";
+    if std::env::var_os(CHILD).is_none() {
+        let collector = collector::start_collector();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rejected_bootstrap_exports_bounded_admission_metrics",
+            ])
+            .env(CHILD, "1")
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        collector.assert_counter("telchar.microvm.admissions", "rejected", 1);
+        assert!(
+            collector
+                .metric_names()
+                .contains("telchar.microvm.admission.duration")
+        );
+        collector.assert_metric_attributes_are_bounded();
+        return;
+    }
+    let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let owner = Arc::new(
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(30),
+        )
+        .unwrap(),
+    );
+    let sessions = Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut service = telchar::microvm::callback_service::CallbackService::start(
+        listener,
+        owner,
+        sessions,
+        1,
+        1,
+        Duration::from_millis(200),
+    )
+    .unwrap();
+    let mut client = TcpStream::connect(address).unwrap();
+    use std::io::Write;
+    client.write_all(b"invalid bootstrap\r\n\r\n").unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut response = Vec::new();
+    match client.read_to_end(&mut response) {
+        Ok(_) => {}
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset),
+    }
+    service.shutdown().unwrap();
+    telemetry.shutdown();
+}
+
 #[test]
 fn ownership_loss_closes_idle_listener_and_remains_unhealthy() {
     let fixture = telchar_test_support::postgres::PostgresFixture::start();

@@ -70,6 +70,7 @@ impl CallbackService {
                             Err(error) => return Err(error),
                         };
                         if admissions.len() >= maximum_connections {
+                            crate::service::metrics::microvm_admission(Duration::ZERO, "capacity");
                             continue;
                         }
                         let owner = Arc::clone(&owner);
@@ -84,9 +85,18 @@ impl CallbackService {
                         let worker = std::thread::Builder::new()
                             .name("microvm-admission".into())
                             .spawn(move || {
+                                let started = Instant::now();
                                 let result = pending.reserve().and_then(|permit| {
                                     sessions.accept(stream, &owner, deadline, permit)
                                 });
+                                crate::service::metrics::microvm_admission(
+                                    started.elapsed(),
+                                    if result.is_ok() {
+                                        "accepted"
+                                    } else {
+                                        "rejected"
+                                    },
+                                );
                                 if result.is_err() {
                                     tracing::debug!(event = "microvm.admission.rejected");
                                 }

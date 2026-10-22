@@ -61,6 +61,8 @@ struct Instruments {
     recovery_duration: Histogram<f64>,
     recovery_outcomes: Counter<u64>,
     recovery_monitoring: Gauge<u64>,
+    microvm_admissions: Counter<u64>,
+    microvm_admission_duration: Histogram<f64>,
     microvm_cleanup_attempts: Counter<u64>,
     microvm_cleanup_duration: Histogram<f64>,
     microvm_launches: Counter<u64>,
@@ -114,6 +116,19 @@ impl GaugeState {
             | crate::persistence::SharedBuildState::Failed => {}
         }
     }
+}
+
+pub(crate) fn microvm_admission(duration: Duration, outcome: &'static str) {
+    let outcome = match outcome {
+        "accepted" => "accepted",
+        "capacity" => "capacity",
+        _ => "rejected",
+    };
+    let attributes = [KeyValue::new("outcome", outcome)];
+    instruments().microvm_admissions.add(1, &attributes);
+    instruments()
+        .microvm_admission_duration
+        .record(duration.as_secs_f64(), &attributes);
 }
 
 pub(crate) fn microvm_cleanup(
@@ -363,6 +378,14 @@ fn instruments() -> &'static Instruments {
             recovery_monitoring: meter
                 .u64_gauge("telchar.recovery.monitoring")
                 .with_unit("{build}")
+                .build(),
+            microvm_admissions: meter
+                .u64_counter("telchar.microvm.admissions")
+                .with_unit("{connection}")
+                .build(),
+            microvm_admission_duration: meter
+                .f64_histogram("telchar.microvm.admission.duration")
+                .with_unit("s")
                 .build(),
             microvm_cleanup_attempts: meter
                 .u64_counter("telchar.microvm.cleanup.attempts")
