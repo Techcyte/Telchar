@@ -234,7 +234,19 @@ def main():
     args = parser.parse_args()
     state = ExecutionState([args.daemon], [args.worker, args.binding, args.trust, args.store],
                            [args.ready], args.binding)
-    server = make_server((args.listen, args.port), state, lambda: True)
+    def image_ready():
+        try:
+            commands = (args.daemon, args.ready, args.worker)
+            parent = os.path.dirname(os.path.abspath(args.binding))
+            return (all(os.path.isfile(path) and os.access(path, os.X_OK) for path in commands)
+                    and os.path.isfile(args.trust) and os.access(args.trust, os.R_OK)
+                    and os.path.getsize(args.trust) > 0
+                    and os.path.isdir(parent) and os.access(parent, os.W_OK | os.X_OK)
+                    and not os.path.lexists(args.binding))
+        except OSError:
+            return False
+
+    server = make_server((args.listen, args.port), state, image_ready)
 
     def shutdown(_signal, _frame):
         state.terminate()
