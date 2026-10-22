@@ -4,6 +4,45 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
+#[test]
+fn exports_launch_outcomes_without_execution_identifiers() {
+    const CHILD: &str = "TELCHAR_TEST_LAUNCH_METRICS";
+    if std::env::var_os(CHILD).is_some() {
+        let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+        launch_exchange(true, "active");
+        launch_exchange(false, "active");
+        launch_exchange(true, "expired");
+        telemetry.shutdown();
+        return;
+    }
+    let collector = collector::start_collector();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "exports_launch_outcomes_without_execution_identifiers",
+        ])
+        .env(CHILD, "1")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let names = collector.metric_names();
+    assert!(names.contains("telchar.microvm.launches"), "{names:?}");
+    assert!(
+        names.contains("telchar.microvm.launch.duration"),
+        "{names:?}"
+    );
+    collector.assert_counter("telchar.microvm.launches", "acknowledged", 1);
+    collector.assert_counter("telchar.microvm.launches", "unknown", 1);
+    collector.assert_metric_attributes_are_bounded();
+}
+
 #[derive(Debug)]
 struct LaunchCredentials {
     database: String,

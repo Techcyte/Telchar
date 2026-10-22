@@ -528,6 +528,7 @@ impl Provider {
             return Ok(None);
         }
         owner.verify().map_err(|_| ProviderError)?;
+        let started = std::time::Instant::now();
         let response = runtime.block_on(Self::launch(
             &client,
             &intent.image_arn,
@@ -536,6 +537,7 @@ impl Provider {
             payload,
             intent.maximum_duration_seconds,
         ));
+        crate::service::metrics::microvm_launch(started.elapsed(), response.is_ok());
         owner.verify().map_err(|_| ProviderError)?;
         match response {
             Ok(id) => {

@@ -61,6 +61,8 @@ struct Instruments {
     recovery_duration: Histogram<f64>,
     recovery_outcomes: Counter<u64>,
     recovery_monitoring: Gauge<u64>,
+    microvm_launches: Counter<u64>,
+    microvm_launch_duration: Histogram<f64>,
     nomad_submissions: Counter<u64>,
     nomad_submission_duration: Histogram<f64>,
     nomad_pending: Gauge<u64>,
@@ -110,6 +112,21 @@ impl GaugeState {
             | crate::persistence::SharedBuildState::Failed => {}
         }
     }
+}
+
+pub(crate) fn microvm_launch(duration: Duration, acknowledged: bool) {
+    let attributes = [KeyValue::new(
+        "outcome",
+        if acknowledged {
+            "acknowledged"
+        } else {
+            "unknown"
+        },
+    )];
+    instruments().microvm_launches.add(1, &attributes);
+    instruments()
+        .microvm_launch_duration
+        .record(duration.as_secs_f64(), &attributes);
 }
 
 fn instruments() -> &'static Instruments {
@@ -328,6 +345,14 @@ fn instruments() -> &'static Instruments {
             recovery_monitoring: meter
                 .u64_gauge("telchar.recovery.monitoring")
                 .with_unit("{build}")
+                .build(),
+            microvm_launches: meter
+                .u64_counter("telchar.microvm.launches")
+                .with_unit("{launch}")
+                .build(),
+            microvm_launch_duration: meter
+                .f64_histogram("telchar.microvm.launch.duration")
+                .with_unit("s")
                 .build(),
             nomad_submissions: meter
                 .u64_counter("telchar.nomad.submissions")
