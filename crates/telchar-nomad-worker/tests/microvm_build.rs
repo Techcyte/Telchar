@@ -206,6 +206,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon-multiple",
             "configured-daemon-fixed-output",
             "configured-daemon-recursive-output",
+            "configured-daemon-client-derivation",
             "configured-daemon-failure",
             "configured-daemon-corrupt-output",
             "configured-daemon-coalesced",
@@ -263,8 +264,10 @@ fn run_build() {
         case.as_str(),
         "configured-corrupt-output" | "configured-daemon-corrupt-output"
     );
+    let client_derivation = case == "configured-daemon-client-derivation";
     let recursive_output = case == "configured-daemon-recursive-output";
-    let fixed_output = recursive_output
+    let fixed_output = client_derivation
+        || recursive_output
         || matches!(
             case.as_str(),
             "configured-fixed-output" | "configured-daemon-fixed-output"
@@ -412,6 +415,35 @@ fn run_build() {
     let derivation = format!(
         r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"{builder_input}],"{system}","{builder}",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","{builder}"),("name","dedicated")])"#
     );
+    let (drv, derivation) = if client_derivation {
+        let expression = format!(
+            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
+        );
+        let result = Command::new("nix-instantiate")
+            .args(["--store", "local", "--expr", &expression, "--add-root"])
+            .arg(root.join("client-derivation"))
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        let path = std::fs::canonicalize(String::from_utf8(result.stdout).unwrap().trim())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = Command::new("nix-store")
+            .args(["--store", "local", "--query", "--outputs", &path])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        assert_eq!(String::from_utf8(result.stdout).unwrap().trim(), output);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        (path, contents)
+    } else {
+        (drv.to_owned(), derivation)
+    };
+    let drv = drv.as_str();
     let request = telchar::build::BuildRequest::from_stored_derivation(
         drv.as_bytes(),
         derivation.as_bytes(),
