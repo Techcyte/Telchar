@@ -312,6 +312,123 @@ fn database_bounds_stalled_query_and_transaction_teardown() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn database_commit_timeout_can_leave_a_durable_transaction() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    use telchar::persistence::DatabaseError;
+
+    let fixture = PostgresFixture::start();
+    let mut observer = fixture.connect();
+    observer
+        .batch_execute("CREATE TABLE commit_rows (id integer PRIMARY KEY)")
+        .unwrap();
+    let config = fixture.keyword_url().parse::<postgres::Config>().unwrap();
+    let host = config
+        .get_hosts()
+        .iter()
+        .find_map(|host| match host {
+            postgres::config::Host::Unix(path) => Some(path),
+            _ => None,
+        })
+        .expect("fixture must use a private Unix socket");
+    let socket_name = format!(".s.PGSQL.{}", config.get_ports()[0]);
+    let upstream = host.join(&socket_name);
+    let root = tempfile::Builder::new()
+        .prefix("commit-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let listener = UnixListener::bind(root.path().join(socket_name)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url =
+        fixture
+            .keyword_url()
+            .replacen(host.to_str().unwrap(), root.path().to_str().unwrap(), 1);
+    let hide_responses = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let relay = scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut client, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "database did not connect");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("proxy accept failed: {error}"),
+                }
+            };
+            let mut server = UnixStream::connect(upstream).unwrap();
+            for stream in [&client, &server] {
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(10)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+            }
+            let mut bytes = [0; 65536];
+            while Instant::now() < deadline {
+                for toward_server in [true, false] {
+                    let (source, destination) = if toward_server {
+                        (&mut client, &mut server)
+                    } else {
+                        (&mut server, &mut client)
+                    };
+                    match source.read(&mut bytes) {
+                        Ok(0) => return,
+                        Ok(length) => {
+                            if toward_server || !hide_responses.load(Ordering::SeqCst) {
+                                destination.write_all(&bytes[..length]).unwrap();
+                            }
+                        }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(error) => panic!("proxy read failed: {error}"),
+                    }
+                }
+            }
+            panic!("database transport did not close after commit timeout");
+        });
+        let database = telchar::persistence::Database::connect(url.as_str()).unwrap();
+        let started = Instant::now();
+        let mut connection = database.connection().unwrap();
+        let mut transaction = connection.transaction().unwrap();
+        transaction
+            .execute("INSERT INTO commit_rows VALUES (1)", &[])
+            .unwrap();
+        hide_responses.store(true, Ordering::SeqCst);
+        let error = transaction.commit().unwrap_err();
+        assert!(matches!(error, DatabaseError::Deadline));
+        assert!(
+            error
+                .to_string()
+                .contains("mutation outcome may be unknown")
+        );
+        assert!(matches!(
+            connection.simple_query("SELECT 1"),
+            Err(DatabaseError::Closed)
+        ));
+        drop(connection);
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert_eq!(
+            observer
+                .query_one("SELECT count(*) FROM commit_rows", &[])
+                .unwrap()
+                .get::<_, i64>(0),
+            1,
+            "lost COMMIT response must not be mistaken for rollback"
+        );
+        relay.join().unwrap();
+    });
+}
+
 #[test]
 fn persistence_accepts_a_substituted_database_source() {
     let fixture = PostgresFixture::start();
