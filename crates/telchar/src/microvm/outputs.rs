@@ -16,6 +16,8 @@ pub struct Outputs {
     endpoint: GatewayStoreEndpoint,
     staging: PathBuf,
     current: Option<(PathManifestEntry, std::fs::File)>,
+    disk_reserve: crate::service::disk_reserve::DiskReserve,
+    store_directory: PathBuf,
 }
 
 impl Outputs {
@@ -37,6 +39,8 @@ impl Outputs {
             endpoint,
             staging,
             current: None,
+            disk_reserve: crate::service::disk_reserve::DiskReserve::from_environment()?,
+            store_directory: crate::service::disk_reserve::gateway_store_directory()?,
         })
     }
 
@@ -44,6 +48,19 @@ impl Outputs {
         if self.current.is_some() {
             return Err(io::Error::other("interleaved MicroVM output"));
         }
+        self.disk_reserve
+            .admit_promotion(
+                &crate::service::disk_reserve::OsDiskReserveProbe,
+                &self.store_directory,
+                &self.staging,
+                metadata.nar_size,
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "MicroVM output disk reserve rejected",
+                )
+            })?;
         self.session.declare(metadata.clone())?;
         self.current = Some((metadata, tempfile::tempfile_in(&self.staging)?));
         Ok(())

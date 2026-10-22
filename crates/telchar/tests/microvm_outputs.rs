@@ -4,6 +4,57 @@ use telchar::nomad::protocol::{BuildOutcome, BuildResultMetadata, NarMetadata, P
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 #[test]
+fn disk_reserve_rejects_output_before_staging() {
+    const CHILD: &str = "TELCHAR_TEST_OUTPUT_DISK_RESERVE";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "disk_reserve_rejects_output_before_staging"])
+            .env(CHILD, "1")
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", u64::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        return;
+    }
+    let staging = tempfile::tempdir().unwrap();
+    let path = "/nix/store/cccccccccccccccccccccccccccccccc-microvm-output";
+    let mut outputs = Outputs::new(
+        vec![path.into()],
+        GatewayStoreEndpoint::parse("unix:///unused-nix.sock").unwrap(),
+        staging.path().into(),
+        1024,
+        2048,
+    )
+    .unwrap();
+    let error = outputs
+        .declare(PathManifestEntry {
+            path: path.into(),
+            nar_hash: "00".repeat(32),
+            nar_size: 128,
+            references: vec![],
+            deriver: None,
+            content_address: None,
+        })
+        .expect_err("disk reserve must reject before accepting output bytes");
+    assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+    assert!(
+        outputs
+            .finish(&BuildResultMetadata {
+                outcome: BuildOutcome::Built,
+                diagnostic: None
+            })
+            .is_err()
+    );
+    assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn receipts_require_authoritative_registration() {
     let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
         let output = std::process::Command::new("bash")

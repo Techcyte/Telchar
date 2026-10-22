@@ -169,6 +169,31 @@ fn transfer_rejects_one_byte_below_requirements() {
 }
 
 #[test]
+fn promotion_accounts_for_two_staging_copies_and_store_import() {
+    let reserve = DiskReserve::parse("10").unwrap();
+    for (store_id, staging_id, store_bytes, staging_bytes) in [(1, 1, 19, 19), (1, 2, 13, 16)] {
+        let probe = ControlledProbe {
+            store: filesystem(store_id, store_bytes),
+            staging: filesystem(staging_id, staging_bytes),
+        };
+        reserve
+            .admit_promotion(&probe, Path::new("/nix/store"), Path::new("/staging"), 3)
+            .unwrap();
+        let below = ControlledProbe {
+            store: probe.store,
+            staging: filesystem(staging_id, staging_bytes - 1),
+        };
+        assert_eq!(
+            reserve
+                .admit_promotion(&below, Path::new("/nix/store"), Path::new("/staging"), 3)
+                .unwrap_err()
+                .reason(),
+            RejectionReason::InsufficientSpace
+        );
+    }
+}
+
+#[test]
 fn transfer_treats_different_path_text_on_one_filesystem_as_shared() {
     let reserve = DiskReserve::parse("10").expect("positive reserve parses");
     let paths = Arc::new(Mutex::new(Vec::new()));
