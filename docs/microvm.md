@@ -89,9 +89,11 @@ retained obligations without configured account/region authority.
 Remaining release gates include distinct-build fairness/quota qualification,
 recursive fixed outputs and remaining transfer failures, staging disk admission,
 store-I/O deadline/fencing guarantees, native executing-builder recovery,
-provider image/egress correspondence, administrative reconciliation and audit,
-metrics, NixOS wiring, and a secure ARM production image. Configuration acceptance is not a
-production release claim. Native sandbox/build-user/secret assertions have focused
+provider image/egress correspondence, remaining administrative fault qualification,
+metrics, NixOS runtime qualification, and a secure ARM production image.
+Administrative reconciliation/audit and optional NixOS socket wiring are implemented;
+their focused contracts do not close all release gates. Configuration acceptance is
+not a production release claim. Native sandbox/build-user/secret assertions have focused
 runtime evidence, but complete image construction and snapshot cryptographic
 safety remain unresolved production gates. Do not deploy the experimental images
 as a substitute.
@@ -148,8 +150,12 @@ the existing pools. Daemon shutdown signals the active request before joining it
 handler; database and provider waits observe cancellation, while socket closure
 interrupts frame I/O. The CLI response timeout alone does not signal cancellation.
 The whole-daemon stopped-PostgreSQL-update contract passes its two-second shutdown
-bound, preserving unchanged launch state and zero audit writes. Combined-stage
-deadline exhaustion and every health-lock contention boundary remain unqualified.
+bound, preserving unchanged launch state and zero audit writes. A separate
+handler/Service/PostgreSQL contract delays the frame body by 3.5 seconds, then
+stalls a simulated provider for three seconds. It requires timeout and socket EOF
+within 5.5 seconds from request start, with no attachment or audit mutation.
+Whole-daemon combined-stage exhaustion and health-lock contention/cancellation
+remain unqualified.
 
 Ownership release on shutdown is best effort, with a separate 250 ms client-side
 budget for the exact owner token and generation. A stopped server can retain its
@@ -190,11 +196,13 @@ telchar admin microvm attach-identity \
 Attachment reads the persisted account/region/image/version, selects configured
 account/region authority, and checks exact provider metadata outside database
 transactions. Credential resolution, re-attestation and metadata lookup share a
-two-second administrative provider budget; timeout rejects attachment without a
-durable mutation. This provider budget does not include database reads, writes or
-pool validation; those use separate checkout budgets, not a total request/shutdown
-deadline. It rechecks service ownership afterward and atomically closes admission,
-attaches the ID and records the audit under the database fence.
+provider budget capped at two seconds and the remaining absolute request budget.
+Timeout during provider verification prevents the attachment mutation from starting.
+Database reads, pool validation, pre/post-provider ownership checks and final
+mutation use the same request deadline and cancellation flag through shared-pool
+handles; they do not receive a fresh five-second request budget at each stage.
+It rechecks service ownership afterward and atomically closes admission, attaches
+the ID and records the audit under the database fence.
 `attached: true` reports that transition; it neither releases capacity nor permits
 worker admission, adoption or relaunch. The evidence reference is an operator
 assertion of launch linkage, not automatically fetched or independently verified.
@@ -205,8 +213,10 @@ A mapped-root CLI/socket/Service/PostgreSQL contract with a signed simulated
 provider covers image-version rejection, attachment after risk release,
 slow-provider rejection and ownership expiry/replacement during lookup. A separate
 whole-daemon contract covers successful cleanup-only attachment and graceful
-shutdown. Total request/shutdown bounds and live AWS correspondence remain
-unqualified.
+shutdown. These contracts and the combined frame/provider deadline case above
+cover specific wait boundaries, not every request/shutdown race. Administrative
+lost-COMMIT-response integration, health-lock fault coverage and live AWS
+correspondence remain unqualified.
 
 ```sh
 telchar admin microvm verify-termination \
