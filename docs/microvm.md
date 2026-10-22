@@ -138,10 +138,25 @@ running SQL. These are isolated local contracts, not host-root deployment or liv
 AWS qualification.
 
 Administrative transactions use a 250 ms lock timeout and a one-second statement
-timeout. Those PostgreSQL limits do not establish a total request or shutdown
-bound when database networking or pool validation stalls. The normal daemon loop
-fails on administrative listener failure; the `--once` path does not poll that
-health check. This interface remains experimental.
+timeout. Each database checkout also has a five-second absolute client-side budget
+covering pool wait, validation, queries and transaction rollback. Expired or failed
+connections are discarded; application mutations are not automatically retried.
+These are separate budgets, not one administrative deadline: identity lookup,
+ownership checks and the final mutation use separate checkouts, with provider
+verification between them. The CLI's five-second response timeout does not cancel
+server-side database work. Closing the administrative socket during shutdown also
+does not directly cancel that work; the listener joins its handler. Total request
+and whole-daemon transport-fault shutdown bounds remain unqualified. The normal
+daemon loop fails on administrative listener failure; the `--once` path does not
+poll that health check. This interface remains experimental.
+
+A timeout, lost response or generic rejection is not proof that a mutation rolled
+back. COMMIT can succeed durably before its response is lost. Inspect the exact
+intent with `telchar operator microvm` and its immutable resolution summary with
+`telchar operator microvm-audit` before deciding whether another administrative
+action is appropriate. Both reports are bounded views: absence from a limited
+result is not proof that no mutation occurred. Do not automatically retry an
+uncertain mutation.
 
 Risk-released intents with no provider ID still need evidence-backed identity
 reconciliation. The provider lookup exposes an instance's ID and image/version,
@@ -163,9 +178,10 @@ Attachment reads the persisted account/region/image/version, selects configured
 account/region authority, and checks exact provider metadata outside database
 transactions. Credential resolution, re-attestation and metadata lookup share a
 two-second administrative provider budget; timeout rejects attachment without a
-durable mutation. This budget does not bound database reads or writes, pool
-validation, or total request/shutdown time. It rechecks service ownership afterward and atomically closes
-admission, attaches the ID and records the audit under the database fence.
+durable mutation. This provider budget does not include database reads, writes or
+pool validation; those use separate checkout budgets, not a total request/shutdown
+deadline. It rechecks service ownership afterward and atomically closes admission,
+attaches the ID and records the audit under the database fence.
 `attached: true` reports that transition; it neither releases capacity nor permits
 worker admission, adoption or relaunch. The evidence reference is an operator
 assertion of launch linkage, not automatically fetched or independently verified.
