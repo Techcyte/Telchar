@@ -79,6 +79,11 @@ fn replacement_acquires_expired_lease_with_higher_generation() {
             .failure(),
         telchar::service::singleton_ownership::SingletonOwnershipFailure::Fenced
     );
+    drop(owner);
+    replacement
+        .verify()
+        .expect("retiring owner preserves replacement");
+    replacement.renew().expect("replacement remains renewable");
 }
 
 #[test]
@@ -196,6 +201,45 @@ fn ownership_remains_authoritative_during_long_startup_work() {
         .expect("ownership renewal remains active");
 
     owner.verify().expect("startup owner remains current");
+}
+
+#[test]
+fn ownership_release_is_bounded_when_its_row_is_locked() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("daemon acquires ownership");
+    let generation = owner.generation();
+    let mut observer = fixture.connect();
+    let mut transaction = observer.transaction().expect("observer transaction");
+    transaction
+        .query_one(
+            "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon' FOR SHARE",
+            &[],
+        )
+        .expect("hold ownership row lock");
+
+    let started = std::time::Instant::now();
+    drop(owner);
+    let elapsed = started.elapsed();
+    assert_eq!(
+        transaction
+            .query_one(
+                "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+                &[]
+            )
+            .expect("unreleased lease remains")
+            .get::<_, i64>(0),
+        generation
+    );
+    transaction.rollback().expect("release observer lock");
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "ownership release exceeded shutdown budget: {elapsed:?}"
+    );
 }
 
 #[test]

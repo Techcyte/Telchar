@@ -193,7 +193,8 @@ impl SingletonOwnership {
 
 impl Drop for SingletonOwnership {
     fn drop(&mut self) {
-        let Ok(mut connection) = connect(&self.database) else {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        let Ok(mut connection) = self.database.connection_until(deadline) else {
             return;
         };
         let _ = connection.execute(

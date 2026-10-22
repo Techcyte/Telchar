@@ -43,8 +43,17 @@ impl Database {
     pub fn connection(
         &self,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        self.connection_until(Instant::now() + Duration::from_secs(5))
+    }
+
+    pub(crate) fn connection_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
         loop {
+            if Instant::now() >= deadline {
+                return Err(DatabaseError::Deadline.into());
+            }
             let mut connection = self
                 .pool
                 .get_timeout(deadline.saturating_duration_since(Instant::now()))?;
