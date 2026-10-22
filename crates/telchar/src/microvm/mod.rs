@@ -361,6 +361,35 @@ impl Provider {
         .map_err(|_| ProviderError)
     }
 
+    pub async fn verify_image(
+        &self,
+        image_arn: &str,
+        image_version: &str,
+    ) -> Result<(), ProviderError> {
+        use aws_sdk_lambdamicrovms::types::{
+            Architecture, MicrovmImageVersionState, MicrovmImageVersionStatus,
+        };
+        let image = self
+            .authorized_client()
+            .await?
+            .get_microvm_image_version()
+            .image_identifier(image_arn)
+            .image_version(image_version)
+            .send()
+            .await
+            .map_err(|_| ProviderError)?;
+        if image.image_arn() != image_arn
+            || image.image_version() != image_version
+            || image.state() != &MicrovmImageVersionState::Successful
+            || image.status() != &MicrovmImageVersionStatus::Active
+            || image.cpu_configurations().len() != 1
+            || image.cpu_configurations()[0].architecture() != &Architecture::Arm64
+        {
+            return Err(ProviderError);
+        }
+        Ok(())
+    }
+
     /// Verifies provider metadata, not the instance's linkage to a launch intent.
     pub async fn verify_identity(
         &self,

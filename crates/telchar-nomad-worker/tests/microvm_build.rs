@@ -21,6 +21,9 @@ fn provider_response(
     provider_client(endpoint, response, attest)
 }
 
+#[path = "../../../tests/microvm/image.rs"]
+mod image;
+
 fn provider_server(
     binding: Option<std::sync::mpsc::SyncSender<serde_json::Value>>,
 ) -> (String, std::thread::JoinHandle<()>) {
@@ -115,6 +118,14 @@ fn provider_server(
                 );
                 let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                 write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                if std::env::var("MICROVM_TEST_CASE")
+                    .is_ok_and(|case| case.starts_with("configured-daemon"))
+                {
+                    image::serve_image(
+                        &listener,
+                        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                    );
+                }
                 continue;
             }
             let request: serde_json::Value = serde_json::from_slice(&body).unwrap();

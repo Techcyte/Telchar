@@ -23,6 +23,87 @@ metadata_bytes = 1048576
 chunk_bytes = 262144
 "#;
 
+#[path = "../../../tests/microvm/image.rs"]
+mod image;
+
+#[test]
+fn configured_provider_rejects_unavailable_image() {
+    const CHILD: &str = "TELCHAR_TEST_IMAGE_CHECK";
+    if std::env::var_os(CHILD).is_some() {
+        let config = telchar::service::config::MicrovmBackendConfig::parse(CONFIG).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(
+            runtime.block_on(config.provider()).is_err(),
+            "unavailable image must reject provider startup"
+        );
+        return;
+    }
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for image in [false, true] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break stream;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+                assert!(headers.len() < 32768);
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.contains("credential=fixture-key/"));
+            let length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .map_or(0, |v| v.parse::<usize>().unwrap());
+            assert!(length < 4096);
+            stream.read_exact(&mut vec![0; length]).unwrap();
+            if image {
+                assert!(headers.starts_with("get "));
+                stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+            } else {
+                let body = "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>";
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        }
+    });
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "configured_provider_rejects_unavailable_image"])
+        .env_clear()
+        .env(CHILD, "1")
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .env("AWS_ACCESS_KEY_ID", "fixture-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
+        .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+}
+
 fn service_configuration(text: &str) -> std::io::Result<telchar::service::config::ServiceConfig> {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("service.toml");
@@ -353,6 +434,12 @@ fn daemon_lifecycle(exit: DaemonExit) {
             "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>{account}</Account><Arn>arn:aws:iam::{account}:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>"
         );
         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+        if exit != DaemonExit::AccountMismatch {
+            image::serve_image(
+                &listener,
+                "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+            );
+        }
         if exit == DaemonExit::Terminated {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut socket = loop {

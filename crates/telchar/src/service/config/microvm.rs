@@ -151,7 +151,7 @@ impl MicrovmBackendConfig {
         let identity = aws_sdk_sts::config::Builder::from(&shared)
             .endpoint_url(endpoint("sts")?)
             .build();
-        crate::microvm::Provider::verify_account(
+        let provider = crate::microvm::Provider::verify_account(
             config,
             identity,
             shared
@@ -161,7 +161,12 @@ impl MicrovmBackendConfig {
             timeout,
         )
         .await
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+        provider
+            .verify_image(&self.0.image_arn, &self.0.image_version)
+            .await
+            .map_err(io::Error::other)?;
+        Ok(provider)
     }
 
     pub fn target(&self) -> &BackendTarget {
