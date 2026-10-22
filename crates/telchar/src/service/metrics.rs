@@ -63,6 +63,8 @@ struct Instruments {
     recovery_monitoring: Gauge<u64>,
     microvm_admissions: Counter<u64>,
     microvm_admission_duration: Histogram<f64>,
+    microvm_obligations: Histogram<u64>,
+    microvm_obligation_age: Histogram<f64>,
     microvm_rendezvous: Counter<u64>,
     microvm_rendezvous_duration: Histogram<f64>,
     microvm_cleanup_attempts: Counter<u64>,
@@ -118,6 +120,21 @@ impl GaugeState {
             | crate::persistence::SharedBuildState::Failed => {}
         }
     }
+}
+
+pub(crate) fn microvm_obligations(identified: bool, count: u64, age: f64) {
+    let attributes = [KeyValue::new(
+        "outcome",
+        if identified {
+            "identified"
+        } else {
+            "unidentified"
+        },
+    )];
+    instruments().microvm_obligations.record(count, &attributes);
+    instruments()
+        .microvm_obligation_age
+        .record(age, &attributes);
 }
 
 pub(crate) fn microvm_rendezvous(duration: Duration, connected: bool) {
@@ -398,6 +415,14 @@ fn instruments() -> &'static Instruments {
                 .build(),
             microvm_admission_duration: meter
                 .f64_histogram("telchar.microvm.admission.duration")
+                .with_unit("s")
+                .build(),
+            microvm_obligations: meter
+                .u64_histogram("telchar.microvm.obligations")
+                .with_unit("{obligation}")
+                .build(),
+            microvm_obligation_age: meter
+                .f64_histogram("telchar.microvm.obligation.age")
                 .with_unit("s")
                 .build(),
             microvm_rendezvous: meter

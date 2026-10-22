@@ -23,6 +23,15 @@ fn exports_cleanup_outcomes_without_releasing_uncertain_capacity() {
             .unwrap()
         );
         assert!(exchange("404 Not Found", "{}", "cleanup").0.is_err());
+        assert!(
+            exchange(
+                "200 OK",
+                &observation("microvm-exact", "RUNNING"),
+                "maintenance"
+            )
+            .0
+            .unwrap()
+        );
         telemetry.shutdown();
         return;
     }
@@ -39,10 +48,11 @@ fn exports_cleanup_outcomes_without_releasing_uncertain_capacity() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    collector.assert_counter("telchar.microvm.cleanup.attempts", "unchanged", 2);
-    for outcome in ["released", "error"] {
-        collector.assert_counter("telchar.microvm.cleanup.attempts", outcome, 1);
-    }
+    collector.assert_counter("telchar.microvm.cleanup.attempts", "unchanged", 3);
+    collector.assert_counter("telchar.microvm.cleanup.attempts", "released", 2);
+    collector.assert_counter("telchar.microvm.cleanup.attempts", "error", 1);
+    collector.assert_histogram_sample("telchar.microvm.obligations", "identified", 1.0);
+    collector.assert_histogram_sample("telchar.microvm.obligation.age", "identified", 10.0);
     assert!(
         collector
             .metric_names()
@@ -218,6 +228,7 @@ fn exchange(
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("cleanup obligation persists");
     if operation.starts_with("maintenance") {
+        fixture.connect().execute("UPDATE microvm_launches SET created_at = created_at - interval '10 seconds' WHERE intent_id = 'cleanup-intent'", &[]).unwrap();
         let other = "/nix/store/cccccccccccccccccccccccccccccccc-cleanup.drv";
         telchar::persistence::claim_shared_build(
             &database,

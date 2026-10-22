@@ -103,6 +103,28 @@ impl Collector {
         assert_eq!(value.attributes.len(), 1, "unexpected counter labels");
     }
 
+    pub fn assert_histogram_sample(&self, name: &str, outcome: &str, minimum: f64) {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let point = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .filter(|metric| metric.name == name)
+            .filter_map(|metric| match &metric.data {
+                Some(Data::Histogram(histogram)) => Some(histogram),
+                _ => None,
+            })
+            .flat_map(|histogram| &histogram.data_points)
+            .find(|point| Self::has_attribute(&point.attributes, "outcome", outcome))
+            .expect("histogram outcome exported");
+        assert!(point.count > 0);
+        assert!(point.max.expect("maximum exported") >= minimum);
+        assert_eq!(point.attributes.len(), 1, "unexpected histogram labels");
+    }
+
     pub fn assert_metric_attributes_are_bounded(&self) {
         let forbidden = [
             "request_id",

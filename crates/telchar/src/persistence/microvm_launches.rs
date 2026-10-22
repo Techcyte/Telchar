@@ -408,6 +408,27 @@ pub fn pending_microvm_cleanup(
         return Err(MicrovmLaunchError);
     }
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let observations = client
+        .query(
+            "SELECT provider_id IS NOT NULL, count(*),
+         GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - min(created_at)))::double precision
+         FROM microvm_launches
+         WHERE account_id = $1 AND region = $2
+           AND (reservation_released_at IS NULL
+                OR (provider_id IS NOT NULL AND termination_observed_at IS NULL))
+         GROUP BY provider_id IS NOT NULL",
+            &[&account_id, &region],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    for identified in [false, true] {
+        let observation = observations
+            .iter()
+            .find(|row| row.get::<_, bool>(0) == identified);
+        let (count, age) = observation.map_or((0, 0.0), |row| {
+            (row.get::<_, i64>(1) as u64, row.get::<_, f64>(2))
+        });
+        crate::service::metrics::microvm_obligations(identified, count, age);
+    }
     let rows = client
         .query(
             "SELECT l.intent_id, l.provider_id, l.account_id, l.region
