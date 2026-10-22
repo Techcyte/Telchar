@@ -22,6 +22,25 @@ enum ConnectionSecurity {
 #[derive(Clone)]
 pub struct Database {
     pool: Pool<Manager>,
+    request: Option<RequestBudget>,
+}
+
+#[derive(Clone)]
+struct RequestBudget {
+    deadline: Instant,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RequestBudget {
+    fn check(&self) -> Result<(), DatabaseError> {
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(DatabaseError::Cancelled);
+        }
+        if Instant::now() >= self.deadline {
+            return Err(DatabaseError::Deadline);
+        }
+        Ok(())
+    }
 }
 
 pub struct DatabaseConnection(PooledConnection<Manager>);
@@ -37,7 +56,22 @@ impl Database {
         };
         Ok(Self {
             pool: build_pool(Manager { config, security })?,
+            request: None,
         })
+    }
+
+    pub fn for_request(
+        &self,
+        deadline: Instant,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            request: Some(RequestBudget {
+                deadline,
+                cancelled,
+            }),
+        }
     }
 
     pub fn connection(
@@ -50,14 +84,29 @@ impl Database {
         &self,
         deadline: Instant,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
+        let deadline = self
+            .request
+            .as_ref()
+            .map_or(deadline, |request| deadline.min(request.deadline));
         loop {
+            if let Some(request) = &self.request {
+                request.check()?;
+            }
             if Instant::now() >= deadline {
                 return Err(DatabaseError::Deadline.into());
             }
-            let mut connection = self
-                .pool
-                .get_timeout(deadline.saturating_duration_since(Instant::now()))?;
-            match connection.validate(deadline) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait = if self.request.is_some() {
+                remaining.min(Duration::from_millis(50))
+            } else {
+                remaining
+            };
+            let mut connection = match self.pool.get_timeout(wait) {
+                Ok(connection) => connection,
+                Err(_) if self.request.is_some() => continue,
+                Err(error) => return Err(error.into()),
+            };
+            match connection.validate(deadline, self.request.clone()) {
                 Ok(()) => return Ok(DatabaseConnection(connection)),
                 Err(error) if Instant::now() >= deadline => return Err(error.into()),
                 Err(_) => {}

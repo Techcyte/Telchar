@@ -12,6 +12,7 @@ const CONNECTION_BUDGET: Duration = Duration::from_secs(5);
 pub enum DatabaseError {
     Query(tokio_postgres::Error),
     Deadline,
+    Cancelled,
     Closed,
     Runtime(std::io::Error),
 }
@@ -36,6 +37,7 @@ impl std::fmt::Display for DatabaseError {
             Self::Deadline => {
                 "database connection deadline exceeded; mutation outcome may be unknown"
             }
+            Self::Cancelled => "database request cancelled; mutation outcome may be unknown",
             Self::Closed => "database connection closed",
             Self::Runtime(_) => "database runtime unavailable",
         })
@@ -89,6 +91,7 @@ impl r2d2::ManageConnection for Manager {
                 runtime,
                 connection: Some(connection),
                 deadline,
+                request: None,
             },
         })
     }
@@ -108,6 +111,7 @@ struct Driver {
     runtime: tokio::runtime::Runtime,
     connection: Option<ConnectionFuture>,
     deadline: Instant,
+    request: Option<super::RequestBudget>,
 }
 
 impl Driver {
@@ -117,10 +121,23 @@ impl Driver {
     ) -> Result<T, DatabaseError> {
         let connection = self.connection.as_mut().ok_or(DatabaseError::Closed)?;
         let mut disconnected = false;
+        let request = self.request.clone();
         let result = self.runtime.block_on(async {
             tokio::select! {
                 biased;
                 _ = tokio::time::sleep_until(self.deadline.into()) => Err(DatabaseError::Deadline),
+                _ = async {
+                    if let Some(request) = request {
+                        loop {
+                            if request.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => Err(DatabaseError::Cancelled),
                 result = connection => {
                     disconnected = true;
                     match result {
@@ -132,7 +149,10 @@ impl Driver {
             }
         });
         if disconnected
-            || matches!(result, Err(DatabaseError::Deadline | DatabaseError::Closed))
+            || matches!(
+                result,
+                Err(DatabaseError::Deadline | DatabaseError::Cancelled | DatabaseError::Closed)
+            )
             || self.client_closed_error(&result)
         {
             self.connection.take();
@@ -151,8 +171,13 @@ pub struct DatabaseClient {
 }
 
 impl DatabaseClient {
-    pub(super) fn validate(&mut self, deadline: Instant) -> Result<(), DatabaseError> {
+    pub(super) fn validate(
+        &mut self,
+        deadline: Instant,
+        request: Option<super::RequestBudget>,
+    ) -> Result<(), DatabaseError> {
         self.driver.deadline = deadline;
+        self.driver.request = request;
         let result = self.simple_query("").map(|_| ());
         if result.is_err() {
             self.driver.connection.take();

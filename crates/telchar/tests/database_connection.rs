@@ -36,6 +36,131 @@ fn database_reuses_an_established_connection() {
 }
 
 #[test]
+fn database_request_cancels_pool_wait_and_active_io() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    for hold_pool in [true, false] {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let request = database.for_request(
+            Instant::now() + Duration::from_secs(5),
+            Arc::clone(&cancelled),
+        );
+        let held = if hold_pool {
+            (0..16)
+                .map(|_| database.connection().unwrap())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let (started, observed) = mpsc::channel();
+        let (finished, result) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                if hold_pool {
+                    started.send(None).unwrap();
+                    let error = request.connection().err().expect("pool wait cancelled");
+                    assert!(matches!(
+                        error.downcast_ref(),
+                        Some(telchar::persistence::DatabaseError::Cancelled)
+                    ));
+                } else {
+                    let mut connection = request.connection().unwrap();
+                    let backend = connection
+                        .query_one("SELECT pg_backend_pid()", &[])
+                        .unwrap()
+                        .get::<_, i32>(0);
+                    started.send(Some(backend)).unwrap();
+                    assert!(matches!(
+                        connection.simple_query("SELECT pg_sleep(10)"),
+                        Err(telchar::persistence::DatabaseError::Cancelled)
+                    ));
+                    assert!(matches!(
+                        connection.simple_query("SELECT 1"),
+                        Err(telchar::persistence::DatabaseError::Closed)
+                    ));
+                }
+                finished.send(()).unwrap();
+            });
+            if let Some(backend) = observed.recv_timeout(Duration::from_secs(2)).unwrap() {
+                let mut inspector = fixture.connect();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !inspector.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event = 'PgSleep')", &[&backend]).unwrap().get::<_, bool>(0) {
+                    assert!(Instant::now() < deadline, "query did not reach server");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            cancelled.store(true, Ordering::Release);
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .expect("request cancellation bounds client I/O");
+        });
+        drop(held);
+        database
+            .connection()
+            .unwrap()
+            .simple_query("SELECT 1")
+            .unwrap();
+    }
+}
+
+#[test]
+fn database_request_deadline_spans_checkouts_without_affecting_pool_users() {
+    use std::sync::{Arc, atomic::AtomicBool};
+    use std::time::{Duration, Instant};
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    let backend = database
+        .connection()
+        .unwrap()
+        .query_one("SELECT pg_backend_pid()", &[])
+        .unwrap()
+        .get::<_, i32>(0);
+    let request = database.for_request(
+        Instant::now() + Duration::from_millis(500),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert_eq!(
+        request
+            .connection()
+            .unwrap()
+            .query_one("SELECT pg_backend_pid()", &[])
+            .unwrap()
+            .get::<_, i32>(0),
+        backend
+    );
+    request
+        .connection()
+        .unwrap()
+        .simple_query("SELECT pg_sleep(0.3)")
+        .unwrap();
+    let started = Instant::now();
+    let error = request
+        .connection()
+        .unwrap()
+        .simple_query("SELECT pg_sleep(1)")
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        telchar::persistence::DatabaseError::Deadline
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "checkout reset request deadline"
+    );
+    assert!(request.connection().is_err());
+    database
+        .connection()
+        .unwrap()
+        .simple_query("SELECT 1")
+        .unwrap();
+}
+
+#[test]
 fn database_replaces_stale_connections_after_restart() {
     let mut fixture = PostgresFixture::start();
     let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
