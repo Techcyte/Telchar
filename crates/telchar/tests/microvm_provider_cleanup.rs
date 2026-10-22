@@ -4,6 +4,53 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
+#[test]
+fn exports_cleanup_outcomes_without_releasing_uncertain_capacity() {
+    const CHILD: &str = "TELCHAR_TEST_CLEANUP_METRICS";
+    if std::env::var_os(CHILD).is_some() {
+        let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+        assert!(
+            exchange(
+                "200 OK",
+                &observation("microvm-exact", "RUNNING"),
+                "lifecycle-cleanup"
+            )
+            .0
+            .unwrap()
+        );
+        assert!(exchange("404 Not Found", "{}", "cleanup").0.is_err());
+        telemetry.shutdown();
+        return;
+    }
+    let collector = collector::start_collector();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "exports_cleanup_outcomes_without_releasing_uncertain_capacity",
+        ])
+        .env(CHILD, "1")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    collector.assert_counter("telchar.microvm.cleanup.attempts", "unchanged", 2);
+    for outcome in ["released", "error"] {
+        collector.assert_counter("telchar.microvm.cleanup.attempts", outcome, 1);
+    }
+    assert!(
+        collector
+            .metric_names()
+            .contains("telchar.microvm.cleanup.duration")
+    );
+    collector.assert_metric_attributes_are_bounded();
+}
+
 #[derive(Debug)]
 struct CleanupCredentials {
     database: String,

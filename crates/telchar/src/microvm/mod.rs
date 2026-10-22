@@ -322,6 +322,17 @@ impl Provider {
         owner: &crate::service::singleton_ownership::SingletonOwnership,
         cleanup: &crate::persistence::MicrovmCleanup,
     ) -> Result<bool, ProviderError> {
+        let started = std::time::Instant::now();
+        let result = self.observe_cleanup(owner, cleanup);
+        crate::service::metrics::microvm_cleanup(started.elapsed(), &result);
+        result
+    }
+
+    fn observe_cleanup(
+        &self,
+        owner: &crate::service::singleton_ownership::SingletonOwnership,
+        cleanup: &crate::persistence::MicrovmCleanup,
+    ) -> Result<bool, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
         if self.client.config().region().map(|region| region.as_ref())
             != Some(cleanup.region.as_str())
