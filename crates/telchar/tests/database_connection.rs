@@ -99,17 +99,36 @@ fn dropping_database_retires_background_tasks() {
 }
 
 #[cfg(target_os = "linux")]
+struct ResumeBackend(i32);
+
+#[cfg(target_os = "linux")]
+impl ResumeBackend {
+    fn stop(backend: i32) -> Self {
+        let resume = Self(backend);
+        assert_eq!(unsafe { libc::kill(backend, libc::SIGSTOP) }, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{backend}/status")).unwrap();
+            if status.lines().any(|line| line.starts_with("State:\tT")) {
+                return resume;
+            }
+            assert!(std::time::Instant::now() < deadline, "backend did not stop");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ResumeBackend {
+    fn drop(&mut self) {
+        unsafe { libc::kill(self.0, libc::SIGCONT) };
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn database_checkout_bounds_stalled_validation() {
     use std::time::{Duration, Instant};
-
-    struct ResumeBackend(i32);
-
-    impl Drop for ResumeBackend {
-        fn drop(&mut self) {
-            unsafe { libc::kill(self.0, libc::SIGCONT) };
-        }
-    }
 
     let fixture = PostgresFixture::start();
     let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
@@ -123,17 +142,7 @@ fn database_checkout_bounds_stalled_validation() {
         .get::<_, i32>(0);
     let (sender, receiver) = std::sync::mpsc::channel();
     let within_deadline = std::thread::scope(|scope| {
-        let resume = ResumeBackend(backend);
-        assert_eq!(unsafe { libc::kill(backend, libc::SIGSTOP) }, 0);
-        let stopped_deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let status = std::fs::read_to_string(format!("/proc/{backend}/status")).unwrap();
-            if status.lines().any(|line| line.starts_with("State:\tT")) {
-                break;
-            }
-            assert!(Instant::now() < stopped_deadline, "backend did not stop");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let resume = ResumeBackend::stop(backend);
         drop(connection);
         let checkout = scope.spawn(|| {
             let started = Instant::now();
@@ -215,6 +224,92 @@ fn database_deadline_discards_an_uncommitted_transaction() {
             .get::<_, i32>(0),
         2
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn database_bounds_stalled_query_and_transaction_teardown() {
+    use std::time::{Duration, Instant};
+    use telchar::persistence::DatabaseError;
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    database
+        .connection()
+        .unwrap()
+        .batch_execute("CREATE TABLE stalled_rows (id integer PRIMARY KEY)")
+        .unwrap();
+
+    for operation in ["query", "rollback", "drop"] {
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let (backend, observed) = std::thread::scope(|scope| {
+            let database = &database;
+            let worker = scope.spawn(move || {
+                let started = Instant::now();
+                let mut connection = database.connection().unwrap();
+                let backend = connection
+                    .query_one("SELECT pg_backend_pid()", &[])
+                    .unwrap()
+                    .get::<_, i32>(0);
+                let mut transaction = connection.transaction().unwrap();
+                transaction
+                    .execute("INSERT INTO stalled_rows VALUES (1)", &[])
+                    .unwrap();
+                ready_sender.send(backend).unwrap();
+                start_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+                match operation {
+                    "query" => {
+                        assert!(matches!(
+                            transaction.simple_query("SELECT 1"),
+                            Err(DatabaseError::Deadline)
+                        ));
+                        drop(transaction);
+                    }
+                    "rollback" => assert!(matches!(
+                        transaction.rollback(),
+                        Err(DatabaseError::Deadline)
+                    )),
+                    "drop" => drop(transaction),
+                    _ => unreachable!(),
+                }
+                assert!(matches!(
+                    connection.simple_query("SELECT 1"),
+                    Err(DatabaseError::Closed)
+                ));
+                drop(connection);
+                done_sender.send(started.elapsed()).unwrap();
+            });
+            let backend = ready_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+            let resume = ResumeBackend::stop(backend);
+            start_sender.send(()).unwrap();
+            let observed = done_receiver.recv_timeout(Duration::from_secs(6));
+            drop(resume);
+            worker.join().unwrap();
+            (backend, observed)
+        });
+        assert!(
+            observed.expect("stalled transaction exceeded checkout budget")
+                < Duration::from_secs(6),
+            "{operation} must share the checkout deadline"
+        );
+        let mut replacement = database.connection().unwrap();
+        assert_ne!(
+            replacement
+                .query_one("SELECT pg_backend_pid()", &[])
+                .unwrap()
+                .get::<_, i32>(0),
+            backend
+        );
+        assert_eq!(
+            replacement
+                .query_one("SELECT count(*) FROM stalled_rows", &[])
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+    }
 }
 
 #[test]
