@@ -442,7 +442,7 @@ chunk_bytes = 1024
             );
         } else {
             assert!(output.stdout.is_empty());
-            assert_eq!(output.stderr, b"telchar: administrative request rejected\n");
+            assert_eq!(output.stderr, b"telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n");
         }
         let row = database.connection().unwrap().query_one("SELECT provider_id, phase, reservation_released_at IS NOT NULL, (SELECT count(*) FROM microvm_resolutions WHERE intent_id = $1 AND action = 'attach-identity') FROM microvm_launches WHERE intent_id = $1", &[&case]).unwrap();
         assert_eq!(

@@ -475,7 +475,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             assert!(repeated.stdout.is_empty(), "{repeated:?}");
             assert_eq!(
                 repeated.stderr,
-                b"telchar: administrative request rejected\n"
+                b"telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n"
             );
             let audit = inspector.query_one("SELECT actor_uid, owner_generation, provider_id, evidence_reference FROM microvm_resolutions WHERE intent_id = 'admin-intent' AND action = 'verify-termination'", &[]).unwrap();
             assert_eq!(audit.get::<_, i64>(0), 0);
@@ -484,7 +484,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             assert_eq!(audit.get::<_, String>(3), "incident:daemon-termination");
         } else {
             assert!(output.stdout.is_empty(), "{output:?}");
-            assert_eq!(output.stderr, b"telchar: administrative request rejected\n");
+            assert_eq!(output.stderr, b"telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n");
         }
         let state = inspector.query_one("SELECT reservation_released_at, termination_observed_at IS NOT NULL, phase, (SELECT count(*) FROM microvm_resolutions) FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         let release_after: Option<std::time::SystemTime> = state.get(0);

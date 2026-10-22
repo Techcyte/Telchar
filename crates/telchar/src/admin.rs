@@ -77,14 +77,22 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
     let mut stream = UnixStream::connect(socket)?;
-    telchar::service::admin::write_request(&mut stream, &request)?;
-    let response = telchar::service::admin::read_response(&mut stream)?;
+    telchar::service::admin::write_request(&mut stream, &request)
+        .map_err(|_| uncertain_outcome())?;
+    let response =
+        telchar::service::admin::read_response(&mut stream).map_err(|_| uncertain_outcome())?;
     if response.rejected {
-        return Err(invalid("administrative request rejected").into());
+        return Err(uncertain_outcome().into());
     }
     serde_json::to_writer(std::io::stdout().lock(), &response)?;
     println!();
     Ok(())
+}
+
+fn uncertain_outcome() -> io::Error {
+    io::Error::other(
+        "administrative mutation outcome unknown; inspect durable state and audit before retrying",
+    )
 }
 
 fn invalid(message: &str) -> io::Error {

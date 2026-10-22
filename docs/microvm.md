@@ -160,7 +160,11 @@ failure; the `--once` path does not poll that health check. This interface remai
 experimental.
 
 A timeout, lost response or generic rejection is not proof that a mutation rolled
-back. COMMIT can succeed durably before its response is lost. Inspect the exact
+back. COMMIT can succeed durably before its response is lost. The CLI reports an
+unknown mutation outcome for request-write failures, response failures and generic
+server rejection. This is conservative: a rejected request may never have reached
+mutation, but the response does not distinguish that from a lost commit result.
+Argument validation and connection failures remain pre-request errors. Inspect the exact
 intent with `telchar operator microvm` and its immutable resolution summary with
 `telchar operator microvm-audit` before deciding whether another administrative
 action is appropriate. Both reports are bounded views: absence from a limited

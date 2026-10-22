@@ -106,63 +106,92 @@ fn cli_requires_explicit_acknowledgment_and_rejects_duplicate_arguments() {
 }
 
 #[test]
-fn cli_sends_exact_request_and_reports_noop_without_database_configuration() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("admin.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
-        .env_clear()
-        .args(["admin", "microvm", "risk-release", "--socket"])
-        .arg(&socket)
-        .args([
-            "--intent",
-            "intent",
-            "--provider-id",
-            "microvm-exact",
-            "--reason",
-            "Remote execution risk accepted",
-            "--evidence",
-            "incident:120",
-            "--accept-remote-execution-risk",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut stream = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline, "CLI did not connect");
-                std::thread::sleep(Duration::from_millis(10));
+fn cli_preserves_request_identity_and_reports_response_uncertainty() {
+    for (response, succeeds) in [
+        (
+            Some(
+                br#"{"released":false,"attached":false,"terminated":false,"rejected":false}"#
+                    .as_slice(),
+            ),
+            true,
+        ),
+        (
+            Some(
+                br#"{"released":false,"attached":false,"terminated":false,"rejected":true}"#
+                    .as_slice(),
+            ),
+            false,
+        ),
+        (None, false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("admin.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .env_clear()
+            .args(["admin", "microvm", "risk-release", "--socket"])
+            .arg(&socket)
+            .args([
+                "--intent",
+                "intent",
+                "--provider-id",
+                "microvm-exact",
+                "--reason",
+                "Remote execution risk accepted",
+                "--evidence",
+                "incident:120",
+                "--accept-remote-execution-risk",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "CLI did not connect");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
             }
-            Err(error) => panic!("{error}"),
+        };
+        assert_eq!(
+            read_request(&mut stream, Duration::from_secs(1)).unwrap(),
+            Request::RiskRelease {
+                intent_id: "intent".into(),
+                provider_id: Some("microvm-exact".into()),
+                reason: "Remote execution risk accepted".into(),
+                evidence_reference: "incident:120".into(),
+                accept_remote_execution_risk: true,
+            }
+        );
+        if let Some(response) = response {
+            stream
+                .write_all(&(response.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(response).unwrap();
         }
-    };
-    assert_eq!(
-        read_request(&mut stream, Duration::from_secs(1)).unwrap(),
-        Request::RiskRelease {
-            intent_id: "intent".into(),
-            provider_id: Some("microvm-exact".into()),
-            reason: "Remote execution risk accepted".into(),
-            evidence_reference: "incident:120".into(),
-            accept_remote_execution_risk: true,
+        drop(stream);
+        let output = child.wait_with_output().unwrap();
+        if succeeds {
+            assert!(output.status.success());
+            assert!(output.stderr.is_empty());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                "{\"released\":false,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert_eq!(
+                String::from_utf8(output.stderr).unwrap(),
+                "telchar: administrative mutation outcome unknown; inspect durable state and audit before retrying\n"
+            );
         }
-    );
-    let response = br#"{"released":false,"attached":false,"terminated":false,"rejected":false}"#;
-    stream
-        .write_all(&(response.len() as u32).to_le_bytes())
-        .unwrap();
-    stream.write_all(response).unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "{\"released\":false,\"attached\":false,\"terminated\":false,\"rejected\":false}\n"
-    );
+    }
 }
 
 #[test]
