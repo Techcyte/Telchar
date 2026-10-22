@@ -34,7 +34,7 @@ cargo test --locked -p telchar-nomad-worker \
   --test microvm_admission --test microvm_connector --test microvm_deadline \
   --test microvm_process --test microvm_session --test microvm_build \
   --test worker -- --test-threads=1
-for suite in hook execution runtime bootstrap nix_execution; do
+for suite in image_readiness hook execution runtime bootstrap nix_execution; do
   unshare --user --map-root-user --mount --propagation private python3 "tests/microvm/test_${suite}.py"
 done
 printf 'MICROVM_IMPLEMENTATION_CHECKPOINT=passed\n'

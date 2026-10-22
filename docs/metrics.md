@@ -154,6 +154,39 @@ Nomad submission attributes are `backend.name`, `resource.profile`, bounded inte
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
+## MicroVM lifecycle
+
+All instruments below carry only bounded `outcome`; no intent, provider, account,
+region, path or credential labels are emitted.
+
+| Instrument | Kind | Unit | Outcomes and meaning |
+| --- | --- | --- | --- |
+| `telchar.microvm.launches` | counter | `{launch}` | `acknowledged` / `unknown` provider-call responses. |
+| `telchar.microvm.launch.duration` | histogram | `s` | Provider-call duration, excluding pre-dispatch rejection. |
+| `telchar.microvm.admissions` | counter | `{connection}` | `accepted` / `rejected` / `capacity` callback admission outcomes. |
+| `telchar.microvm.admission.duration` | histogram | `s` | Admission duration; capacity rejection records zero. |
+| `telchar.microvm.rendezvous` | counter | `{connection}` | `connected` / `error` execution-side callback waits. |
+| `telchar.microvm.rendezvous.duration` | histogram | `s` | Wait after acknowledged dispatch; failed launches never enter this wait. |
+| `telchar.microvm.cleanup.attempts` | counter | `{attempt}` | `released` / `unchanged` / `error` cleanup API results. |
+| `telchar.microvm.cleanup.duration` | histogram | `s` | Cleanup API duration. |
+| `telchar.microvm.obligations` | histogram | `{obligation}` | Retained count sampled per account/region scan, split `identified` / `unidentified`. |
+| `telchar.microvm.obligation.age` | histogram | `s` | Oldest retained reservation age per scan/category; zero when empty. |
+
+Launch acknowledgment and callback connection do not prove build success.
+Cleanup `unchanged` includes both unresolved observations and already-resolved
+no-ops. Only exact provider termination observation establishes cleanup release.
+Retained obligations include unreleased reservations and identified instances
+without observed termination, even when capacity was independently released.
+`unidentified` includes reservations without provider identity, not exclusively
+quarantined launches.
+
+Obligation histograms aggregate repeated scan observations, including scans made
+by callers outside maintenance. They are not current fleet gauges; do not sum
+samples to estimate outstanding instances. Age starts at reservation creation,
+not at cleanup eligibility, and can include active builds. Accounts and regions
+share histogram series deliberately. These instruments do not replace durable
+operator reports for exact obligation inventory.
+
 ## Interpretation
 
 Useful service-level views include:
