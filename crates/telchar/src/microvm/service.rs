@@ -133,8 +133,22 @@ impl Service {
     }
 
     pub fn check(&self) -> io::Result<()> {
-        self.owner.verify().map_err(io::Error::other)?;
+        self.check_request(None)
+    }
+
+    fn check_request(&self, scope: Option<&crate::service::admin::RequestScope>) -> io::Result<()> {
+        if let Some(scope) = scope {
+            scope.remaining()?;
+            self.owner
+                .verify_database(&scope.database(self.owner.database()))
+                .map_err(io::Error::other)?;
+        } else {
+            self.owner.verify().map_err(io::Error::other)?;
+        }
         let lifecycle = loop {
+            if let Some(scope) = scope {
+                scope.remaining()?;
+            }
             if self.stopped.load(Ordering::Acquire) {
                 return Err(io::Error::other("MicroVM service stopped"));
             }
@@ -153,6 +167,9 @@ impl Service {
         }
         let callback = Arc::clone(&lifecycle.callback);
         let mut callback = loop {
+            if let Some(scope) = scope {
+                scope.remaining()?;
+            }
             if self.stopped.load(Ordering::Acquire) {
                 return Err(io::Error::other("MicroVM service stopped"));
             }
@@ -167,15 +184,28 @@ impl Service {
             }
         };
         callback.check()?;
-        lifecycle
-            .cleanup
-            .lock()
-            .map_err(|_| io::Error::other("MicroVM cleanup unavailable"))?
-            .check()
+        loop {
+            if let Some(scope) = scope {
+                scope.remaining()?;
+            }
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(io::Error::other("MicroVM service stopped"));
+            }
+            match lifecycle.cleanup.try_lock() {
+                Ok(mut cleanup) => return cleanup.check(),
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("MicroVM cleanup unavailable"));
+                }
+            }
+        }
     }
 
     pub fn verify_termination(
         &self,
+        scope: &crate::service::admin::RequestScope,
         observation: &crate::persistence::MicrovmTerminationObservation<'_>,
     ) -> io::Result<bool> {
         use crate::persistence::valid_resolution_text;
@@ -189,25 +219,43 @@ impl Service {
         {
             return Err(io::Error::other("invalid MicroVM termination observation"));
         }
-        self.verify_administrative_provider(self.provider.verify_termination(
-            observation.provider_id,
-            observation.account_id,
-            observation.region,
-        ))?;
-        crate::persistence::resolve_microvm_termination(self.owner.database(), observation)
-            .map_err(io::Error::other)
+        self.verify_administrative_provider(
+            scope,
+            self.provider.verify_termination(
+                observation.provider_id,
+                observation.account_id,
+                observation.region,
+            ),
+        )?;
+        crate::persistence::resolve_microvm_termination(
+            &scope.database(self.owner.database()),
+            observation,
+        )
+        .map_err(io::Error::other)
     }
 
     fn verify_administrative_provider(
         &self,
+        scope: &crate::service::admin::RequestScope,
         verification: impl std::future::Future<Output = Result<(), super::ProviderError>>,
     ) -> io::Result<()> {
-        self.check()?;
+        self.check_request(Some(scope))?;
+        let timeout = scope.remaining()?.min(std::time::Duration::from_secs(2));
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
             .block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(2), verification).await
+                tokio::time::timeout(timeout, async {
+                    tokio::pin!(verification);
+                    loop {
+                        scope.remaining()?;
+                        tokio::select! {
+                            result = &mut verification => return result.map_err(io::Error::other),
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                        }
+                    }
+                })
+                .await
             })
             .map_err(|_| {
                 io::Error::new(
@@ -216,11 +264,12 @@ impl Service {
                 )
             })?
             .map_err(io::Error::other)?;
-        self.check()
+        self.check_request(Some(scope))
     }
 
     pub fn attach_identity(
         &self,
+        scope: &crate::service::admin::RequestScope,
         attachment: &crate::persistence::MicrovmIdentityAttachment<'_>,
     ) -> io::Result<bool> {
         use crate::persistence::valid_resolution_text;
@@ -234,15 +283,21 @@ impl Service {
         {
             return Err(io::Error::other("invalid MicroVM identity attachment"));
         }
-        self.verify_administrative_provider(self.provider.verify_identity(
-            attachment.provider_id,
-            attachment.account_id,
-            attachment.region,
-            attachment.image_arn,
-            attachment.image_version,
-        ))?;
-        crate::persistence::attach_microvm_cleanup_identity(self.owner.database(), attachment)
-            .map_err(io::Error::other)
+        self.verify_administrative_provider(
+            scope,
+            self.provider.verify_identity(
+                attachment.provider_id,
+                attachment.account_id,
+                attachment.region,
+                attachment.image_arn,
+                attachment.image_version,
+            ),
+        )?;
+        crate::persistence::attach_microvm_cleanup_identity(
+            &scope.database(self.owner.database()),
+            attachment,
+        )
+        .map_err(io::Error::other)
     }
 
     pub fn shutdown(&self) -> io::Result<()> {

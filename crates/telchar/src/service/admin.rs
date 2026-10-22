@@ -9,6 +9,36 @@ use serde::{Deserialize, Serialize};
 const MAXIMUM_FRAME_BYTES: usize = 4096;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub struct RequestScope {
+    deadline: Instant,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RequestScope {
+    pub fn database(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> crate::persistence::Database {
+        database.for_request(self.deadline, self.cancelled.clone())
+    }
+
+    pub fn remaining(&self) -> io::Result<Duration> {
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other(
+                "administrative request cancelled; mutation outcome may be unknown",
+            ));
+        }
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "administrative request timed out; mutation outcome may be unknown",
+                )
+            })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
@@ -62,9 +92,17 @@ pub fn serve(
     mut stream: UnixStream,
     database: &crate::persistence::Database,
     services: &[std::sync::Arc<crate::microvm::service::Service>],
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> io::Result<()> {
     authorize(&stream)?;
-    let request = read_request(&mut stream, REQUEST_TIMEOUT)?;
+    let scope = RequestScope {
+        deadline: Instant::now() + REQUEST_TIMEOUT,
+        cancelled,
+    };
+    let database = &scope.database(database);
+    scope.remaining()?;
+    let request: Request =
+        serde_json::from_slice(&read_frame_until(&mut stream, scope.deadline)?).map_err(invalid)?;
     let attachment = matches!(&request, Request::AttachIdentity { .. });
     let termination = matches!(&request, Request::VerifyTermination { .. });
     let result = match request {
@@ -74,6 +112,7 @@ pub fn serve(
             reason,
             evidence_reference,
         } => verify_termination(
+            &scope,
             database,
             services,
             &intent_id,
@@ -87,6 +126,7 @@ pub fn serve(
             reason,
             evidence_reference,
         } => attach_identity(
+            &scope,
             database,
             services,
             &intent_id,
@@ -120,13 +160,15 @@ pub fn serve(
         terminated: termination && changed,
         rejected: result.is_err(),
     };
-    write_frame(
+    write_frame_until(
         &mut stream,
         &serde_json::to_vec(&response).map_err(invalid)?,
+        scope.deadline,
     )
 }
 
 fn verify_termination(
+    scope: &RequestScope,
     database: &crate::persistence::Database,
     services: &[std::sync::Arc<crate::microvm::service::Service>],
     intent_id: &str,
@@ -145,18 +187,22 @@ fn verify_termination(
                 && service.configuration().region() == identity.region
         })
         .ok_or_else(|| invalid("MicroVM authority unavailable"))?;
-    service.verify_termination(&crate::persistence::MicrovmTerminationObservation {
-        intent_id,
-        provider_id,
-        account_id: &identity.account_id,
-        region: &identity.region,
-        actor_uid: 0,
-        reason,
-        evidence_reference,
-    })
+    service.verify_termination(
+        scope,
+        &crate::persistence::MicrovmTerminationObservation {
+            intent_id,
+            provider_id,
+            account_id: &identity.account_id,
+            region: &identity.region,
+            actor_uid: 0,
+            reason,
+            evidence_reference,
+        },
+    )
 }
 
 fn attach_identity(
+    scope: &RequestScope,
     database: &crate::persistence::Database,
     services: &[std::sync::Arc<crate::microvm::service::Service>],
     intent_id: &str,
@@ -174,21 +220,27 @@ fn attach_identity(
                 && service.configuration().region() == identity.region
         })
         .ok_or_else(|| invalid("MicroVM authority unavailable"))?;
-    service.attach_identity(&crate::persistence::MicrovmIdentityAttachment {
-        intent_id,
-        provider_id,
-        account_id: &identity.account_id,
-        region: &identity.region,
-        image_arn: &identity.image_arn,
-        image_version: &identity.image_version,
-        actor_uid: 0,
-        reason,
-        evidence_reference,
-    })
+    service.attach_identity(
+        scope,
+        &crate::persistence::MicrovmIdentityAttachment {
+            intent_id,
+            provider_id,
+            account_id: &identity.account_id,
+            region: &identity.region,
+            image_arn: &identity.image_arn,
+            image_version: &identity.image_version,
+            actor_uid: 0,
+            reason,
+            evidence_reference,
+        },
+    )
 }
 
 fn read_frame(stream: &mut UnixStream, timeout: Duration) -> io::Result<Vec<u8>> {
-    let deadline = Instant::now() + timeout;
+    read_frame_until(stream, Instant::now() + timeout)
+}
+
+fn read_frame_until(stream: &mut UnixStream, deadline: Instant) -> io::Result<Vec<u8>> {
     let mut length = [0; 4];
     read_until(stream, &mut length, deadline)?;
     let length = u32::from_le_bytes(length) as usize;
@@ -221,12 +273,29 @@ fn read_until(stream: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) 
 }
 
 fn write_frame(stream: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
+    write_frame_until(stream, bytes, Instant::now() + REQUEST_TIMEOUT)
+}
+
+fn write_frame_until(stream: &mut UnixStream, bytes: &[u8], deadline: Instant) -> io::Result<()> {
     if bytes.is_empty() || bytes.len() > MAXIMUM_FRAME_BYTES {
         return Err(invalid("administrative frame exceeds size limit"));
     }
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
-    stream.write_all(bytes)
+    let frame = [&(bytes.len() as u32).to_le_bytes()[..], bytes].concat();
+    let mut remaining = frame.as_slice();
+    while !remaining.is_empty() {
+        let timeout = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::TimedOut, "administrative response timed out")
+            })?;
+        stream.set_write_timeout(Some(timeout))?;
+        let written = stream.write(remaining)?;
+        if written == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        remaining = &remaining[written..];
+    }
+    Ok(())
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

@@ -345,7 +345,13 @@ chunk_bytes = 1024
                     Err(error) => panic!("{error}"),
                 }
             };
-            telchar::service::admin::serve(stream, &fenced, &[serving]).unwrap();
+            telchar::service::admin::serve(
+                stream,
+                &fenced,
+                &[serving],
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
         });
         let started = Instant::now();
         let output = Command::new(env!("CARGO_BIN_EXE_telchar"))

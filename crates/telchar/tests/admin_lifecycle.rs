@@ -751,6 +751,30 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
     }
     assert!(!admin.exists());
     assert!(!ipc.exists());
+    if matches!(scenario, Scenario::RunningSql | Scenario::StalledTransport) {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let lease = inspector.query_opt("SELECT generation, lease_expires_at > clock_timestamp() FROM singleton_ownership WHERE owner_kind = 'daemon'", &[]).unwrap();
+            let Some(lease) = lease else { break };
+            assert_eq!(lease.get::<_, i64>(0), generation);
+            if !lease.get::<_, bool>(1) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "retired daemon lease did not expire"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            url,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        replacement.verify().unwrap();
+        replacement.renew().unwrap();
+        drop(replacement);
+    }
     assert_eq!(
         inspector
             .query_one("SELECT count(*) FROM singleton_ownership", &[])

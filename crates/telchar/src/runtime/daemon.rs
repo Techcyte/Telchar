@@ -343,8 +343,12 @@ impl AdminService {
                                 }
                                 *active = Some(stream.try_clone()?);
                             }
-                            let result =
-                                telchar::service::admin::serve(stream, &database, &services);
+                            let result = telchar::service::admin::serve(
+                                stream,
+                                &database,
+                                &services,
+                                Arc::clone(&stopping),
+                            );
                             serving
                                 .lock()
                                 .expect("admin socket mutex is not poisoned")

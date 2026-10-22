@@ -141,15 +141,15 @@ Administrative transactions use a 250 ms lock timeout and a one-second statement
 timeout. Each database checkout also has a five-second absolute client-side budget
 covering pool wait, validation, queries and transaction rollback. Expired or failed
 connections are discarded; application mutations are not automatically retried.
-These are separate budgets, not one administrative deadline: identity lookup,
-ownership checks and the final mutation use separate checkouts, with provider
-verification between them. The CLI's five-second response timeout does not cancel
-server-side database work. Closing the administrative socket during shutdown also
-does not directly cancel that work; the listener joins its handler. Total request
-bounds remain unqualified. A stopped PostgreSQL backend during an administrative
-update has reproduced failure of the two-second whole-daemon shutdown contract.
-Request-scoped database cancellation exists, but the administrative handler does
-not yet propagate it through its Service and ownership operations.
+Administration shares one five-second absolute request budget from frame decoding
+through identity lookup, ownership verification, health-lock acquisition, provider
+verification, final mutation and response writing. Scoped database handles retain
+the existing pools. Daemon shutdown signals the active request before joining its
+handler; database and provider waits observe cancellation, while socket closure
+interrupts frame I/O. The CLI response timeout alone does not signal cancellation.
+The whole-daemon stopped-PostgreSQL-update contract passes its two-second shutdown
+bound, preserving unchanged launch state and zero audit writes. Combined-stage
+deadline exhaustion and every health-lock contention boundary remain unqualified.
 
 Ownership release on shutdown is best effort, with a separate 250 ms client-side
 budget for the exact owner token and generation. A stopped server can retain its

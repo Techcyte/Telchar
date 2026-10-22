@@ -176,7 +176,14 @@ impl SingletonOwnership {
     }
 
     pub fn verify(&self) -> Result<(), SingletonOwnershipError> {
-        let mut connection = connect(&self.database)
+        self.verify_database(&self.database)
+    }
+
+    pub(crate) fn verify_database(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> Result<(), SingletonOwnershipError> {
+        let mut connection = connect(database)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let current = connection
             .query_opt(
