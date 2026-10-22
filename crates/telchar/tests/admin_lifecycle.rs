@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 use telchar::backend::BackendKind;
 use telchar_test_support::postgres::PostgresFixture;
 
+#[path = "../../../tests/microvm/image.rs"]
+mod image;
+
 fn attachment_provider(
     config: &std::path::Path,
     lookup_started: Option<std::sync::mpsc::Sender<()>>,
@@ -50,6 +53,12 @@ chunk_bytes = 1024
     drop(callback);
     let server = std::thread::spawn(move || {
         for identity in [true, false] {
+            if !identity {
+                image::serve_image(
+                    &listener,
+                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                );
+            }
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
