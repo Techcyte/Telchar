@@ -475,6 +475,10 @@ The operator provisions and owns images/versions, snapshot privileges, VPC/subne
 and security controls, DNS/certificates/TLS proxy, IAM, credentials, monitoring
 and cost alarms. Telchar only launches and terminates executions from this
 configuration; it does not create images, buckets, networks, roles or fleets.
+Telchar checks execution compatibility and resource sizing, not image network
+configuration. Connector allowlists and network-policy correspondence are not
+Telchar configuration or release gates. The network guidance below applies to
+operator-owned deployment policy, not gateway enforcement.
 Use a gateway-only AWS credential provider with refresh and least privilege for
 launch/exact inspection/termination and necessary image inspection. Pin account
 identity at startup; fail closed on mismatch. Review exact IAM action/resource

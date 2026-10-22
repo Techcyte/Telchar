@@ -25,7 +25,7 @@ gaps, not every conceivable fault permutation.
 | --- | --- | --- |
 | Image prerequisites | `execution.py::image_ready` checks commands, trust and binding destination; HTTP-process regression covers rejection without process startup. | Implemented and focused tests passed. Accepted run still requires protocol-level daemon readiness; native image qualification remains separate. |
 | Staging disk admission | `microvm/outputs.rs::declare` applies existing disk policy before declaration/tempfile creation, accounting for two staging copies and store import. | Implemented; focused boundary, rejection and real-store contracts passed. Measurement is not an atomic reservation against unrelated writes; existing probe-failure policy remains unchanged. |
-| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource/network policy correspondence remains open. | Verify the required provider metadata against operator-owned policy before selection. Keep image/network creation outside Telchar. Do not infer egress authorization from STS or a callback address. |
+| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource sizing remains to be qualified. | Verify execution compatibility and qualify resource sizing. Network configuration, connector selection and network-policy review are operator-owned, not Telchar validation gates. No connector allowlist or duplicate network configuration is required. |
 | Lifecycle observability | Launch response count/duration are instrumented at the provider call boundary with bounded acknowledged/unknown outcomes. Admission-class, quarantine, cleanup-age/failure and remaining phase instruments remain open. | Emit bounded instruments at actual lifecycle boundaries, including retained obligations; verify through a real metrics receiver. No intent/provider/path labels. |
 
 This is a confirmed-gap list, not a claim that all remaining configuration and
@@ -33,6 +33,15 @@ runtime behavior has been exhaustively reviewed. Selection priority/features and
 launch/pending bounds must be reconciled against the accepted checklist during
 the policy integration milestone; ADR proposed field names are not automatically
 additional required APIs.
+
+## Operator-owned infrastructure
+
+Telchar validates execution compatibility and concerns itself with resource sizing.
+It does not validate MicroVM egress connectors or network policy. Pinning the
+image/version does not claim to audit its network configuration; the operator owns
+that configuration independently. Resource qualification must distinguish baseline
+memory from elastic peak capacity and disk availability, not invent a hard RAM cap
+or require duplicate configuration merely to mirror provider metadata.
 
 ## Accepted snapshot risk
 
@@ -47,7 +56,7 @@ requires separate resource/cost authority.
 ## Bounded execution order
 
 1. **One integrated policy/runtime change set.** Close confirmed prerequisite,
-   staging admission, image-policy and observability gaps, preserving existing
+   staging admission, execution compatibility, sizing and observability gaps, preserving existing
    scheduling, cleanup and trust boundaries. Each behavior gets a focused red/green
    contract. Exit: these production paths work together; targeted tests and lint
    pass. Any additional architectural change is reported before implementation.
