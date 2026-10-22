@@ -143,6 +143,14 @@ fn shutdown_rolls_back_running_administrative_sql() {
 }
 
 #[test]
+fn shutdown_bounds_stalled_administrative_transport() {
+    root_contract(
+        "shutdown_bounds_stalled_administrative_transport",
+        Scenario::StalledTransport,
+    );
+}
+
+#[test]
 fn daemon_attachment_preserves_cleanup_and_denies_admission() {
     root_contract(
         "daemon_attachment_preserves_cleanup_and_denies_admission",
@@ -199,6 +207,15 @@ enum Scenario {
     Success,
     OwnershipLoss,
     RunningSql,
+    StalledTransport,
+}
+
+struct ResumeBackend(i32);
+
+impl Drop for ResumeBackend {
+    fn drop(&mut self) {
+        assert_eq!(unsafe { libc::kill(self.0, libc::SIGCONT) }, 0);
+    }
 }
 
 fn root_contract(test: &str, scenario: Scenario) {
@@ -371,6 +388,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             "--accept-remote-execution-risk",
         ]);
     let mut incomplete = None;
+    let mut stopped_backend = None;
     if expire_owner {
         assert_eq!(
             unsafe { libc::kill(daemon.0.id() as i32, libc::SIGSTOP) },
@@ -575,7 +593,7 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
             0
         );
-    } else if matches!(scenario, Scenario::RunningSql) {
+    } else if matches!(scenario, Scenario::RunningSql | Scenario::StalledTransport) {
         inspector.batch_execute("CREATE FUNCTION delay_admin_release() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER delay_admin_release BEFORE UPDATE ON microvm_launches FOR EACH ROW EXECUTE FUNCTION delay_admin_release()").unwrap();
         let stream = incomplete.insert(std::os::unix::net::UnixStream::connect(&admin).unwrap());
         telchar::service::admin::write_request(
@@ -591,8 +609,22 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let running: bool = inspector.query_one("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event = 'PgSleep' AND query LIKE '%UPDATE microvm_launches%')", &[]).unwrap().get(0);
-            if running {
+            let running = inspector.query_opt("SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event = 'PgSleep' AND query LIKE '%UPDATE microvm_launches%'", &[]).unwrap();
+            if let Some(running) = running {
+                if matches!(scenario, Scenario::StalledTransport) {
+                    let pid = running.get::<_, i32>(0);
+                    stopped_backend = Some(ResumeBackend(pid));
+                    assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+                    let deadline = Instant::now() + Duration::from_secs(1);
+                    while !std::fs::read_to_string(format!("/proc/{pid}/status"))
+                        .unwrap()
+                        .lines()
+                        .any(|line| line.starts_with("State:\tT"))
+                    {
+                        assert!(Instant::now() < deadline, "backend did not stop");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
                 break;
             }
             assert!(
@@ -654,6 +686,8 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    drop(stopped_backend);
+    let mut inspector = database.connection().unwrap();
     use std::io::Read;
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -701,7 +735,10 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
             "{stderr}"
         );
     }
-    if matches!(scenario, Scenario::RunningSql | Scenario::ProviderLookup) {
+    if matches!(
+        scenario,
+        Scenario::RunningSql | Scenario::StalledTransport | Scenario::ProviderLookup
+    ) {
         let state = inspector.query_one("SELECT reservation_released_at IS NULL, termination_observed_at IS NULL, (SELECT count(*) FROM microvm_resolutions), provider_id IS NULL, phase FROM microvm_launches WHERE intent_id = 'admin-intent'", &[]).unwrap();
         assert!(state.get::<_, bool>(0));
         assert!(state.get::<_, bool>(1));
