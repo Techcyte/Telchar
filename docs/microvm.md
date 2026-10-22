@@ -146,9 +146,18 @@ ownership checks and the final mutation use separate checkouts, with provider
 verification between them. The CLI's five-second response timeout does not cancel
 server-side database work. Closing the administrative socket during shutdown also
 does not directly cancel that work; the listener joins its handler. Total request
-and whole-daemon transport-fault shutdown bounds remain unqualified. The normal
-daemon loop fails on administrative listener failure; the `--once` path does not
-poll that health check. This interface remains experimental.
+bounds remain unqualified. A stopped PostgreSQL backend during an administrative
+update has reproduced failure of the two-second whole-daemon shutdown contract.
+Request-scoped database cancellation exists, but the administrative handler does
+not yet propagate it through its Service and ownership operations.
+
+Ownership release on shutdown is best effort, with a separate 250 ms client-side
+budget for the exact owner token and generation. A stopped server can retain its
+transaction locks after client transport closure, so the lease may remain until
+expiry. Bounded client teardown is not proof of immediate server rollback or
+successful lease removal. The normal daemon loop fails on administrative listener
+failure; the `--once` path does not poll that health check. This interface remains
+experimental.
 
 A timeout, lost response or generic rejection is not proof that a mutation rolled
 back. COMMIT can succeed durably before its response is lost. Inspect the exact
