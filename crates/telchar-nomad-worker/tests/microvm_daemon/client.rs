@@ -84,26 +84,51 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
     let user = Command::new("id").args(["-un", "1000"]).output()?;
     assert!(user.status.success());
     let user = String::from_utf8(user.stdout).unwrap();
-    let result = Command::new(std::env::var_os("TELCHAR_NIX_BIN").unwrap())
+    let nix = std::env::var_os("TELCHAR_NIX_BIN").unwrap();
+    let client_root = home.join("store");
+    let client_store = format!("local?root={}", client_root.display());
+    let derivation = std::str::from_utf8(derivation).unwrap();
+    let copied = Command::new(&nix)
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "copy",
+            "--from",
+            "local",
+            "--to",
+            &client_store,
+            derivation,
+        ])
+        .output()?;
+    assert!(copied.status.success(), "{copied:?}");
+    assert!(copied.stdout.is_empty(), "{copied:?}");
+    let diagnostic = String::from_utf8(copied.stderr).unwrap();
+    assert!(
+        !diagnostic.contains("error:") && !diagnostic.contains("warning:"),
+        "{diagnostic}"
+    );
+    let result = Command::new(&nix)
         .env("HOME", &home)
         .env("NIX_SSHOPTS", format!("-p {port} -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes", key.display()))
         .args(["--extra-experimental-features", "nix-command", "--store"])
-        .arg(format!("ssh-ng://{}@127.0.0.1", user.trim()))
-        .args(["build", "--no-link", "--print-out-paths"])
-        .arg(format!("{}^*", std::str::from_utf8(derivation).unwrap()))
+        .arg(&client_store)
+        .args(["build", "--no-link", "--print-out-paths", "--max-jobs", "0", "--builders"])
+        .arg(format!("ssh-ng://{}@127.0.0.1 aarch64-linux", user.trim()))
+        .arg(format!("{derivation}^*"))
         .output()?;
     assert!(
         result.status.success(),
         "stock Nix: {result:?}; sshd: {}",
         std::fs::read_to_string(home.join("sshd.log"))?
     );
-    assert!(result.stdout.is_empty(), "{result:?}");
-    assert_eq!(
-        String::from_utf8(result.stderr).unwrap(),
-        format!(
-            "this derivation will be built:\n  {}\n",
-            std::str::from_utf8(derivation).unwrap()
-        )
+    let output = String::from_utf8(result.stdout).unwrap();
+    assert_eq!(output.lines().count(), 1, "{output}");
+    let path = client_root.join(output.trim().strip_prefix('/').unwrap());
+    assert_eq!(std::fs::read(path)?, b"dedicated-worker-success\n");
+    let diagnostic = String::from_utf8(result.stderr).unwrap();
+    assert!(
+        !diagnostic.contains("error:") && !diagnostic.contains("warning:"),
+        "{diagnostic}"
     );
     Ok(())
 }
