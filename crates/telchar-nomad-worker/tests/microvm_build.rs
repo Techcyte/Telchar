@@ -205,6 +205,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-daemon",
             "configured-daemon-multiple",
             "configured-daemon-fixed-output",
+            "configured-daemon-recursive-output",
             "configured-daemon-failure",
             "configured-daemon-corrupt-output",
             "configured-daemon-coalesced",
@@ -262,10 +263,12 @@ fn run_build() {
         case.as_str(),
         "configured-corrupt-output" | "configured-daemon-corrupt-output"
     );
-    let fixed_output = matches!(
-        case.as_str(),
-        "configured-fixed-output" | "configured-daemon-fixed-output"
-    );
+    let recursive_output = case == "configured-daemon-recursive-output";
+    let fixed_output = recursive_output
+        || matches!(
+            case.as_str(),
+            "configured-fixed-output" | "configured-daemon-fixed-output"
+        );
     let native_system = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
     let system = if configured {
         "aarch64-linux"
@@ -291,7 +294,19 @@ fn run_build() {
     let input = String::from_utf8(added.stdout).unwrap().trim().to_owned();
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(store.query_path_info(input.as_bytes()).unwrap().is_some());
-    let hash = {
+    let hash = if recursive_output {
+        let result = Command::new("nix-store")
+            .args(["--dump", &input])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&result.stdout)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
         use sha2::{Digest, Sha256};
         Sha256::digest(b"dedicated-worker-success\n")
             .iter()
@@ -300,8 +315,13 @@ fn run_build() {
     };
     let fixed_path;
     let output = if fixed_output {
-        let result = Command::new("nix-store")
-            .args(["--print-fixed-path", "sha256", &hash, "dedicated"])
+        let mut command = Command::new("nix-store");
+        command.arg("--print-fixed-path");
+        if recursive_output {
+            command.arg("--recursive");
+        }
+        let result = command
+            .args(["sha256", &hash, "dedicated"])
             .output()
             .unwrap();
         assert!(
@@ -382,7 +402,9 @@ fn run_build() {
         script
     };
     let script = serde_json::to_string(&script).unwrap();
-    let (hash_algorithm, output_hash) = if fixed_output {
+    let (hash_algorithm, output_hash) = if recursive_output {
+        ("r:sha256", hash.as_str())
+    } else if fixed_output {
         ("sha256", hash.as_str())
     } else {
         ("", "")
@@ -1049,11 +1071,12 @@ chunk_bytes = 262144
     }
     if fixed_output {
         let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
-        assert!(
-            info.content_address()
-                .unwrap()
-                .starts_with(b"fixed:sha256:")
-        );
+        let prefix = if recursive_output {
+            b"fixed:r:sha256:".as_slice()
+        } else {
+            b"fixed:sha256:".as_slice()
+        };
+        assert!(info.content_address().unwrap().starts_with(prefix));
         assert!(info.references().is_empty());
     }
     if multiple {
