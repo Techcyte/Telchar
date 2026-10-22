@@ -312,6 +312,65 @@ fn database_bounds_stalled_query_and_transaction_teardown() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn database_transport_deadline_does_not_release_a_stopped_backend_lock() {
+    use std::time::Duration;
+    use telchar::persistence::DatabaseError;
+
+    let fixture = PostgresFixture::start();
+    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    let mut observer = fixture.connect();
+    observer
+        .batch_execute("CREATE TABLE locked_rows (id integer PRIMARY KEY); INSERT INTO locked_rows VALUES (1); SET lock_timeout = '100ms'")
+        .unwrap();
+    let mut connection = database.connection().unwrap();
+    let backend = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .unwrap()
+        .get::<_, i32>(0);
+    let mut transaction = connection.transaction().unwrap();
+    transaction
+        .query_one("SELECT id FROM locked_rows WHERE id = 1 FOR SHARE", &[])
+        .unwrap();
+    let resume = ResumeBackend::stop(backend);
+    assert!(matches!(
+        transaction.simple_query("SELECT 1"),
+        Err(DatabaseError::Deadline)
+    ));
+    drop(transaction);
+    drop(connection);
+
+    let error = observer
+        .execute("DELETE FROM locked_rows WHERE id = 1", &[])
+        .expect_err("stopped server retains its transaction lock after client transport closes");
+    assert_eq!(
+        error.code(),
+        Some(&postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    );
+    assert_eq!(
+        observer
+            .query_one("SELECT count(*) FROM locked_rows", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    drop(resume);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match observer.execute("DELETE FROM locked_rows WHERE id = 1", &[]) {
+            Ok(1) => break,
+            Err(error) if error.code() == Some(&postgres::error::SqlState::LOCK_NOT_AVAILABLE) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "resumed backend retained lock"
+                );
+            }
+            result => panic!("unexpected lock release result: {result:?}"),
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn database_commit_timeout_can_leave_a_durable_transaction() {
