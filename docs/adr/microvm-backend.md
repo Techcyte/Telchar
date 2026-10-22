@@ -315,18 +315,13 @@ identical hooks cannot launch another daemon/worker; conflicting hooks fail.
 The daemon and worker process group is terminated on local deadline. Reject
 active suspend/snapshot requests; do not implement warm suspended builders.
 
-This proposal removes retained application OpenSSL state from Nix, but it is not
-proof that every supervisor/library/provider component is snapshot-safe. Inventory
-all captured processes and loaded crypto libraries. The [AWS snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
-directs applications using OpenSSL to the AWS-patched library, not merely to
-fresh connections. A fresh Nix process linked to Nixpkgs OpenSSL must be explicitly
-distinguished from retained OpenSSL state; the documentation does not explicitly
-exempt post-restore processes. Provider guidance or security review must validate
-that boundary. If it cannot, package Nix with the snapshot-safe library before
-release rather than treat fresh startup as an established exemption.
-Use the AWS snapshot-safe library for any OpenSSL consumer that must remain alive
-at capture, or do not release that image. Merely selecting an AL2023 base does not
-replace Nix store-linked OpenSSL. Distinct random samples are not certification.
+Snapshot/PRNG residual risk is accepted by Travis as documentation-only, not a
+release blocker. The AWS base supplies patched system OpenSSL; it does not replace
+Nix store-linked OpenSSL. Fresh daemon/worker startup avoids retaining their live
+application state at capture, but is not a claim of snapshot cryptographic
+uniqueness. No crypto replacement, inventory campaign or external security/provider
+sign-off is required for this concern. Preserve fresh-process startup and the
+prohibition on capturing active builds.
 
 Pin image ARN and exact numeric version with reproducible package provenance;
 never follow a moving version implicitly. Only a successful active version is
@@ -550,8 +545,8 @@ orders or implementation authorization:
    deadlines, shutdown, stale owner, cleanup failure and administrative resolution.
    Keep known-ID cleanup runnable independently of terminal shared-build state.
 6. **Deployment and stock-client qualification.** Validate NixOS configuration,
-   protected proxy hop, IAM review, credential rotation, snapshot process/crypto
-   inventory and sandbox secrets/network isolation. Use real stock Nix clients
+   protected proxy hop, IAM review, credential rotation, and sandbox
+   secrets/network isolation. Use real stock Nix clients
    against the gateway with authorized AWS ARM executions, including substantial
    compilation and multiple outputs, provider expiry, actual ARM authentication
    and corruption negatives, restart/output-only recovery and exact cleanup.
@@ -562,8 +557,7 @@ Before claiming production readiness, obtain worker peak memory/disk and gateway
 staging observations, deliberate disk exhaustion, provider expiry behavior and
 actual billing/cost reconciliation. These accepted experimental gaps are future
 qualification requirements, not reasons to repeat the closed campaign without
-permission. Include snapshot security sign-off, clean failure logs and independent
-cleanup verification. Expensive/live qualification needs a separate agreed budget,
+permission. Include clean failure logs and independent cleanup verification. Expensive/live qualification needs a separate agreed budget,
 account/region/resource ledger and cleanup authority.
 
 ## Evidence and review scope

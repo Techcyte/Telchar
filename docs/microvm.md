@@ -94,8 +94,9 @@ metrics, NixOS runtime qualification, and a secure ARM production image.
 Administrative reconciliation/audit and optional NixOS socket wiring are implemented;
 their focused contracts do not close all release gates. Configuration acceptance is
 not a production release claim. Native sandbox/build-user/secret assertions have focused
-runtime evidence, but complete image construction and snapshot cryptographic
-safety remain unresolved production gates. Do not deploy the experimental images
+runtime evidence, but complete image construction remains an unresolved production
+gate. Travis accepts residual snapshot/PRNG risk as documentation-only, not a
+release blocker; no crypto investigation or external sign-off is required. Do not deploy the experimental images
 as a substitute.
 
 ## Local administrative resolution
@@ -307,8 +308,8 @@ for execution. Success requires gateway-authoritative registration, exact output
 content, durable success and clean runtime shutdown. Providers remain simulated;
 this is neither stock OpenSSH nor live AWS qualification.
 
-Full OCI construction and cold-start Nix snapshot applicability still require
-verification. Emulation alone is not native sandbox evidence. AWS's base does not
+Full OCI construction still requires verification. Residual snapshot/PRNG risk
+is accepted, not a release gate. Emulation alone is not native sandbox evidence. AWS's base does not
 replace Nix-store libraries.
 The isolated OpenSSL experiments below are historical investigation, not the
 chosen packaging approach.
@@ -336,8 +337,10 @@ for historical probe reproduction.
 AWS's [snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
 states that snapshots include process memory, disk, connections and file
 descriptors, and requires AWS-patched OpenSSL for applications using OpenSSL.
-The Nix closure does not yet establish compliance with that requirement. Starting
-TLS/build processes after the run hook alone is not grounds to waive it.
+The Nix closure does not establish compliance with that guidance. Travis accepts
+this residual snapshot/PRNG risk without additional investigation, custom OpenSSL
+packaging or external sign-off. Preserve fresh daemon/worker startup after `/run`;
+this risk acceptance is not a claim of proven cryptographic uniqueness.
 
 The Amazon Linux source RPM
 [`openssl-3.5.8-1.amzn2023.0.3.src.rpm`](https://cdn.amazonlinux.com/al2023/blobstore/24b99be684592c7891e7dde95f1525de96981c4abfcbe7aeb868ec5b3b098ed7/openssl-3.5.8-1.amzn2023.0.3.src.rpm)

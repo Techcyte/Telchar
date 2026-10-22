@@ -1,7 +1,7 @@
 # MicroVM production completion gates
 
-This is a bounded completion plan, not a production-readiness claim or a change
-to the accepted [backend design](adr/microvm-backend.md). Historical evidence and
+This is a bounded completion plan, not a production-readiness claim. The
+[backend design](adr/microvm-backend.md) records the accepted snapshot risk. Historical evidence and
 limitations remain in [MicroVM operations](microvm.md). The exhausted delivery
 loop is not restarted by this plan.
 
@@ -34,64 +34,40 @@ launch/pending bounds must be reconciled against the accepted checklist during
 the policy integration milestone; ADR proposed field names are not automatically
 additional required APIs.
 
-## Release-defining image decision
+## Accepted snapshot risk
 
-The pinned AWS base supplies snapshot-safe system OpenSSL, and Amazon Python uses
-those system libraries. The copied Nix closure has separate Nix-store libraries.
-Using the AWS base does not replace them.
-
-AWS's [snapshot guidance](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images-snapshots.html)
-says to generate unique state after startup and use patched OpenSSL for applications
-using OpenSSL. It does not explicitly exempt a fresh-exec Nix process started by
-`/run`. Fresh execution avoids retained application PRNG state, but that argument
-alone is not provider approval or the security sign-off required by the ADR.
-
-The approved composition captures an idle supervisor and starts Nix/worker only
-after the run hook. A successful local build, differing random samples, or ordinary
-container restart cannot qualify Firecracker restoration. AWS also distinguishes
-its managed MicroVM base from the Dockerfile container base; testing extracted
-Dockerfile steps is not proof of the complete provider image lifecycle.
-
-Before another packaging implementation, resolve one of these paths explicitly:
-
-1. Obtain a qualified security review or provider clarification accepting the
-   exact post-restore Nix process/library boundary, supported by captured-process
-   and loaded-library inventory and lifecycle analysis.
-2. Approve a different packaging design that actually satisfies the library
-   requirement. The rejected custom OpenSSL integration is not an authorized path.
-
-Do not silently claim an exemption, patch crypto again, or spend another broad
-verification cycle while this decision remains unresolved. Live AWS image and
-restoration qualification additionally needs separate resource/cost authority.
+Travis accepts residual snapshot/PRNG risk as documentation-only, not a release
+blocker. Keep the AWS base and fresh daemon/worker startup after `/run`. Nix-store
+OpenSSL differs from the AWS-patched system library; no snapshot-uniqueness proof
+is claimed. No further crypto investigation, process/library inventory campaign,
+custom OpenSSL packaging or external sign-off is required for this concern.
+Actual image/runtime functionality still needs qualification; live AWS work
+requires separate resource/cost authority.
 
 ## Bounded execution order
 
-1. **Image feasibility checkpoint.** Resolve the preceding boundary first.
-   Exit: defensible approved image approach, or a precise external decision
-   blocker. Stop here if neither is available; do not substitute peripheral tests.
-2. **One integrated policy/runtime change set.** Close confirmed prerequisite,
+1. **One integrated policy/runtime change set.** Close confirmed prerequisite,
    staging admission, image-policy and observability gaps, preserving existing
    scheduling, cleanup and trust boundaries. Each behavior gets a focused red/green
    contract. Exit: these production paths work together; targeted tests and lint
    pass. Any additional architectural change is reported before implementation.
-3. **One consequential qualification campaign.** Exercise configured daemon and
+2. **One consequential qualification campaign.** Exercise configured daemon and
    dedicated worker with real stores/TLS/PostgreSQL, including distinct-build
    fairness/quota/concurrency, recursive fixed outputs, invalid input/transfer
    limits, cleanup across removed configuration, and NixOS runtime wiring. Reuse
    already-covered corruption, exact binding, fencing and recovery contracts.
    Add a missing case only where it establishes an accepted requirement not
    exercised by an existing production-path test.
-4. **Release candidate verification.** Build the actual selected image artifact;
+3. **Release candidate verification.** Build the actual selected image artifact;
    qualify its native runtime and stock-client boundary; then run the full
    workspace and exact fresh-shell verification once for that candidate. Record
    source/artifact identities, commands, prerequisites, resource caps, complete
    logs, failures and ignored tests. Separate local completion from unauthorized
    live AWS gates.
 
-These are checkpoints, not four guaranteed short coding sessions. No credible
-finish-time estimate exists until the image decision closes. If a checkpoint
-uncovers another independent subsystem redesign, stop and report its delivery
-impact instead of growing this plan automatically.
+These are checkpoints, not guaranteed short coding sessions. If a checkpoint
+uncovers another independent subsystem redesign, report its delivery impact
+instead of growing this plan automatically.
 
 ## Administrative testing boundary
 
@@ -113,4 +89,5 @@ No deployment, live AWS calls, paid model use, crypto replacement, resource-cap
 increase, artifact deletion or replacement autonomous loop is authorized by this
 plan. Preserve prior JJ changes, evidence, VM disks, keys, caches, GC roots and
 rerun artifacts. Task 13 remains incomplete until local acceptance actually passes;
-production readiness additionally requires the original provider/security gates.
+production readiness additionally requires applicable provider/security gates,
+with the snapshot/PRNG concern explicitly accepted above.
