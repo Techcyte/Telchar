@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::GatewayStoreEndpoint;
 
+mod client;
+
 struct Daemon(std::process::Child);
 
 impl Drop for Daemon {
@@ -127,222 +129,233 @@ chunk_bytes = 262144
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
-    IpcListener::send_envelope(
-        &mut stream,
-        &IpcEnvelope {
-            version: IPC_VERSION,
-            requester: RequesterMetadata {
-                credential_id: "ssh-pubkey:microvm-build".into(),
-                audit_subject: "microvm-build".into(),
-                quota_subject: "microvm-build".into(),
-            },
-            session_id: "microvm-daemon-build".into(),
-            trace_context: telchar_telemetry::TraceContext::default(),
-            error: None,
-        },
-    )?;
-    let client = match nix_worker_protocol::WorkerClient::connect(stream.try_clone()?) {
-        Ok(client) => client,
-        Err(error) => {
-            daemon.0.kill()?;
-            daemon.0.wait()?;
-            let mut diagnostic = String::new();
-            daemon
-                .0
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut diagnostic)?;
-            panic!("daemon handshake {error}: {diagnostic}");
-        }
-    };
-    let mut wire = Vec::new();
-    use nix_worker_protocol::{write_worker_byte_string as bytes, write_worker_integer as word};
-    word(&mut wire, 36);
-    bytes(&mut wire, request.derivation_path());
-    word(&mut wire, request.output_authorities().len() as u64);
-    for output in request.output_authorities() {
-        for value in [
-            output.name(),
-            output.path(),
-            output.hash_algorithm(),
-            output.hash(),
-        ] {
-            bytes(&mut wire, value);
-        }
-    }
-    word(&mut wire, request.input_sources().len() as u64);
-    for input in request.input_sources() {
-        bytes(&mut wire, input);
-    }
-    bytes(&mut wire, request.system().as_bytes());
-    bytes(&mut wire, request.builder());
-    word(&mut wire, request.arguments().len() as u64);
-    for argument in request.arguments() {
-        bytes(&mut wire, argument);
-    }
-    word(&mut wire, request.environment().len() as u64);
-    for (key, value) in request.environment() {
-        bytes(&mut wire, key);
-        bytes(&mut wire, value);
-    }
-    word(&mut wire, 0);
-    let mut terminal_barrier = if recovers_outputs {
-        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
-        control.batch_execute("CREATE FUNCTION hold_terminal_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state = 'succeeded' THEN PERFORM pg_advisory_xact_lock(78564321); END IF; RETURN NEW; END $$; CREATE TRIGGER hold_terminal_result BEFORE UPDATE ON shared_builds FOR EACH ROW EXECUTE FUNCTION hold_terminal_result(); SELECT pg_advisory_lock(78564321);").unwrap();
-        Some(control)
-    } else {
-        None
-    };
-    stream.write_all(&wire)?;
-    stream.flush()?;
-    let mut expected = Vec::new();
-    if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
-        nix_worker_protocol::write_stderr_frame(
-            &mut expected,
-            nix_worker_protocol::StderrFrame::Next {
-                message: b"sandbox-builder-executing\n".to_vec(),
-            },
-        )?;
-    }
-    if fails {
-        nix_worker_protocol::write_worker_error(&mut expected, "BuildDerivation execution failed")?;
-    } else {
-        nix_worker_protocol::write_build_derivation_success_response(
-            &mut expected,
-            client.profile().version,
-            false,
-        )?;
-    }
     let coalesced = matches!(
         case.as_str(),
         "configured-daemon-coalesced" | "configured-daemon-detached"
     );
-    let follower = if coalesced {
-        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !control
-            .query_one("SELECT EXISTS(SELECT 1 FROM shared_builds)", &[])
-            .unwrap()
-            .get::<_, bool>(0)
-        {
-            assert!(Instant::now() < deadline, "leader claim deadline");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let mut follower = std::os::unix::net::UnixStream::connect(&socket)?;
-        follower.set_read_timeout(Some(Duration::from_secs(20)))?;
-        follower.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let stock_client = case == "configured-daemon-client-derivation";
+    let mut terminal_barrier = None;
+    if stock_client {
+        client::build(root, &socket, request.derivation_path())?;
+    } else {
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcListener, RequesterMetadata};
         IpcListener::send_envelope(
-            &mut follower,
+            &mut stream,
             &IpcEnvelope {
                 version: IPC_VERSION,
                 requester: RequesterMetadata {
-                    credential_id: "ssh-pubkey:microvm-follower".into(),
-                    audit_subject: "microvm-follower".into(),
-                    quota_subject: "microvm-follower".into(),
+                    credential_id: "ssh-pubkey:microvm-build".into(),
+                    audit_subject: "microvm-build".into(),
+                    quota_subject: "microvm-build".into(),
                 },
-                session_id: "microvm-daemon-follower".into(),
+                session_id: "microvm-daemon-build".into(),
                 trace_context: telchar_telemetry::TraceContext::default(),
                 error: None,
             },
         )?;
-        let client = nix_worker_protocol::WorkerClient::connect(follower.try_clone()?)?;
-        follower.write_all(&wire)?;
-        follower.flush()?;
-        Some((follower, client))
-    } else {
-        None
-    };
-    if recovers_outputs {
-        let control = terminal_barrier.as_mut().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !control.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objid = 78564321 AND NOT granted)", &[]).unwrap().get::<_, bool>(0) {
+        let client = match nix_worker_protocol::WorkerClient::connect(stream.try_clone()?) {
+            Ok(client) => client,
+            Err(error) => {
+                daemon.0.kill()?;
+                daemon.0.wait()?;
+                let mut diagnostic = String::new();
+                daemon
+                    .0
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut diagnostic)?;
+                panic!("daemon handshake {error}: {diagnostic}");
+            }
+        };
+        let mut wire = Vec::new();
+        use nix_worker_protocol::{
+            write_worker_byte_string as bytes, write_worker_integer as word,
+        };
+        word(&mut wire, 36);
+        bytes(&mut wire, request.derivation_path());
+        word(&mut wire, request.output_authorities().len() as u64);
+        for output in request.output_authorities() {
+            for value in [
+                output.name(),
+                output.path(),
+                output.hash_algorithm(),
+                output.hash(),
+            ] {
+                bytes(&mut wire, value);
+            }
+        }
+        word(&mut wire, request.input_sources().len() as u64);
+        for input in request.input_sources() {
+            bytes(&mut wire, input);
+        }
+        bytes(&mut wire, request.system().as_bytes());
+        bytes(&mut wire, request.builder());
+        word(&mut wire, request.arguments().len() as u64);
+        for argument in request.arguments() {
+            bytes(&mut wire, argument);
+        }
+        word(&mut wire, request.environment().len() as u64);
+        for (key, value) in request.environment() {
+            bytes(&mut wire, key);
+            bytes(&mut wire, value);
+        }
+        word(&mut wire, 0);
+        terminal_barrier = if recovers_outputs {
+            let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+            control.batch_execute("CREATE FUNCTION hold_terminal_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state = 'succeeded' THEN PERFORM pg_advisory_xact_lock(78564321); END IF; RETURN NEW; END $$; CREATE TRIGGER hold_terminal_result BEFORE UPDATE ON shared_builds FOR EACH ROW EXECUTE FUNCTION hold_terminal_result(); SELECT pg_advisory_lock(78564321);").unwrap();
+            Some(control)
+        } else {
+            None
+        };
+        stream.write_all(&wire)?;
+        stream.flush()?;
+        let mut expected = Vec::new();
+        if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+            nix_worker_protocol::write_stderr_frame(
+                &mut expected,
+                nix_worker_protocol::StderrFrame::Next {
+                    message: b"sandbox-builder-executing\n".to_vec(),
+                },
+            )?;
+        }
+        if fails {
+            nix_worker_protocol::write_worker_error(
+                &mut expected,
+                "BuildDerivation execution failed",
+            )?;
+        } else {
+            nix_worker_protocol::write_build_derivation_success_response(
+                &mut expected,
+                client.profile().version,
+                false,
+            )?;
+        }
+        let follower = if coalesced {
+            let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !control
+                .query_one("SELECT EXISTS(SELECT 1 FROM shared_builds)", &[])
+                .unwrap()
+                .get::<_, bool>(0)
+            {
+                assert!(Instant::now() < deadline, "leader claim deadline");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut follower = std::os::unix::net::UnixStream::connect(&socket)?;
+            follower.set_read_timeout(Some(Duration::from_secs(20)))?;
+            follower.set_write_timeout(Some(Duration::from_secs(5)))?;
+            IpcListener::send_envelope(
+                &mut follower,
+                &IpcEnvelope {
+                    version: IPC_VERSION,
+                    requester: RequesterMetadata {
+                        credential_id: "ssh-pubkey:microvm-follower".into(),
+                        audit_subject: "microvm-follower".into(),
+                        quota_subject: "microvm-follower".into(),
+                    },
+                    session_id: "microvm-daemon-follower".into(),
+                    trace_context: telchar_telemetry::TraceContext::default(),
+                    error: None,
+                },
+            )?;
+            let client = nix_worker_protocol::WorkerClient::connect(follower.try_clone()?)?;
+            follower.write_all(&wire)?;
+            follower.flush()?;
+            Some((follower, client))
+        } else {
+            None
+        };
+        if recovers_outputs {
+            let control = terminal_barrier.as_mut().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !control.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objid = 78564321 AND NOT granted)", &[]).unwrap().get::<_, bool>(0) {
             assert!(Instant::now() < deadline, "terminal write barrier deadline");
             std::thread::sleep(Duration::from_millis(10));
         }
-        let mut gateway = telchar::store::daemon::GatewayStoreConnection::connect(store)?;
-        for (_, output) in request.expected_outputs() {
-            assert!(
-                gateway.query_path_info(output)?.is_some(),
-                "output registered before crash"
+            let mut gateway = telchar::store::daemon::GatewayStoreConnection::connect(store)?;
+            for (_, output) in request.expected_outputs() {
+                assert!(
+                    gateway.query_path_info(output)?.is_some(),
+                    "output registered before crash"
+                );
+            }
+            assert_ne!(
+                control
+                    .query_one("SELECT state FROM shared_builds", &[])
+                    .unwrap()
+                    .get::<_, String>(0),
+                "succeeded"
             );
-        }
-        assert_ne!(
-            control
-                .query_one("SELECT state FROM shared_builds", &[])
-                .unwrap()
-                .get::<_, String>(0),
-            "succeeded"
-        );
-    } else if crashes {
-        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound' AND provider_id = 'microvm-build')", &[]).unwrap().get::<_, bool>(0) {
+        } else if crashes {
+            let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !control.query_one("SELECT EXISTS(SELECT 1 FROM microvm_launches WHERE phase = 'bound' AND provider_id = 'microvm-build')", &[]).unwrap().get::<_, bool>(0) {
             assert!(Instant::now() < deadline, "provider binding deadline");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(
-            control
-                .query_one("SELECT state FROM shared_builds", &[])
+            assert_eq!(
+                control
+                    .query_one("SELECT state FROM shared_builds", &[])
+                    .unwrap()
+                    .get::<_, String>(0),
+                "running"
+            );
+        } else if case == "configured-daemon-detached" {
+            let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while control
+                .query_one(
+                    "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+                    &[],
+                )
                 .unwrap()
-                .get::<_, String>(0),
-            "running"
-        );
-    } else if case == "configured-daemon-detached" {
-        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while control
-            .query_one(
-                "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
-                &[],
-            )
-            .unwrap()
-            .get::<_, i64>(0)
-            != 2
-        {
-            assert!(Instant::now() < deadline, "follower attachment deadline");
-            std::thread::sleep(Duration::from_millis(10));
+                .get::<_, i64>(0)
+                != 2
+            {
+                assert!(Instant::now() < deadline, "follower attachment deadline");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stream.shutdown(std::net::Shutdown::Both)?;
+            std::fs::write(root.join("requester-disconnected"), b"")?;
+        } else {
+            let mut actual = vec![0; expected.len()];
+            let read = stream.read_exact(&mut actual);
+            if read.is_err() || actual != expected {
+                daemon.0.kill()?;
+                daemon.0.wait()?;
+                let mut diagnostic = String::new();
+                daemon
+                    .0
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut diagnostic)?;
+                panic!("daemon read {read:?}, result {actual:?}: {diagnostic}");
+            }
         }
-        stream.shutdown(std::net::Shutdown::Both)?;
-        std::fs::write(root.join("requester-disconnected"), b"")?;
-    } else {
-        let mut actual = vec![0; expected.len()];
-        let read = stream.read_exact(&mut actual);
-        if read.is_err() || actual != expected {
-            daemon.0.kill()?;
-            daemon.0.wait()?;
-            let mut diagnostic = String::new();
-            daemon
-                .0
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut diagnostic)?;
-            panic!("daemon read {read:?}, result {actual:?}: {diagnostic}");
+        if let Some((mut follower, _client)) = follower {
+            let mut follower_expected = Vec::new();
+            nix_worker_protocol::write_stderr_frame(
+                &mut follower_expected,
+                nix_worker_protocol::StderrFrame::Next {
+                    message: b"identical build already in progress\n".to_vec(),
+                },
+            )?;
+            follower_expected.extend_from_slice(&expected);
+            let mut actual = vec![0; follower_expected.len()];
+            follower.read_exact(&mut actual)?;
+            assert_eq!(
+                actual, follower_expected,
+                "follower receives shared success"
+            );
         }
+        drop(stream);
+        drop(client);
     }
-    if let Some((mut follower, _client)) = follower {
-        let mut follower_expected = Vec::new();
-        nix_worker_protocol::write_stderr_frame(
-            &mut follower_expected,
-            nix_worker_protocol::StderrFrame::Next {
-                message: b"identical build already in progress\n".to_vec(),
-            },
-        )?;
-        follower_expected.extend_from_slice(&expected);
-        let mut actual = vec![0; follower_expected.len()];
-        follower.read_exact(&mut actual)?;
-        assert_eq!(
-            actual, follower_expected,
-            "follower receives shared success"
-        );
-    }
-    drop(stream);
-    drop(client);
     if case == "configured-daemon-restart" || crashes || recovers_outputs {
         let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
         let generation: i64 = control
@@ -515,13 +528,15 @@ chunk_bytes = 262144
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0].get::<_, String>("state"), terminal_state);
     assert_eq!(attempts[0].get::<_, String>("backend_kind"), "microvm");
-    let attachment = control
-        .query_one(
-            "SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-build'",
-            &[],
-        )
-        .unwrap();
-    assert_eq!(attachment.get::<_, String>(0), "detached");
+    if !stock_client {
+        let attachment = control
+            .query_one(
+                "SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-build'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(attachment.get::<_, String>(0), "detached");
+    }
     if coalesced {
         let follower = control.query_one("SELECT state FROM request_attachments WHERE session_id = 'microvm-daemon-follower'", &[]).unwrap();
         assert_eq!(follower.get::<_, String>(0), "detached");
