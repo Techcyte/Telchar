@@ -236,9 +236,10 @@ impl Execution<'_> {
         }
         let result = (|| {
             launched.map_err(io::Error::other)?;
-            let connection = waiting
-                .receive_active(self.owner)
-                .map_err(io::Error::other)?;
+            let started = Instant::now();
+            let connection = waiting.receive_active(self.owner);
+            crate::service::metrics::microvm_rendezvous(started.elapsed(), connection.is_ok());
+            let connection = connection.map_err(io::Error::other)?;
             run_admitted(
                 connection,
                 self.owner,

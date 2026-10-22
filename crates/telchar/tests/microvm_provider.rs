@@ -43,6 +43,38 @@ fn exports_launch_outcomes_without_execution_identifiers() {
     collector.assert_metric_attributes_are_bounded();
 }
 
+#[test]
+fn exports_rendezvous_timeout_without_claiming_execution_success() {
+    const CHILD: &str = "TELCHAR_TEST_RENDEZVOUS_METRICS";
+    if std::env::var_os(CHILD).is_some() {
+        let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+        launch_exchange(true, "execution-timeout");
+        launch_exchange(false, "execution-failure");
+        telemetry.shutdown();
+        return;
+    }
+    let collector = collector::start_collector();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "exports_rendezvous_timeout_without_claiming_execution_success",
+        ])
+        .env(CHILD, "1")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    collector.assert_counter("telchar.microvm.rendezvous", "error", 1);
+    assert!(
+        collector
+            .metric_names()
+            .contains("telchar.microvm.rendezvous.duration")
+    );
+    collector.assert_metric_attributes_are_bounded();
+}
+
 #[derive(Debug)]
 struct LaunchCredentials {
     database: String,
