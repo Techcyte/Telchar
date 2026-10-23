@@ -53,6 +53,7 @@ let
       nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
       preCheck = ''
+        export TELCHAR_NIX_BIN=${pkgs.nix}/bin/nix
         daemonBuildLog=$(mktemp)
         cargoWithProfile build --locked -p telchar --bin telchar \
           --config "profile.''${CARGO_PROFILE:-dev}.package.telchar.debug-assertions=true" \
@@ -63,6 +64,13 @@ let
         test -x "$daemonExecutable"
         export TELCHAR_TEST_DAEMON_BIN="$TMPDIR/telchar-test-daemon"
         cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
+      '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        mkdir -p /var/empty
+        if ! test -e /noshell; then
+          ln -s ${pkgs.bash}/bin/bash /noshell
+        fi
+        checkCpus=$(${pkgs.python3}/bin/python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
+        taskset -pc "$checkCpus" $$
       '';
       postInstall = ''
         test ! -e "$out/bin/telchar"

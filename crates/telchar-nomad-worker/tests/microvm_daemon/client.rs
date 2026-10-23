@@ -91,6 +91,7 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
     let derivation = std::str::from_utf8(derivation).unwrap();
     let copied = Command::new(&nix)
         .args([
+            "--offline",
             "--extra-experimental-features",
             "nix-command",
             "copy",
@@ -112,7 +113,7 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
     let result = Command::new(&nix)
         .env("HOME", &home)
         .env("NIX_SSHOPTS", format!("-p {port} -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes", key.display()))
-        .args(["--extra-experimental-features", "nix-command", "--store"])
+        .args(["--offline", "--extra-experimental-features", "nix-command", "--store"])
         .arg(&client_store)
         .args(["build", "--no-link", "--print-out-paths", "--max-jobs", "0", "--builders"])
         .arg(format!("ssh-ng://{}@127.0.0.1 aarch64-linux", user.trim()))
