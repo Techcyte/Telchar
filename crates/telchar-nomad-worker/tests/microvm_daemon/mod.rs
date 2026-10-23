@@ -9,7 +9,19 @@ use telchar::store::daemon::GatewayStoreEndpoint;
 
 mod client;
 
-struct Daemon(std::process::Child);
+struct Daemon(std::process::Child, std::path::PathBuf);
+
+impl Daemon {
+    fn spawn(command: &mut Command, home: &Path) -> std::io::Result<Self> {
+        let stderr = home.join("daemon.stderr");
+        command.stderr(std::fs::File::create(&stderr)?);
+        Ok(Self(command.spawn()?, stderr))
+    }
+
+    fn stderr(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(&self.1)
+    }
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -111,20 +123,13 @@ chunk_bytes = 262144
         .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", &roots)
         .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut daemon = Daemon(command.spawn()?);
+        .stdout(Stdio::piped());
+    let mut daemon = Daemon::spawn(&mut command, &home)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
         assert!(Instant::now() < deadline, "daemon startup deadline");
         if let Some(status) = daemon.0.try_wait()? {
-            let mut diagnostic = String::new();
-            daemon
-                .0
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut diagnostic)?;
+            let diagnostic = daemon.stderr()?;
             panic!("daemon exited {status}: {diagnostic}");
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -161,13 +166,7 @@ chunk_bytes = 262144
             Err(error) => {
                 daemon.0.kill()?;
                 daemon.0.wait()?;
-                let mut diagnostic = String::new();
-                daemon
-                    .0
-                    .stderr
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut diagnostic)?;
+                let diagnostic = daemon.stderr()?;
                 panic!("daemon handshake {error}: {diagnostic}");
             }
         };
@@ -327,13 +326,7 @@ chunk_bytes = 262144
             if read.is_err() || actual != expected {
                 daemon.0.kill()?;
                 daemon.0.wait()?;
-                let mut diagnostic = String::new();
-                daemon
-                    .0
-                    .stderr
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut diagnostic)?;
+                let diagnostic = daemon.stderr()?;
                 panic!("daemon read {read:?}, result {actual:?}: {diagnostic}");
             }
         }
@@ -379,19 +372,13 @@ chunk_bytes = 262144
             );
         }
         let mut stdout = String::new();
-        let mut stderr = String::new();
+        let stderr = daemon.stderr()?;
         daemon
             .0
             .stdout
             .take()
             .unwrap()
             .read_to_string(&mut stdout)?;
-        daemon
-            .0
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut stderr)?;
         assert!(stdout.is_empty());
         assert!(
             !stderr.lines().any(|line| line.contains(" ERROR ")),
@@ -408,17 +395,11 @@ chunk_bytes = 262144
                 ),
             )?;
         }
-        daemon = Daemon(command.spawn()?);
+        daemon = Daemon::spawn(&mut command, &home)?;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = daemon.0.try_wait()? {
-                let mut diagnostic = String::new();
-                daemon
-                    .0
-                    .stderr
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut diagnostic)?;
+                let diagnostic = daemon.stderr()?;
                 panic!("replacement exited {status}: {diagnostic}");
             }
             let replaced = control
@@ -457,19 +438,13 @@ chunk_bytes = 262144
     }
     assert!(daemon.0.wait()?.success());
     let mut stdout = String::new();
-    let mut stderr = String::new();
+    let stderr = daemon.stderr()?;
     daemon
         .0
         .stdout
         .take()
         .unwrap()
         .read_to_string(&mut stdout)?;
-    daemon
-        .0
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)?;
     assert!(stdout.is_empty());
     let errors = stderr
         .lines()

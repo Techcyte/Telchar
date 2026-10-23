@@ -70,6 +70,7 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(home.join("sshd.log"))?)
             .spawn()?,
+        home.join("sshd.log"),
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     while !home.join("sshd.pid").exists() {
