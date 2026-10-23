@@ -9,7 +9,7 @@ let
 in
 pkgs.testers.nixosTest {
   name = "telchar-microvm-service";
-  nodes.gateway = { ... }: {
+  nodes.gateway = { config, ... }: {
     imports = [ telcharModule ];
     virtualisation.memorySize = 2048;
     virtualisation.cores = 1;
@@ -38,8 +38,9 @@ pkgs.testers.nixosTest {
     };
     systemd.services.nginx.wantedBy = pkgs.lib.mkForce [];
     environment.etc."microvm-serve".source = pkgs.writeShellScript "microvm-serve" ''
+      export TELCHAR_CONFIG=${config.systemd.services.telchar.environment.TELCHAR_CONFIG}
       export TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock
-      export TELCHAR_AUTHENTICATED_KEY=SHA256:microvm-client
+      export TELCHAR_AUTHENTICATED_KEY="$1"
       exec ${daemon}/bin/telchar serve-stdio
     '';
     systemd.tmpfiles.rules = [ "d /var/lib/telchar/gc-roots 0700 telchar telchar -" ];
@@ -62,6 +63,14 @@ pkgs.testers.nixosTest {
       frontendUid = 995;
       database.url = "host=/run/postgresql user=telchar dbname=telchar";
       settings = {
+        identity.credentials = {
+          "ssh-pubkey:SHA256:microvm-alice" = { audit_subject = "alice"; quota_subject = "alice"; };
+          "ssh-pubkey:SHA256:microvm-bob" = { audit_subject = "bob"; quota_subject = "bob"; };
+        };
+        scheduling.default = {
+          maximum_queued_builds = 4;
+          maximum_active_builds = 1;
+        };
         backends = {
           microvm_bind = "127.0.0.1:7443";
           microvm = [{
@@ -161,8 +170,11 @@ pkgs.testers.nixosTest {
     worker.succeed("${pkgs.python3}/bin/python3 -c \"import socket, ssl; trust = open('/run/microvm-worker/trust.der', 'rb').read(); context = ssl.create_default_context(cadata=ssl.DER_cert_to_PEM_cert(trust)); connection = context.wrap_socket(socket.create_connection(('192.168.1.2', 7444), timeout=5), server_hostname='gateway'); connection.close()\"")
     client.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /root/key")
     public_key = client.succeed("cat /root/key.pub").strip()
+    client.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /root/bob")
+    bob_key = client.succeed("cat /root/bob.pub").strip()
     gateway.succeed("install -d -m 700 -o telchar -g telchar /var/lib/telchar/.ssh")
-    gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve\" " + public_key + "' > /var/lib/telchar/.ssh/authorized_keys; chown telchar:telchar /var/lib/telchar/.ssh/authorized_keys")
+    gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve SHA256:microvm-alice\" " + public_key + "' > /var/lib/telchar/.ssh/authorized_keys; chown telchar:telchar /var/lib/telchar/.ssh/authorized_keys")
+    gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve SHA256:microvm-bob\" " + bob_key + "' >> /var/lib/telchar/.ssh/authorized_keys")
     client.succeed("nix-instantiate /etc/microvm-build.nix --add-root /root/derivation")
     derivation = client.succeed("readlink -f /root/derivation").strip()
     client.succeed("NIX_SSHOPTS='-i /root/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + derivation + "^* > /root/output")
@@ -172,9 +184,10 @@ pkgs.testers.nixosTest {
     client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name microvm-service-second --add-root /root/second")
     second = client.succeed("readlink -f /root/second").strip()
     assert second != derivation
-    client.succeed("NIX_SSHOPTS='-i /root/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + second + "^* > /root/second-output")
+    client.succeed("NIX_SSHOPTS='-i /root/bob -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + second + "^* > /root/second-output")
     assert client.succeed("cat $(cat /root/second-output)") == "microvm-service-success\n"
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "2"
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT quota_subject FROM shared_builds ORDER BY quota_subject'\"").strip().splitlines() == ["alice", "bob"]
     gateway.succeed("systemctl stop telchar.service")
     gateway.wait_for_closed_port(7443)
     gateway.succeed("test ! -e /run/telchar/daemon.sock")
