@@ -130,8 +130,9 @@ pkgs.testers.nixosTest {
     networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.4"; prefixLength = 24; }];
     nix.settings = { substituters = pkgs.lib.mkForce []; experimental-features = [ "nix-command" ]; };
     environment.etc."microvm-build.nix".text = ''
+      { name ? "microvm-service-output" }:
       derivation {
-        name = "microvm-service-output";
+        inherit name;
         system = "aarch64-linux";
         builder = "${pkgs.bash}/bin/bash";
         builderPackage = builtins.storePath "${pkgs.bash}";
@@ -166,7 +167,14 @@ pkgs.testers.nixosTest {
     derivation = client.succeed("readlink -f /root/derivation").strip()
     client.succeed("NIX_SSHOPTS='-i /root/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + derivation + "^* > /root/output")
     assert client.succeed("cat $(cat /root/output)") == "microvm-service-success\n"
-    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "1"
+    gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE reservation_released_at IS NULL'\" | grep -qx 0", timeout=90)
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "1"
+    client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name microvm-service-second --add-root /root/second")
+    second = client.succeed("readlink -f /root/second").strip()
+    assert second != derivation
+    client.succeed("NIX_SSHOPTS='-i /root/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + second + "^* > /root/second-output")
+    assert client.succeed("cat $(cat /root/second-output)") == "microvm-service-success\n"
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "2"
     gateway.succeed("systemctl stop telchar.service")
     gateway.wait_for_closed_port(7443)
     gateway.succeed("test ! -e /run/telchar/daemon.sock")

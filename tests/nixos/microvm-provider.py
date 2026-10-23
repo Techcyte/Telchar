@@ -5,6 +5,8 @@ import json
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
+    dispatches = 0
+
     def log_message(self, format, *args):
         pass
 
@@ -22,13 +24,15 @@ class Provider(http.server.BaseHTTPRequestHandler):
             assert self.path.startswith("/2025-09-09/microvms")
             payload = json.loads(json.loads(body)["runHookPayload"])
             payload.pop("version")
-            payload["provider_id"] = "microvm-build"
+            Provider.dispatches += 1
+            provider_id = f"microvm-build-{Provider.dispatches}"
+            payload["provider_id"] = provider_id
             worker = http.client.HTTPConnection("worker", 9877, timeout=2)
             worker.request("POST", "/run", json.dumps(payload))
             assert worker.getresponse().status == 202
             worker.close()
             self.respond(json.dumps({
-                "microvmId": "microvm-build", "state": "PENDING",
+                "microvmId": provider_id, "state": "PENDING",
                 "endpoint": "https://unused.invalid", "imageArn": "fixture",
                 "imageVersion": "1", "maximumDurationInSeconds": 60, "startedAt": 1,
             }), "application/json")
@@ -45,6 +49,19 @@ class Provider(http.server.BaseHTTPRequestHandler):
         )
 
     def do_GET(self):
+        if self.path.startswith("/2025-09-09/microvms/"):
+            provider_id = self.path.rsplit("/", 1)[1]
+            worker = http.client.HTTPConnection("worker", 9877, timeout=2)
+            worker.request("GET", f"/executions/{provider_id}")
+            response = worker.getresponse()
+            assert response.status == 200
+            terminated = json.loads(response.read())["terminated"]
+            worker.close()
+            self.respond(json.dumps({
+                "microvmId": provider_id,
+                "state": "TERMINATED" if terminated else "RUNNING",
+            }), "application/json")
+            return
         assert self.path.startswith("/2025-09-09/microvm-images/")
         assert self.path.endswith("/versions/1")
         assert "Credential=fixture-key/" in self.headers["Authorization"]
