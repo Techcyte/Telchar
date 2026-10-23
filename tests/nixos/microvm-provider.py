@@ -1,4 +1,5 @@
 """Loopback provider simulator for NixOS MicroVM startup, not AWS qualification."""
+import http.client
 import http.server
 import json
 
@@ -17,7 +18,22 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        assert self.path == "/" and b"Action=GetCallerIdentity" in body
+        if self.path != "/":
+            assert self.path.startswith("/2025-09-09/microvms")
+            payload = json.loads(json.loads(body)["runHookPayload"])
+            payload.pop("version")
+            payload["provider_id"] = "microvm-build"
+            worker = http.client.HTTPConnection("worker", 9877, timeout=2)
+            worker.request("POST", "/run", json.dumps(payload))
+            assert worker.getresponse().status == 202
+            worker.close()
+            self.respond(json.dumps({
+                "microvmId": "microvm-build", "state": "PENDING",
+                "endpoint": "https://unused.invalid", "imageArn": "fixture",
+                "imageVersion": "1", "maximumDurationInSeconds": 60, "startedAt": 1,
+            }), "application/json")
+            return
+        assert b"Action=GetCallerIdentity" in body
         assert "Credential=fixture-key/" in self.headers["Authorization"]
         self.respond(
             '<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
