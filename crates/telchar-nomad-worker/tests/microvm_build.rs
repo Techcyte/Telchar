@@ -185,7 +185,7 @@ fn provider_client(
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
         if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
-            run_isolated_build("configured-daemon");
+            run_isolated_build("configured-daemon-client-derivation");
             return;
         }
         for case in [
@@ -416,8 +416,23 @@ fn run_build() {
         r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"{builder_input}],"{system}","{builder}",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","{builder}"),("name","dedicated")])"#
     );
     let (drv, derivation) = if client_derivation {
+        let builder_dependency = if runtime.is_some() {
+            format!(
+                "builderPackage = builtins.storePath {};",
+                serde_json::to_string(
+                    std::path::Path::new(&builder)
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                )
+                .unwrap()
+            )
+        } else {
+            String::new()
+        };
         let expression = format!(
-            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
+            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; {builder_dependency} args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
         );
         let result = Command::new("nix-instantiate")
             .args(["--store", "local", "--expr", &expression, "--add-root"])

@@ -93,6 +93,7 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
             "--extra-experimental-features",
             "nix-command",
             "copy",
+            "--no-check-sigs",
             "--from",
             "local",
             "--to",

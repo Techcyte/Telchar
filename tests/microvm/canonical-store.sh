@@ -11,7 +11,12 @@ cleanup() {
     status=$?
     if ((status != 0)); then
         printf 'Canonical store fixture retained: %s\n' "$root" >&2
+    elif [[ -n ${MICROVM_TEST_RUNTIME:-} ]]; then
+        printf 'Canonical store fixture retained: %s\n' "$root"
     else
+        if [[ -d $root/client/store ]]; then
+            find "$root/client/store" -type d -exec chmod u+w {} +
+        fi
         rm -rf "$root"
     fi
 }
