@@ -85,7 +85,7 @@ pkgs.testers.nixosTest {
             execution_timeout_seconds = 50;
             admission_timeout_seconds = 20;
             provider_timeout_seconds = 2;
-            cleanup_interval_seconds = 60;
+            cleanup_interval_seconds = 5;
             callback_url = "wss://gateway:7444/microvm";
             callback_address = "192.168.1.2:7444";
             staging_directory = "/var/lib/telchar";
@@ -203,7 +203,7 @@ pkgs.testers.nixosTest {
     client.succeed("cp /root/first-output /root/output")
     assert client.succeed("cat $(cat /root/output)") == "microvm-service-success\n"
     gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE reservation_released_at IS NULL'\" | grep -qx 0", timeout=90)
-    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "1"
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "2"
     client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name microvm-service-second --add-root /root/second")
     second = client.succeed("readlink -f /root/second").strip()
     assert second != derivation

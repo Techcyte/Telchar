@@ -52,12 +52,14 @@ impl Execution<'_> {
                 "MicroVM attempt backend does not match deployment",
             ));
         }
+        let stopped = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|scope| {
+            let stopped = &stopped;
             let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
             let worker = std::thread::Builder::new()
                 .name("microvm-execution".into())
                 .spawn_scoped(scope, move || {
-                    self.run_build(config, build, |bytes| {
+                    self.run_build_until(config, build, stopped, |bytes| {
                         for chunk in bytes.chunks(64 * 1024) {
                             let _ = sender.try_send(chunk.to_vec());
                         }
@@ -86,6 +88,7 @@ impl Execution<'_> {
                     }
                 }
                 if failure.is_some() {
+                    stopped.store(true, std::sync::atomic::Ordering::Release);
                     self.owner.verify().map_err(io::Error::other)?;
                     crate::persistence::cancel_microvm_attempt(
                         self.owner.database(),
@@ -117,6 +120,21 @@ impl Execution<'_> {
         build: &crate::backend::BuildExecution<'_>,
         log: impl FnMut(&[u8]),
     ) -> io::Result<crate::backend::BuildResult> {
+        self.run_build_until(
+            config,
+            build,
+            &std::sync::atomic::AtomicBool::new(false),
+            log,
+        )
+    }
+
+    fn run_build_until(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+        build: &crate::backend::BuildExecution<'_>,
+        stopped: &std::sync::atomic::AtomicBool,
+        log: impl FnMut(&[u8]),
+    ) -> io::Result<crate::backend::BuildResult> {
         self.owner.verify().map_err(io::Error::other)?;
         if build.target_name() != Some(config.name()) {
             return Err(io::Error::other(
@@ -144,7 +162,7 @@ impl Execution<'_> {
                 "MicroVM admitted request does not match execution",
             ));
         }
-        let result = self.run_until(config, attempt.attempt_id, deadline, log)?;
+        let result = self.run_until(config, attempt.attempt_id, deadline, stopped, log)?;
         if result.outcome != crate::nomad::protocol::BuildOutcome::Built {
             return Err(io::Error::other("MicroVM build failed"));
         }
@@ -164,7 +182,13 @@ impl Execution<'_> {
         let deadline = Instant::now()
             .checked_add(config.execution_timeout())
             .ok_or_else(|| io::Error::other("MicroVM execution deadline overflow"))?;
-        self.run_until(config, attempt_id, deadline, log)
+        self.run_until(
+            config,
+            attempt_id,
+            deadline,
+            &std::sync::atomic::AtomicBool::new(false),
+            log,
+        )
     }
 
     fn run_until(
@@ -172,6 +196,7 @@ impl Execution<'_> {
         config: &crate::service::config::MicrovmBackendConfig,
         attempt_id: i64,
         deadline: Instant,
+        stopped: &std::sync::atomic::AtomicBool,
         log: impl FnMut(&[u8]),
     ) -> io::Result<BuildResultMetadata> {
         self.owner.verify().map_err(io::Error::other)?;
@@ -190,16 +215,56 @@ impl Execution<'_> {
         if Instant::now() >= deadline {
             return Err(io::Error::other("MicroVM execution deadline expired"));
         }
-        let (intent, payload) = config.launch(attempt_id)?;
-        if !crate::persistence::reserve_microvm_launch(
-            self.owner.database(),
-            &intent,
-            config.maximum_concurrent_builds(),
-        )
-        .map_err(io::Error::other)?
-        {
-            return Err(io::Error::other("MicroVM reservation was not granted"));
-        }
+        let (intent, payload) = loop {
+            self.owner.verify().map_err(io::Error::other)?;
+            if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "MicroVM build cancelled",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "MicroVM capacity wait expired",
+                ));
+            }
+            if crate::persistence::microvm_attempt_request(
+                self.owner.database(),
+                attempt_id,
+                config.name(),
+            )
+            .map_err(io::Error::other)?
+            .is_none()
+            {
+                return Err(io::Error::other("MicroVM attempt is not active"));
+            }
+            let (intent, payload) = config.launch(attempt_id)?;
+            if crate::persistence::reserve_microvm_launch(
+                self.owner.database(),
+                &intent,
+                config.maximum_concurrent_builds(),
+            )
+            .map_err(io::Error::other)?
+            {
+                if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                    crate::persistence::cancel_microvm_launch(
+                        self.owner.database(),
+                        &intent.intent_id,
+                    )
+                    .map_err(io::Error::other)?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "MicroVM build cancelled",
+                    ));
+                }
+                break (intent, payload);
+            }
+            std::thread::sleep(
+                std::time::Duration::from_millis(50)
+                    .min(deadline.saturating_duration_since(Instant::now())),
+            );
+        };
         let execution = Execution {
             provider: self.provider,
             owner: self.owner,
