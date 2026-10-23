@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Private canonical store with a copy-on-write view of installed executables.
+# Private canonical store preserving installed executable mount trees.
 set -euo pipefail
 binary=$(realpath "$1")
 shift
@@ -32,8 +32,16 @@ export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STO
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"
-mount --bind "$MICROVM_STORE_ROOT/store" /nix/store
+for path in /nix/store/*; do
+    target="$MICROVM_STORE_ROOT/store/$(basename "$path")"
+    if [[ -d $path ]]; then
+        mkdir "$target"
+        mount --rbind "$path" "$target"
+    else
+        cp -a "$path" "$target"
+    fi
+done
+mount --rbind "$MICROVM_STORE_ROOT/store" /nix/store
 nix-store --store local --init
 if test -n "${MICROVM_TEST_REGISTRATION:-}"; then
     nix-store --store local --load-db < "$MICROVM_TEST_REGISTRATION"
