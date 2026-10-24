@@ -382,6 +382,27 @@ fn run_build() {
         format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
     };
     let runtime = std::env::var_os("MICROVM_TEST_RUNTIME");
+    let compiler = std::env::var("MICROVM_TEST_COMPILER").ok();
+    assert!(compiler.is_none() || runtime.is_some());
+    let script = if let Some(compiler) = &compiler {
+        assert!(client_derivation, "compiler workload requires stock client");
+        format!(
+            r#"set -e
+printf '#include <stdio.h>\n' > workload.c
+for ((i=0; i<512; i++)); do
+    printf 'unsigned f%s(unsigned x) {{ return x + %s; }}\n' "$i" "$i" >> workload.c
+done
+printf 'int main(void) {{ unsigned sum = 0;\n' >> workload.c
+for ((i=0; i<512; i++)); do
+    printf 'sum += f%s(%s);\n' "$i" "$i" >> workload.c
+done
+printf 'if (sum != 261632) return 1; puts("dedicated-worker-success"); return 0; }}\n' >> workload.c
+{compiler} -O2 -Wall -Wextra -Werror workload.c -o workload
+./workload > "$out""#
+        )
+    } else {
+        script
+    };
     let builder = if runtime.is_some() {
         std::env::var("MICROVM_TEST_BUILDER").expect("packaged runtime builder")
     } else {
@@ -431,8 +452,19 @@ fn run_build() {
         } else {
             String::new()
         };
+        let compiler_dependency = compiler.as_ref().map_or_else(String::new, |compiler| {
+            let package = std::path::Path::new(compiler)
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap();
+            format!(
+                "compilerPackage = builtins.storePath {};",
+                serde_json::to_string(package).unwrap()
+            )
+        });
         let expression = format!(
-            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; {builder_dependency} args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
+            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; {builder_dependency} {compiler_dependency} args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
         );
         let result = Command::new("nix-instantiate")
             .args(["--store", "local", "--expr", &expression, "--add-root"])

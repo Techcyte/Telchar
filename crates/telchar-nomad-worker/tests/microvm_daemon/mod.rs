@@ -63,7 +63,10 @@ pub fn run(
     std::fs::create_dir(&roots)?;
     let socket = home.join("ipc.sock");
     let config = home.join("service.toml");
-    let transfer_bytes = if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+    let compiler = std::env::var_os("MICROVM_TEST_COMPILER").is_some();
+    let transfer_bytes = if compiler {
+        (320 * 1024 * 1024, 512 * 1024 * 1024)
+    } else if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
         (64 * 1024 * 1024, 128 * 1024 * 1024)
     } else {
         (1048576, 2097152)
@@ -90,16 +93,18 @@ cleanup_interval_seconds = 60
 callback_url = "wss://localhost:{port}/microvm"
 callback_address = "{address}"
 staging_directory = "{staging}"
-maximum_paths = 10
+maximum_paths = {maximum_paths}
 maximum_nar_bytes = {nar_bytes}
 maximum_total_bytes = {total_bytes}
-metadata_bytes = 8192
+metadata_bytes = {metadata_bytes}
 chunk_bytes = 262144
 "#,
             port = address.port(),
             staging = root.display(),
             nar_bytes = transfer_bytes.0,
-            total_bytes = transfer_bytes.1
+            total_bytes = transfer_bytes.1,
+            maximum_paths = if compiler { 64 } else { 10 },
+            metadata_bytes = if compiler { 65536 } else { 8192 }
         ),
     )?;
     let uid = Command::new("id").arg("-u").output()?;

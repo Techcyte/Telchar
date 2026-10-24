@@ -78,6 +78,8 @@ def qualify(args):
         'MICROVM_TEST_BUILDER': args.builder,
         'MICROVM_TEST_REGISTRATION': str(context / 'runtime/registration'),
     })
+    if args.compiler:
+        gateway_env['MICROVM_TEST_COMPILER'] = args.compiler
     runtime_env = {'HOME': '/root', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin',
                    'PYTHONDONTWRITEBYTECODE': '1'}
     with (evidence / 'stdout').open('wb') as stdout, (evidence / 'stderr').open('wb') as stderr, (evidence / 'gateway.stdout').open('wb') as gateway_stdout, (evidence / 'gateway.stderr').open('wb') as gateway_stderr:
@@ -152,6 +154,7 @@ def main():
     parser.add_argument('--context', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--builder', required=True)
+    parser.add_argument('--compiler', help='declared native GCC executable for compilation workload')
     parser.add_argument('gateway', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if not args.gateway:
