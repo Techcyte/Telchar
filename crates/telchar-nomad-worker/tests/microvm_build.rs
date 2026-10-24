@@ -1094,7 +1094,21 @@ chunk_bytes = 262144
             FrameKind::OutputNar => {
                 let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
                 if chunk.final_chunk {
-                    socket.send(upstream.read().unwrap()).unwrap();
+                    let receipt = match upstream.read() {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
+                            drop(upstream);
+                            drop(socket);
+                            let result = gateway_thread.join();
+                            let worker = worker.wait_with_output().unwrap();
+                            panic!(
+                                "output receipt failed in {case}: {error}; gateway: {result:?}; worker: {:?}; stderr: {}",
+                                worker.status,
+                                String::from_utf8_lossy(&worker.stderr)
+                            );
+                        }
+                    };
+                    socket.send(receipt).unwrap();
                 }
             }
             FrameKind::BuildResult => break,
