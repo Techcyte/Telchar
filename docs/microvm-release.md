@@ -53,16 +53,41 @@ VM does not establish competitive round-robin dispatch order.
 
 The configured-daemon worker test also verifies acknowledged launch, connected
 rendezvous, accepted admission, duration samples and bounded attributes through
-a real OTLP receiver after validated output success and shutdown. This does not
-close detailed rejection classes or every phase instrument.
+a real OTLP receiver after validated output success and shutdown. Separate real
+listener/PostgreSQL/OTLP contracts exercise protocol, bootstrap and authentication
+rejection stages. Other finite rejection stages are
+implemented but do not yet have direct receiver qualification. These contracts
+do not close every phase instrument.
 
 The VM's staging observer includes the exact daemon's anonymous/deleted open
 files and deduplicates inode identities. A 16 MiB output transfer observed
 33,554,704 logical bytes and 33,562,624 allocated bytes at the largest sample,
 with zero at the beginning and end. These are sampled staging observations,
 not whole import-store disk usage, representative compiler sizing, true peaks
-or billing measurements. Native compiler resource qualification and a
-current-candidate fresh-shell final verification remain open.
+or billing measurements.
+
+A separate native ARM64 runtime contract compiles and links 512 generated C
+functions with GCC 15.2, executes an arithmetic check and returns the expected
+output through gateway registration and stock-client copyback. The compiler
+closure is a declared derivation dependency, registered only in the gateway
+prerequisite store and transferred into the independent worker store. The
+worker remains nonroot and sandboxed. Current gateway/test sources were compiled
+for this run; the packaged worker and AWS context were retained artifacts, not
+rebuilt from that candidate.
+
+Worker-runtime-only observation collected 163 samples over 21.13 seconds at a
+nominal 100 ms interval plus sampling cost. Maximum sampled aggregate PSS was
+123,815,936 bytes across at most nine observed processes. Maximum sampled
+allocated bytes were 331,894,784 in the writable store, 9,277,440 in Nix state,
+4,096 in runtime state and zero in the tracked temporary directory. Writable-store
+usage includes imported compiler dependencies, not just compiler scratch. These
+are per-category sampled maxima, not necessarily simultaneous, true cgroup peaks,
+a representative application sizing guarantee or provider billing measurements.
+The compiler command's enclosing 8 GiB qualification scope is not a worker memory
+requirement. Whole gateway import-store disk usage remains unmeasured.
+
+A current-candidate fresh-shell final verification and remaining phase
+observability remain open.
 
 ## Operator-owned infrastructure
 
