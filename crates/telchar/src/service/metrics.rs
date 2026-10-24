@@ -62,6 +62,7 @@ struct Instruments {
     recovery_outcomes: Counter<u64>,
     recovery_monitoring: Gauge<u64>,
     microvm_admissions: Counter<u64>,
+    microvm_admission_rejections: Counter<u64>,
     microvm_admission_duration: Histogram<f64>,
     microvm_obligations: Histogram<u64>,
     microvm_obligation_age: Histogram<f64>,
@@ -146,6 +147,17 @@ pub(crate) fn microvm_rendezvous(duration: Duration, connected: bool) {
     instruments()
         .microvm_rendezvous_duration
         .record(duration.as_secs_f64(), &attributes);
+}
+
+pub(crate) fn microvm_admission_rejection(outcome: &'static str) {
+    let outcome = match outcome {
+        "ownership" | "protocol" | "bootstrap" | "authentication" | "capacity" | "binding"
+        | "deadline" => outcome,
+        _ => "internal",
+    };
+    instruments()
+        .microvm_admission_rejections
+        .add(1, &[KeyValue::new("outcome", outcome)]);
 }
 
 pub(crate) fn microvm_admission(duration: Duration, outcome: &'static str) {
@@ -411,6 +423,10 @@ fn instruments() -> &'static Instruments {
                 .build(),
             microvm_admissions: meter
                 .u64_counter("telchar.microvm.admissions")
+                .with_unit("{connection}")
+                .build(),
+            microvm_admission_rejections: meter
+                .u64_counter("telchar.microvm.admission.rejections")
                 .with_unit("{connection}")
                 .build(),
             microvm_admission_duration: meter

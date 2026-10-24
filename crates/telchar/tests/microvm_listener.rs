@@ -26,7 +26,9 @@ fn rejected_bootstrap_exports_bounded_admission_metrics() {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
-        collector.assert_counter("telchar.microvm.admissions", "rejected", 1);
+        collector.assert_counter("telchar.microvm.admissions", "rejected", 2);
+        collector.assert_counter("telchar.microvm.admission.rejections", "protocol", 1);
+        collector.assert_counter("telchar.microvm.admission.rejections", "bootstrap", 1);
         assert!(
             collector
                 .metric_names()
@@ -69,6 +71,30 @@ fn rejected_bootstrap_exports_bounded_admission_metrics() {
         Ok(_) => {}
         Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset),
     }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bootstrap = loop {
+        use tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{address}/microvm")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            "telchar-microvm-v1".parse().unwrap(),
+        );
+        match tungstenite::connect(request) {
+            Ok(connection) => break connection.0,
+            Err(_) => {
+                assert!(Instant::now() < deadline, "admission slot not released");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    bootstrap
+        .send(tungstenite::Message::Binary(
+            b"invalid bootstrap".to_vec().into(),
+        ))
+        .unwrap();
+    assert!(bootstrap.read().is_err());
     service.shutdown().unwrap();
     telemetry.shutdown();
 }

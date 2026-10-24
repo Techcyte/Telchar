@@ -71,6 +71,7 @@ impl CallbackService {
                         };
                         if admissions.len() >= maximum_connections {
                             crate::service::metrics::microvm_admission(Duration::ZERO, "capacity");
+                            crate::service::metrics::microvm_admission_rejection("capacity");
                             continue;
                         }
                         let owner = Arc::clone(&owner);

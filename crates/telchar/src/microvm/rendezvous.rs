@@ -339,6 +339,16 @@ pub fn accept_session(
     })
 }
 
+struct AdmissionObservation(Option<&'static str>);
+
+impl Drop for AdmissionObservation {
+    fn drop(&mut self) {
+        if let Some(outcome) = self.0 {
+            crate::service::metrics::microvm_admission_rejection(outcome);
+        }
+    }
+}
+
 fn accept_session_for(
     stream: TcpStream,
     owner: &SingletonOwnership,
@@ -346,7 +356,9 @@ fn accept_session_for(
     mut pending: PendingConnection<'_>,
     mut execution_deadline: impl FnMut(&str) -> Result<Instant, ProviderError>,
 ) -> Result<AdmittedConnection, ProviderError> {
+    let mut observation = AdmissionObservation(Some("ownership"));
     owner.verify().map_err(|_| ProviderError)?;
+    observation.0 = Some("protocol");
     let stream = SessionStream {
         inner: stream,
         deadline,
@@ -378,6 +390,7 @@ fn accept_session_for(
     let mut socket = tungstenite::accept_hdr_with_config(stream, upgrade, Some(config))
         .map_err(|_| ProviderError)?;
     socket.get_mut().header_bytes = None;
+    observation.0 = Some("bootstrap");
     let Message::Binary(message) = socket.read().map_err(|_| ProviderError)? else {
         return Err(ProviderError);
     };
@@ -389,6 +402,7 @@ fn accept_session_for(
     {
         return Err(ProviderError);
     }
+    observation.0 = Some("authentication");
     let verifier = super::bearer_verifier(&bootstrap.bearer).ok_or(ProviderError)?;
     let backend = crate::persistence::microvm_session_backend(
         owner.database(),
@@ -397,10 +411,13 @@ fn accept_session_for(
     )
     .map_err(|_| ProviderError)?
     .ok_or(ProviderError)?;
+    observation.0 = Some("capacity");
     pending.authenticate(&backend)?;
+    observation.0 = Some("binding");
     loop {
         let session_deadline = execution_deadline(&bootstrap.intent_id)?;
         if Instant::now() >= deadline.min(session_deadline) {
+            observation.0 = Some("deadline");
             return Err(ProviderError);
         }
         socket.get_ref().verify_waiting_peer()?;
@@ -411,6 +428,7 @@ fn accept_session_for(
             &bootstrap.bearer,
         )? {
             socket.get_mut().deadline = session_deadline;
+            observation.0 = None;
             return Ok(AdmittedConnection {
                 intent_id: bootstrap.intent_id,
                 socket,
@@ -432,6 +450,7 @@ fn accept_session_for(
                 &bootstrap.bearer,
             )? {
                 socket.get_mut().deadline = session_deadline;
+                observation.0 = None;
                 return Ok(AdmittedConnection {
                     intent_id: bootstrap.intent_id,
                     socket,

@@ -164,6 +164,7 @@ region, path or credential labels are emitted.
 | `telchar.microvm.launches` | counter | `{launch}` | `acknowledged` / `unknown` provider-call responses. |
 | `telchar.microvm.launch.duration` | histogram | `s` | Provider-call duration, excluding pre-dispatch rejection. |
 | `telchar.microvm.admissions` | counter | `{connection}` | `accepted` / `rejected` / `capacity` callback admission outcomes. |
+| `telchar.microvm.admission.rejections` | counter | `{connection}` | Bounded rejection stage: `ownership`, `protocol`, `bootstrap`, `authentication`, `capacity`, `binding`, `deadline`, or `internal`. |
 | `telchar.microvm.admission.duration` | histogram | `s` | Admission duration; capacity rejection records zero. |
 | `telchar.microvm.rendezvous` | counter | `{connection}` | `connected` / `error` execution-side callback waits. |
 | `telchar.microvm.rendezvous.duration` | histogram | `s` | Wait after acknowledged dispatch; failed launches never enter this wait. |
@@ -171,6 +172,14 @@ region, path or credential labels are emitted.
 | `telchar.microvm.cleanup.duration` | histogram | `s` | Cleanup API duration. |
 | `telchar.microvm.obligations` | histogram | `{obligation}` | Retained count sampled per account/region scan, split `identified` / `unidentified`. |
 | `telchar.microvm.obligation.age` | histogram | `s` | Oldest retained reservation age per scan/category; zero when empty. |
+
+Rejection stages identify the operation that failed, not a forensic verdict.
+For example, a socket deadline during upgrade belongs to `protocol`; `deadline`
+identifies the explicit admission cutoff check after bootstrap. Authentication
+covers capability lookup before backend admission; `binding` includes exact
+provider/single-use admission and waiting-peer checks. No peer-supplied diagnostic
+or credential becomes a label. These stages do not classify later delivery races
+between an admitted connection and its execution receiver.
 
 Launch acknowledgment and callback connection do not prove build success.
 Cleanup `unchanged` includes both unresolved observations and already-resolved
