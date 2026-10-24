@@ -26,9 +26,10 @@ fn rejected_bootstrap_exports_bounded_admission_metrics() {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
-        collector.assert_counter("telchar.microvm.admissions", "rejected", 2);
+        collector.assert_counter("telchar.microvm.admissions", "rejected", 3);
         collector.assert_counter("telchar.microvm.admission.rejections", "protocol", 1);
         collector.assert_counter("telchar.microvm.admission.rejections", "bootstrap", 1);
+        collector.assert_counter("telchar.microvm.admission.rejections", "authentication", 1);
         assert!(
             collector
                 .metric_names()
@@ -71,30 +72,52 @@ fn rejected_bootstrap_exports_bounded_admission_metrics() {
         Ok(_) => {}
         Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset),
     }
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut bootstrap = loop {
-        use tungstenite::client::IntoClientRequest;
-        let mut request = format!("ws://{address}/microvm")
-            .into_client_request()
-            .unwrap();
-        request.headers_mut().insert(
-            "sec-websocket-protocol",
-            "telchar-microvm-v1".parse().unwrap(),
-        );
-        match tungstenite::connect(request) {
-            Ok(connection) => break connection.0,
-            Err(_) => {
-                assert!(Instant::now() < deadline, "admission slot not released");
-                std::thread::sleep(Duration::from_millis(10));
+    let connect = || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            use tungstenite::client::IntoClientRequest;
+            let mut request = format!("ws://{address}/microvm")
+                .into_client_request()
+                .unwrap();
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                "telchar-microvm-v1".parse().unwrap(),
+            );
+            match tungstenite::connect(request) {
+                Ok((mut socket, _)) => {
+                    if let tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_mut() {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                    }
+                    break socket;
+                }
+                Err(_) => {
+                    assert!(Instant::now() < deadline, "admission slot not released");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         }
     };
+    let mut bootstrap = connect();
     bootstrap
         .send(tungstenite::Message::Binary(
             b"invalid bootstrap".to_vec().into(),
         ))
         .unwrap();
     assert!(bootstrap.read().is_err());
+    let mut authentication = connect();
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    let message = serde_json::to_vec(&serde_json::json!({
+        "intent_id": "unregistered-intent",
+        "provider_id": "unregistered-provider",
+        "bearer": capability.bearer(),
+    }))
+    .unwrap();
+    authentication
+        .send(tungstenite::Message::Binary(message.into()))
+        .unwrap();
+    assert!(authentication.read().is_err());
     service.shutdown().unwrap();
     telemetry.shutdown();
 }
