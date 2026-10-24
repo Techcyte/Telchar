@@ -568,11 +568,39 @@ chunk_bytes = 1024
                 assert_eq!(row.get::<_, String>(1), "ambiguous");
                 assert_eq!(row.get::<_, Vec<u8>>(2), policy.fingerprint());
                 assert!(row.get::<_, bool>(3));
-                assert!(
-                    executor
-                        .run_configured(&policy, attempt.attempt_id, |_| {})
-                        .is_err()
-                );
+                let request = telchar::persistence::microvm_attempt_request(
+                    owner.database(),
+                    attempt.attempt_id,
+                    policy.name(),
+                )
+                .unwrap()
+                .unwrap();
+                let mut waiting = telchar::backend::BuildExecution::new(
+                    "capacity-wait",
+                    &request,
+                    Duration::from_millis(200),
+                )
+                .unwrap();
+                waiting.set_target_name(policy.name()).unwrap();
+                let started = std::time::Instant::now();
+                let error = executor.run_build(&policy, &waiting, |_| {}).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+                assert!(started.elapsed() >= Duration::from_millis(200));
+                assert!(started.elapsed() < Duration::from_secs(1));
+                let started = std::time::Instant::now();
+                let error = executor
+                    .execute_build(&policy, &waiting, &mut |_| Ok(()), &mut || {
+                        Ok(started.elapsed() >= Duration::from_millis(75))
+                    })
+                    .unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+                assert!(started.elapsed() < Duration::from_secs(1));
+                let count: i64 = fixture
+                    .connect()
+                    .query_one("SELECT count(*) FROM microvm_launches", &[])
+                    .unwrap()
+                    .get(0);
+                assert_eq!(count, 1, "waiting must not create another launch");
                 let requests = server.join().unwrap();
                 assert_eq!(requests.len(), 1, "capacity prevents another dispatch");
                 return;
