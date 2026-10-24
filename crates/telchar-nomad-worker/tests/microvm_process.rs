@@ -75,6 +75,7 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
         .env_clear()
+        .env("RUST_LOG", "off")
         .arg(&binding)
         .arg(&trust)
         .arg("unix:///definitely-missing-nix.sock")
@@ -102,6 +103,7 @@ fn microvm_worker_rejects_unprotected_bootstrap_without_secret_diagnostics() {
     std::fs::write(&bootstrap, b"secret-runtime-capability").unwrap();
     std::fs::set_permissions(&bootstrap, std::fs::Permissions::from_mode(0o644)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
+        .env("RUST_LOG", "off")
         .arg(&bootstrap)
         .arg("unused-trust.der")
         .arg("unix:///definitely-missing-nix.sock")

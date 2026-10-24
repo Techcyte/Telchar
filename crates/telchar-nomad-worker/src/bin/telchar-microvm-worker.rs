@@ -104,7 +104,39 @@ fn run() -> io::Result<()> {
 }
 
 fn main() -> std::process::ExitCode {
-    match run() {
+    let telemetry = match telchar_telemetry::Telemetry::initialize(
+        "telchar-microvm-worker",
+        env!("CARGO_PKG_VERSION"),
+    ) {
+        Ok(telemetry) => telemetry,
+        Err(_) => {
+            eprintln!("MicroVM worker failed");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let started = Instant::now();
+    let result = {
+        let execution = tracing::info_span!("microvm.worker.execution");
+        let _entered = execution.enter();
+        let result = run();
+        if let Err(error) = &result {
+            tracing::error!(event = "microvm.worker.failed", error_kind = ?error.kind());
+        }
+        opentelemetry::global::meter("telchar-microvm-worker")
+            .f64_histogram("telchar.microvm.worker.duration")
+            .with_unit("s")
+            .build()
+            .record(
+                started.elapsed().as_secs_f64(),
+                &[opentelemetry::KeyValue::new(
+                    "outcome",
+                    if result.is_ok() { "success" } else { "failure" },
+                )],
+            );
+        result
+    };
+    telemetry.shutdown();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(_) => {
             eprintln!("MicroVM worker failed");
