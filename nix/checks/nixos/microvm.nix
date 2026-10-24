@@ -92,7 +92,7 @@ pkgs.testers.nixosTest {
             maximum_paths = 64;
             maximum_nar_bytes = 67108864;
             maximum_total_bytes = 134217728;
-            metadata_bytes = 8192;
+            metadata_bytes = 16384;
             chunk_bytes = 262144;
           }];
         };
@@ -139,14 +139,14 @@ pkgs.testers.nixosTest {
     networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.4"; prefixLength = 24; }];
     nix.settings = { substituters = pkgs.lib.mkForce []; experimental-features = [ "nix-command" ]; };
     environment.etc."microvm-build.nix".text = ''
-      { name ? "microvm-service-output", delay ? 0 }:
+      { name ? "microvm-service-output", delay ? 0, payloadBytes ? 0 }:
       derivation {
         inherit name;
         system = "aarch64-linux";
         builder = "${pkgs.bash}/bin/bash";
         builderPackage = builtins.storePath "${pkgs.bash}";
         sleepPackage = builtins.storePath "${pkgs.coreutils}";
-        args = [ "-c" "test $EUID != 0 && ${pkgs.coreutils}/bin/sleep ''${builtins.toString delay} && printf 'microvm-service-success\\n' > $out" ];
+        args = [ "-c" "test $EUID != 0 && ${pkgs.coreutils}/bin/sleep ''${builtins.toString delay} && printf 'microvm-service-success\\n' > $out && ${pkgs.coreutils}/bin/head -c ''${builtins.toString payloadBytes} /dev/zero >> $out" ];
       }
     '';
     system.stateVersion = "26.05";
@@ -176,7 +176,9 @@ pkgs.testers.nixosTest {
     gateway.succeed("install -d -m 700 -o telchar -g telchar /var/lib/telchar/.ssh")
     gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve SHA256:microvm-alice\" " + public_key + "' > /var/lib/telchar/.ssh/authorized_keys; chown telchar:telchar /var/lib/telchar/.ssh/authorized_keys")
     gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve SHA256:microvm-bob\" " + bob_key + "' >> /var/lib/telchar/.ssh/authorized_keys")
-    client.succeed("nix-instantiate /etc/microvm-build.nix --arg delay 15 --add-root /root/derivation")
+    gateway.succeed("systemd-run --unit=microvm-staging ${pkgs.python3}/bin/python3 ${../../../tests/nixos/microvm-staging.py} $(systemctl show telchar.service -p MainPID --value)")
+    gateway.wait_until_succeeds("test -s /run/microvm-staging.jsonl", timeout=10)
+    client.succeed("nix-instantiate /etc/microvm-build.nix --arg delay 15 --arg payloadBytes 16777216 --add-root /root/derivation")
     derivation = client.succeed("readlink -f /root/derivation").strip()
     def submit(name, path, key="key"):
         command = "PATH=/run/current-system/sw/bin NIX_SSHOPTS='-i /root/" + key + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux - 4' " + path + "^* > /root/" + name + "-output 2>/root/" + name + "-stderr; echo $? > /root/" + name + "-status"
@@ -216,7 +218,8 @@ pkgs.testers.nixosTest {
     assert client.succeed("cat /root/first-status /root/queued-status /root/second-status").strip().splitlines() == ["0", "0", "0"], client.succeed("cat /root/first-stderr /root/queued-stderr /root/second-stderr")
     assert client.succeed("cat $(cat /root/queued-output)") == "microvm-service-success\n"
     client.succeed("cp /root/first-output /root/output")
-    assert client.succeed("cat $(cat /root/output)") == "microvm-service-success\n"
+    assert client.succeed("wc -c < $(cat /root/output)").strip() == "16777240"
+    assert client.succeed("head -c 24 $(cat /root/output)") == "microvm-service-success\n"
     gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE reservation_released_at IS NULL'\" | grep -qx 0", timeout=90)
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "3"
     assert client.succeed("cat $(cat /root/second-output)") == "microvm-service-success\n"
@@ -225,6 +228,15 @@ pkgs.testers.nixosTest {
     assert alice_order == [derivation, queued], alice_order
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "3"
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT quota_subject FROM shared_builds WHERE state = 'succeeded' ORDER BY quota_subject\\\"\"").strip().splitlines() == ["alice", "alice", "bob"]
+    gateway.succeed("touch /run/microvm-staging-stop")
+    gateway.wait_until_succeeds("test $(systemctl show microvm-staging.service -p ExecMainStatus --value) = 0 && ! systemctl is-active --quiet microvm-staging.service", timeout=10)
+    gateway.copy_from_machine("/run/microvm-staging.jsonl")
+    import json
+    with open(os.environ["out"] + "/microvm-staging.jsonl") as samples_file:
+        staging_samples = [json.loads(line) for line in samples_file]
+    assert max(sample["logical_bytes"] for sample in staging_samples) - staging_samples[0]["logical_bytes"] >= 16777216, staging_samples
+    print("GATEWAY_STAGING_SAMPLED_LOGICAL_MAX=" + str(max(sample["logical_bytes"] for sample in staging_samples)))
+    print("GATEWAY_STAGING_SAMPLED_ALLOCATED_MAX=" + str(max(sample["allocated_bytes"] for sample in staging_samples)))
     gateway.succeed("systemctl stop telchar.service")
     gateway.wait_for_closed_port(7443)
     gateway.succeed("test ! -e /run/telchar/daemon.sock")
