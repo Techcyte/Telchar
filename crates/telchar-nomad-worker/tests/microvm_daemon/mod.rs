@@ -410,6 +410,7 @@ chunk_bytes = 262144
                 ),
             )?;
         }
+        std::fs::write(root.join("replacement-starting"), b"")?;
         daemon = Daemon::spawn(&mut command, &home)?;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {

@@ -50,12 +50,28 @@ fn provider_server(
             vec![false]
         };
         for (index, identity) in exchanges.into_iter().enumerate() {
+            if restart && index == 2 {
+                let barrier =
+                    std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap())
+                        .join("replacement-starting");
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while !barrier.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "replacement startup barrier deadline"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(std::time::Instant::now() < deadline);
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "provider exchange {index} deadline (identity={identity})"
+                        );
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("provider accept: {error}"),
