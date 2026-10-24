@@ -178,8 +178,8 @@ pkgs.testers.nixosTest {
     gateway.succeed("printf '%s\\n' 'restrict,command=\"/etc/microvm-serve SHA256:microvm-bob\" " + bob_key + "' >> /var/lib/telchar/.ssh/authorized_keys")
     client.succeed("nix-instantiate /etc/microvm-build.nix --arg delay 15 --add-root /root/derivation")
     derivation = client.succeed("readlink -f /root/derivation").strip()
-    def submit(name, path):
-        command = "PATH=/run/current-system/sw/bin NIX_SSHOPTS='-i /root/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux - 4' " + path + "^* > /root/" + name + "-output 2>/root/" + name + "-stderr; echo $? > /root/" + name + "-status"
+    def submit(name, path, key="key"):
+        command = "PATH=/run/current-system/sw/bin NIX_SSHOPTS='-i /root/" + key + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux - 4' " + path + "^* > /root/" + name + "-output 2>/root/" + name + "-stderr; echo $? > /root/" + name + "-status"
         import shlex
         client.succeed("systemd-run --unit=" + name + " /bin/sh -c " + shlex.quote(command))
     submit("first", derivation)
@@ -197,18 +197,24 @@ pkgs.testers.nixosTest {
         print(client.succeed("cat /root/queued-stderr; cat /root/queued-status 2>/dev/null || true"))
         print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT quota_subject,state FROM shared_builds ORDER BY queue_position'\""))
         raise
-    client.wait_until_succeeds("test -f /root/first-status -a -f /root/queued-status", timeout=90)
+    client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name bob-overlapping --add-root /root/second")
+    second = client.succeed("readlink -f /root/second").strip()
+    assert len({derivation, queued, second}) == 3
+    submit("second", second, "bob")
+    gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'running' AND quota_subject = 'bob'\\\"\" | grep -qx 1", timeout=10)
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'claimed' AND quota_subject = 'alice'\\\"\"").strip() == "1"
+    client.wait_until_succeeds("test -f /root/first-status -a -f /root/queued-status -a -f /root/second-status", timeout=90)
     print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT provider_id, reservation_released_at IS NULL, termination_observed_at IS NULL FROM microvm_launches'\""))
-    assert client.succeed("cat /root/first-status /root/queued-status").strip().splitlines() == ["0", "0"], client.succeed("cat /root/first-stderr /root/queued-stderr")
+    assert client.succeed("cat /root/first-status /root/queued-status /root/second-status").strip().splitlines() == ["0", "0", "0"], client.succeed("cat /root/first-stderr /root/queued-stderr /root/second-stderr")
+    assert client.succeed("cat $(cat /root/queued-output)") == "microvm-service-success\n"
     client.succeed("cp /root/first-output /root/output")
     assert client.succeed("cat $(cat /root/output)") == "microvm-service-success\n"
     gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE reservation_released_at IS NULL'\" | grep -qx 0", timeout=90)
-    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "2"
-    client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name microvm-service-second --add-root /root/second")
-    second = client.succeed("readlink -f /root/second").strip()
-    assert second != derivation
-    client.succeed("NIX_SSHOPTS='-i /root/bob -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux' " + second + "^* > /root/second-output")
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "3"
     assert client.succeed("cat $(cat /root/second-output)") == "microvm-service-success\n"
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM microvm_launches a JOIN microvm_launches b ON a.created_at < b.created_at WHERE a.reservation_released_at > b.created_at\\\"\"").strip() == "0"
+    alice_order = gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT a.derivation_path FROM microvm_launches l JOIN shared_build_attempts a USING (attempt_id) JOIN shared_builds b USING (derivation_path) WHERE b.quota_subject = 'alice' ORDER BY l.created_at\\\"\"").strip().splitlines()
+    assert alice_order == [derivation, queued], alice_order
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "3"
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT quota_subject FROM shared_builds ORDER BY quota_subject'\"").strip().splitlines() == ["alice", "alice", "bob"]
     gateway.succeed("systemctl stop telchar.service")
