@@ -396,7 +396,7 @@ printf 'int main(void) {{ unsigned sum = 0;\n' >> workload.c
 for ((i=0; i<512; i++)); do
     printf 'sum += f%s(%s);\n' "$i" "$i" >> workload.c
 done
-printf 'if (sum != 261632) return 1; puts("dedicated-worker-success"); return 0; }}\n' >> workload.c
+printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nreturn 0;\n}}\n' >> workload.c
 {compiler} -O2 -Wall -Wextra -Werror workload.c -o workload
 ./workload > "$out""#
         )
