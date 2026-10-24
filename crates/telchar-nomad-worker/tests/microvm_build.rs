@@ -8,6 +8,10 @@ use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 mod microvm_daemon;
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../tests/microvm/canonical-store.sh"
@@ -830,9 +834,12 @@ chunk_bytes = 262144
         sha2::Sha256::digest(worker_binding["bearer"].as_str().unwrap().as_bytes()).into();
     std::fs::write(&binding, serde_json::to_vec(&worker_binding).unwrap()).unwrap();
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let collector = (case == "single").then(collector::start_collector);
+    let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
+            .env("RUST_LOG", "off")
             .arg(&binding)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -840,6 +847,14 @@ chunk_bytes = 262144
             .unwrap()
     } else {
         Command::new("bash")
+            .env("RUST_LOG", "off")
+            .env(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                telemetry_endpoint
+                    .as_deref()
+                    .unwrap_or("http://127.0.0.1:4317"),
+            )
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
             .arg(FIXTURE)
             .arg("/bin/sh")
             .args([
@@ -1149,6 +1164,24 @@ chunk_bytes = 262144
         String::from_utf8_lossy(&worker.stderr)
     );
     assert_eq!(result.unwrap(), BuildOutcome::Built);
+    if let Some(collector) = collector {
+        for phase in [
+            "connect",
+            "manifest",
+            "resolve-inputs",
+            "import-inputs",
+            "build",
+            "return-outputs",
+        ] {
+            collector.assert_histogram_attributes(
+                "telchar.microvm.worker.phase.duration",
+                &[("phase", phase), ("outcome", "success")],
+                0.0,
+            );
+        }
+        collector.assert_histogram_sample("telchar.microvm.worker.duration", "success", 0.0);
+        collector.assert_metric_attributes_are_bounded();
+    }
     let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
     let row = control.query_one(
         "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",

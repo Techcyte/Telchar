@@ -9,9 +9,7 @@ use telchar::store::daemon::GatewayStoreEndpoint;
 
 mod client;
 
-#[allow(dead_code)]
-#[path = "../../../../tests/telemetry/collector.rs"]
-mod collector;
+use super::collector;
 
 struct Daemon(std::process::Child, std::path::PathBuf);
 
