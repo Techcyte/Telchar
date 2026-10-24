@@ -1,6 +1,10 @@
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
 #[test]
 fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
     use std::sync::Arc;
@@ -72,10 +76,13 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
             "deadline must disconnect silent manifest peer"
         );
     });
+    let collector = collector::start_collector();
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
         .env_clear()
         .env("RUST_LOG", "off")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
         .arg(&binding)
         .arg(&trust)
         .arg("unix:///definitely-missing-nix.sock")
@@ -87,6 +94,17 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert_eq!(output.stderr, b"MicroVM worker failed\n");
+    collector.assert_histogram_attributes(
+        "telchar.microvm.worker.phase.duration",
+        &[("phase", "connect"), ("outcome", "success")],
+        0.0,
+    );
+    collector.assert_histogram_attributes(
+        "telchar.microvm.worker.phase.duration",
+        &[("phase", "manifest"), ("outcome", "failure")],
+        0.5,
+    );
+    collector.assert_metric_attributes_are_bounded();
     assert!(
         elapsed < Duration::from_secs(2),
         "execution deadline: {elapsed:?}"

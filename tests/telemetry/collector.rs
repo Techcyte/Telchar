@@ -104,6 +104,15 @@ impl Collector {
     }
 
     pub fn assert_histogram_sample(&self, name: &str, outcome: &str, minimum: f64) {
+        self.assert_histogram_attributes(name, &[("outcome", outcome)], minimum);
+    }
+
+    pub fn assert_histogram_attributes(
+        &self,
+        name: &str,
+        attributes: &[(&str, &str)],
+        minimum: f64,
+    ) {
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
         let requests = self.metric_requests.lock().expect("metric requests");
         let point = requests
@@ -118,11 +127,19 @@ impl Collector {
                 _ => None,
             })
             .flat_map(|histogram| &histogram.data_points)
-            .find(|point| Self::has_attribute(&point.attributes, "outcome", outcome))
-            .expect("histogram outcome exported");
+            .find(|point| {
+                attributes
+                    .iter()
+                    .all(|(key, value)| Self::has_attribute(&point.attributes, key, value))
+            })
+            .expect("histogram attributes exported");
         assert!(point.count > 0);
         assert!(point.max.expect("maximum exported") >= minimum);
-        assert_eq!(point.attributes.len(), 1, "unexpected histogram labels");
+        assert_eq!(
+            point.attributes.len(),
+            attributes.len(),
+            "unexpected histogram labels"
+        );
     }
 
     pub fn assert_metric_attributes_are_bounded(&self) {

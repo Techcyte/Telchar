@@ -22,6 +22,26 @@ fn invalid() -> io::Error {
     io::Error::other("invalid MicroVM execution")
 }
 
+fn phase<T>(name: &'static str, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let started = Instant::now();
+    let result = operation();
+    opentelemetry::global::meter("telchar-microvm-worker")
+        .f64_histogram("telchar.microvm.worker.phase.duration")
+        .with_unit("s")
+        .build()
+        .record(
+            started.elapsed().as_secs_f64(),
+            &[
+                opentelemetry::KeyValue::new("phase", name),
+                opentelemetry::KeyValue::new(
+                    "outcome",
+                    if result.is_ok() { "success" } else { "failure" },
+                ),
+            ],
+        );
+    result
+}
+
 fn run() -> io::Result<()> {
     let started = Instant::now();
     let mut arguments = std::env::args_os().skip(1);
@@ -76,31 +96,37 @@ fn run() -> io::Result<()> {
     .with_no_client_auth();
     let store = store.to_str().ok_or_else(invalid)?;
     telchar::store::daemon::GatewayStoreEndpoint::parse(store).map_err(|_| invalid())?;
-    let socket = telchar_nomad_worker::microvm::connect(
-        &execution.endpoint,
-        execution.address,
-        Arc::new(tls),
-        deadline,
-        &execution.intent_id,
-        &execution.provider_id,
-        &execution.bearer,
-    )?;
-    let mut session = telchar_nomad_worker::microvm::receive_session(
-        socket,
-        8 * 1024 * 1024,
-        256 * 1024,
-        deadline,
-    )?;
-    let requested = session.resolve_inputs(store)?;
-    session.import_requested_inputs(store, &requested)?;
-    let result = match session.build(store) {
+    let socket = phase("connect", || {
+        telchar_nomad_worker::microvm::connect(
+            &execution.endpoint,
+            execution.address,
+            Arc::new(tls),
+            deadline,
+            &execution.intent_id,
+            &execution.provider_id,
+            &execution.bearer,
+        )
+    })?;
+    let mut session = phase("manifest", || {
+        telchar_nomad_worker::microvm::receive_session(
+            socket,
+            8 * 1024 * 1024,
+            256 * 1024,
+            deadline,
+        )
+    })?;
+    let requested = phase("resolve-inputs", || session.resolve_inputs(store))?;
+    phase("import-inputs", || {
+        session.import_requested_inputs(store, &requested)
+    })?;
+    let result = match phase("build", || session.build(store)) {
         Ok(result) => result,
         Err(error) => {
-            let _ = session.report_failure(&error, 4096);
+            let _ = phase("report-failure", || session.report_failure(&error, 4096));
             return Err(error);
         }
     };
-    session.return_outputs(store, &result)
+    phase("return-outputs", || session.return_outputs(store, &result))
 }
 
 fn main() -> std::process::ExitCode {
