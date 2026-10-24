@@ -9,6 +9,10 @@ use telchar::store::daemon::GatewayStoreEndpoint;
 
 mod client;
 
+#[allow(dead_code)]
+#[path = "../../../../tests/telemetry/collector.rs"]
+mod collector;
+
 struct Daemon(std::process::Child, std::path::PathBuf);
 
 impl Daemon {
@@ -42,6 +46,7 @@ pub fn run(
     binding: std::sync::mpsc::SyncSender<serde_json::Value>,
 ) -> std::io::Result<BuildOutcome> {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    let collector = (case == "configured-daemon").then(collector::start_collector);
     let crashes = case == "configured-daemon-crash";
     let recovers_outputs = case == "configured-daemon-output-recovery";
     let fails = matches!(
@@ -124,6 +129,11 @@ chunk_bytes = 262144
         .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
+    if let Some(collector) = &collector {
+        command
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
     let mut daemon = Daemon::spawn(&mut command, &home)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
@@ -536,6 +546,14 @@ chunk_bytes = 262144
     );
     assert!(!socket.exists());
     assert!(std::net::TcpListener::bind(gateway).is_ok());
+    if let Some(collector) = collector {
+        collector.assert_counter("telchar.microvm.launches", "acknowledged", 1);
+        collector.assert_counter("telchar.microvm.rendezvous", "connected", 1);
+        collector.assert_counter("telchar.microvm.admissions", "accepted", 1);
+        collector.assert_histogram_sample("telchar.microvm.rendezvous.duration", "connected", 0.0);
+        collector.assert_histogram_sample("telchar.microvm.admission.duration", "accepted", 0.0);
+        collector.assert_metric_attributes_are_bounded();
+    }
     if fails {
         Err(std::io::Error::other("BuildDerivation execution failed"))
     } else {
