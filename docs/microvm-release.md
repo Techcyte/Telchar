@@ -34,6 +34,36 @@ launch/pending bounds must be reconciled against the accepted checklist during
 the policy integration milestone; ADR proposed field names are not automatically
 additional required APIs.
 
+## Local integration evidence boundaries
+
+The configured NixOS contract in `nix/checks/nixos/microvm.nix` exercises
+independent stock-Nix clients, SSH identities mapped to Alice and Bob, real
+PostgreSQL, TLS/WebSocket transport and sandboxed workers. Provider responses
+are simulated. It requires three distinct successful outputs, Alice's active
+and queued limits, rejection of an overflowing request, Bob's admission while
+Alice is queued, Alice's dispatch FIFO, nonoverlapping physical reservations,
+exact observed worker termination and restart through migration 24.
+
+Round-robin applies to scheduler admission, not provider dispatch order.
+`subject_rotation_survives_scheduler_restart` in
+`crates/telchar/tests/shared_build_scheduler.rs` exercises the actual scheduler
+with persisted rotation and competing queued subjects. Together these contracts
+cover rotation and configured quota/FIFO/capacity composition; the configured
+VM does not establish competitive round-robin dispatch order.
+
+The configured-daemon worker test also verifies acknowledged launch, connected
+rendezvous, accepted admission, duration samples and bounded attributes through
+a real OTLP receiver after validated output success and shutdown. This does not
+close detailed rejection classes or every phase instrument.
+
+The VM's staging observer includes the exact daemon's anonymous/deleted open
+files and deduplicates inode identities. A 16 MiB output transfer observed
+33,554,704 logical bytes and 33,562,624 allocated bytes at the largest sample,
+with zero at the beginning and end. These are sampled staging observations,
+not whole import-store disk usage, representative compiler sizing, true peaks
+or billing measurements. Native compiler resource qualification and a
+current-candidate fresh-shell final verification remain open.
+
 ## Operator-owned infrastructure
 
 Telchar validates execution compatibility and concerns itself with resource sizing.
