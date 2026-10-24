@@ -68,7 +68,7 @@ pkgs.testers.nixosTest {
           "ssh-pubkey:SHA256:microvm-bob" = { audit_subject = "bob"; quota_subject = "bob"; };
         };
         scheduling.default = {
-          maximum_queued_builds = 4;
+          maximum_queued_builds = 1;
           maximum_active_builds = 1;
         };
         backends = {
@@ -197,6 +197,14 @@ pkgs.testers.nixosTest {
         print(client.succeed("cat /root/queued-stderr; cat /root/queued-status 2>/dev/null || true"))
         print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT quota_subject,state FROM shared_builds ORDER BY queue_position'\""))
         raise
+    client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name alice-overflow --add-root /root/overflow")
+    overflow = client.succeed("readlink -f /root/overflow").strip()
+    submit("overflow", overflow)
+    client.wait_until_succeeds("test -f /root/overflow-status", timeout=10)
+    assert client.succeed("cat /root/overflow-status").strip() != "0"
+    overflow_error = client.succeed("cat /root/overflow-stderr")
+    assert "shared build scheduling failed" in overflow_error, overflow_error
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches'\"").strip() == "1"
     client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name bob-overlapping --add-root /root/second")
     second = client.succeed("readlink -f /root/second").strip()
     assert len({derivation, queued, second}) == 3
@@ -216,7 +224,7 @@ pkgs.testers.nixosTest {
     alice_order = gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT a.derivation_path FROM microvm_launches l JOIN shared_build_attempts a USING (attempt_id) JOIN shared_builds b USING (derivation_path) WHERE b.quota_subject = 'alice' ORDER BY l.created_at\\\"\"").strip().splitlines()
     assert alice_order == [derivation, queued], alice_order
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM shared_builds WHERE state = 'succeeded'\\\"\"").strip() == "3"
-    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT quota_subject FROM shared_builds ORDER BY quota_subject'\"").strip().splitlines() == ["alice", "alice", "bob"]
+    assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT quota_subject FROM shared_builds WHERE state = 'succeeded' ORDER BY quota_subject\\\"\"").strip().splitlines() == ["alice", "alice", "bob"]
     gateway.succeed("systemctl stop telchar.service")
     gateway.wait_for_closed_port(7443)
     gateway.succeed("test ! -e /run/telchar/daemon.sock")
@@ -225,6 +233,9 @@ pkgs.testers.nixosTest {
     gateway.succeed("systemctl stop telchar.service")
     gateway.wait_for_closed_port(7443)
     service_journal = gateway.succeed("journalctl -u telchar.service -u microvm-provider.service -u postgresql.service --no-pager")
-    assert not any(marker in service_journal for marker in ("Traceback", " ERROR ", "FATAL:")), service_journal
+    errors = [line for line in service_journal.splitlines() if " ERROR " in line]
+    assert len(errors) == 1 and 'rejection="shared-build-scheduling"' in errors[0], service_journal
+    assert "diagnostic=shared build quota exceeded" in service_journal, service_journal
+    assert not any(marker in service_journal for marker in ("Traceback", "FATAL:")), service_journal
   '';
 }
