@@ -154,6 +154,11 @@ Nomad submission attributes are `backend.name`, `resource.profile`, bounded inte
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
+`telchar.worker.input.validated_bytes` is a byte counter with only
+`outcome=validated`. Shared worker input transfer records each requested NAR size
+after Nix accepts the import and the transfer reader confirms completion.
+Already-present inputs and failed or incomplete imports do not contribute.
+
 `telchar.worker.output.accepted_bytes` is a byte counter with only
 `outcome=accepted`. Shared worker output transfer records each NAR size only
 after receiving a matching accepted gateway receipt. Rejected, incomplete, or

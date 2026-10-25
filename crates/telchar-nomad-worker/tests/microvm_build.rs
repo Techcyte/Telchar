@@ -992,6 +992,7 @@ chunk_bytes = 262144
         return;
     }
     let mut input_requested = false;
+    let mut requested_nar_bytes = 0u64;
     let mut sandbox_build_observed = false;
     loop {
         let message = socket.read().unwrap();
@@ -1075,7 +1076,12 @@ chunk_bytes = 262144
             FrameKind::InputRequest => {
                 let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
                 input_requested |= requested.paths.iter().any(|path| path == &input);
-                for _ in requested.paths {
+                for path in requested.paths {
+                    requested_nar_bytes += store
+                        .query_path_info(path.as_bytes())
+                        .unwrap()
+                        .unwrap()
+                        .nar_size();
                     loop {
                         let message = upstream.read().unwrap();
                         let frame = read_frame(
@@ -1194,6 +1200,12 @@ chunk_bytes = 262144
             );
         }
         collector.assert_histogram_sample("telchar.microvm.worker.duration", "success", 0.0);
+        assert!(requested_nar_bytes > 0);
+        collector.assert_counter(
+            "telchar.worker.input.validated_bytes",
+            "validated",
+            i64::try_from(requested_nar_bytes).unwrap(),
+        );
         let output_info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
         collector.assert_counter(
             "telchar.worker.output.accepted_bytes",

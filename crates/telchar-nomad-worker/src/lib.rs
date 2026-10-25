@@ -364,6 +364,14 @@ impl WorkerSession {
                 )));
             }
             source.finish()?;
+            opentelemetry::global::meter("telchar-worker")
+                .u64_counter("telchar.worker.input.validated_bytes")
+                .with_unit("By")
+                .build()
+                .add(
+                    entry.nar_size,
+                    &[opentelemetry::KeyValue::new("outcome", "validated")],
+                );
             tracing::debug!(event = "worker.input.imported", index, path = %entry.path, nar_size = entry.nar_size);
         }
         self.inputs.ready_to_build()
