@@ -22,9 +22,19 @@ fn invalid() -> io::Error {
     io::Error::other("invalid MicroVM execution")
 }
 
-fn phase<T>(name: &'static str, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+fn phase<T>(
+    name: &'static str,
+    deadline: Instant,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     let started = Instant::now();
     let result = operation();
+    if result.is_err() && Instant::now() >= deadline && name != "report-failure" {
+        opentelemetry::global::meter("telchar-microvm-worker")
+            .u64_counter("telchar.microvm.worker.deadline")
+            .build()
+            .add(1, &[opentelemetry::KeyValue::new("outcome", "expired")]);
+    }
     opentelemetry::global::meter("telchar-microvm-worker")
         .f64_histogram("telchar.microvm.worker.phase.duration")
         .with_unit("s")
@@ -96,7 +106,7 @@ fn run() -> io::Result<()> {
     .with_no_client_auth();
     let store = store.to_str().ok_or_else(invalid)?;
     telchar::store::daemon::GatewayStoreEndpoint::parse(store).map_err(|_| invalid())?;
-    let socket = phase("connect", || {
+    let socket = phase("connect", deadline, || {
         telchar_nomad_worker::microvm::connect(
             &execution.endpoint,
             execution.address,
@@ -107,7 +117,7 @@ fn run() -> io::Result<()> {
             &execution.bearer,
         )
     })?;
-    let mut session = phase("manifest", || {
+    let mut session = phase("manifest", deadline, || {
         telchar_nomad_worker::microvm::receive_session(
             socket,
             8 * 1024 * 1024,
@@ -115,18 +125,22 @@ fn run() -> io::Result<()> {
             deadline,
         )
     })?;
-    let requested = phase("resolve-inputs", || session.resolve_inputs(store))?;
-    phase("import-inputs", || {
+    let requested = phase("resolve-inputs", deadline, || session.resolve_inputs(store))?;
+    phase("import-inputs", deadline, || {
         session.import_requested_inputs(store, &requested)
     })?;
-    let result = match phase("build", || session.build(store)) {
+    let result = match phase("build", deadline, || session.build(store)) {
         Ok(result) => result,
         Err(error) => {
-            let _ = phase("report-failure", || session.report_failure(&error, 4096));
+            let _ = phase("report-failure", deadline, || {
+                session.report_failure(&error, 4096)
+            });
             return Err(error);
         }
     };
-    phase("return-outputs", || session.return_outputs(store, &result))
+    phase("return-outputs", deadline, || {
+        session.return_outputs(store, &result)
+    })
 }
 
 fn main() -> std::process::ExitCode {

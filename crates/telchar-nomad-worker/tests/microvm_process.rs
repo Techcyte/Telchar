@@ -104,6 +104,7 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
         &[("phase", "manifest"), ("outcome", "failure")],
         0.5,
     );
+    collector.assert_counter("telchar.microvm.worker.deadline", "expired", 1);
     collector.assert_metric_attributes_are_bounded();
     assert!(
         elapsed < Duration::from_secs(2),

@@ -154,6 +154,20 @@ Nomad submission attributes are `backend.name`, `resource.profile`, bounded inte
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
+## Dedicated MicroVM worker
+
+The dedicated worker exports `telchar.microvm.worker.duration` in seconds with
+`outcome=success|failure`. `telchar.microvm.worker.phase.duration` adds bounded
+`phase`: `connect`, `manifest`, `resolve-inputs`, `import-inputs`, `build`,
+`report-failure`, or `return-outputs`. Build duration excludes output return;
+it is not a compiler-only measurement.
+
+`telchar.microvm.worker.deadline` counts failed primary operations observed at or
+after the absolute execution cutoff, with `outcome=expired`. Failure reporting
+does not count again. This observation does not establish that expiry caused the
+error; transport errors can race the cutoff. Enforcement remains the absolute
+session/build deadlines, independent of telemetry export.
+
 ## MicroVM lifecycle
 
 All instruments below carry only bounded `outcome`; no intent, provider, account,
