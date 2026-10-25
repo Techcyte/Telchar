@@ -289,6 +289,14 @@ impl WorkerSession {
             if receipt.path != metadata.path || !receipt.accepted {
                 return Err(invalid("gateway rejected worker output"));
             }
+            opentelemetry::global::meter("telchar-worker")
+                .u64_counter("telchar.worker.output.accepted_bytes")
+                .with_unit("By")
+                .build()
+                .add(
+                    metadata.nar_size,
+                    &[opentelemetry::KeyValue::new("outcome", "accepted")],
+                );
             tracing::debug!(event = "worker.output.accepted", index, path = %metadata.path);
         }
         tracing::info!(

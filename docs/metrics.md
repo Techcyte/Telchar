@@ -154,6 +154,12 @@ Nomad submission attributes are `backend.name`, `resource.profile`, bounded inte
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
+`telchar.worker.output.accepted_bytes` is a byte counter with only
+`outcome=accepted`. Shared worker output transfer records each NAR size only
+after receiving a matching accepted gateway receipt. Rejected, incomplete, or
+unacknowledged transfers do not contribute. Receipt acceptance is not itself the
+durable terminal build result.
+
 ## Dedicated MicroVM worker
 
 The dedicated worker exports `telchar.microvm.worker.duration` in seconds with

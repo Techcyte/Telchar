@@ -1194,6 +1194,12 @@ chunk_bytes = 262144
             );
         }
         collector.assert_histogram_sample("telchar.microvm.worker.duration", "success", 0.0);
+        let output_info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+        collector.assert_counter(
+            "telchar.worker.output.accepted_bytes",
+            "accepted",
+            i64::try_from(output_info.nar_size()).unwrap(),
+        );
         collector.assert_metric_attributes_are_bounded();
     }
     let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
