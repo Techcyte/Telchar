@@ -32,14 +32,12 @@ export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STO
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-for path in /nix/store/*; do
-    target="$MICROVM_STORE_ROOT/store/$(basename "$path")"
-    if [[ -d $path ]]; then
-        mkdir "$target"
-        mount --rbind "$path" "$target"
-    else
-        cp -a "$path" "$target"
-    fi
+find /nix/store -mindepth 1 -maxdepth 1 ! -name ".*" ! -name "*.lock" ! -type d \
+    -exec cp -a --no-preserve=ownership -t "$MICROVM_STORE_ROOT/store" -- {} +
+find /nix/store -mindepth 1 -maxdepth 1 ! -name ".*" -type d -print0 | while IFS= read -r -d "" path; do
+    target="$MICROVM_STORE_ROOT/store/${path##*/}"
+    mkdir "$target"
+    mount --rbind "$path" "$target"
 done
 mount --rbind "$MICROVM_STORE_ROOT/store" /nix/store
 nix-store --store local --init
