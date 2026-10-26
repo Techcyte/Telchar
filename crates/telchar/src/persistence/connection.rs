@@ -127,6 +127,7 @@ where
 {
     Ok(Pool::builder()
         .max_size(16)
+        .min_idle(Some(0))
         .connection_timeout(Duration::from_secs(5))
         .build_unchecked(manager))
 }
