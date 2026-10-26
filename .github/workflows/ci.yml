@@ -42,7 +42,10 @@ jobs:
           --all-targets -- -D warnings
 
       - name: Run workspace tests
-        run: nix develop -c cargo test --locked --workspace -- --test-threads=1
+        run: |
+          nix develop -c cargo build --locked -p telchar --bin telchar
+          export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
+          nix develop -c bash tests/workspace.sh --locked
 
       - name: Run release tooling tests
         run: |
@@ -113,6 +116,12 @@ jobs:
 
       - name: Scan OCI images
         run: scripts/check-oci-images.sh
+
+      - name: Check VM acceleration
+        run: test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Build configured MicroVM service contract
+        run: nix build --no-link .#checks.x86_64-linux.nixos-microvm-service
 
       - name: Publish main images
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

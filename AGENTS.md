@@ -114,7 +114,9 @@ Most gateway integration suites live in `crates/telchar/tests/` and are named af
 nix develop -c cargo fmt --all -- --check
 nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
-nix develop -c cargo test --locked --workspace -- --test-threads=1
+nix develop -c cargo build --locked -p telchar --bin telchar
+export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
+nix develop -c bash tests/workspace.sh --locked
 NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 
 nix build --no-link .#telchar .#telchar-nomad-worker
@@ -126,11 +128,11 @@ Run available language-server diagnostics before builds. Inspect all test output
 
 Important distinctions:
 
-- Full process/PostgreSQL integration authority is the serial workspace Cargo command above. `nix/checks/rust.nix` runs sandbox-compatible library tests, not the full integration suite.
+- Full process/PostgreSQL integration authority is the package-partitioned `tests/workspace.sh` command above. It runs all packages serially, with the gateway's canonical-store boundary separate from worker-owned stores; see `tests/canonical-store.md`. `nix/checks/rust.nix` runs sandbox-compatible library tests, not the full integration suite.
 - Run real-Nix/PostgreSQL fixtures as a non-root user with process/socket permissions. Helpers start isolated stores and databases; do not redirect them at production state. Nix fixtures also hold a cross-process lock; waiting on another test process is not necessarily a hung test. Do not bypass fixture locking to force parallelism.
 - Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.
-- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts. It is not synonymous with building every flake check.
+- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts, including `nixos-microvm-service` with a simulated provider. Neither path provisions AWS resources. It is not synonymous with building every flake check.
 - Service boundary: `nix build --no-link .#checks.x86_64-linux.nixos-service-boundary`. Provider credential helper tests belong to telchar-gateway. Release tooling tests: `nix develop -c scripts/test-prepare-release.py`.
 
 ## Deployment and release pitfalls
