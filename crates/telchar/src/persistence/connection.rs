@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::time::Duration;
 
 use postgres::{Client, Config, NoTls};
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::PostgresConnectionManager;
 use rustls::{ClientConfig, RootCertStore};
+use scheduled_thread_pool::{OnPoolDropBehavior, ScheduledThreadPool};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
 
@@ -125,7 +127,13 @@ where
     T::TlsConnect: Send,
     <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
 {
+    let workers = ScheduledThreadPool::builder()
+        .num_threads(3)
+        .thread_name_pattern("r2d2-worker-{}")
+        .on_drop_behavior(OnPoolDropBehavior::DiscardPendingScheduled)
+        .build();
     Ok(Pool::builder()
+        .thread_pool(Arc::new(workers))
         .max_size(16)
         .min_idle(Some(0))
         .connection_timeout(Duration::from_secs(5))
