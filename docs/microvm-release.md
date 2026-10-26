@@ -17,7 +17,9 @@ Reconciliation 24 and read-only integrity review 25 closed local task 13.
 That evidence applies to source
 `29db0719cd1c9f3ac4c0acc9717158f6d448f58641a3d8a31964f843ab181fa2`
 and its selected artifacts. It does not qualify subsequent VPC configuration
-changes or the production AWS provider path. The completed loop stays closed.
+changes or the production AWS provider path. The separate configured AWS smoke
+below qualifies one successful execution at `cd112dc1`; it does not rerun that
+workspace gate. The completed loop stays closed.
 The sections below retain historical qualification boundaries; they are not an
 open local task list.
 
@@ -26,13 +28,59 @@ changes executable sources. Reuse existing behavior contracts when they exercise
 the same production path; add tests for missing behavior or consequential boundary
 gaps, not every conceivable fault permutation.
 
+## Configured AWS compiler smoke
+
+One real production-provider execution passed with gateway source `cd112dc1`,
+exact image version `1.0` and a version-qualified VPC egress connector `:1` in
+`us-west-2`. AWS's exact-ID response independently returned that singleton
+`egressNetworkConnectors` selection. The ARM64 image used OCI manifest
+`sha256:65b5bba3a5a8d7ba3f303f0e86d4758b6617a77dbd034cdefe792ae2b1cd296f`,
+a uniquely generated callback certificate and the retained packaged worker
+`a11b1aeb57c3efd24a4b1bff554cda0ecbc22ae59f69313323228f991cc69256`.
+The worker was not rebuilt from the gateway revision; its runtime recipe and
+sandbox policy were unchanged.
+
+A stock Nix client used OpenSSH/`ssh-ng` to an isolated local gateway with private
+PostgreSQL, store and spool. The selected worker reached it through authenticated
+TLS/WSS, a narrow private relay and reverse SSH. GCC 15.2 compiled and linked 512
+C functions and ran an arithmetic check under the nonroot sandbox; binding and
+runtime source were invisible to the builder. Compiler prerequisites were
+registered in the gateway store, not preloaded into the worker image. Gateway
+validation/registration and independent client copyback returned exactly
+`dedicated-worker-success\n` (25 bytes). The gateway execute phase took 105.107
+seconds, including launch, callback, transfers and build; this is not a boot or
+throughput benchmark.
+
+Exact VM `microvm-0e1fcfa5-6f2f-33fd-b653-cdb82228b052` was observed
+`TERMINATED`. Retained PostgreSQL independently showed shared-build `succeeded`,
+launch `closed`, released reservation and recorded termination observation.
+Exact cloud image, connector, ECR repository, artifact bucket, roles, log group
+and connector security group were deleted and independently checked absent.
+Relay rules/listeners were removed; appliance ports 22, 2222 and 7443 remained.
+Local/native evidence, images, keys, stores and failed attempts were preserved.
+
+Evidence is retained outside the repository under
+`~/.local/state/telchar-microvm-test/`: `vpc-real-relay-build.log`,
+`vpc-gateway-t23g1r0c/`, `vpc-live-qx3lkyw4/` and `vpc-final-verify.log`.
+Preparation failures, including an unregistered host-owned store collision,
+missing SDK SSO support and a client GC-root alias rejection, remain failed
+attempts rather than being counted as successful runs. The live harness supplied
+existing temporary credentials in-memory; it did not add SDK SSO support.
+CloudWatch capture contained image-build logs, not worker-runtime logs. The
+worker/compiler evidence comes from the authenticated build transaction and
+retained client/gateway/durable-state records.
+
+This closes one successful configured AWS smoke and exact cleanup, not live
+failure/restart/fencing/concurrency, resource sizing, billing, OTLP export or
+production readiness. Historical full-workspace evidence remains source-specific.
+
 ## Confirmed implementation gaps
 
 | Gate | Source evidence | Completion condition |
 | --- | --- | --- |
 | Image prerequisites | `execution.py::image_ready` checks commands, trust and binding destination; HTTP-process regression covers rejection without process startup. | Implemented and focused tests passed. Accepted run still requires protocol-level daemon readiness; native image qualification remains separate. |
 | Staging disk admission | `microvm/outputs.rs::declare` applies existing disk policy before declaration/tempfile creation, accounting for two staging copies and store import. | Implemented; focused boundary, rejection and real-store contracts passed. Measurement is not an atomic reservation against unrelated writes; existing probe-failure policy remains unchanged. |
-| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource sizing remains to be qualified. | Verify execution compatibility and qualify resource sizing. Each policy requires an explicit same-account/region VPC egress connector ARN, sent on every launch and included in configuration/request digests. Provisioning, routing and security-group review remain operator-owned. Live connector reachability remains open. |
+| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource sizing remains to be qualified. | Verify execution compatibility and qualify resource sizing. Each policy requires an explicit same-account/region VPC egress connector ARN, sent on every launch and included in configuration/request digests. Provisioning, routing and security-group review remain operator-owned. One version-pinned connector completed the configured AWS smoke above; other operator network policies are not attested. |
 | Lifecycle observability | Launch response, cleanup result, callback admission and rendezvous count/duration are instrumented at actual boundaries with bounded outcomes. Cleanup unchanged includes unresolved and already-resolved no-ops; rendezvous connected does not establish build success. Cleanup scans also sample retained obligation counts and oldest reservation age, separated by identified/unidentified provider identity. These histograms aggregate scan observations, not fleet-wide current gauges or time since cleanup became eligible. Worker phase durations, deadline observations, validated input bytes and acknowledged output bytes have bounded receiver evidence. | Emit bounded instruments at actual lifecycle boundaries, including retained obligations; verify through a real metrics receiver. No intent/provider/path labels. |
 
 This is a confirmed-gap list, not a claim that all remaining configuration and
@@ -119,8 +167,9 @@ blocker. Keep the AWS base and fresh daemon/worker startup after `/run`. Nix-sto
 OpenSSL differs from the AWS-patched system library; no snapshot-uniqueness proof
 is claimed. No further crypto investigation, process/library inventory campaign,
 custom OpenSSL packaging or external sign-off is required for this concern.
-Selected-image native runtime functionality passed locally; actual AWS image
-restoration and production-provider lifecycle still require live qualification.
+Selected-image native runtime functionality passed locally. The configured AWS
+smoke above also exercises image restoration and one successful provider lifecycle;
+live failure, restart, fencing and concurrency qualification remain separate.
 
 ## Bounded execution order
 
@@ -168,8 +217,7 @@ resource-cap increase, artifact deletion or replacement autonomous loop authorit
 Travis separately authorized disposable AWS qualification using `hub-admin` in
 `us-west-2`, at most ten concurrent MicroVMs, initially one with a 600-second
 maximum lifetime, and exact cleanup of owned test infrastructure. The private
-reverse-SSH relay passed a nonce probe and was removed; that is not a MicroVM
-WSS callback qualification. Live production-provider build/lifecycle gates remain
-open. Preserve prior JJ changes, evidence, VM disks, keys, caches, GC roots and
+reverse-SSH relay first passed a nonce probe, then carried the configured AWS
+smoke above. Live failure/restart/fencing/concurrency gates remain open. Preserve prior JJ changes, evidence, VM disks, keys, caches, GC roots and
 rerun artifacts. Task 13 is locally complete; production readiness remains a
 separate claim, with snapshot/PRNG risk explicitly accepted above.

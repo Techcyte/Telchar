@@ -99,6 +99,14 @@ gate. Travis accepts residual snapshot/PRNG risk as documentation-only, not a
 release blocker; no crypto investigation or external sign-off is required. Do not deploy the experimental images
 as a substitute.
 
+A separate [configured AWS compiler smoke](microvm-release.md#configured-aws-compiler-smoke)
+passed with gateway revision `cd112dc1`, a retained ARM64 packaged worker, exact
+image version `1.0`, a pinned VPC connector and unique callback trust. A stock
+client received validated output from a nonroot sandboxed GCC build through the
+production provider. Exact-ID termination, durable capacity release and deletion
+of owned cloud resources were independently verified. This does not qualify live
+failure/restart/fencing/concurrency or make the backend production-ready.
+
 ## Image version policy
 
 `image_version` selects an exact numeric image version, such as `"1"` or
@@ -134,8 +142,9 @@ AWS-managed authenticated HTTPS ingress endpoint. The callback address must be
 reachable through the selected connector, and WSS certificate validation remains
 mandatory. Configuration validation checks ARN identity and syntax, not connector
 readiness, routing or security-group policy; AWS launch rejection remains a
-fail-closed, non-retried provider failure. Actual VPC callback reachability requires
-live qualification.
+fail-closed, non-retried provider failure. The configured AWS smoke establishes
+callback reachability for its selected connector and relay only; it does not
+attest other operator-owned network policies.
 
 ## Local administrative resolution
 
