@@ -59,6 +59,8 @@ fn distinct_builds_preserve_subject_order_and_wait_for_remote_capacity() {
         region: "us-west-2".into(),
         image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
         image_version: "1".into(),
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+            .into(),
         configuration_digest: [1; 32],
         request_digest: [2; 32],
         client_token: name.into(),

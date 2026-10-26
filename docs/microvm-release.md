@@ -7,12 +7,19 @@ loop is not restarted by this plan.
 
 ## Baseline and evidence reuse
 
-Workspace qualification 197 passed 908 top-level tests, with 12 existing ignores,
-plus its nested helper, formatting, daemon compilation, all-target Clippy and
-check. The iteration-200 integrity review found only documentation differed from
-that snapshot. Those results cover that source snapshot, not image construction,
-AWS restoration, deployment, or every requirement below. No tests were rerun for
-this audit.
+Local acceptance completed at finalization 25. Integrated verification 22 passed
+917 top-level tests plus one nested helper, with 12 existing ignores, formatting,
+all-target Clippy, workspace check and daemon compilation. It also qualified the
+selected ARM64 OCI runtime with a sandboxed 512-function GCC build, independent
+input transfer, gateway validation/registration and stock-client copyback.
+Reconciliation 24 and read-only integrity review 25 closed local task 13.
+
+That evidence applies to source
+`29db0719cd1c9f3ac4c0acc9717158f6d448f58641a3d8a31964f843ab181fa2`
+and its selected artifacts. It does not qualify subsequent VPC configuration
+changes or the production AWS provider path. The completed loop stays closed.
+The sections below retain historical qualification boundaries; they are not an
+open local task list.
 
 Do not repeat the workspace suite until an integrated implementation milestone
 changes executable sources. Reuse existing behavior contracts when they exercise
@@ -25,8 +32,8 @@ gaps, not every conceivable fault permutation.
 | --- | --- | --- |
 | Image prerequisites | `execution.py::image_ready` checks commands, trust and binding destination; HTTP-process regression covers rejection without process startup. | Implemented and focused tests passed. Accepted run still requires protocol-level daemon readiness; native image qualification remains separate. |
 | Staging disk admission | `microvm/outputs.rs::declare` applies existing disk policy before declaration/tempfile creation, accounting for two staging copies and store import. | Implemented; focused boundary, rejection and real-store contracts passed. Measurement is not an atomic reservation against unrelated writes; existing probe-failure policy remains unchanged. |
-| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource sizing remains to be qualified. | Verify execution compatibility and qualify resource sizing. Network configuration, connector selection and network-policy review are operator-owned, not Telchar validation gates. No connector allowlist or duplicate network configuration is required. |
-| Lifecycle observability | Launch response, cleanup result, callback admission and rendezvous count/duration are instrumented at actual boundaries with bounded outcomes. Cleanup unchanged includes unresolved and already-resolved no-ops; rendezvous connected does not establish build success. Cleanup scans also sample retained obligation counts and oldest reservation age, separated by identified/unidentified provider identity. These histograms aggregate scan observations, not fleet-wide current gauges or time since cleanup became eligible. Detailed admission classes and remaining phase instruments remain open. | Emit bounded instruments at actual lifecycle boundaries, including retained obligations; verify through a real metrics receiver. No intent/provider/path labels. |
+| Image correspondence | Config verifies ARN syntax/account/region and STS identity. Startup also inspects exact image/version, successful/active state and ARM64 architecture. Provider launch pins image/version; attachment checks instance metadata. Resource sizing remains to be qualified. | Verify execution compatibility and qualify resource sizing. Each policy requires an explicit same-account/region VPC egress connector ARN, sent on every launch and included in configuration/request digests. Provisioning, routing and security-group review remain operator-owned. Live connector reachability remains open. |
+| Lifecycle observability | Launch response, cleanup result, callback admission and rendezvous count/duration are instrumented at actual boundaries with bounded outcomes. Cleanup unchanged includes unresolved and already-resolved no-ops; rendezvous connected does not establish build success. Cleanup scans also sample retained obligation counts and oldest reservation age, separated by identified/unidentified provider identity. These histograms aggregate scan observations, not fleet-wide current gauges or time since cleanup became eligible. Worker phase durations, deadline observations, validated input bytes and acknowledged output bytes have bounded receiver evidence. | Emit bounded instruments at actual lifecycle boundaries, including retained obligations; verify through a real metrics receiver. No intent/provider/path labels. |
 
 This is a confirmed-gap list, not a claim that all remaining configuration and
 runtime behavior has been exhaustively reviewed. Selection priority/features and
@@ -86,15 +93,22 @@ a representative application sizing guarantee or provider billing measurements.
 The compiler command's enclosing 8 GiB qualification scope is not a worker memory
 requirement. Whole gateway import-store disk usage remains unmeasured.
 
-A current-candidate fresh-shell final verification and remaining phase
-observability remain open.
+Integrated finalization verification closed the local fresh-shell gate and
+required phase instrumentation. Direct report-failure export assertions, negative
+byte-counter cases and image OTLP export remain disclosed coverage gaps, not
+claims made by that gate. Integrated runtime observation also captured live
+gateway store boundaries: 84 to 87 registered paths, with 16,384 allocated and
+5,864 logical bytes added. Boundaries are not peaks or compiler-import sizing.
 
 ## Operator-owned infrastructure
 
 Telchar validates execution compatibility and concerns itself with resource sizing.
-It does not validate MicroVM egress connectors or network policy. Pinning the
-image/version does not claim to audit its network configuration; the operator owns
-that configuration independently. Resource qualification must distinguish baseline
+It requires an explicit VPC egress connector ARN and checks its
+syntax, account and region. It does not attest connector readiness, routes or
+security-group policy. Pinning image/version and connector identity does not
+audit network policy; operators own that infrastructure independently. Qualified
+ARNs pin connector versions; unqualified ARNs follow AWS updates. Resource
+qualification must distinguish baseline
 memory from elastic peak capacity and disk availability, not invent a hard RAM cap
 or require duplicate configuration merely to mirror provider metadata.
 
@@ -105,8 +119,8 @@ blocker. Keep the AWS base and fresh daemon/worker startup after `/run`. Nix-sto
 OpenSSL differs from the AWS-patched system library; no snapshot-uniqueness proof
 is claimed. No further crypto investigation, process/library inventory campaign,
 custom OpenSSL packaging or external sign-off is required for this concern.
-Actual image/runtime functionality still needs qualification; live AWS work
-requires separate resource/cost authority.
+Selected-image native runtime functionality passed locally; actual AWS image
+restoration and production-provider lifecycle still require live qualification.
 
 ## Bounded execution order
 
@@ -149,9 +163,13 @@ through explicit scope review, never by marking the entire task complete.
 
 ## Authority and preservation
 
-No deployment, live AWS calls, paid model use, crypto replacement, resource-cap
-increase, artifact deletion or replacement autonomous loop is authorized by this
-plan. Preserve prior JJ changes, evidence, VM disks, keys, caches, GC roots and
-rerun artifacts. Task 13 remains incomplete until local acceptance actually passes;
-production readiness additionally requires applicable provider/security gates,
-with the snapshot/PRNG concern explicitly accepted above.
+This document grants no deployment, paid model use, crypto replacement,
+resource-cap increase, artifact deletion or replacement autonomous loop authority.
+Travis separately authorized disposable AWS qualification using `hub-admin` in
+`us-west-2`, at most ten concurrent MicroVMs, initially one with a 600-second
+maximum lifetime, and exact cleanup of owned test infrastructure. The private
+reverse-SSH relay passed a nonce probe and was removed; that is not a MicroVM
+WSS callback qualification. Live production-provider build/lifecycle gates remain
+open. Preserve prior JJ changes, evidence, VM disks, keys, caches, GC roots and
+rerun artifacts. Task 13 is locally complete; production readiness remains a
+separate claim, with snapshot/PRNG risk explicitly accepted above.

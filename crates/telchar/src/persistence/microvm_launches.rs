@@ -20,6 +20,7 @@ pub struct MicrovmLaunchIntent {
     pub region: String,
     pub image_arn: String,
     pub image_version: String,
+    pub vpc_egress_connector_arn: String,
     pub configuration_digest: [u8; 32],
     pub request_digest: [u8; 32],
     pub client_token: String,

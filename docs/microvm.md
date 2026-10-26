@@ -99,6 +99,35 @@ gate. Travis accepts residual snapshot/PRNG risk as documentation-only, not a
 release blocker; no crypto investigation or external sign-off is required. Do not deploy the experimental images
 as a substitute.
 
+## VPC egress policy
+
+Every `[[backends.microvm]]` policy requires an operator-owned
+`vpc_egress_connector_arn` in the configured AWS account and region:
+
+```toml
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+```
+
+Telchar explicitly sends this connector in `RunMicrovm.egressNetworkConnectors`.
+Omitting it, using an empty value, or selecting another account or region rejects
+configuration; there is no implicit public-internet egress mode. The connector
+participates in both the deployment fingerprint and the durable launch request
+digest. Changing the ARN requires a restart and cannot alter a reserved request.
+Use a version-qualified ARN such as `network-connector:builder:12` to pin VPC
+configuration. An unqualified ARN follows AWS connector updates; its identity
+digest does not freeze the underlying routes or security groups.
+
+Operators provision the VPC egress connector, its IAM permissions, subnets,
+security groups and routes. Telchar does not create or modify them. VPC egress
+routes outbound traffic through that network; internet access can still exist
+through operator-configured NAT/routes. It does not expose SSH or replace the
+AWS-managed authenticated HTTPS ingress endpoint. The callback address must be
+reachable through the selected connector, and WSS certificate validation remains
+mandatory. Configuration validation checks ARN identity and syntax, not connector
+readiness, routing or security-group policy; AWS launch rejection remains a
+fail-closed, non-retried provider failure. Actual VPC callback reachability requires
+live qualification.
+
 ## Local administrative resolution
 
 An optional `TELCHAR_ADMIN_SOCKET` path enables a dedicated daemon-owned Unix

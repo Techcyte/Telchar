@@ -125,6 +125,18 @@ fn admission_expiry_during_credentials_prevents_launch() {
 }
 
 #[test]
+fn launch_explicitly_selects_vpc_egress() {
+    launch_exchange(true, "active");
+    for mismatch in [
+        "connector-missing",
+        "connector-mismatch",
+        "connector-digest",
+    ] {
+        launch_exchange(true, mismatch);
+    }
+}
+
+#[test]
 fn reserved_launch_records_one_dispatch_and_quarantines_provider_failure() {
     launch_exchange(false, "active");
     launch_exchange(true, "active");
@@ -230,7 +242,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         _ => {}
     }
     let payload = hook.to_string();
-    let intent = telchar::persistence::MicrovmLaunchIntent {
+    let mut intent = telchar::persistence::MicrovmLaunchIntent {
         intent_id: "intent-fixture".to_owned(),
         attempt_id: attempt.attempt_id,
         backend_name: "provider-fixture".to_owned(),
@@ -238,10 +250,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         region: "us-west-2".to_owned(),
         image_arn: "image-fixture".to_owned(),
         image_version: "1".to_owned(),
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+            .into(),
         configuration_digest: [1; 32],
         request_digest: telchar::microvm::launch_request_digest(
             "image-fixture",
             "1",
+            "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
             "intent-fixture",
             &payload,
             600,
@@ -256,6 +271,24 @@ fn launch_exchange(success: bool, ownership: &'static str) {
             telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, 1)
                 .expect("capacity reserves")
         );
+    }
+    match ownership {
+        "connector-missing" => intent.vpc_egress_connector_arn.clear(),
+        "connector-mismatch" | "connector-digest" => {
+            intent.vpc_egress_connector_arn =
+                "arn:aws:lambda:us-west-2:116392764028:network-connector:isolated".into();
+            if ownership == "connector-digest" {
+                intent.request_digest = telchar::microvm::launch_request_digest(
+                    &intent.image_arn,
+                    &intent.image_version,
+                    &intent.vpc_egress_connector_arn,
+                    &intent.client_token,
+                    &payload,
+                    intent.maximum_duration_seconds,
+                );
+            }
+        }
+        _ => {}
     }
     let owner = std::sync::Arc::new(
         telchar::service::singleton_ownership::SingletonOwnership::acquire(
@@ -304,6 +337,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                         continue;
                     }
+                    let launch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        launch["egressNetworkConnectors"],
+                        serde_json::json!([
+                            "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+                        ])
+                    );
                     requests.push((headers, body));
                     if ownership == "response-expired" {
                         postgres::Client::connect(&control_url, postgres::NoTls).expect("fixture control connects").batch_execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'").expect("owner expires during request");
@@ -421,6 +461,7 @@ account_id = "116392764028"
 region = "us-west-2"
 image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
 image_version = "1"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 600
 execution_timeout_seconds = 540
@@ -666,6 +707,9 @@ chunk_bytes = 1024
             | "hook-lifetime"
             | "hook-capability"
             | "hook-schema"
+            | "connector-missing"
+            | "connector-mismatch"
+            | "connector-digest"
     );
     assert_eq!(requests.len(), if rejected_before_dispatch { 0 } else { 1 });
     if !rejected_before_dispatch {
@@ -695,7 +739,10 @@ chunk_bytes = 1024
             | "hook-intent"
             | "hook-lifetime"
             | "hook-capability"
-            | "hook-schema" => "prepared",
+            | "hook-schema"
+            | "connector-missing"
+            | "connector-mismatch"
+            | "connector-digest" => "prepared",
             "response-expired" => "dispatching",
             "execution-timeout" => "closed",
             _ if success => "bound",

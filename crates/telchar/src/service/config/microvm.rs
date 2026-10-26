@@ -10,6 +10,7 @@ pub(super) struct Deployment {
     region: String,
     image_arn: String,
     image_version: String,
+    vpc_egress_connector_arn: String,
     maximum_concurrent_builds: usize,
     maximum_duration_seconds: u64,
     execution_timeout_seconds: u64,
@@ -62,6 +63,11 @@ impl MicrovmBackendConfig {
                 .parse::<u64>()
                 .ok()
                 .is_none_or(|v| v == 0 || v.to_string() != d.image_version)
+            || !crate::microvm::valid_vpc_egress_connector(
+                &d.vpc_egress_connector_arn,
+                &d.account_id,
+                &d.region,
+            )
             || !(1..=65536).contains(&d.maximum_concurrent_builds)
             || !(60..=28800).contains(&d.maximum_duration_seconds)
             || d.execution_timeout_seconds == 0
@@ -231,10 +237,12 @@ impl MicrovmBackendConfig {
             region: self.0.region.clone(),
             image_arn: self.0.image_arn.clone(),
             image_version: self.0.image_version.clone(),
+            vpc_egress_connector_arn: self.0.vpc_egress_connector_arn.clone(),
             configuration_digest: self.fingerprint(),
             request_digest: crate::microvm::launch_request_digest(
                 &self.0.image_arn,
                 &self.0.image_version,
+                &self.0.vpc_egress_connector_arn,
                 &intent_id,
                 &payload,
                 lifetime,

@@ -124,6 +124,8 @@ fn durable_commands_report_empty_authoritative_state() {
                 region: "us-west-2".into(),
                 image_arn: "fixture-image".into(),
                 image_version: "1".into(),
+                vpc_egress_connector_arn:
+                    "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
                 configuration_digest: [1; 32],
                 request_digest: [2; 32],
                 client_token: "private-client-token".into(),

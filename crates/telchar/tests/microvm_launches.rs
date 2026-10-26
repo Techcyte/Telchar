@@ -47,6 +47,8 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
         region: "us-west-2".to_owned(),
         image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".to_owned(),
         image_version: "1".to_owned(),
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+            .into(),
         configuration_digest: [1; 32],
         request_digest: [2; 32],
         client_token: intent_id.to_owned(),

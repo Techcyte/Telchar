@@ -37,6 +37,8 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
             region: "us-west-2".into(),
             image_arn: "fixture".into(),
             image_version: "1".into(),
+            vpc_egress_connector_arn:
+                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
             configuration_digest: [1; 32],
             request_digest: [2; 32],
             client_token: format!("token-{index}"),

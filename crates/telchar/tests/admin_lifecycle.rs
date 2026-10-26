@@ -33,6 +33,7 @@ account_id = "116392764028"
 region = "us-west-2"
 image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
 image_version = "1"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
@@ -363,6 +364,8 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
                 region: "us-west-2".into(),
                 image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
                 image_version: "1".into(),
+                vpc_egress_connector_arn:
+                    "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
                 configuration_digest: [1; 32],
                 request_digest: [2; 32],
                 client_token: "admin-intent".into(),

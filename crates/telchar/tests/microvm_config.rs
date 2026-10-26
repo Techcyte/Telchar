@@ -7,6 +7,7 @@ account_id = "116392764028"
 region = "us-west-2"
 image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder"
 image_version = "1"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
 maximum_concurrent_builds = 2
 maximum_duration_seconds = 600
 execution_timeout_seconds = 540
@@ -769,6 +770,46 @@ fn daemon_lifecycle(exit: DaemonExit) {
         .unwrap()
         .get(0);
     assert_eq!(count, 0);
+}
+
+#[test]
+fn deployment_requires_vpc_egress_connector() {
+    let configured = CONFIG;
+    let missing = configured.replace(
+        "vpc_egress_connector_arn = \"arn:aws:lambda:us-west-2:116392764028:network-connector:builder\"\n",
+        "",
+    );
+    assert!(MicrovmBackendConfig::parse(&missing).is_err());
+    let policy = MicrovmBackendConfig::parse(configured).unwrap();
+    let rotated = configured.replace("network-connector:builder", "network-connector:isolated");
+    assert_ne!(
+        policy.fingerprint(),
+        MicrovmBackendConfig::parse(&rotated).unwrap().fingerprint()
+    );
+    let pinned = configured.replace("network-connector:builder", "network-connector:builder:12");
+    assert_ne!(
+        policy.fingerprint(),
+        MicrovmBackendConfig::parse(&pinned).unwrap().fingerprint()
+    );
+    for connector in [
+        "",
+        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:0",
+        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:01",
+        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:1:2",
+        "arn:aws:lambda:us-east-1:116392764028:network-connector:builder",
+        "arn:aws:lambda:us-west-2:999999999999:network-connector:builder",
+        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder/other",
+    ] {
+        assert!(
+            MicrovmBackendConfig::parse(&configured.replace(
+                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+                connector,
+            ))
+            .is_err(),
+            "accepted {connector}"
+        );
+    }
 }
 
 #[test]

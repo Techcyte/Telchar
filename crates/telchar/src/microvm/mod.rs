@@ -163,16 +163,35 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+pub(crate) fn valid_vpc_egress_connector(arn: &str, account_id: &str, region: &str) -> bool {
+    let prefix = format!("arn:aws:lambda:{region}:{account_id}:network-connector:");
+    arn.len() <= 140
+        && arn.strip_prefix(&prefix).is_some_and(|resource| {
+            let (name, version) = resource
+                .split_once(':')
+                .map_or((resource, None), |(name, version)| (name, Some(version)));
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                && version.is_none_or(|version| {
+                    version.starts_with(|digit: char| matches!(digit, '1'..='9'))
+                        && version.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
+}
+
 pub fn launch_request_digest(
     image: &str,
     version: &str,
+    vpc_egress_connector_arn: &str,
     token: &str,
     payload: &str,
     lifetime_seconds: i32,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"telchar-microvm-launch-v1\0");
-    for field in [image, version, token, payload] {
+    digest.update(b"telchar-microvm-launch-v2\0");
+    for field in [image, version, vpc_egress_connector_arn, token, payload] {
         digest.update((field.len() as u64).to_be_bytes());
         digest.update(field.as_bytes());
     }
@@ -516,9 +535,15 @@ impl Provider {
                 .account_id
                 .as_deref()
                 .is_some_and(|account| account != intent.account_id)
+            || !valid_vpc_egress_connector(
+                &intent.vpc_egress_connector_arn,
+                &intent.account_id,
+                &intent.region,
+            )
             || launch_request_digest(
                 &intent.image_arn,
                 &intent.image_version,
+                &intent.vpc_egress_connector_arn,
                 &intent.client_token,
                 payload,
                 intent.maximum_duration_seconds,
@@ -544,6 +569,7 @@ impl Provider {
             &client,
             &intent.image_arn,
             &intent.image_version,
+            &intent.vpc_egress_connector_arn,
             &intent.client_token,
             payload,
             intent.maximum_duration_seconds,
@@ -571,6 +597,7 @@ impl Provider {
         client: &Client,
         image: &str,
         version: &str,
+        vpc_egress_connector_arn: &str,
         token: &str,
         payload: &str,
         lifetime_seconds: i32,
@@ -596,6 +623,7 @@ impl Provider {
             .run_microvm()
             .image_identifier(image)
             .image_version(version)
+            .egress_network_connectors(vpc_egress_connector_arn)
             .client_token(token)
             .run_hook_payload(payload)
             .maximum_duration_in_seconds(lifetime_seconds)

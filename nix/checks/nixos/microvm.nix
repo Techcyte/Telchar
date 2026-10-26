@@ -80,6 +80,7 @@ pkgs.testers.nixosTest {
             region = "us-west-2";
             image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder";
             image_version = "1";
+            vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder";
             maximum_concurrent_builds = 1;
             maximum_duration_seconds = 60;
             execution_timeout_seconds = 50;

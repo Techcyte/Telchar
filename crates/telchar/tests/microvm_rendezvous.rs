@@ -149,6 +149,8 @@ fn socket_capability_exchange(interruption: &str) {
         region: "us-west-2".into(),
         image_arn: "image-fixture".into(),
         image_version: "1".into(),
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+            .into(),
         configuration_digest: [1; 32],
         request_digest: [2; 32],
         client_token: "rendezvous-token".into(),
