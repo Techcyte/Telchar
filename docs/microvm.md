@@ -107,6 +107,44 @@ production provider. Exact-ID termination, durable capacity release and deletion
 of owned cloud resources were independently verified. This does not qualify live
 failure/restart/fencing/concurrency or make the backend production-ready.
 
+## Same-source ARM worker and image context
+
+The flake exports `packages.aarch64-linux.telchar-nomad-worker`, including
+`bin/telchar-microvm-worker`. It uses the same filtered source and coordinated
+version as `packages.x86_64-linux.telchar`. Build on an ARM64 Linux builder:
+
+```sh
+nix build --no-link .#packages.aarch64-linux.telchar-nomad-worker
+```
+
+`lib.microvmAwsContext { trust = PUBLIC_DER_PATH; }` constructs the AWS build
+context from that worker and the pinned Nix closure. Trust is required explicitly;
+there is no fixture-certificate default. From a Git checkout of the selected
+revision, with a public DER file outside the repository:
+
+```sh
+nix build --impure --no-link --print-out-paths --expr '
+  let flake = builtins.getFlake "git+file:///absolute/path/to/telchar-checkout";
+  in flake.lib.microvmAwsContext {
+    trust = builtins.path {
+      path = /absolute/path/to/callback-public.der;
+      name = "microvm-callback-public.der";
+    };
+  }'
+```
+
+The context contains its Dockerfile and worker/Nix runtime closure, not a callback
+server or private key. Never supply private material: explicit trust becomes
+public Nix-store and image content. Operators own certificate identity, validity,
+TLS termination and rotation. A trust change requires a corresponding image and
+gateway rollout; use an exact image version and retain the preceding artifacts
+for rollback.
+
+Derivation evaluation establishes source/version correspondence, not successful
+ARM compilation or runtime qualification. Image construction, selected-artifact
+sandbox qualification and AWS lifecycle evidence remain separate release gates.
+The flake does not create an AWS image, connector or deployment.
+
 ## Image version policy
 
 `image_version` selects an exact numeric image version, such as `"1"` or

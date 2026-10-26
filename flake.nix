@@ -20,6 +20,8 @@
         config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "nomad";
       };
       craneLib = crane.mkLib pkgs;
+      armPkgs = import nixpkgs { system = "aarch64-linux"; };
+      armCraneLib = crane.mkLib armPkgs;
       source = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -50,7 +52,27 @@
         default = self.nixosModules.telchar;
       };
 
-      lib.sshForcedCommand = import ./nix/ssh-forced-command.nix;
+      lib = {
+        sshForcedCommand = import ./nix/ssh-forced-command.nix;
+        microvmAwsContext =
+          { trust }:
+          import ./nix/microvm-aws-context.nix {
+            pkgs = armPkgs;
+            worker = self.packages.aarch64-linux.telchar-nomad-worker;
+            inherit trust;
+          };
+      };
+
+      packages.aarch64-linux = {
+        inherit
+          (import ./nix/packages.nix {
+            pkgs = armPkgs;
+            craneLib = armCraneLib;
+            inherit source;
+          })
+          telchar-nomad-worker
+          ;
+      };
 
       packages.${system} = import ./nix/packages.nix {
         inherit pkgs craneLib source;

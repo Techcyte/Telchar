@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Nix flake outputs target `x86_64-linux` only; `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker` and `lib.microvmAwsContext { trust = PUBLIC_DER_PATH; }` provide the same-source ARM worker/context. `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
