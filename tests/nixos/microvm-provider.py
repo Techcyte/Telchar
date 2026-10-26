@@ -39,6 +39,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             return
         assert b"Action=GetCallerIdentity" in body
         assert "Credential=fixture-key/" in self.headers["Authorization"]
+        assert self.headers["X-Amz-Security-Token"] == "fixture-token"
         self.respond(
             '<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
             '<GetCallerIdentityResult><Account>116392764028</Account>'
@@ -65,6 +66,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert self.path.startswith("/2025-09-09/microvm-images/")
         assert self.path.endswith("/versions/1")
         assert "Credential=fixture-key/" in self.headers["Authorization"]
+        assert self.headers["X-Amz-Security-Token"] == "fixture-token"
         self.respond(json.dumps({
             "imageArn": "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
             "imageVersion": "1", "state": "SUCCESSFUL", "status": "ACTIVE",

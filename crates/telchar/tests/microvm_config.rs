@@ -29,6 +29,15 @@ mod image;
 
 #[test]
 fn configured_provider_rejects_unavailable_image() {
+    configured_provider("configured_provider_rejects_unavailable_image", false);
+}
+
+#[test]
+fn configured_provider_uses_protected_profile() {
+    configured_provider("configured_provider_uses_protected_profile", true);
+}
+
+fn configured_provider(test: &str, protected_profile: bool) {
     const CHILD: &str = "TELCHAR_TEST_IMAGE_CHECK";
     if std::env::var_os(CHILD).is_some() {
         let config = telchar::service::config::MicrovmBackendConfig::parse(CONFIG).unwrap();
@@ -36,9 +45,9 @@ fn configured_provider_rejects_unavailable_image() {
             .enable_all()
             .build()
             .unwrap();
-        assert!(
-            runtime.block_on(config.provider()).is_err(),
-            "unavailable image must reject provider startup"
+        assert_eq!(
+            runtime.block_on(config.provider()).is_ok(),
+            protected_profile
         );
         return;
     }
@@ -48,6 +57,13 @@ fn configured_provider_rejects_unavailable_image() {
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         for image in [false, true] {
+            if image && protected_profile {
+                image::serve_image(
+                    &listener,
+                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                );
+                continue;
+            }
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             let mut stream = loop {
                 if let Ok((stream, _)) = listener.accept() {
@@ -70,6 +86,9 @@ fn configured_provider_rejects_unavailable_image() {
             }
             let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
             assert!(headers.contains("credential=fixture-key/"));
+            if protected_profile {
+                assert!(headers.contains("x-amz-security-token: fixture-token\r\n"));
+            }
             let length = headers
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length: "))
@@ -85,16 +104,35 @@ fn configured_provider_rejects_unavailable_image() {
             }
         }
     });
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "configured_provider_rejects_unavailable_image"])
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test])
         .env_clear()
         .env(CHILD, "1")
         .env("AWS_EC2_METADATA_DISABLED", "true")
-        .env("AWS_ACCESS_KEY_ID", "fixture-key")
-        .env("AWS_SECRET_ACCESS_KEY", "fixture-secret")
-        .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
-        .output()
-        .unwrap();
+        .env("AWS_CONFIG_FILE", directory.path().join("config"))
+        .env(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            directory.path().join("credentials"),
+        )
+        .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint);
+    if protected_profile {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut credentials = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(directory.path().join("credentials"))
+            .unwrap();
+        credentials.write_all(b"[gateway]\naws_access_key_id = fixture-key\naws_secret_access_key = fixture-secret\naws_session_token = fixture-token\n").unwrap();
+        command.env("AWS_PROFILE", "gateway");
+    } else {
+        command
+            .env("AWS_ACCESS_KEY_ID", "fixture-key")
+            .env("AWS_SECRET_ACCESS_KEY", "fixture-secret");
+    }
+    let output = command.output().unwrap();
     server.join().unwrap();
     assert!(
         output.status.success(),

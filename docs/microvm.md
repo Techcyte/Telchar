@@ -107,6 +107,67 @@ production provider. Exact-ID termination, durable capacity release and deletion
 of owned cloud resources were independently verified. This does not qualify live
 failure/restart/fencing/concurrency or make the backend production-ready.
 
+## Unattended AWS credentials
+
+The gateway uses the AWS Rust SDK credential chain, bounded by
+`provider_timeout_seconds`. Environment credentials and named profiles containing
+`aws_access_key_id`, `aws_secret_access_key` and optional `aws_session_token` are
+supported. A protected shared-credentials profile is suitable when the deployment
+already supplies and rotates those credentials. Telchar does not acquire them.
+The compiled SDK does not enable SSO, interactive login or `credential_process`;
+a CLI profile that depends on those features is not a daemon credential source.
+
+For a NixOS service, load the file through the existing systemd credential input:
+
+```nix
+services.telchar = {
+  credentials = [{
+    name = "aws-credentials";
+    source = "/run/secrets/telchar-aws-credentials";
+  }];
+  environment = {
+    AWS_SHARED_CREDENTIALS_FILE = "%d/aws-credentials";
+    AWS_CONFIG_FILE = "/dev/null";
+    AWS_PROFILE = "gateway";
+    AWS_EC2_METADATA_DISABLED = "true";
+  };
+};
+```
+
+`%d` expands to the service's systemd credential directory. The protected source
+file must be readable by the credential loader, outside the Nix store, and contain
+an operator-selected profile:
+
+```ini
+[gateway]
+aws_access_key_id = OPERATOR_SUPPLIED_ACCESS_KEY
+aws_secret_access_key = OPERATOR_SUPPLIED_SECRET_KEY
+aws_session_token = OPERATOR_SUPPLIED_SESSION_TOKEN
+```
+
+Never put these values in Nix expressions, generated TOML, service environment
+values, images or logs. Omit the session-token line only for credentials that do
+not require it. Remove inherited `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_SESSION_TOKEN`: environment credentials take precedence over the file.
+Metadata lookup is disabled in this profile deployment to prevent an unintended
+instance-role fallback. This is a supported input shape, not selection of a
+production principal or a recommendation to create long-lived keys.
+
+Systemd copies credentials at service start. Refresh the protected source and
+perform a planned drain/restart before expiry; file replacement and SIGHUP do not
+promise live SDK or systemd credential rotation. Keep account/region cleanup
+authority available until every retained obligation is resolved. Startup requires
+signed STS account attestation and exact image verification; operation credentials
+are re-attested when their resolved identity changes. Missing, expired or
+wrong-account credentials fail closed and must not trigger automatic mutation
+retries.
+
+The protected-profile contract exercises the real SDK file loader and signing
+against local simulated STS/image responses, without credential values in the
+child environment. It is not live AWS or systemd credential-delivery evidence.
+The earlier AWS smoke used in-memory temporary credentials and did not establish
+an unattended credential refresh mechanism.
+
 ## Same-source ARM worker and image context
 
 The flake exports `packages.aarch64-linux.telchar-nomad-worker`, including

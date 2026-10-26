@@ -57,8 +57,24 @@ pkgs.testers.nixosTest {
         DynamicUser = true;
       };
     };
+    systemd.services.microvm-credentials = {
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        RuntimeDirectory = "microvm-aws";
+        RuntimeDirectoryMode = "0700";
+        UMask = "0077";
+        ExecStart = pkgs.writeShellScript "microvm-credentials" ''
+          printf '%s\n' '[gateway]' \
+            'aws_access_key_id = fixture-key' \
+            'aws_secret_access_key = fixture-secret' \
+            'aws_session_token = fixture-token' > /run/microvm-aws/credentials
+        '';
+      };
+    };
     services.telchar = {
       enable = true;
+      credentials = [{ name = "aws-credentials"; source = "/run/microvm-aws/credentials"; }];
       package = daemon;
       frontendUid = 995;
       database.url = "host=/run/postgresql user=telchar dbname=telchar";
@@ -100,14 +116,15 @@ pkgs.testers.nixosTest {
       };
       environment = {
         AWS_EC2_METADATA_DISABLED = "true";
-        AWS_ACCESS_KEY_ID = "fixture-key";
-        AWS_SECRET_ACCESS_KEY = "fixture-secret";
+        AWS_SHARED_CREDENTIALS_FILE = "%d/aws-credentials";
+        AWS_CONFIG_FILE = "/dev/null";
+        AWS_PROFILE = "gateway";
         TELCHAR_TEST_MICROVM_ENDPOINT = "http://127.0.0.1:9876";
       };
     };
     systemd.services.telchar = {
-      after = [ "postgresql-setup.service" "microvm-provider.service" ];
-      requires = [ "postgresql-setup.service" "microvm-provider.service" ];
+      after = [ "postgresql-setup.service" "microvm-provider.service" "microvm-credentials.service" ];
+      requires = [ "postgresql-setup.service" "microvm-provider.service" "microvm-credentials.service" ];
     };
     system.stateVersion = "26.05";
   };
