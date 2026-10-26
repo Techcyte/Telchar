@@ -243,6 +243,43 @@ fn ownership_release_is_bounded_when_its_row_is_locked() {
 }
 
 #[test]
+fn ownership_reuses_its_connection_during_renewal() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("daemon acquires ownership");
+    let mut observer = fixture.connect();
+    observer
+        .batch_execute("SELECT pg_stat_clear_snapshot()")
+        .expect("statistics snapshot clears");
+    let backends = |observer: &mut postgres::Client| {
+        observer
+            .query(
+                "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() ORDER BY pid",
+                &[],
+            )
+            .expect("ownership backend identities read")
+            .iter()
+            .map(|row| row.get::<_, i32>(0))
+            .collect::<Vec<_>>()
+    };
+    let initial_backends = backends(&mut observer);
+    assert_eq!(
+        initial_backends.len(),
+        1,
+        "ownership retains one connection"
+    );
+    for _ in 0..3 {
+        owner.renew().expect("ownership renews");
+        owner.verify().expect("ownership verifies");
+        assert_eq!(backends(&mut observer), initial_backends);
+    }
+}
+
+#[test]
 fn ownership_renews_after_database_restart() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");

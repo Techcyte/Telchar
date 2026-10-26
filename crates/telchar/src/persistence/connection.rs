@@ -178,6 +178,7 @@ fn build_pool(manager: Manager) -> Result<Pool<Manager>, r2d2::Error> {
     Ok(Pool::builder()
         .thread_pool(std::sync::Arc::new(maintenance))
         .max_size(16)
+        .min_idle(Some(0))
         // Validation runs after checkout under the caller's remaining absolute budget.
         .test_on_check_out(false)
         .connection_timeout(Duration::from_secs(5))

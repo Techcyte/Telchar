@@ -99,17 +99,20 @@ impl SingletonOwnership {
         let generation = row
             .try_get(0)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
+        drop(connection);
         let database_url = fenced_database_url(database_url, owner_kind, &owner_token, generation)?;
         let database = crate::persistence::Database::connect(&database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
-        Ok(Self {
+        let ownership = Self {
             database_url,
             database,
             owner_kind,
             owner_token,
             generation,
             lease_duration,
-        })
+        };
+        ownership.verify()?;
+        Ok(ownership)
     }
 
     pub fn generation(&self) -> i64 {

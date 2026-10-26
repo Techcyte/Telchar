@@ -1,6 +1,6 @@
 [package]
 name = "nix-worker-protocol"
-version = "2026.9.2"
+version = "2026.10.0"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
@@ -14,4 +14,4 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-proptest = "1.9.0"
+proptest = "1.12.0"

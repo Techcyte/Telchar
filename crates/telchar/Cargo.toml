@@ -1,6 +1,6 @@
 [package]
 name = "telchar"
-version = "2026.9.2"
+version = "2026.10.0"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 opentelemetry.workspace = true
 tokio.workspace = true
-rustix = { version = "1.1.4", features = [
+rustix = { version = "1.1.5", features = [
   "event",
   "fs",
   "net",
@@ -31,16 +31,16 @@ scheduled-thread-pool = "0.2.7"
 tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
-toml = "1.0"
+toml = "1.1"
 reqwest.workspace = true
 rustls.workspace = true
 tungstenite.workspace = true
-jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 tempfile = "3.27.0"
 signal-hook = "0.4"
 libc = "0.2"
 aws-config = { version = "1.12.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
-aws-sdk-ec2 = { version = "1.262.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-ec2 = { version = "1.268.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-credential-types = "1.3.0"
 aws-sdk-sts = { version = "1.116.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-lambdamicrovms = { version = "1.13.0", default-features = false, features = ["rt-tokio", "default-https-client"] }

@@ -614,6 +614,54 @@ fn database_commit_timeout_can_leave_a_durable_transaction() {
 }
 
 #[test]
+fn database_opens_connections_only_for_concurrent_checkouts() {
+    let fixture = PostgresFixture::start();
+    let mut observer = fixture.connect();
+    let database = telchar::persistence::Database::connect(fixture.url())
+        .expect("database connection pool starts");
+    let mut first = database.connection().expect("first connection checks out");
+    let first_backend: i32 = first
+        .query_one("SELECT pg_backend_pid()", &[])
+        .expect("first backend identity reads")
+        .get(0);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let connections: i64 = observer
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+            &[],
+        )
+        .expect("database connection count reads")
+        .get(0);
+    assert_eq!(connections, 1, "one checkout needs one database connection");
+
+    let mut second = database
+        .connection()
+        .expect("concurrent connection checks out");
+    let second_backend: i32 = second
+        .query_one("SELECT pg_backend_pid()", &[])
+        .expect("second backend identity reads")
+        .get(0);
+    assert_ne!(first_backend, second_backend);
+    let connections: i64 = observer
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+            &[],
+        )
+        .expect("concurrent database connection count reads")
+        .get(0);
+    assert_eq!(connections, 2);
+    drop(second);
+    drop(first);
+    let reused_backend: i32 = database
+        .connection()
+        .expect("returned connection checks out")
+        .query_one("SELECT pg_backend_pid()", &[])
+        .expect("reused backend identity reads")
+        .get(0);
+    assert_eq!(first_backend, reused_backend);
+}
+
+#[test]
 fn persistence_accepts_a_substituted_database_source() {
     let fixture = PostgresFixture::start();
     let database = TestDatabase {
