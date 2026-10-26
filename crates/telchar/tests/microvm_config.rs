@@ -813,6 +813,27 @@ fn deployment_requires_vpc_egress_connector() {
 }
 
 #[test]
+fn deployment_configuration_accepts_exact_provider_image_versions() {
+    let pinned = CONFIG.replace("image_version = \"1\"", "image_version = \"1.0\"");
+    let policy = MicrovmBackendConfig::parse(&pinned).unwrap();
+    let rotated = pinned.replace("image_version = \"1.0\"", "image_version = \"1.1\"");
+    assert_ne!(
+        policy.fingerprint(),
+        MicrovmBackendConfig::parse(&rotated).unwrap().fingerprint()
+    );
+    for version in ["latest", "0.0", "01.0", "1.00", "1.", ".1", "1.0.0"] {
+        assert!(
+            MicrovmBackendConfig::parse(&CONFIG.replace(
+                "image_version = \"1\"",
+                &format!("image_version = \"{version}\"")
+            ))
+            .is_err(),
+            "accepted {version}"
+        );
+    }
+}
+
+#[test]
 fn deployment_configuration_preserves_execution_authority() {
     let config = MicrovmBackendConfig::parse(CONFIG).unwrap();
     assert_eq!(config.name(), "arm");

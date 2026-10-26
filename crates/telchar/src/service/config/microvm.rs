@@ -59,10 +59,7 @@ impl MicrovmBackendConfig {
             || !d.account_id.bytes().all(|b| b.is_ascii_digit())
             || !component(&d.region)
             || image_name.is_none_or(|name| !component(name))
-            || d.image_version
-                .parse::<u64>()
-                .ok()
-                .is_none_or(|v| v == 0 || v.to_string() != d.image_version)
+            || !crate::microvm::valid_image_version(&d.image_version)
             || !crate::microvm::valid_vpc_egress_connector(
                 &d.vpc_egress_connector_arn,
                 &d.account_id,

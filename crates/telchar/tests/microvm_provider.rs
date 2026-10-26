@@ -460,7 +460,7 @@ system = "aarch64-linux"
 account_id = "116392764028"
 region = "us-west-2"
 image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
-image_version = "1"
+image_version = "1.0"
 vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 600
@@ -604,11 +604,12 @@ chunk_bytes = 1024
                     );
                     return;
                 }
-                let row = fixture.connect().query_one("SELECT intent_id, phase, configuration_digest, reservation_released_at IS NULL FROM microvm_launches", &[]).unwrap();
+                let row = fixture.connect().query_one("SELECT intent_id, phase, configuration_digest, reservation_released_at IS NULL, image_version FROM microvm_launches", &[]).unwrap();
                 assert_ne!(row.get::<_, String>(0), "intent-fixture");
                 assert_eq!(row.get::<_, String>(1), "ambiguous");
                 assert_eq!(row.get::<_, Vec<u8>>(2), policy.fingerprint());
                 assert!(row.get::<_, bool>(3));
+                assert_eq!(row.get::<_, String>(4), "1.0");
                 let request = telchar::persistence::microvm_attempt_request(
                     owner.database(),
                     attempt.attempt_id,
@@ -644,6 +645,8 @@ chunk_bytes = 1024
                 assert_eq!(count, 1, "waiting must not create another launch");
                 let requests = server.join().unwrap();
                 assert_eq!(requests.len(), 1, "capacity prevents another dispatch");
+                let launch: serde_json::Value = serde_json::from_slice(&requests[0].1).unwrap();
+                assert_eq!(launch["imageVersion"], "1.0");
                 return;
             }
             assert!(

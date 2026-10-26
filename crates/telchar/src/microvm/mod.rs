@@ -163,6 +163,21 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+pub(crate) fn valid_image_version(value: &str) -> bool {
+    let valid_number = |value: &str| {
+        !value.is_empty()
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && (value == "0" || !value.starts_with('0'))
+    };
+    let mut components = value.split('.');
+    value.len() <= 128
+        && components
+            .next()
+            .is_some_and(|major| valid_number(major) && major != "0")
+        && components.next().is_none_or(valid_number)
+        && components.next().is_none()
+}
+
 pub(crate) fn valid_vpc_egress_connector(arn: &str, account_id: &str, region: &str) -> bool {
     let prefix = format!("arn:aws:lambda:{region}:{account_id}:network-connector:");
     arn.len() <= 140
@@ -604,8 +619,7 @@ impl Provider {
     ) -> Result<String, ProviderError> {
         if image.is_empty()
             || image.len() > 2048
-            || version.is_empty()
-            || !version.bytes().all(|byte| byte.is_ascii_digit())
+            || !valid_image_version(version)
             || token.is_empty()
             || token.len() > 128
             || payload.len() > 16384

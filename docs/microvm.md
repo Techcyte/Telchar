@@ -99,6 +99,15 @@ gate. Travis accepts residual snapshot/PRNG risk as documentation-only, not a
 release blocker; no crypto investigation or external sign-off is required. Do not deploy the experimental images
 as a substitute.
 
+## Image version policy
+
+`image_version` selects an exact numeric image version, such as `"1"` or
+`"1.0"`. The major component must be positive; an optional minor component can
+be zero. Components use canonical decimal digits without leading zeroes, with
+at most 128 bytes overall. Aliases such as `"latest"` are rejected. Telchar sends
+the configured string unchanged and requires AWS image verification to return
+that exact version in `SUCCESSFUL` and `ACTIVE` state.
+
 ## VPC egress policy
 
 Every `[[backends.microvm]]` policy requires an operator-owned
