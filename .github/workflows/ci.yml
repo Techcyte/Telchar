@@ -30,6 +30,26 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Allow test namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Check canonical-store prerequisites
+        run: |
+          started=$(date --iso-8601=seconds)
+          if nix develop -c bash tests/canonical-store.sh true; then
+            exit 0
+          else
+            fixture_exit=$?
+          fi
+          for setting in kernel.apparmor_restrict_unprivileged_userns \
+                         kernel.unprivileged_userns_clone \
+                         user.max_user_namespaces; do
+            sysctl "$setting" || true
+          done
+          sudo -n journalctl --kernel --since "$started" --no-pager \
+            --grep='apparmor=.*(userns_create|capable)' || true
+          exit "$fixture_exit"
+
       - name: Check formatting
         run: nix develop -c cargo fmt --all -- --check
 
