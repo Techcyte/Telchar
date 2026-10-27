@@ -7,13 +7,15 @@ use std::time::{Duration, Instant};
 pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result<()> {
     let home = root.join("client");
     std::fs::create_dir(&home)?;
-    let empty = home.join("empty");
-    std::fs::create_dir(&empty)?;
+    let var = home.join("var");
+    let empty = var.join("empty");
+    std::fs::create_dir_all(&empty)?;
+    std::fs::set_permissions(&var, std::fs::Permissions::from_mode(0o755))?;
     std::fs::set_permissions(&empty, std::fs::Permissions::from_mode(0o755))?;
     let result = Command::new("mount")
         .arg("--bind")
-        .arg(&empty)
-        .arg("/var/empty")
+        .arg(&var)
+        .arg("/var")
         .output()?;
     assert!(result.status.success(), "{result:?}");
     assert!(result.stderr.is_empty(), "{result:?}");
