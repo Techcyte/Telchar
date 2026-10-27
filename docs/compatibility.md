@@ -64,9 +64,11 @@ start its build-hook process, which must decline when no builders are configured
 derivations against a real isolated Nix daemon, with an observable declining hook.
 It covers the local executor, static SSH submission using a simulated transport
 and real `nix-daemon --stdio`, and shared worker build logic using a fixture
-callback. Ordinary connections before and after retain their configured builders.
-This is execution-policy coverage, not OpenSSH, live Nomad, or MicroVM isolation
-qualification.
+callback, including MicroVM session reception. Ordinary connections before and
+after retain their configured builders. The dedicated MicroVM worker suite also
+exercises configured daemon dispatch and output return through isolated stores
+and a simulated provider. This is execution-policy and fixture integration
+coverage, not live Nomad, native MicroVM isolation, or AWS qualification.
 
 ## Expanding support
 

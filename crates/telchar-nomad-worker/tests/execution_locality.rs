@@ -208,7 +208,7 @@ fn select_protocol(
     Ok(response)
 }
 
-fn worker_build(build: BuildSpecification, uri: &str) {
+fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
     let endpoint = GatewayStoreEndpoint::parse(uri).unwrap();
     let info = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint)
         .unwrap()
@@ -280,7 +280,18 @@ fn worker_build(build: BuildSpecification, uri: &str) {
     ]);
     let config =
         WorkerConfig::from_lookup(|name| values.get(name).map(|value| value.to_string())).unwrap();
-    let mut session = receive_manifest(&config).unwrap();
+    let mut session = if microvm {
+        let socket = telchar_nomad_worker::connect(&config).unwrap();
+        telchar_nomad_worker::microvm::receive_session(
+            socket,
+            config.maximum_manifest_bytes(),
+            config.transfer_chunk_bytes(),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .unwrap()
+    } else {
+        receive_manifest(&config).unwrap()
+    };
     session.resolve_inputs(uri).unwrap();
     session.build(uri).unwrap();
     drop(session);
@@ -364,7 +375,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
     let endpoint = GatewayStoreEndpoint::parse(&uri).unwrap();
     ordinary_build(&instantiate("ordinary-before"), &socket);
     assert_eq!(fs::read_to_string(&marker).unwrap(), "attempt\n");
-    for backend in ["local", "ssh", "worker"] {
+    for backend in ["local", "ssh", "worker", "microvm"] {
         let build = instantiate(backend);
         let output = PathBuf::from(String::from_utf8(build.outputs[0].path.clone()).unwrap());
         assert!(!output.exists());
@@ -418,7 +429,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
                     String::from_utf8_lossy(&logs)
                 );
             }
-            "worker" => worker_build(build, &uri),
+            "worker" | "microvm" => worker_build(build, &uri, backend == "microvm"),
             _ => unreachable!(),
         }
         assert_eq!(fs::read(output).unwrap(), b"terminal");
