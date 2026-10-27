@@ -60,6 +60,12 @@ Execution options provide one local build slot, automatic core count, and enable
 substitution; they do not override sandbox or signature settings. Nix may still
 start its build-hook process, which must decline when no builders are configured.
 
+This prevents assigned builds from recursively delegating to Telchar or another
+distributed builder. Ordinary requests on a worker host may still use Telchar.
+It does not make routing a build back into its originating Nix store safe: the
+original request can hold store locks while waiting for assigned execution that
+needs those same locks. Keep that execution in a separate store domain.
+
 `crates/telchar-nomad-worker/tests/execution_locality.rs` exercises registered
 derivations against a real isolated Nix daemon, with an observable declining hook.
 It covers the local executor, static SSH submission using a simulated transport
