@@ -550,6 +550,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
         .env("TELCHAR_TEST_MICROVM_ENDPOINT", endpoint)
         .env("TELCHAR_CONFIG", config)
         .env("TELCHAR_DATABASE_URL", &database_url)
+        .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .env(
             "TELCHAR_GATEWAY_STORE_URI",
             std::env::var("MICROVM_TEST_STORE_URI")
