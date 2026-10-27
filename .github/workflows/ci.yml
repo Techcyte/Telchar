@@ -50,6 +50,10 @@ jobs:
             --grep='apparmor=.*(userns_create|capable)' || true
           exit "$fixture_exit"
 
+      - name: Check execution-store prerequisites
+        run: >-
+          nix develop -c bash scripts/test-execution-store.sh /bin/sh -c true
+
       - name: Check formatting
         run: nix develop -c cargo fmt --all -- --check
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use nix_worker_protocol::{
     AddToStoreNarInfo, BuildDerivationClientRequest, WorkerBuildResult, WorkerClient,
-    WorkerClientProfile, WorkerMissingPaths, WorkerPathInfo,
+    WorkerClientProfile, WorkerMissingPaths, WorkerOptions, WorkerPathInfo,
 };
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -206,6 +206,12 @@ impl GatewayStoreConnection {
         request: &BuildDerivationClientRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<WorkerBuildResult> {
+        self.client
+            .set_options(&WorkerOptions {
+                overrides: vec![(b"builders".to_vec(), Vec::new())],
+                ..WorkerOptions::default()
+            })
+            .map_err(|_| io::Error::other("gateway Nix daemon execution options failed"))?;
         self.client
             .build_derivation(request, logs)
             .map_err(|error| {

@@ -51,6 +51,29 @@ Telchar's pure-Rust gateway-store client advertises worker protocol 1.38 and req
 
 The implemented acceptance window is worker protocol 1.35–1.38. Scripted negotiation fixtures explicitly cover 1.35, 1.37, and 1.38; real-daemon integration uses the daemon supplied by the pinned nixpkgs revision. Older daemons, another protocol major, malformed negotiation, and unsupported operation semantics fail closed.
 
+## Assigned execution
+
+Local, static SSH, and allocation-worker build submissions send connection-scoped
+`SetOptions` before `BuildDerivation`, with an empty `builders` override. Setup
+failure aborts submission. Query and transfer connections retain daemon policy.
+Execution options provide one local build slot, automatic core count, and enabled
+substitution; they do not override sandbox or signature settings. Nix may still
+start its build-hook process, which must decline when no builders are configured.
+
+This prevents assigned builds from recursively delegating to Telchar or another
+distributed builder. Ordinary requests on a worker host may still use Telchar.
+It does not make routing a build back into its originating Nix store safe: the
+original request can hold store locks while waiting for assigned execution that
+needs those same locks. Keep that execution in a separate store domain.
+
+`crates/telchar-nomad-worker/tests/execution_locality.rs` exercises registered
+derivations against a real isolated Nix daemon, with an observable declining hook.
+It covers the local executor, static SSH submission using a simulated transport
+and real `nix-daemon --stdio`, and shared worker build logic using a fixture
+callback. Ordinary connections before and after retain their configured builders.
+This is execution-policy coverage, not OpenSSH, live Nomad, or MicroVM isolation
+qualification.
+
 ## Expanding support
 
 A compatibility addition needs:
