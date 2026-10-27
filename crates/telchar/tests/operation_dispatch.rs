@@ -271,6 +271,7 @@ impl FrontendFixture {
         daemon_command
             .env("TELCHAR_CONFIG", &config_path)
             .env("TELCHAR_DATABASE_URL", database.url())
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
             .env_remove("TELCHAR_RUNNING_DISCONNECT_POLICY")
             .env_remove("TELCHAR_TEST_BUILD_HELPER")
             .env_remove("TELCHAR_TEST_EXPORT_HELPER")

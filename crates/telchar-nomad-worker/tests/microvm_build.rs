@@ -247,6 +247,7 @@ fn run_isolated_build(case: &str) {
     let output = Command::new("bash")
         .env("MICROVM_TEST_DATABASE", database.url())
         .env("MICROVM_TEST_CASE", case)
+        .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .arg(FIXTURE)
         .arg(std::env::current_exe().unwrap())
         .args([

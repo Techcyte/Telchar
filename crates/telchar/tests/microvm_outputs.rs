@@ -58,6 +58,7 @@ fn disk_reserve_rejects_output_before_staging() {
 fn receipts_require_authoritative_registration() {
     let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
         let output = std::process::Command::new("bash")
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../tests/microvm/canonical-store.sh"
