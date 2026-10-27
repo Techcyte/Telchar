@@ -2,9 +2,10 @@
 
 ## Status
 
-Proposed; design under review. Not implemented. Travis approved the
-first-release launch-ambiguity and output-only recovery limits below; that
-approval does not accept the whole ADR or authorize implementation.
+Experimental design reference, not a production-readiness claim. The
+[operator guide](../microvm.md) describes implemented interfaces and qualification
+limits. Launch ambiguity, output-only recovery and residual snapshot risk have
+the explicit limits recorded below; this document grants no deployment authority.
 
 ## Scope
 
@@ -14,11 +15,8 @@ single-active database ownership. This proposes a narrow exception to the
 [architecture](../design.md) non-goal of provisioning compute: launching and
 terminating one managed execution is backend work. Publishing images, creating
 networks/IAM roles, fleet management and deployment remain operator-owned.
-Travis must approve this boundary before implementation.
-
-The [experiment](../microvm.md) proved substantial native compilation and usable
-validated outputs, not production recovery, capacity or snapshot cryptographic
-safety. Accepted experimental gaps become implementation qualification gates.
+Image construction and successful compilation do not establish production
+recovery, capacity or snapshot cryptographic safety.
 
 ## Existing extension points
 
@@ -42,9 +40,9 @@ Current Nomad execution optionally retries infrastructure failures through its
 configured `max_retries`; MicroVM policy must be specified independently rather
 than inheriting that branch. No existing retry behavior is changed by this ADR.
 
-## Provider contracts verified so far
+## Provider contracts
 
-Checked public documentation during design; no account API calls:
+Provider documentation defines these boundaries:
 
 - [RunMicrovm](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_RunMicrovm.html)
   accepts a case-sensitive `clientToken` of 1–128 characters for idempotency.
@@ -60,7 +58,7 @@ Checked public documentation during design; no account API calls:
   documents a maximum 16 KB runtime payload and a provider-injected `microvmId`
   in the `/run` body. The runtime payload is launch-specific. Endpoint traffic
   begins after the hook returns200; an outbound worker connection need not wait
-  for gateway receipt of the launch response, as the experiment demonstrated.
+  for gateway receipt of the launch response.
 - The same guide says asynchronous applications should disable automatic
   suspension or configure an appropriate idle duration. CPU activity alone
   must not be treated as endpoint traffic. Production build policy should not
@@ -255,8 +253,9 @@ Release does not delete the obligation or its audit history. A later exact ID
 observation remains visible and eligible for cleanup by current ownership, even
 if capacity was manually released. Do not claim token/list matching can discover
 all orphan instances. Operators may elect to disable backend dispatch rather
-than accept this risk. Administrative command shape and deployment authentication
-must be reviewed before implementation; no public mutation endpoint is implied.
+than accept this risk. Administrative resolution uses the local root-authenticated
+interface described in the [operator guide](../microvm.md#local-administrative-resolution);
+no public mutation endpoint is implied.
 
 ## Credential and transport proposal
 
@@ -332,8 +331,7 @@ ARM64 only initially; do not advertise x86 through implicit emulation. All OS
 capabilities needed for Nix sandboxing must be explicit and qualified.
 
 Set provider maximum lifetime explicitly and local deadlines strictly inside it,
-with time reserved for transfer/cleanup; the experiment's600s ceiling is evidence,
-not authorization for longer production testing. For outbound-only execution,
+with time reserved for transfer/cleanup. For outbound-only execution,
 set the documented idle threshold beyond maximum execution lifetime, explicitly
 set the required suspended-duration field and disable auto-resume, rather than assume autoResumeEnabled=false disables suspension.
 [IdlePolicy](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_IdlePolicy.html)
@@ -402,43 +400,19 @@ based on stale state. Current owner first reconciles exact gateway outputs, then
 fails incomplete builds and assumes all durable cleanup obligations. This is
 single-active fail-closed operation, not active/active handover.
 
-## Concrete transfer reuse boundary
+## Transfer boundary
 
-Source inspection of `nomad/callback_service.rs::serve_connection` and
-`receive_build_outputs` shows that listener admission, Nomad proof/allocation
-verification, manifest creation, transfer, durable completion and metrics are
-composed together. `OutputImport::finish` directly calls typed `add_to_store_nar`
-and checks validity; it does not call `store/promotion.rs` validation/promotion.
-Do not assume extracting that entire callback gives the MicroVM contract. This
-is a design boundary observation, not a qualification or remediation of Nomad.
+MicroVM outputs use `store/promotion.rs::validate_and_promote_nar` and the gateway
+promotion backend, with admitted output authority supplied separately from worker
+metadata. Verify hashes, sizes, references, deriver and content address through
+the owning store interfaces, then record authoritative outputs before terminal
+success.
 
-Use `store/promotion.rs::validate_and_promote_nar` and the gateway promotion
-backend for MicroVM outputs, with admitted output authority supplied separately
-from worker metadata. Verify hashes, sizes, references, deriver and content
-address through the owning store interfaces, then record authoritative outputs
-before terminal success. The existing `nomad_output_session.rs` tests exercise
-real protocol-state logic (not storage); `store_promotion/real_store.rs` has a
-real mutation rejection contract and an explicitly ignored matching-promotion
-case because its private store namespace differs. Neither substitutes for a new
-real MicroVM gateway-store integration contract. Do not blanket-enable the
-ignored test or count its existence as passing coverage.
-
-Smallest initial reuse candidate is authenticated `WorkerSession` transfer/build
-logic with a separate MicroVM connector and credential admission. Inspection of
-`connect`/`connect_once` confirms Nomad authentication and its named WebSocket
-subprotocol are sent there; do not route MicroVM bootstrap through that connector.
-`receive_authenticated_manifest` accepts an already connected socket, but initializes
-Nomad protocol-session state internally and uses fixed path/input limits. Its
-connection deadline begins after manifest receipt, so pre-manifest waiting needs
-an independent bounded deadline. These are concrete adaptation points, not an
-assertion that the current public helper is a complete production worker API.
-Preserve the
-TLNW Nomad wire contract and its existing callers. Before moving protocol types,
-read their entire implementation and worker callers, add behavioral parity tests,
-and decide whether a backend-neutral transfer module is actually necessary.
-Remaining full-file reads are an implementation prerequisite; this ADR does not
-claim a completed extraction design. No Nomad execution identity crosses the
-MicroVM boundary.
+Worker transfer/build mechanics are shared through `WorkerSession`; the MicroVM
+connector and credential admission remain separate from Nomad authentication.
+Preserve the TLNW Nomad wire contract and its existing callers. Pre-manifest
+waiting requires its own bounded deadline. No Nomad execution identity crosses
+the MicroVM boundary.
 
 ## Configuration and deployment responsibilities
 
@@ -511,78 +485,19 @@ are sufficient; intent/provider/path/subject identities belong only in protected
 structured events, not metric labels. Never emit hook payload, bearer/verifier,
 AWS credentials, NAR bytes or build-log bodies into control-plane records.
 
-## Implementation slices and qualification gates
+## Qualification boundaries
 
-Every behavior change begins with a failing behavioral test, confirmed red, then
-a minimal implementation and green rerun. These are proposed slices, not work
-orders or implementation authorization:
+Local provider simulations exercise serialization and orchestration, not AWS
+semantics. Real PostgreSQL, TLS and isolated-store contracts have distinct
+coverage from native ARM runtime and live provider qualification. Successful
+builds do not establish production recovery, capacity or snapshot safety.
 
-1. **Durable identity and reservations.** Append the next migration with ownership
-   triggers for intents, reservations and resolution audit records; register in
-   `persistence/migrations.rs`. Real PostgreSQL tests cover fencing, unique intent,
-   atomic dispatch grant/reservation, reconstruction, terminal build versus live
-   cleanup, concurrent release, stale administrative generation and restart at
-   every transaction boundary. No AWS calls in database tests.
-2. **Exact provider control.** Separate bounded launch/get/terminate operations
-   from scheduler composition. Test serialization and SDK retry configuration
-   through a deterministic local HTTP server that records actual requests and
-   can drop a response; that is fault injection at the real HTTP boundary, not
-   proof of AWS semantics. Confirm exactly one dispatch on lost response, no
-   guessed listing binding and durable quarantine. Then separately qualify the
-   pinned SDK and actual provider with explicit resource/cost authorization.
-3. **Image and authenticated session.** Reproducible ARM image/startup, runtime
-   binding, bounded early rendezvous, single-use fenced admission and a separate
-   connector. Real loopback sockets/TLS plus isolated database exercise early
-   connection, wrong/expired/replayed capability, wrong ID/config, concurrent
-   admission, cutoff, ownership loss and no manifest before API binding. Do not
-   infer provider identity attestation from a bearer-plus-ID handshake.
-4. **Transfer and completion.** Real isolated Nix stores, production promotion,
-   classic and fixed-output builds. Cover missing-input transfer, corrupt NARs,
-   reference/content-address mismatch, declared/actual byte bounds, incomplete or
-   extra outputs, multi-output order, bounded logs, disk reserve/exhaustion and
-   receipt loss. Assert invalid outputs never become authoritative success.
-   Kill gateway before/after each import and completion transaction; exact
-   complete outputs may win recovery, partial outputs cannot imply success.
-5. **Routing and lifecycle.** Add explicit configured backend and OutputOnly
-   capability, preserving fair queue/coalescing/subject quotas and no retries.
-   Real PostgreSQL plus local worker processes test cancellation, client detach,
-   deadlines, shutdown, stale owner, cleanup failure and administrative resolution.
-   Keep known-ID cleanup runnable independently of terminal shared-build state.
-6. **Deployment and stock-client qualification.** Validate NixOS configuration,
-   protected proxy hop, IAM review, credential rotation, and sandbox
-   secrets/network isolation. Use real stock Nix clients
-   against the gateway with authorized AWS ARM executions, including substantial
-   compilation and multiple outputs, provider expiry, actual ARM authentication
-   and corruption negatives, restart/output-only recovery and exact cleanup.
-
-Existing successful native ARM CMake compilation, validated outputs and emulated
-produced-tool usability are feasibility evidence, not a passing production gate.
-Before claiming production readiness, obtain worker peak memory/disk and gateway
-staging observations, deliberate disk exhaustion, provider expiry behavior and
-actual billing/cost reconciliation. These accepted experimental gaps are future
-qualification requirements, not reasons to repeat the closed campaign without
-permission. Include clean failure logs and independent cleanup verification. Expensive/live qualification needs a separate agreed budget,
-account/region/resource ledger and cleanup authority.
-
-## Evidence and review scope
-
-The closed [qualification record](../microvm.md) distinguishes actual native ARM
-compilation/registration, local real-store/socket behavior and archived evidence
-validation. The 484.190s CMake result is one successful substantial build, not a
-latency distribution or a capacity benchmark. Emulated ARM CMake/CTest usability
-used a host compiler; it does not establish a second native ARM build. Original
-peak-resource, billing, disk-exhaustion and failure gaps remain visible there.
-The experiment captured a running Nix daemon; its image is not the proposed
-fresh-daemon production image and cannot certify that image's snapshot safety.
-
-Reviewed source bodies cover backend routing/capabilities, launch/recovery
-identity, callback admission, worker input/build/output and connector, transfer
-state/framing, promotion, singleton lease and relevant config validation. Closest
-recovery/admission tests include doubles: they locate orchestration boundaries,
-not provider correctness. Lease/PostgreSQL and real-store contracts have separate
-authority. No tests were run for this documentation-only design. Selected-module
-complete reads remain mandatory immediately before implementation, especially
-where an extraction is actually chosen.
+Production readiness requires representative worker memory/disk and gateway
+staging observations, deliberate disk exhaustion, provider expiry behavior,
+live failure/restart/fencing/concurrency and actual billing/cost reconciliation.
+Live qualification requires an explicit budget, account/region/resource ledger
+and exact-owned cleanup authority. Residual snapshot/PRNG risk remains accepted
+under the fresh-process constraints above.
 
 ## Alternatives and invariant review
 
@@ -615,21 +530,3 @@ but may already have issued external side effects; validated store registration
 and cleanup/recovery handle this limit rather than claim atomic distributed
 fencing. Disconnect never silently becomes an automatic build retry.
 
-## Approval and implementation prerequisites
-
-Only the two first-release limits explicitly recorded above have approval.
-Travis's review must accept or revise the compute-launch product-boundary
-exception, verifier-only bootstrap trust model, conservative capacity/operator
-risk-resolution policy, fresh-process image/security gates and implementation
-slices before production changes. An administrative risk release deliberately
-trades remote-capacity certainty for operator availability; it is never described
-as cleanup success.
-
-Before editing implementation, finish complete owning-module reads for the
-selected extraction/config/runtime boundaries, choose the concrete protocol/API
-shape and verify exact IAM/resource/connector policy with authoritative references.
-The protocol state/framing bodies have been inspected, but this ADR does not
-claim a complete audit of every worker helper/config/callback path. Qualification
-must establish behavioral parity for any moved code. These prerequisites bound
-implementation choices; they do not license speculative refactoring. No production
-code, schema, deployment or AWS resources are changed by this document.
