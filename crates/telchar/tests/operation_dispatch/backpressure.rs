@@ -113,7 +113,7 @@ fn unread_frontend_backpressures_build_logs_and_disconnect_cleans_request() {
         .expect("frontend stderr")
         .read_to_string(&mut frontend_stderr)
         .expect("frontend stderr reads");
-    let daemon_output = fixture.daemon.wait_with_output().expect("daemon exits");
+    let daemon_output = fixture.wait_for_daemon();
     assert!(
         !frontend_stderr.contains("telchar-hostile-log-secret"),
         "{frontend_stderr}"

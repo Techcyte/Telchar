@@ -21,7 +21,7 @@ fn check_build_logs(level: &str) {
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf 'build-log-line\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
+            "#!/bin/sh\nset -eu\ncat > '{}'\nprintf '%16384s' '' | tr ' ' x >&2\nprintf '\\nbuild-log-line\\n' >&2\nprintf '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n",
             request_path.display()
         ),
     )
@@ -43,9 +43,20 @@ fn check_build_logs(level: &str) {
     write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
-    assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
-    assert_eq!(read_string(&mut output), "build-log-line\n");
-    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    let mut build_logs = String::new();
+    loop {
+        let frame = read_integer(&mut output);
+        if frame == STDERR_LAST {
+            break;
+        }
+        assert_eq!(frame, nix_worker_protocol::STDERR_NEXT);
+        build_logs.push_str(&read_string(&mut output));
+        assert!(build_logs.len() <= 16_384 + "\nbuild-log-line\n".len());
+    }
+    assert_eq!(
+        build_logs,
+        format!("{}\nbuild-log-line\n", "x".repeat(16_384))
+    );
     assert_eq!(read_integer(&mut output), 0, "Built status");
     assert_eq!(read_string(&mut output), "", "empty build error message");
     assert_eq!(read_integer(&mut output), 0, "times built");

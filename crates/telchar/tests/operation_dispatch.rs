@@ -267,7 +267,7 @@ impl FrontendFixture {
         daemon_command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .stderr(fs::File::create(root.join("daemon.stderr")).expect("daemon stderr creates"));
         daemon_command
             .env("TELCHAR_CONFIG", &config_path)
             .env("TELCHAR_DATABASE_URL", database.url())
@@ -343,6 +343,16 @@ impl FrontendFixture {
             .expect("frontend starts")
     }
 
+    fn wait_for_daemon(&mut self) -> std::process::Output {
+        let status = self.daemon.wait().expect("daemon exits");
+        let stderr = fs::read(self.root.join("daemon.stderr")).expect("daemon stderr reads");
+        std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr,
+        }
+    }
+
     fn finish(mut self) -> String {
         let mut frontend_stderr = String::new();
         self.frontend
@@ -362,7 +372,7 @@ impl FrontendFixture {
         } else {
             false
         };
-        let daemon_output = self.daemon.wait_with_output().expect("daemon exits");
+        let daemon_output = self.wait_for_daemon();
         let _ = fs::remove_dir_all(self.root);
         assert!(
             terminated || daemon_output.status.success(),

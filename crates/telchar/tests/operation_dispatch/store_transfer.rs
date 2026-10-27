@@ -476,7 +476,7 @@ fn truncated_add_multiple_to_store_reports_promotion_read_failure() {
         .expect("frontend stderr")
         .read_to_string(&mut frontend_stderr)
         .expect("frontend stderr reads");
-    let daemon_output = fixture.daemon.wait_with_output().expect("daemon exits");
+    let daemon_output = fixture.wait_for_daemon();
     let stderr = format!(
         "{frontend_stderr}{}",
         String::from_utf8_lossy(&daemon_output.stderr)
@@ -540,7 +540,7 @@ fn partial_add_multiple_to_store_failure_removes_staging_state() {
         .expect("frontend stderr")
         .read_to_string(&mut frontend_stderr)
         .expect("frontend stderr reads");
-    let daemon_output = fixture.daemon.wait_with_output().expect("daemon exits");
+    let daemon_output = fixture.wait_for_daemon();
     let stderr = format!(
         "{frontend_stderr}{}",
         String::from_utf8_lossy(&daemon_output.stderr)
