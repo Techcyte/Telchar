@@ -32,14 +32,8 @@ export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STO
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-find /nix/store -mindepth 1 -maxdepth 1 ! -name ".*" ! -name "*.lock" ! -type d \
-    -exec cp -a --no-preserve=ownership -t "$MICROVM_STORE_ROOT/store" -- {} +
-find /nix/store -mindepth 1 -maxdepth 1 ! -name ".*" -type d -print0 | while IFS= read -r -d "" path; do
-    target="$MICROVM_STORE_ROOT/store/${path##*/}"
-    mkdir "$target"
-    mount --rbind "$path" "$target"
-done
-mount --rbind "$MICROVM_STORE_ROOT/store" /nix/store
+mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"
+mount --bind "$MICROVM_STORE_ROOT/store" /nix/store
 nix-store --store local --init
 if test -n "${MICROVM_TEST_REGISTRATION:-}"; then
     nix-store --store local --load-db < "$MICROVM_TEST_REGISTRATION"

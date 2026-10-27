@@ -114,7 +114,7 @@ pub(super) fn build(root: &Path, socket: &Path, derivation: &[u8]) -> io::Result
     );
     let result = Command::new(&nix)
         .env("HOME", &home)
-        .env("NIX_SSHOPTS", format!("-p {port} -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes", key.display()))
+        .env("NIX_SSHOPTS", format!("-F /dev/null -p {port} -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes", key.display()))
         .args(["--offline", "--extra-experimental-features", "nix-command", "--store"])
         .arg(&client_store)
         .args(["build", "--no-link", "--print-out-paths", "--max-jobs", "0", "--builders"])
