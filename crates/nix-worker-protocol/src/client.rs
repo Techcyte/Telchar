@@ -229,6 +229,37 @@ impl WorkerBuildResult {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerOptions {
+    pub keep_failed: bool,
+    pub keep_going: bool,
+    pub fallback: bool,
+    pub verbosity: u32,
+    pub max_jobs: u32,
+    pub max_silent_time: u32,
+    pub verbose_build: bool,
+    pub build_cores: u32,
+    pub use_substitutes: bool,
+    pub overrides: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+impl Default for WorkerOptions {
+    fn default() -> Self {
+        Self {
+            keep_failed: false,
+            keep_going: false,
+            fallback: false,
+            verbosity: 0,
+            max_jobs: 1,
+            max_silent_time: 0,
+            verbose_build: true,
+            build_cores: 0,
+            use_substitutes: true,
+            overrides: Vec::new(),
+        }
+    }
+}
+
 pub struct WorkerClient<S> {
     stream: S,
     profile: WorkerClientProfile,
@@ -409,6 +440,42 @@ impl<S: Read + Write> WorkerClient<S> {
             download_size,
             nar_size,
         })
+    }
+
+    pub fn set_options(&mut self, options: &WorkerOptions) -> io::Result<()> {
+        if options.overrides.len() > 256
+            || options
+                .overrides
+                .iter()
+                .any(|(key, value)| key.is_empty() || key.len() > 16_384 || value.len() > 16_384)
+        {
+            return Err(protocol_client_error());
+        }
+        write_worker_integer_to(&mut self.stream, WorkerOperation::SetOptions.code())?;
+        for value in [
+            u64::from(options.keep_failed),
+            u64::from(options.keep_going),
+            u64::from(options.fallback),
+            u64::from(options.verbosity),
+            u64::from(options.max_jobs),
+            u64::from(options.max_silent_time),
+            1, // obsolete useBuildHook
+            if options.verbose_build { 0 } else { 7 },
+            0, // obsolete log type
+            0, // obsolete print build trace
+            u64::from(options.build_cores),
+            u64::from(options.use_substitutes),
+        ] {
+            write_worker_integer_to(&mut self.stream, value)?;
+        }
+        write_worker_integer_to(&mut self.stream, options.overrides.len() as u64)?;
+        for (key, value) in &options.overrides {
+            write_worker_byte_string_to(&mut self.stream, key)?;
+            write_worker_byte_string_to(&mut self.stream, value)?;
+        }
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)
+            .map_err(|_| io::Error::other("Nix daemon SetOptions failed"))
     }
 
     pub fn build_derivation(
