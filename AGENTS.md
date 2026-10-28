@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker` and `lib.microvmAwsContext { trust = PUBLIC_DER_PATH; }` provide the same-source ARM worker/context. `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker`, `packages.aarch64-linux.telchar-microvm-execution-oci` and `lib.microvmAwsContext` provide the same-source ARM worker, OCI image and AWS context. MicroVM trust is mounted at runtime, never supplied during image construction. `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
@@ -142,7 +142,7 @@ Important distinctions:
 - `nixosModules.telchar`/`default` is the only service module. PostgreSQL provisioning, host trusted-user changes, retained GC-root directories, SSH ingress, and credential acquisition belong to the deployment. `lib.sshForcedCommand` exposes the authenticated stdio adapter. `examples/nixos/` contains explicit host and AWS/Vault compositions; none are public module exports. Deployment-owned tests live in telchar-gateway. Nomad backend token consumption/reload, submission, callbacks, and recovery remain product tests in Telchar.
 - SIGHUP supports transactional static SSH inventory changes and contents-only rotation of existing Nomad token files, not arbitrary configuration hot reload. Existing executions retain exact selected targets.
 - `telchar operator` is read-only, but not uniformly offline: `config-check` needs no database, other commands need an existing schema, and `backends` actively probes SSH/Nix readiness. Do not use daemon startup as an inspection command; it migrates and acquires ownership.
-- `nix/packages.nix` defines packages and four OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.
+- `nix/packages.nix` defines packages and four x86 OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. `nix/microvm-execution.nix` defines the ARM64 microVM execution archive; native ARM CI/release jobs build, scan and publish it. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.
 - Versions use `YYYY.M.PATCH`. `scripts/prepare-release.py` coordinates the four crate manifests, workspace and fuzz lockfiles, and `nix/packages.nix`; do not bump only one authority. Publication is manually approved and exact-version-only, with no moving `latest` tag. Do not publish or run version-changing release tooling for routine development.
 
 Keep this guide focused on stable boundaries and verified commands. Update it when those change; keep detailed designs, configuration examples, and compatibility matrices in their owning documents.

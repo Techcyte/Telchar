@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,6 +39,52 @@ class PublishOciImagesTest(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    def test_images_are_published_with_selected_tag(self) -> None:
+        cases = [(system, tag) for system in ("x86_64-linux", "aarch64-linux")
+                 for tag in ("main", self.release_version)]
+        for system, tag in cases:
+            images = (["telchar-microvm-execution"] if system == "aarch64-linux" else
+                      ["telchar", "telchar-nomad-worker", "telchar-nix-daemon", "telchar-ssh-ingress"])
+            with self.subTest(system=system, tag=tag), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                calls = root / "calls"
+                nix = root / "nix"
+                nix.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import json, os, sys\n"
+                    "with open(os.environ['CAPTURED_CALLS'], 'a') as output:\n"
+                    "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                    "if sys.argv[1] == 'eval':\n"
+                    "    print(os.environ['PACKAGE_VERSION'], end='')\n"
+                    "elif sys.argv[1] == 'build':\n"
+                    "    print('/isolated/microvm.tar.gz')\n"
+                    "elif 'login' in sys.argv:\n"
+                    "    sys.stdin.read()\n"
+                )
+                nix.chmod(0o755)
+                result = subprocess.run(
+                    [PUBLISH], cwd=ROOT, text=True, capture_output=True,
+                    env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                         "CAPTURED_CALLS": str(calls), "PACKAGE_VERSION": self.release_version,
+                         "IMAGE_TAG": tag, "IMAGE_SYSTEM": system,
+                         "GITHUB_ACTOR": "test-actor", "GHCR_TOKEN": "test-token"},
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual(
+                    [command for command in commands if command[0] == "build"],
+                    [["build", "--no-link", "--print-out-paths",
+                      f".#packages.{system}.{image}-oci"] for image in images],
+                )
+                self.assertEqual(
+                    [command for command in commands if "copy" in command],
+                    [["develop", "--command", "skopeo", "copy",
+                      "docker-archive:/isolated/microvm.tar.gz",
+                      f"docker://ghcr.io/techcyte/{image}:{tag}"] for image in images],
+                )
 
     def test_main_tag_is_accepted(self) -> None:
         result = self.run_publisher("main")

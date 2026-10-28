@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -32,7 +33,7 @@ class ReleaseNotesTests(unittest.TestCase):
                 env={
                     "CAPTURED_ARGUMENTS": str(arguments),
                     "GITHUB_SHA": "0123456789abcdef",
-                    "PATH": f"{root}:/usr/bin:/bin",
+                    "PATH": f"{root}:{os.environ['PATH']}",
                     "RELEASE_VERSION": "2026.9.1",
                 },
             )
@@ -44,6 +45,7 @@ class ReleaseNotesTests(unittest.TestCase):
                 "OCI images:\n"
                 "- ghcr.io/techcyte/telchar:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-nomad-worker:2026.9.1\n"
+                "- ghcr.io/techcyte/telchar-microvm-execution:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-nix-daemon:2026.9.1\n"
                 "- ghcr.io/techcyte/telchar-ssh-ingress:2026.9.1",
             )

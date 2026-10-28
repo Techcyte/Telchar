@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+TRUST = ROOT / "crates/telchar-nomad-worker/tests/fixtures/microvm-cert.der"
 spec = importlib.util.spec_from_file_location("microvm_execution", ROOT / "deploy/microvm/execution.py")
 assert spec is not None and spec.loader is not None
 execution = importlib.util.module_from_spec(spec)
@@ -29,7 +30,7 @@ class HookTests(unittest.TestCase):
             daemon = [sys.executable, "-c", "import time; time.sleep(30)"]
             ready = [sys.executable, "-c", "raise SystemExit(0)"]
             worker = [sys.executable, "-c", f"import pathlib; pathlib.Path({str(marker)!r}).open('a').write('run\\n')"]
-            state = execution.ExecutionState(daemon, worker, ready, binding)
+            state = execution.ExecutionState(daemon, worker, ready, binding, TRUST)
             self.assertFalse(binding.exists())
             self.assertFalse(marker.exists())
             payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
@@ -55,7 +56,7 @@ class HookTests(unittest.TestCase):
             state = execution.ExecutionState(
                 [sys.executable, "-c", "import time; time.sleep(30)"],
                 [sys.executable, "-c", f"import pathlib,time; pathlib.Path({str(marker)!r}).touch(); time.sleep(30)"],
-                [sys.executable, "-c", "raise SystemExit(0)"], binding)
+                [sys.executable, "-c", "raise SystemExit(0)"], binding, TRUST)
             payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                        "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 10}
             hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
@@ -109,7 +110,7 @@ class HookTests(unittest.TestCase):
                 script.chmod(0o700)
                 scripts[name] = str(script)
             trust = root / "trust.der"
-            trust.write_bytes(b"image-owned-trust")
+            trust.write_bytes(b"runtime-trust")
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
@@ -171,7 +172,7 @@ class HookTests(unittest.TestCase):
     def test_invalid_hook_cannot_write_binding_or_start_processes(self):
         with tempfile.TemporaryDirectory() as directory:
             binding = Path(directory) / "execution.json"
-            state = execution.ExecutionState([], [], [], binding)
+            state = execution.ExecutionState([], [], [], binding, TRUST)
             for payload in [None, {}, {"microvmId": "id", "runHookPayload": "{}"},
                             {"microvmId": "id", "runHookPayload": " " * 16385}]:
                 with self.assertRaises(ValueError):
@@ -183,7 +184,7 @@ class HookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binding = Path(directory) / "execution.json"
             binding.write_text("operator-owned")
-            state = execution.ExecutionState([], [], [], binding)
+            state = execution.ExecutionState([], [], [], binding, TRUST)
             payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                        "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
             with self.assertRaises(FileExistsError):

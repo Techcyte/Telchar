@@ -54,13 +54,10 @@
 
       lib = {
         sshForcedCommand = import ./nix/ssh-forced-command.nix;
-        microvmAwsContext =
-          { trust }:
-          import ./nix/microvm-aws-context.nix {
-            pkgs = armPkgs;
-            worker = self.packages.aarch64-linux.telchar-nomad-worker;
-            inherit trust;
-          };
+        microvmAwsContext = import ./nix/microvm-aws-context.nix {
+          pkgs = armPkgs;
+          worker = self.packages.aarch64-linux.telchar-nomad-worker;
+        };
       };
 
       packages.aarch64-linux = {
@@ -72,6 +69,16 @@
           })
           telchar-nomad-worker
           ;
+        telchar-microvm-execution-oci = import ./nix/microvm-execution.nix {
+          pkgs = armPkgs;
+          worker = self.packages.aarch64-linux.telchar-nomad-worker;
+        };
+      };
+
+      checks.aarch64-linux.oci-images = import ./nix/tests/microvm-image.nix {
+        pkgs = armPkgs;
+        worker = self.packages.aarch64-linux.telchar-nomad-worker;
+        image = self.packages.aarch64-linux.telchar-microvm-execution-oci;
       };
 
       packages.${system} = import ./nix/packages.nix {
@@ -139,6 +146,14 @@
           inherit (import ./nix/checks/nixos/static-ssh.nix args) nixos-static-ssh-fixture;
           inherit (import ./nix/checks/nixos/artifacts.nix args) nixos-artifacts;
         };
+
+      devShells.aarch64-linux.default = armPkgs.mkShell {
+        packages = [
+          armPkgs.skopeo
+          armPkgs.python3
+          armPkgs.util-linux
+        ];
+      };
 
       devShells.${system}.default = pkgs.mkShell {
         TELCHAR_NIX = "${pkgs.nix}/bin/nix";

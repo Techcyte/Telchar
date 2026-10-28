@@ -1,5 +1,5 @@
 # AWS image-build context; runtime and restored-snapshot qualification required.
-{ pkgs, worker, trust }:
+{ pkgs, worker }:
 assert pkgs.stdenv.hostPlatform.system == "aarch64-linux";
 let
   policy = import ./microvm-store.nix { inherit pkgs; };
@@ -9,7 +9,14 @@ let
   ready = pkgs.writeShellScript "microvm-ready" ''
     exec ${pkgs.nix}/bin/nix --offline store ping --store daemon
   '';
-  closure = pkgs.closureInfo { rootPaths = [ pkgs.nix worker trust daemon ready ]; };
+  closure = pkgs.closureInfo {
+    rootPaths = [
+      pkgs.nix
+      worker
+      daemon
+      ready
+    ];
+  };
   entrypoint = pkgs.writeText "microvm-entrypoint" ''
     #!/bin/sh
     set -eu
@@ -24,7 +31,7 @@ let
       --listen 0.0.0.0 --daemon ${daemon} --ready ${ready} \
       --worker ${worker}/bin/telchar-microvm-worker \
       --binding /run/telchar-microvm/execution.json \
-      --trust ${trust} --store unix:///nix/var/nix/daemon-socket/socket
+      --trust /run/telchar-microvm/trust.der --store unix:///nix/var/nix/daemon-socket/socket
   '';
 in
 pkgs.runCommand "microvm-aws-context" { } ''

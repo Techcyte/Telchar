@@ -135,7 +135,8 @@ Stock-client tests that require a shared canonical store can run through the
 [isolated canonical-store command runner](tests/canonical-store.md), without
 using the host Nix daemon or changing its store registration.
 
-The flake currently publishes and tests `x86_64-linux` outputs only.
+Gateway outputs target `x86_64-linux`. The microVM worker and execution image
+also have native `aarch64-linux` packages and image checks.
 
 Useful packages:
 
@@ -150,10 +151,14 @@ Reproducible OCI image archives are also flake packages:
 nix build .#telchar-oci
 nix build .#telchar-nix-daemon-oci
 nix build .#telchar-nomad-worker-oci
+nix build .#packages.aarch64-linux.telchar-microvm-execution-oci
 nix build .#telchar-ssh-ingress-oci
 ```
 
-OCI images are published as `ghcr.io/techcyte/telchar`, `telchar-nomad-worker`, `telchar-nix-daemon`, and `telchar-ssh-ingress`. Use an exact `YYYY.M.PATCH` tag for a release or `main` for the latest unreleased main-branch build.
+OCI images are published as `ghcr.io/techcyte/telchar`, `telchar-nomad-worker`, `telchar-microvm-execution` (ARM64), `telchar-nix-daemon`, and `telchar-ssh-ingress`. Use an exact `YYYY.M.PATCH` tag for a release or `main` for the latest unreleased main-branch build.
+
+The microVM image requires a runtime-mounted public gateway trust certificate;
+see [microVM runtime packaging](docs/microvm.md#same-source-arm-worker-and-image-context).
 
 The gateway and worker images are application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. See the [operator guide](docs/operations.md) for deployment requirements and the [Nomad guide](docs/nomad.md) for worker configuration.
 

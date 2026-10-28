@@ -130,28 +130,38 @@ version as `packages.x86_64-linux.telchar`. Build on an ARM64 Linux builder:
 nix build --no-link .#packages.aarch64-linux.telchar-nomad-worker
 ```
 
-`lib.microvmAwsContext { trust = PUBLIC_DER_PATH; }` constructs the AWS build
-context from that worker and the pinned Nix closure. Trust is required explicitly;
-there is no fixture-certificate default. From a Git checkout of the selected
-revision, with a public DER file outside the repository:
+The ARM64 OCI execution image uses the coordinated release version and is
+published as `ghcr.io/techcyte/telchar-microvm-execution`. Build its archive with:
+
+```sh
+nix build --no-link .#packages.aarch64-linux.telchar-microvm-execution-oci
+```
+
+`lib.microvmAwsContext` constructs the AWS build context from that worker and the
+pinned Nix closure. From a Git checkout of the selected revision:
 
 ```sh
 nix build --impure --no-link --print-out-paths --expr '
   let flake = builtins.getFlake "git+file:///absolute/path/to/telchar-checkout";
-  in flake.lib.microvmAwsContext {
-    trust = builtins.path {
-      path = /absolute/path/to/callback-public.der;
-      name = "microvm-callback-public.der";
-    };
-  }'
+  in flake.lib.microvmAwsContext'
 ```
 
-The context contains its Dockerfile and worker/Nix runtime closure, not a callback
-server or private key. Never supply private material: explicit trust becomes
-public Nix-store and image content. Operators own certificate identity, validity,
-TLS termination and rotation. A trust change requires a corresponding image and
-gateway rollout; use an exact image version and retain the preceding artifacts
-for rollback.
+Both compositions require deployment to mount a public DER-encoded gateway TLS
+trust certificate read-only at `/run/telchar-microvm/trust.der`. No certificate
+is an image-build input or image content. Never mount a private key. Operators
+own certificate identity, validity, TLS termination and rotation. Certificate
+rotation replaces the runtime mount and starts a fresh execution; it does not
+require rebuilding the software image. There is no insecure or fixture-trust
+fallback. Missing, empty or oversized trust prevents readiness and run admission;
+the worker validates DER parsing, hostname and TLS certificate trust before
+connecting. `/run/telchar-microvm` is root-only and also holds the per-execution
+binding; mount the certificate file, not a directory that hides that binding.
+
+The AWS context contains its Dockerfile and worker/Nix runtime closure, not a
+callback server or private key. The OCI image is a dedicated Linux execution
+runtime, not the AWS base image or an AWS snapshot. Deployment owns runtime
+certificate provisioning and AWS image construction. Use exact image versions
+and retain preceding artifacts for rollback.
 
 Derivation evaluation establishes source/version correspondence, not successful
 ARM compilation or runtime qualification. Image construction, selected-artifact
@@ -348,11 +358,11 @@ The unmodified Nix/worker closure and mandatory sandbox policy are included;
 Nix daemon and worker start only after an accepted run hook. No custom OpenSSL
 patch is used. Context construction is not full OCI or AWS runtime qualification.
 
-`nix/microvm-execution.nix` provides a separate ARM64-only dedicated execution
-composition with the same explicit worker and public DER trust inputs. It is
-tagged `unqualified`, not exported as a production image. The binding lives
-under root-only `/run/telchar-microvm`. Lifecycle `ready`, `validate`, `suspend`
-and `resume` accept only idle state; completed or failed execution cannot become
+`nix/microvm-execution.nix` provides the ARM64-only dedicated execution OCI image
+with a runtime-mounted public DER trust certificate and the coordinated worker
+version. Registry publication is not AWS runtime or snapshot qualification. The
+binding lives under root-only `/run/telchar-microvm`. Lifecycle `ready`,
+`validate`, `suspend` and `resume` accept only idle state; completed or failed execution cannot become
 a reusable snapshot through those hooks. That guard does not erase secrets from
 memory or establish provider snapshot behavior.
 

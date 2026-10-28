@@ -9,8 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.version }}
@@ -19,6 +18,9 @@ concurrency:
 jobs:
   publish:
     name: Publish GitHub and OCI release
+    permissions:
+      contents: write
+      packages: write
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
@@ -57,7 +59,8 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           tag="v$RELEASE_VERSION"
-          notes=$(printf 'OCI images:\n- ghcr.io/techcyte/telchar:%s\n- ghcr.io/techcyte/telchar-nomad-worker:%s\n- ghcr.io/techcyte/telchar-nix-daemon:%s\n- ghcr.io/techcyte/telchar-ssh-ingress:%s' \
+          notes=$(printf 'OCI images:\n- ghcr.io/techcyte/telchar:%s\n- ghcr.io/techcyte/telchar-nomad-worker:%s\n- ghcr.io/techcyte/telchar-microvm-execution:%s\n- ghcr.io/techcyte/telchar-nix-daemon:%s\n- ghcr.io/techcyte/telchar-ssh-ingress:%s' \
+            "$RELEASE_VERSION" \
             "$RELEASE_VERSION" \
             "$RELEASE_VERSION" \
             "$RELEASE_VERSION" \
@@ -76,8 +79,54 @@ jobs:
           IMAGE_TAG: ${{ inputs.version }}
         run: scripts/publish-oci-images.sh
 
+  microvm:
+    name: Publish ARM64 MicroVM image
+    permissions:
+      contents: read
+      packages: write
+    needs: publish
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Allow test namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build MicroVM image contract
+        run: nix build -L --no-link .#checks.aarch64-linux.oci-images
+
+      - name: Scan MicroVM image
+        env:
+          IMAGE_SYSTEM: aarch64-linux
+        run: scripts/check-oci-images.sh
+
+      - name: Publish release images
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ inputs.version }}
+          IMAGE_SYSTEM: aarch64-linux
+        run: scripts/publish-oci-images.sh
+
+  release:
+    name: Publish GitHub release
+    permissions:
+      contents: write
+    needs: [publish, microvm]
+    runs-on: ubuntu-26.04
+    steps:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: gh release edit "v$RELEASE_VERSION" --draft=false

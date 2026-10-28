@@ -15,6 +15,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  microvm:
+    name: ARM64 MicroVM image
+    needs: rust
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Allow test namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Test MicroVM runtime trust and lifecycle
+        run: |
+          nix develop -c unshare --user --map-root-user \
+            --mount --pid --fork --mount-proc \
+            python3 -m unittest discover -s tests/microvm -p test_hook.py -v
+          nix develop -c python3 tests/microvm/test_image_readiness.py
+
+      - name: Build MicroVM image contract
+        run: nix build -L --no-link .#checks.aarch64-linux.oci-images
+
+      - name: Scan MicroVM image
+        env:
+          IMAGE_SYSTEM: aarch64-linux
+        run: scripts/check-oci-images.sh
+
+      - name: Publish main images
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: main
+          IMAGE_SYSTEM: aarch64-linux
+        run: scripts/publish-oci-images.sh
+
   rust:
     name: Rust checks and tests
     runs-on: ubuntu-26.04
