@@ -23,8 +23,6 @@ use telchar::nomad::backend::{
 };
 use telchar::service::config::ServiceConfig;
 
-mod support;
-
 static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn gateway_store_endpoint() -> telchar::store::daemon::GatewayStoreEndpoint {

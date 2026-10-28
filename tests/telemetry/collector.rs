@@ -82,6 +82,66 @@ impl Collector {
             .collect()
     }
 
+    pub fn assert_counter(&self, name: &str, outcome: &str, expected: i64) {
+        use opentelemetry_proto::tonic::metrics::v1::{metric::Data, number_data_point::Value};
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let value = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .filter(|metric| metric.name == name)
+            .filter_map(|metric| match &metric.data {
+                Some(Data::Sum(sum)) => Some(sum),
+                _ => None,
+            })
+            .flat_map(|sum| &sum.data_points)
+            .find(|point| Self::has_attribute(&point.attributes, "outcome", outcome))
+            .expect("counter outcome exported");
+        assert_eq!(value.value, Some(Value::AsInt(expected)));
+        assert_eq!(value.attributes.len(), 1, "unexpected counter labels");
+    }
+
+    pub fn assert_histogram_sample(&self, name: &str, outcome: &str, minimum: f64) {
+        self.assert_histogram_attributes(name, &[("outcome", outcome)], minimum);
+    }
+
+    pub fn assert_histogram_attributes(
+        &self,
+        name: &str,
+        attributes: &[(&str, &str)],
+        minimum: f64,
+    ) {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let point = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .filter(|metric| metric.name == name)
+            .filter_map(|metric| match &metric.data {
+                Some(Data::Histogram(histogram)) => Some(histogram),
+                _ => None,
+            })
+            .flat_map(|histogram| &histogram.data_points)
+            .find(|point| {
+                attributes
+                    .iter()
+                    .all(|(key, value)| Self::has_attribute(&point.attributes, key, value))
+            })
+            .expect("histogram attributes exported");
+        assert!(point.count > 0);
+        assert!(point.max.expect("maximum exported") >= minimum);
+        assert_eq!(
+            point.attributes.len(),
+            attributes.len(),
+            "unexpected histogram labels"
+        );
+    }
+
     pub fn assert_metric_attributes_are_bounded(&self) {
         let forbidden = [
             "request_id",
@@ -91,6 +151,8 @@ impl Collector {
             "shared_build_key",
             "execution_id",
             "allocation_id",
+            "intent_id",
+            "provider_id",
             "quota_subject",
             "endpoint",
             "namespace",

@@ -1,0 +1,1259 @@
+use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+use telchar::microvm::session::Limits;
+use telchar::nomad::protocol::BuildOutcome;
+use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
+
+mod microvm_daemon;
+
+#[allow(dead_code)]
+#[path = "../../../tests/telemetry/collector.rs"]
+mod collector;
+
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/microvm/canonical-store.sh"
+);
+
+fn provider_response(
+    binding: Option<std::sync::mpsc::SyncSender<serde_json::Value>>,
+) -> (telchar::microvm::Provider, std::thread::JoinHandle<()>) {
+    let attest = binding.is_some();
+    let (endpoint, response) = provider_server(binding);
+    provider_client(endpoint, response, attest)
+}
+
+#[path = "../../../tests/microvm/image.rs"]
+mod image;
+
+fn provider_server(
+    binding: Option<std::sync::mpsc::SyncSender<serde_json::Value>>,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let attest = binding.is_some();
+    let restart = matches!(
+        std::env::var("MICROVM_TEST_CASE").as_deref(),
+        Ok("configured-daemon-restart"
+            | "configured-daemon-crash"
+            | "configured-daemon-output-recovery")
+    );
+    let cleanup = std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("configured-daemon-crash");
+    let response = std::thread::spawn(move || {
+        let exchanges = if cleanup {
+            vec![true, false, true, false, false, false]
+        } else if restart {
+            vec![true, false, true]
+        } else if attest {
+            vec![true, false]
+        } else {
+            vec![false]
+        };
+        for (index, identity) in exchanges.into_iter().enumerate() {
+            if restart && index == 2 {
+                let barrier =
+                    std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap())
+                        .join("replacement-starting");
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while !barrier.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "replacement startup barrier deadline"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "provider exchange {index} deadline (identity={identity})"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("provider accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+                assert!(header.len() < 32768);
+            }
+            let header = String::from_utf8(header).unwrap();
+            let length: usize = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            assert!(length < 32768);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            assert!(
+                header
+                    .to_ascii_lowercase()
+                    .contains("authorization: aws4-hmac-sha256 credential=fixture-key/")
+            );
+            if cleanup && index >= 3 {
+                let method = if index == 4 { "DELETE" } else { "GET" };
+                assert!(header.starts_with(&format!(
+                    "{method} /2025-09-09/microvms/microvm-build HTTP/1.1"
+                )));
+                assert!(body.is_empty());
+                let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
+                let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+                assert!(control.query_one("SELECT reservation_released_at IS NULL FROM microvm_launches WHERE provider_id = 'microvm-build'", &[]).unwrap().get::<_, bool>(0), "capacity released before terminal observation");
+                let state = if index == 3 { "RUNNING" } else { "TERMINATED" };
+                let body = if index == 4 {
+                    "{}".to_owned()
+                } else {
+                    serde_json::json!({"microvmId":"microvm-build", "state":state, "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1, "terminatedAt":2}).to_string()
+                };
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                continue;
+            }
+            if identity {
+                assert!(header.starts_with("POST / "));
+                assert!(
+                    String::from_utf8(body)
+                        .unwrap()
+                        .contains("Action=GetCallerIdentity")
+                );
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                if std::env::var("MICROVM_TEST_CASE")
+                    .is_ok_and(|case| case.starts_with("configured-daemon"))
+                {
+                    image::serve_image(
+                        &listener,
+                        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                    );
+                }
+                continue;
+            }
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if let Some(binding) = &binding {
+                let payload: serde_json::Value =
+                    serde_json::from_str(request["runHookPayload"].as_str().unwrap()).unwrap();
+                binding.send(payload).unwrap();
+            } else {
+                assert_eq!(request["clientToken"], "build-token");
+            }
+            let body = serde_json::json!({"microvmId":"microvm-build", "state":"PENDING", "endpoint":"https://unused.invalid", "imageArn":"fixture", "imageVersion":"1", "maximumDurationInSeconds":60, "startedAt":1}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    (endpoint, response)
+}
+
+fn provider_client(
+    endpoint: String,
+    response: std::thread::JoinHandle<()>,
+    attest: bool,
+) -> (telchar::microvm::Provider, std::thread::JoinHandle<()>) {
+    let credentials =
+        aws_credential_types::Credentials::new("fixture-key", "fixture-secret", None, None, "test");
+    let config = aws_sdk_lambdamicrovms::Config::builder()
+        .behavior_version_latest()
+        .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
+        .credentials_provider(credentials.clone())
+        .endpoint_url(&endpoint)
+        .build();
+    let provider = if attest {
+        let identity = aws_sdk_sts::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_sts::config::Region::new("us-west-2"))
+            .credentials_provider(credentials.clone())
+            .endpoint_url(endpoint)
+            .build();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(telchar::microvm::Provider::verify_account(
+                config,
+                identity,
+                aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
+                "116392764028",
+                Duration::from_secs(2),
+            ))
+            .unwrap()
+    } else {
+        telchar::microvm::Provider::new(config, Duration::from_secs(2)).unwrap()
+    };
+    (provider, response)
+}
+
+#[test]
+fn dedicated_worker_builds_and_returns_registered_output() {
+    if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
+            run_isolated_build("configured-daemon-client-derivation");
+            return;
+        }
+        for case in [
+            "single",
+            "multiple",
+            "cancelled",
+            "fenced",
+            "configured",
+            "configured-multiple",
+            "configured-failure",
+            "configured-cancelled",
+            "configured-building-cancelled",
+            "configured-building-deadline",
+            "configured-fenced",
+            "configured-corrupt-output",
+            "configured-fixed-output",
+            "configured-daemon",
+            "configured-daemon-multiple",
+            "configured-daemon-fixed-output",
+            "configured-daemon-recursive-output",
+            "configured-daemon-client-derivation",
+            "configured-daemon-failure",
+            "configured-daemon-corrupt-output",
+            "configured-daemon-coalesced",
+            "configured-daemon-detached",
+            "configured-daemon-restart",
+            "configured-daemon-crash",
+            "configured-daemon-output-recovery",
+        ] {
+            run_isolated_build(case);
+        }
+        return;
+    }
+    run_build();
+}
+
+fn run_isolated_build(case: &str) {
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let output = Command::new("bash")
+        .env("MICROVM_TEST_DATABASE", database.url())
+        .env("MICROVM_TEST_CASE", case)
+        .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+        .arg(FIXTURE)
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "dedicated_worker_builds_and_returns_registered_output",
+            "--test-threads=1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_build() {
+    let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    let multiple = matches!(
+        case.as_str(),
+        "multiple" | "configured-multiple" | "configured-daemon-multiple"
+    );
+    let configured = case.starts_with("configured");
+    let build_failure = matches!(
+        case.as_str(),
+        "configured-failure" | "configured-daemon-failure"
+    );
+    let corrupt_output = matches!(
+        case.as_str(),
+        "configured-corrupt-output" | "configured-daemon-corrupt-output"
+    );
+    let client_derivation = case == "configured-daemon-client-derivation";
+    let recursive_output = case == "configured-daemon-recursive-output";
+    let fixed_output = client_derivation
+        || recursive_output
+        || matches!(
+            case.as_str(),
+            "configured-fixed-output" | "configured-daemon-fixed-output"
+        );
+    let native_system = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    let system = if configured {
+        "aarch64-linux"
+    } else {
+        &native_system
+    };
+    let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
+    let endpoint =
+        GatewayStoreEndpoint::parse(&std::env::var("MICROVM_TEST_STORE_URI").unwrap()).unwrap();
+    let source = root.join("input");
+    std::fs::write(&source, b"dedicated-worker-success\n").unwrap();
+    let added = Command::new("nix-store")
+        .args(["--store", "local", "--add"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    assert!(added.stderr.is_empty());
+    let input = String::from_utf8(added.stdout).unwrap().trim().to_owned();
+    let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
+    assert!(store.query_path_info(input.as_bytes()).unwrap().is_some());
+    let hash = if recursive_output {
+        let result = Command::new("nix-store")
+            .args(["--dump", &input])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&result.stdout)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    } else {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(b"dedicated-worker-success\n")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let fixed_path;
+    let output = if fixed_output {
+        let mut command = Command::new("nix-store");
+        command.arg("--print-fixed-path");
+        if recursive_output {
+            command.arg("--recursive");
+        }
+        let result = command
+            .args(["sha256", &hash, "dedicated"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stderr.is_empty());
+        fixed_path = String::from_utf8(result.stdout).unwrap();
+        fixed_path.trim()
+    } else {
+        "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output"
+    };
+    let secondary = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dedicated-reference";
+    let outputs = if multiple {
+        vec![output, secondary]
+    } else {
+        vec![output]
+    };
+    let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv";
+    assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+    let extra_script = if multiple {
+        "; printf '%s' \"$out\" > \"$reference\""
+    } else {
+        ""
+    };
+    let extra_output = if multiple {
+        format!(r#",("reference","{secondary}","","")"#)
+    } else {
+        String::new()
+    };
+    let extra_environment = if multiple {
+        format!(r#",("reference","{secondary}")"#)
+    } else {
+        String::new()
+    };
+    let building_interrupted = matches!(
+        case.as_str(),
+        "configured-building-cancelled" | "configured-building-deadline"
+    );
+    let script = if building_interrupted {
+        {
+            let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|path| path.join("sleep"))
+                .find(|path| path.is_file())
+                .expect("sleep available in development shell");
+            format!(
+                "printf 'builder-executing\\n' >&2; {} 10; printf 'unexpected completion' > \"$out\"",
+                sleep.display()
+            )
+        }
+    } else if build_failure {
+        "exit 42".to_owned()
+    } else {
+        format!("read -r value < {input}; printf '%s\\n' \"$value\" > \"$out\"{extra_script}")
+    };
+    let runtime = std::env::var_os("MICROVM_TEST_RUNTIME");
+    let compiler = std::env::var("MICROVM_TEST_COMPILER").ok();
+    assert!(compiler.is_none() || runtime.is_some());
+    let script = if let Some(compiler) = &compiler {
+        assert!(client_derivation, "compiler workload requires stock client");
+        format!(
+            r#"set -e
+printf '#include <stdio.h>\n' > workload.c
+for ((i=0; i<512; i++)); do
+    printf 'unsigned f%s(unsigned x) {{ return x + %s; }}\n' "$i" "$i" >> workload.c
+done
+printf 'int main(void) {{ unsigned sum = 0;\n' >> workload.c
+for ((i=0; i<512; i++)); do
+    printf 'sum += f%s(%s);\n' "$i" "$i" >> workload.c
+done
+printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nreturn 0;\n}}\n' >> workload.c
+{compiler} -O2 -Wall -Wextra -Werror workload.c -o workload
+./workload > "$out""#
+        )
+    } else {
+        script
+    };
+    let builder = if runtime.is_some() {
+        std::env::var("MICROVM_TEST_BUILDER").expect("packaged runtime builder")
+    } else {
+        "/bin/sh".to_owned()
+    };
+    let builder_input = if runtime.is_some() {
+        let package = std::path::Path::new(&builder)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        format!(",{}", serde_json::to_string(package).unwrap())
+    } else {
+        String::new()
+    };
+    let script = if runtime.is_some() {
+        format!(
+            "set -e; test \"$EUID\" != 0; test ! -e /run/telchar-microvm/execution.json; test ! -e /opt/telchar/execution.py; printf 'sandbox-builder-executing\\n' >&2; {script}"
+        )
+    } else {
+        script
+    };
+    let script = serde_json::to_string(&script).unwrap();
+    let (hash_algorithm, output_hash) = if recursive_output {
+        ("r:sha256", hash.as_str())
+    } else if fixed_output {
+        ("sha256", hash.as_str())
+    } else {
+        ("", "")
+    };
+    let derivation = format!(
+        r#"Derive([("out","{output}","{hash_algorithm}","{output_hash}"){extra_output}],[],["{input}"{builder_input}],"{system}","{builder}",["-c",{script}],[("out","{output}"){extra_environment},("system","{system}"),("builder","{builder}"),("name","dedicated")])"#
+    );
+    let (drv, derivation) = if client_derivation {
+        let builder_dependency = if runtime.is_some() {
+            format!(
+                "builderPackage = builtins.storePath {};",
+                serde_json::to_string(
+                    std::path::Path::new(&builder)
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                )
+                .unwrap()
+            )
+        } else {
+            String::new()
+        };
+        let compiler_dependency = compiler.as_ref().map_or_else(String::new, |compiler| {
+            let package = std::path::Path::new(compiler)
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap();
+            format!(
+                "compilerPackage = builtins.storePath {};",
+                serde_json::to_string(package).unwrap()
+            )
+        });
+        let expression = format!(
+            r#"derivation {{ name = "dedicated"; system = "{system}"; builder = "{builder}"; {builder_dependency} {compiler_dependency} args = [ "-c" {script} ]; input = builtins.storePath "{input}"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "{hash}"; }}"#
+        );
+        let result = Command::new("nix-instantiate")
+            .args(["--store", "local", "--expr", &expression, "--add-root"])
+            .arg(root.join("client-derivation"))
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        let path = std::fs::canonicalize(String::from_utf8(result.stdout).unwrap().trim())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = Command::new("nix-store")
+            .args(["--store", "local", "--query", "--outputs", &path])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        assert_eq!(String::from_utf8(result.stdout).unwrap().trim(), output);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        (path, contents)
+    } else {
+        (drv.to_owned(), derivation)
+    };
+    let drv = drv.as_str();
+    let request = telchar::build::BuildRequest::from_stored_derivation(
+        drv.as_bytes(),
+        derivation.as_bytes(),
+        &[telchar::backend::BackendTarget::new(
+            "fixture",
+            telchar::backend::BackendKind::Local,
+            system,
+            [] as [&str; 0],
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
+    telchar::persistence::migrate(&database).unwrap();
+    let local = if configured {
+        telchar::backend::BackendKind::Microvm
+    } else {
+        telchar::backend::BackendKind::Local
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway_address = gateway.local_addr().unwrap();
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    let ownership_lost = matches!(case.as_str(), "fenced" | "configured-fenced");
+    let (binding_sender, binding_receiver) = std::sync::mpsc::sync_channel(1);
+    let gateway_thread = if case.starts_with("configured-daemon") {
+        drop(gateway);
+        let root = root.clone();
+        let database = database.clone();
+        let endpoint = endpoint.clone();
+        std::thread::spawn(move || {
+            microvm_daemon::run(
+                &root,
+                &database,
+                &endpoint,
+                address,
+                gateway_address,
+                &request,
+                binding_sender,
+            )
+        })
+    } else {
+        telchar::persistence::claim_shared_build_with_request(
+            &database,
+            drv,
+            &request.shared_build_digest(),
+            "build",
+            local,
+            local.capabilities(),
+            None,
+            &outputs,
+            &request,
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(&database, drv).unwrap();
+        let attempt = telchar::persistence::read_shared_build_attempt(&database, drv)
+            .unwrap()
+            .unwrap();
+        let payload = capability
+            .launch_payload(
+                &format!("wss://localhost:{}/microvm", address.port()),
+                address,
+                "build-intent",
+                60,
+            )
+            .unwrap();
+        let intent = telchar::persistence::MicrovmLaunchIntent {
+            intent_id: "build-intent".into(),
+            attempt_id: attempt.attempt_id,
+            backend_name: "build".into(),
+            account_id: "116392764028".into(),
+            region: "us-west-2".into(),
+            image_arn: "fixture".into(),
+            image_version: "1".into(),
+            vpc_egress_connector_arn:
+                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+            configuration_digest: [1; 32],
+            request_digest: telchar::microvm::launch_request_digest(
+                "fixture",
+                "1",
+                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+                "build-token",
+                &payload,
+                60,
+            ),
+            client_token: "build-token".into(),
+            credential_verifier: capability.verifier(),
+            admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+            maximum_duration_seconds: 60,
+        };
+        if !configured {
+            assert!(telchar::persistence::reserve_microvm_launch(&database, &intent, 1).unwrap());
+        }
+
+        let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            &database,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+                .unwrap()
+                .is_none()
+        );
+        let owner = std::sync::Arc::new(owner);
+        let sessions =
+            std::sync::Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+        let mut gateway = Some(gateway);
+        let mut callback = if configured {
+            None
+        } else {
+            Some(
+                telchar::microvm::callback_service::CallbackService::start(
+                    gateway.take().unwrap(),
+                    owner.clone(),
+                    sessions.clone(),
+                    1,
+                    1,
+                    Duration::from_secs(5),
+                )
+                .unwrap(),
+            )
+        };
+        let gateway_store = endpoint.clone();
+        let staging = root.clone();
+        let execution_intent = intent.clone();
+        std::thread::spawn(move || {
+            let (provider, response) = provider_response(configured.then_some(binding_sender));
+            let limits = Limits {
+                maximum_paths: 10,
+                maximum_nar_bytes: 1024 * 1024,
+                maximum_total_bytes: 2 * 1024 * 1024,
+                metadata_bytes: 8192,
+                chunk_bytes: 256 * 1024,
+            };
+            let execution = telchar::microvm::execution::Execution {
+                provider: &provider,
+                owner: &owner,
+                sessions: &sessions,
+                store: gateway_store,
+                staging,
+                limits,
+            };
+            let result = if configured {
+                let deployment = format!(
+                    r#"
+name = "build"
+system = "aarch64-linux"
+account_id = "116392764028"
+region = "us-west-2"
+image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder"
+image_version = "1"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+maximum_concurrent_builds = 1
+maximum_duration_seconds = 60
+execution_timeout_seconds = 50
+admission_timeout_seconds = 20
+provider_timeout_seconds = 2
+cleanup_interval_seconds = 5
+callback_url = "wss://localhost:{}/microvm"
+callback_address = "{}"
+staging_directory = "{}"
+maximum_paths = 10
+maximum_nar_bytes = 1048576
+maximum_total_bytes = 2097152
+metadata_bytes = 8192
+chunk_bytes = 262144
+"#,
+                    address.port(),
+                    address,
+                    execution.staging.display()
+                );
+                let policy =
+                    telchar::service::config::MicrovmBackendConfig::parse(&deployment).unwrap();
+                let service = Arc::new(
+                    telchar::microvm::service::Service::start(
+                        policy,
+                        provider.clone(),
+                        owner.clone(),
+                        gateway.take().unwrap(),
+                        execution.store.clone(),
+                    )
+                    .unwrap(),
+                );
+                let configuration_file = execution.staging.join("service.toml");
+                std::fs::write(&configuration_file, format!(
+                "[backends]\nmicrovm_bind = \"{gateway_address}\"\n[[backends.microvm]]\n{deployment}"
+            )).unwrap();
+                let configuration =
+                    telchar::service::config::ServiceConfig::load_from_default(&configuration_file)
+                        .unwrap();
+                let backends = telchar::backend::routing::ConfiguredBackends::new(
+                    &configuration,
+                    Some(execution.store.clone()),
+                )
+                .unwrap()
+                .attach_microvm_services(&configuration, vec![service.clone()])
+                .unwrap();
+                let mut backend = backends
+                    .executor(
+                        owner.database().clone(),
+                        Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+                    )
+                    .unwrap();
+                use telchar::backend::BuildBackend;
+                let target = backend.selected_target(request.system(), &[]).unwrap();
+                assert_eq!(target.kind(), telchar::backend::BackendKind::Microvm);
+                let mut build = telchar::backend::BuildExecution::new(
+                    "configured-worker",
+                    &request,
+                    Duration::from_secs(15),
+                )
+                .unwrap();
+                build.set_target_name(target.name()).unwrap();
+                let result = backend.execute_with_logs(&build, &mut |_| Ok(()), &mut || Ok(false));
+                let shutdown = service.shutdown();
+                if ownership_lost {
+                    if let Err(error) = shutdown {
+                        assert_eq!(error.to_string(), "MicroVM listener failed");
+                    }
+                    assert!(backend.selected_target(request.system(), &[]).is_err());
+                } else {
+                    shutdown.unwrap();
+                }
+                result.map(|result| {
+                    assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
+                    assert_eq!(result.outputs(), request.expected_outputs());
+                    BuildOutcome::Built
+                })
+            } else {
+                execution
+                    .run_reserved(
+                        &execution_intent,
+                        &payload,
+                        std::time::Instant::now() + Duration::from_secs(15),
+                        |_| {},
+                    )
+                    .map(|result| result.outcome)
+            };
+            response.join().unwrap();
+            let shutdown = callback
+                .as_mut()
+                .map_or(Ok(()), |callback| callback.shutdown());
+            if ownership_lost {
+                if let Err(error) = shutdown {
+                    assert_eq!(error.to_string(), "MicroVM listener failed");
+                }
+            } else {
+                shutdown.unwrap();
+            }
+            result
+        })
+    };
+    let binding = root.join("binding.json");
+    let trust = root.join("trust.der");
+    std::fs::write(&trust, include_bytes!("fixtures/microvm-cert.der")).unwrap();
+    let mut worker_binding = if configured {
+        match binding_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(binding) => binding,
+            Err(error) => panic!(
+                "worker binding failed: {error}; gateway result: {:?}",
+                gateway_thread.join()
+            ),
+        }
+    } else {
+        serde_json::json!({
+            "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
+            "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 15
+        })
+    };
+    if case == "configured-daemon-crash" {
+        let error = gateway_thread.join().unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "BuildDerivation execution failed");
+        let mut connection = GatewayStoreConnection::connect(&endpoint).unwrap();
+        for output in &outputs {
+            assert!(
+                connection
+                    .query_path_info(output.as_bytes())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        return;
+    }
+    if case == "configured-daemon-coalesced" {
+        let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let attached = control
+                .query_one(
+                    "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i64>(0);
+            if attached == 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "both requesters must attach before worker startup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    if case == "configured-daemon-detached" {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !root.join("requester-disconnected").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "leader disconnect deadline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    worker_binding.as_object_mut().unwrap().remove("version");
+    worker_binding["provider_id"] = "microvm-build".into();
+    if case == "configured-building-deadline" {
+        worker_binding["lifetime_seconds"] = 3.into();
+    }
+    let intent_id = worker_binding["intent_id"].as_str().unwrap().to_owned();
+    use sha2::Digest;
+    let verifier: [u8; 32] =
+        sha2::Sha256::digest(worker_binding["bearer"].as_str().unwrap().as_bytes()).into();
+    std::fs::write(&binding, serde_json::to_vec(&worker_binding).unwrap()).unwrap();
+    std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let collector = (case == "single").then(collector::start_collector);
+    let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
+    let packaged_runtime = runtime.is_some();
+    let mut worker = if let Some(runtime) = runtime {
+        Command::new(runtime)
+            .env("RUST_LOG", "off")
+            .arg(&binding)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("bash")
+            .env("RUST_LOG", "off")
+            .env(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                telemetry_endpoint
+                    .as_deref()
+                    .unwrap_or("http://127.0.0.1:4317"),
+            )
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            .arg(FIXTURE)
+            .arg("/bin/sh")
+            .args([
+                "-c",
+                "exec \"$1\" \"$2\" \"$3\" \"$MICROVM_TEST_STORE_URI\"",
+                "worker",
+            ])
+            .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
+            .arg(&binding)
+            .arg(&trust)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    listener.set_nonblocking(true).unwrap();
+    let started = std::time::Instant::now();
+    let stream = loop {
+        if let Ok((stream, _)) = listener.accept() {
+            break stream;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "worker did not connect"
+        );
+        if let Some(status) = worker.try_wait().unwrap() {
+            panic!(
+                "worker exited {status}: {:?}",
+                worker.wait_with_output().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(
+            include_bytes!("fixtures/microvm-key.der").to_vec().into(),
+        ),
+    )
+    .unwrap();
+    let tls = rustls::StreamOwned::new(
+        rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+        stream,
+    );
+    #[allow(clippy::result_large_err)]
+    let upgrade = |_: &tungstenite::handshake::server::Request,
+                   mut response: tungstenite::handshake::server::Response| {
+        response.headers_mut().insert(
+            "sec-websocket-protocol",
+            "telchar-microvm-v1".parse().unwrap(),
+        );
+        Ok(response)
+    };
+    let mut socket = tungstenite::accept_hdr(tls, upgrade).unwrap();
+    use telchar::nomad::protocol::{
+        FrameKind, NarMetadata, PathSet, ProtocolLimits, decode_metadata, read_frame,
+    };
+    use tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{gateway_address}/microvm")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "telchar-microvm-v1".parse().unwrap(),
+    );
+    let connection = std::net::TcpStream::connect(gateway_address).unwrap();
+    connection
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    connection
+        .set_write_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
+    upstream.send(socket.read().unwrap()).unwrap();
+    let manifest = match upstream.read() {
+        Ok(manifest) => manifest,
+        Err(error) => panic!(
+            "gateway manifest failed: {error}; gateway result: {:?}",
+            gateway_thread.join()
+        ),
+    };
+    socket.send(manifest).unwrap();
+    if matches!(
+        case.as_str(),
+        "cancelled" | "fenced" | "configured-cancelled" | "configured-fenced"
+    ) {
+        let started = std::time::Instant::now();
+        if !ownership_lost {
+            assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
+        } else {
+            let mut database = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            assert_eq!(database.execute("UPDATE singleton_ownership SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE owner_kind = 'daemon'", &[]).unwrap(), 1);
+        }
+        let result = gateway_thread.join().unwrap();
+        drop(upstream);
+        drop(socket);
+        let worker = worker.wait_with_output().unwrap();
+        assert!(!worker.status.success());
+        let diagnostic = String::from_utf8(worker.stderr).unwrap();
+        assert!(diagnostic.contains("MicroVM worker failed"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("Canonical store fixture retained:"),
+            "{diagnostic}"
+        );
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{case} idle session did not stop promptly"
+        );
+        assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        if configured {
+            let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            let row = control.query_one(
+                "SELECT phase, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id],
+            ).unwrap();
+            assert_eq!(
+                row.get::<_, String>(0),
+                if ownership_lost { "bound" } else { "closed" }
+            );
+            assert!(row.get::<_, bool>(1));
+            assert!(row.get::<_, bool>(2));
+        }
+        return;
+    }
+    let mut input_requested = false;
+    let mut requested_nar_bytes = 0u64;
+    let mut sandbox_build_observed = false;
+    loop {
+        let message = socket.read().unwrap();
+        let frame = read_frame(
+            &mut message.clone().into_data().as_ref(),
+            ProtocolLimits::new(8192, 256 * 1024),
+        )
+        .unwrap();
+        if corrupt_output && frame.kind() == FrameKind::OutputNar {
+            let mut bytes = message.into_data().to_vec();
+            let content = b"dedicated-worker-success";
+            let offset = bytes
+                .windows(content.len())
+                .position(|window| window == content)
+                .expect("output NAR contains fixture content");
+            bytes[offset] ^= 1;
+            upstream
+                .send(tungstenite::Message::Binary(bytes.into()))
+                .unwrap();
+            break;
+        }
+        if packaged_runtime && frame.kind() == FrameKind::LogChunk {
+            sandbox_build_observed |= frame
+                .payload()
+                .windows(b"sandbox-builder-executing".len())
+                .any(|bytes| bytes == b"sandbox-builder-executing");
+        }
+        upstream.send(message).unwrap();
+        if building_interrupted
+            && frame.kind() == FrameKind::LogChunk
+            && frame
+                .payload()
+                .windows(b"builder-executing".len())
+                .any(|bytes| bytes == b"builder-executing")
+        {
+            let started = std::time::Instant::now();
+            let worker = if case == "configured-building-deadline" {
+                let worker = worker.wait_with_output().unwrap();
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "worker deadline waited for build completion"
+                );
+                drop(upstream);
+                drop(socket);
+                assert!(gateway_thread.join().unwrap().is_err());
+                worker
+            } else {
+                assert!(
+                    telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap()
+                );
+                assert!(gateway_thread.join().unwrap().is_err());
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "gateway cancellation deadline"
+                );
+                drop(upstream);
+                drop(socket);
+                worker.wait_with_output().unwrap()
+            };
+            assert!(!worker.status.success());
+            assert!(worker.stdout.is_empty());
+            let diagnostic = String::from_utf8(worker.stderr).unwrap();
+            assert!(
+                diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+                "{diagnostic}"
+            );
+            assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+            assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+            let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
+            assert_eq!(row.get::<_, String>(0), "closed");
+            assert!(row.get::<_, bool>(1));
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "executing worker cancellation took {:?}",
+                started.elapsed()
+            );
+            return;
+        }
+        match frame.kind() {
+            FrameKind::InputRequest => {
+                let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
+                input_requested |= requested.paths.iter().any(|path| path == &input);
+                for path in requested.paths {
+                    requested_nar_bytes += store
+                        .query_path_info(path.as_bytes())
+                        .unwrap()
+                        .unwrap()
+                        .nar_size();
+                    loop {
+                        let message = upstream.read().unwrap();
+                        let frame = read_frame(
+                            &mut message.clone().into_data().as_ref(),
+                            ProtocolLimits::new(8192, 256 * 1024),
+                        )
+                        .unwrap();
+                        let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                        socket.send(message).unwrap();
+                        if chunk.final_chunk {
+                            break;
+                        }
+                    }
+                }
+            }
+            FrameKind::OutputNar => {
+                let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                if chunk.final_chunk {
+                    let receipt = match upstream.read() {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
+                            drop(upstream);
+                            drop(socket);
+                            let result = gateway_thread.join();
+                            let worker = worker.wait_with_output().unwrap();
+                            panic!(
+                                "output receipt failed in {case}: {error}; gateway: {result:?}; worker: {:?}; stderr: {}",
+                                worker.status,
+                                String::from_utf8_lossy(&worker.stderr)
+                            );
+                        }
+                    };
+                    socket.send(receipt).unwrap();
+                }
+            }
+            FrameKind::BuildResult => break,
+            _ => {}
+        }
+    }
+    assert!(
+        !building_interrupted,
+        "builder execution barrier not observed"
+    );
+    if packaged_runtime {
+        assert!(
+            input_requested,
+            "packaged worker must request fixture input"
+        );
+        assert!(
+            sandbox_build_observed,
+            "packaged worker must execute builder"
+        );
+    }
+    let result = gateway_thread.join().unwrap();
+    if corrupt_output {
+        drop(upstream);
+        drop(socket);
+    }
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            &database,
+            &intent_id,
+            "microvm-build",
+            &verifier
+        )
+        .unwrap()
+    );
+    let worker = worker.wait_with_output().unwrap();
+    if build_failure || corrupt_output {
+        assert!(!worker.status.success());
+        assert!(worker.stdout.is_empty());
+        let diagnostic = String::from_utf8(worker.stderr).unwrap();
+        assert!(
+            diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+            "{diagnostic}"
+        );
+        assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+        let error = result.unwrap_err();
+        if case.starts_with("configured-daemon") {
+            assert_eq!(error.to_string(), "BuildDerivation execution failed");
+        } else if build_failure {
+            assert_eq!(error.to_string(), "MicroVM build failed");
+        }
+        assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+        let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "closed");
+        assert!(row.get::<_, bool>(1));
+        return;
+    }
+    assert!(
+        worker.status.success(),
+        "{result:?}: {}",
+        String::from_utf8_lossy(&worker.stderr)
+    );
+    assert!(worker.stdout.is_empty());
+    assert!(
+        worker.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&worker.stderr)
+    );
+    assert_eq!(result.unwrap(), BuildOutcome::Built);
+    if let Some(collector) = collector {
+        for phase in [
+            "connect",
+            "manifest",
+            "resolve-inputs",
+            "import-inputs",
+            "build",
+            "return-outputs",
+        ] {
+            collector.assert_histogram_attributes(
+                "telchar.microvm.worker.phase.duration",
+                &[("phase", phase), ("outcome", "success")],
+                0.0,
+            );
+        }
+        collector.assert_histogram_sample("telchar.microvm.worker.duration", "success", 0.0);
+        assert!(requested_nar_bytes > 0);
+        collector.assert_counter(
+            "telchar.worker.input.validated_bytes",
+            "validated",
+            i64::try_from(requested_nar_bytes).unwrap(),
+        );
+        let output_info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+        collector.assert_counter(
+            "telchar.worker.output.accepted_bytes",
+            "accepted",
+            i64::try_from(output_info.nar_size()).unwrap(),
+        );
+        collector.assert_metric_attributes_are_bounded();
+    }
+    let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+    let row = control.query_one(
+        "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",
+        &[&intent_id],
+    ).unwrap();
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(row.get::<_, String>(1), "microvm-build");
+    assert!(row.get::<_, bool>(2));
+    assert!(
+        row.get::<_, bool>(3),
+        "build success cannot release provider capacity"
+    );
+    for expected in outputs {
+        assert!(store.is_valid_path(expected.as_bytes()).unwrap());
+    }
+    if fixed_output {
+        let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+        let prefix = if recursive_output {
+            b"fixed:r:sha256:".as_slice()
+        } else {
+            b"fixed:sha256:".as_slice()
+        };
+        assert!(info.content_address().unwrap().starts_with(prefix));
+        assert!(info.references().is_empty());
+    }
+    if multiple {
+        assert_eq!(std::fs::read(secondary).unwrap(), output.as_bytes());
+        let info = store
+            .query_path_info(secondary.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.references(), &[output.as_bytes().to_vec()]);
+    }
+    assert_eq!(
+        std::fs::read(output).unwrap(),
+        b"dedicated-worker-success\n"
+    );
+}

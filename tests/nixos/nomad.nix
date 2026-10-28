@@ -154,6 +154,7 @@ in
           };
       };
       testScript = ''
+        ${builtins.readFile ./nomad-journal.py}
         start_all()
         gateway.wait_for_unit("postgresql.service")
         nomad_server.wait_for_unit("nomad.service")
@@ -161,6 +162,8 @@ in
         nomad_server.wait_until_succeeds("nomad operator raft list-peers | grep -q true", timeout=60)
         nomad_server.wait_until_succeeds("nomad namespace apply telchar", timeout=60)
         nomad_server.wait_until_succeeds("nomad node status -json | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].Status == \"ready\"'", timeout=60)
+        check_nomad_journal(nomad_server)
+        check_nomad_journal(nomad_client)
         gateway.succeed("install -d -m 700 -o telchar-ingress -g telchar /var/lib/telchar-import && install -m 600 -o telchar-ingress -g telchar /etc/telchar/nomad.toml /var/lib/telchar-import/telchar.toml && printf fixture-transfer-secret > /var/lib/telchar-import/nomad-transfer.key && chown telchar-ingress:telchar /var/lib/telchar-import/nomad-transfer.key && chmod 600 /var/lib/telchar-import/nomad-transfer.key")
         gateway.succeed("systemctl start telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")

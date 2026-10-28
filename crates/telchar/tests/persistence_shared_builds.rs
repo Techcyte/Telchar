@@ -1,12 +1,11 @@
 //! Tests shared-build, build-request, and executor persistence contracts and failure boundaries.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use support::postgres::PostgresFixture;
 use telchar::backend::{
     BackendCapabilities, BackendKind, CancellationCapability, ExecutionRecovery, LogRecovery,
 };

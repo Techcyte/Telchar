@@ -5,9 +5,9 @@ use super::*;
 #[test]
 fn store_lease_persists_across_restart() {
     let mut fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "lease-request",
         "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
@@ -17,7 +17,7 @@ fn store_lease_persists_across_restart() {
     .expect("request persists");
 
     let created = telchar::persistence::create_store_lease(
-        fixture.url(),
+        fixture.database(),
         "lease-1",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "lease-request",
@@ -29,7 +29,7 @@ fn store_lease_persists_across_restart() {
     fixture.restart();
 
     assert_eq!(
-        telchar::persistence::read_store_lease(fixture.url(), "lease-1").expect("lease reads"),
+        telchar::persistence::read_store_lease(fixture.database(), "lease-1").expect("lease reads"),
         Some(created)
     );
 }
@@ -37,9 +37,9 @@ fn store_lease_persists_across_restart() {
 #[test]
 fn store_lease_releases_once_without_mutating_immutable_fields() {
     let fixture = Arc::new(PostgresFixture::start());
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "release-request",
         "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
@@ -48,7 +48,7 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
     )
     .expect("request persists");
     let created = telchar::persistence::create_store_lease(
-        fixture.url(),
+        fixture.database(),
         "release-lease",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "release-request",
@@ -57,8 +57,8 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
     )
     .expect("lease persists");
 
-    let first_url = fixture.url().to_owned();
-    let second_url = fixture.url().to_owned();
+    let first_url = fixture.database().to_owned();
+    let second_url = fixture.database().to_owned();
     let first = thread::spawn(move || {
         telchar::persistence::release_store_lease(&first_url, "release-lease")
     });
@@ -99,13 +99,13 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
             .is_some_and(|at| at >= created.created_at)
     );
     assert_eq!(
-        telchar::persistence::release_store_lease(fixture.url(), "release-lease")
+        telchar::persistence::release_store_lease(fixture.database(), "release-lease")
             .expect_err("released lease does not release again")
             .failure(),
         telchar::persistence::StoreLeaseFailure::InvalidState
     );
     assert_eq!(
-        telchar::persistence::release_store_lease(fixture.url(), "missing")
+        telchar::persistence::release_store_lease(fixture.database(), "missing")
             .expect_err("absent lease rejects")
             .failure(),
         telchar::persistence::StoreLeaseFailure::Missing
@@ -115,9 +115,9 @@ fn store_lease_releases_once_without_mutating_immutable_fields() {
 #[test]
 fn duplicate_store_lease_id_rejects_without_mutating_original() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "duplicate-owner",
         "/nix/store/11111111111111111111111111111111-original.drv",
         "x86_64-linux",
@@ -126,7 +126,7 @@ fn duplicate_store_lease_id_rejects_without_mutating_original() {
     )
     .expect("request persists");
     let original = telchar::persistence::create_store_lease(
-        fixture.url(),
+        fixture.database(),
         "duplicate-lease",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "duplicate-owner",
@@ -137,7 +137,7 @@ fn duplicate_store_lease_id_rejects_without_mutating_original() {
 
     assert_eq!(
         telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             "duplicate-lease",
             telchar::persistence::StoreLeaseOwnerKind::Request,
             "duplicate-owner",
@@ -149,7 +149,7 @@ fn duplicate_store_lease_id_rejects_without_mutating_original() {
         telchar::persistence::StoreLeaseFailure::Conflict
     );
     assert_eq!(
-        telchar::persistence::read_store_lease(fixture.url(), "duplicate-lease")
+        telchar::persistence::read_store_lease(fixture.database(), "duplicate-lease")
             .expect("lease reads"),
         Some(original)
     );
@@ -158,9 +158,9 @@ fn duplicate_store_lease_id_rejects_without_mutating_original() {
 #[test]
 fn store_lease_rejects_statement_and_commit_failures_without_transition() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "failure-owner",
         "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
@@ -175,7 +175,7 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
     ).expect("insert trigger installs");
     assert_eq!(
         telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             "statement-failure",
             telchar::persistence::StoreLeaseOwnerKind::Request,
             "failure-owner",
@@ -187,7 +187,7 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
         telchar::persistence::StoreLeaseFailure::Query
     );
     assert!(
-        telchar::persistence::read_store_lease(fixture.url(), "statement-failure")
+        telchar::persistence::read_store_lease(fixture.database(), "statement-failure")
             .expect("absent lease reads")
             .is_none()
     );
@@ -198,7 +198,7 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
         )
         .expect("insert trigger removes");
     let lease = telchar::persistence::create_store_lease(
-        fixture.url(),
+        fixture.database(),
         "commit-failure",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "failure-owner",
@@ -211,13 +211,13 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
          CREATE TRIGGER reject_store_lease_release BEFORE UPDATE ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_store_lease_release();",
     ).expect("release trigger installs");
     assert_eq!(
-        telchar::persistence::release_store_lease(fixture.url(), "commit-failure")
+        telchar::persistence::release_store_lease(fixture.database(), "commit-failure")
             .expect_err("release statement rejects")
             .failure(),
         telchar::persistence::StoreLeaseFailure::Query
     );
     assert_eq!(
-        telchar::persistence::read_store_lease(fixture.url(), "commit-failure")
+        telchar::persistence::read_store_lease(fixture.database(), "commit-failure")
             .expect("lease reads"),
         Some(lease.clone())
     );
@@ -228,13 +228,13 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
          CREATE CONSTRAINT TRIGGER reject_store_lease_commit AFTER UPDATE ON store_leases DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_store_lease_commit();",
     ).expect("commit trigger installs");
     assert_eq!(
-        telchar::persistence::release_store_lease(fixture.url(), "commit-failure")
+        telchar::persistence::release_store_lease(fixture.database(), "commit-failure")
             .expect_err("release commit rejects")
             .failure(),
         telchar::persistence::StoreLeaseFailure::Commit
     );
     assert_eq!(
-        telchar::persistence::read_store_lease(fixture.url(), "commit-failure")
+        telchar::persistence::read_store_lease(fixture.database(), "commit-failure")
             .expect("lease reads"),
         Some(lease)
     );
@@ -244,9 +244,9 @@ fn store_lease_rejects_statement_and_commit_failures_without_transition() {
 fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
     let _guard = TELEMETRY_TESTS.lock().expect("telemetry lock holds");
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "telemetry-owner",
         "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract.drv",
         "x86_64-linux",
@@ -258,7 +258,7 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
     tracing::dispatcher::with_default(&dispatch, || {
         telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             "telemetry-lease",
             telchar::persistence::StoreLeaseOwnerKind::Request,
             "telemetry-owner",
@@ -266,7 +266,7 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
             telchar::persistence::StoreLeasePurpose::Output,
         )
         .expect("lease persists");
-        telchar::persistence::release_store_lease(fixture.url(), "telemetry-lease")
+        telchar::persistence::release_store_lease(fixture.database(), "telemetry-lease")
             .expect("lease releases");
         let error = telchar::persistence::create_store_lease(
             "postgresql://sensitive-url",
@@ -320,10 +320,10 @@ fn store_lease_telemetry_and_errors_are_bounded_and_redacted() {
 #[test]
 fn store_lease_validates_owners_and_rejects_malformed_rows() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     let requester_reference = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
     telchar::persistence::open_protocol_session(
-        fixture.url(),
+        fixture.database(),
         "open-owner",
         requester_reference,
         "ssh-pubkey:SHA256:test",
@@ -332,7 +332,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
     )
     .expect("session opens");
     telchar::persistence::open_protocol_session(
-        fixture.url(),
+        fixture.database(),
         "closed-owner",
         requester_reference,
         "ssh-pubkey:SHA256:test",
@@ -340,7 +340,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
         "test-quota",
     )
     .expect("session opens");
-    telchar::persistence::close_protocol_session(fixture.url(), "closed-owner")
+    telchar::persistence::close_protocol_session(fixture.database(), "closed-owner")
         .expect("session closes");
 
     for (owner_kind, purpose) in [
@@ -354,7 +354,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
         ),
     ] {
         let record = telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             purpose_name(purpose),
             owner_kind,
             "open-owner",
@@ -367,7 +367,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
     }
     assert_eq!(
         telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             "missing-owner",
             telchar::persistence::StoreLeaseOwnerKind::Request,
             "missing",
@@ -380,7 +380,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
     );
     assert_eq!(
         telchar::persistence::create_store_lease(
-            fixture.url(),
+            fixture.database(),
             "closed-owner",
             telchar::persistence::StoreLeaseOwnerKind::Session,
             "closed-owner",
@@ -431,14 +431,14 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
         .expect("malformed lease writes");
     for lease_id in ["malformed-lease", "malformed-active", "malformed-released"] {
         assert_eq!(
-            telchar::persistence::read_store_lease(fixture.url(), lease_id)
+            telchar::persistence::read_store_lease(fixture.database(), lease_id)
                 .expect_err("malformed lease rejects")
                 .failure(),
             telchar::persistence::StoreLeaseFailure::Query
         );
     }
     assert_eq!(
-        telchar::persistence::release_store_lease(fixture.url(), "malformed-active")
+        telchar::persistence::release_store_lease(fixture.database(), "malformed-active")
             .expect_err("malformed active lease rejects")
             .failure(),
         telchar::persistence::StoreLeaseFailure::Query
@@ -448,7 +448,7 @@ fn store_lease_validates_owners_and_rejects_malformed_rows() {
 #[test]
 fn minimum_schema_enforces_domain_constraints() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     let mut client = fixture.connect();
 
     client
@@ -472,10 +472,10 @@ fn minimum_schema_enforces_domain_constraints() {
 #[test]
 fn concurrent_retained_byte_admission_counts_unique_paths_once() {
     let fixture = Arc::new(PostgresFixture::start());
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     for request_id in ["retained-first", "retained-second"] {
         telchar::persistence::create_build_request(
-            fixture.url(),
+            fixture.database(),
             request_id,
             "/nix/store/11111111111111111111111111111111-test.drv",
             "x86_64-linux",
@@ -504,7 +504,7 @@ fn concurrent_retained_byte_admission_counts_unique_paths_once() {
         workers.push(thread::spawn(move || {
             barrier.wait();
             telchar::persistence::create_request_input_leases_with_limit(
-                fixture.url(),
+                fixture.database(),
                 request_id,
                 6,
                 &[(lease_id.to_owned(), store_path.to_owned(), 6)],
@@ -534,10 +534,10 @@ fn concurrent_retained_byte_admission_counts_unique_paths_once() {
 #[test]
 fn concurrent_retained_byte_admission_rejects_budget_overflow_atomically() {
     let fixture = Arc::new(PostgresFixture::start());
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     for request_id in ["budget-first", "budget-second"] {
         telchar::persistence::create_build_request(
-            fixture.url(),
+            fixture.database(),
             request_id,
             "/nix/store/11111111111111111111111111111111-test.drv",
             "x86_64-linux",
@@ -566,7 +566,7 @@ fn concurrent_retained_byte_admission_rejects_budget_overflow_atomically() {
         workers.push(thread::spawn(move || {
             barrier.wait();
             telchar::persistence::create_request_input_leases_with_limit(
-                fixture.url(),
+                fixture.database(),
                 request_id,
                 6,
                 &[(lease_id.to_owned(), store_path.to_owned(), 6)],

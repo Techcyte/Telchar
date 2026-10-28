@@ -8,7 +8,9 @@ export NIXPKGS_ALLOW_UNFREE=1
 
 nix develop -c cargo fmt --all -- --check
 nix develop -c scripts/test-prepare-release.py
-nix develop -c cargo test --locked --workspace -- --test-threads=1
+nix develop -c cargo build --locked -p telchar --bin telchar
+export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
+nix develop -c bash tests/workspace.sh --locked
 nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
 nix develop -c scripts/check-advisory-exceptions.py
@@ -19,6 +21,7 @@ nix build --no-link .#checks.x86_64-linux.oci-images
 scripts/check-oci-images.sh
 nix build --no-link .#checks.x86_64-linux.nixos-oci-runtime
 nix build --no-link .#checks.x86_64-linux.nixos-module
+nix build --no-link .#checks.x86_64-linux.nixos-microvm-service
 nix build --no-link .#checks.x86_64-linux.nixos-remote-build-contract
 nix build --no-link .#checks.x86_64-linux.nixos-lix-local
 nix build --no-link .#checks.x86_64-linux.nixos-fixed-output-local

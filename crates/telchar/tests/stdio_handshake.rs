@@ -7,9 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod support;
-
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn frontend_failure_has_trace_id() {

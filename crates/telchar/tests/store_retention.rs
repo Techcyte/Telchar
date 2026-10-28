@@ -7,9 +7,8 @@ use std::time::{Duration, SystemTime};
 
 use telchar::fixture::nix::{NixDaemon, NixFixture, TrustMode};
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
-use support::postgres::PostgresFixture;
 use telchar::store::retention::{
     NixStoreRetentionBackend, ReleasedRetentionEntry, RetentionEntry, StoreRetentionBackend,
 };

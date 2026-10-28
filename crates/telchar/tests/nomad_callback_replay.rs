@@ -1,11 +1,10 @@
 //! Tests nomad callback replay contracts and failure boundaries, including reserves callback nonce once and survives new connections.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::time::{Duration, SystemTime};
 
 use postgres::{Client, NoTls};
-use support::postgres::PostgresFixture;
 use telchar::persistence::reserve_nomad_callback_nonce;
 
 #[test]

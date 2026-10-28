@@ -61,6 +61,17 @@ struct Instruments {
     recovery_duration: Histogram<f64>,
     recovery_outcomes: Counter<u64>,
     recovery_monitoring: Gauge<u64>,
+    microvm_admissions: Counter<u64>,
+    microvm_admission_rejections: Counter<u64>,
+    microvm_admission_duration: Histogram<f64>,
+    microvm_obligations: Histogram<u64>,
+    microvm_obligation_age: Histogram<f64>,
+    microvm_rendezvous: Counter<u64>,
+    microvm_rendezvous_duration: Histogram<f64>,
+    microvm_cleanup_attempts: Counter<u64>,
+    microvm_cleanup_duration: Histogram<f64>,
+    microvm_launches: Counter<u64>,
+    microvm_launch_duration: Histogram<f64>,
     nomad_submissions: Counter<u64>,
     nomad_submission_duration: Histogram<f64>,
     nomad_pending: Gauge<u64>,
@@ -110,6 +121,87 @@ impl GaugeState {
             | crate::persistence::SharedBuildState::Failed => {}
         }
     }
+}
+
+pub(crate) fn microvm_obligations(identified: bool, count: u64, age: f64) {
+    let attributes = [KeyValue::new(
+        "outcome",
+        if identified {
+            "identified"
+        } else {
+            "unidentified"
+        },
+    )];
+    instruments().microvm_obligations.record(count, &attributes);
+    instruments()
+        .microvm_obligation_age
+        .record(age, &attributes);
+}
+
+pub(crate) fn microvm_rendezvous(duration: Duration, connected: bool) {
+    let attributes = [KeyValue::new(
+        "outcome",
+        if connected { "connected" } else { "error" },
+    )];
+    instruments().microvm_rendezvous.add(1, &attributes);
+    instruments()
+        .microvm_rendezvous_duration
+        .record(duration.as_secs_f64(), &attributes);
+}
+
+pub(crate) fn microvm_admission_rejection(outcome: &'static str) {
+    let outcome = match outcome {
+        "ownership" | "protocol" | "bootstrap" | "authentication" | "capacity" | "binding"
+        | "deadline" => outcome,
+        _ => "internal",
+    };
+    instruments()
+        .microvm_admission_rejections
+        .add(1, &[KeyValue::new("outcome", outcome)]);
+}
+
+pub(crate) fn microvm_admission(duration: Duration, outcome: &'static str) {
+    let outcome = match outcome {
+        "accepted" => "accepted",
+        "capacity" => "capacity",
+        _ => "rejected",
+    };
+    let attributes = [KeyValue::new("outcome", outcome)];
+    instruments().microvm_admissions.add(1, &attributes);
+    instruments()
+        .microvm_admission_duration
+        .record(duration.as_secs_f64(), &attributes);
+}
+
+pub(crate) fn microvm_cleanup(
+    duration: Duration,
+    result: &Result<bool, crate::microvm::ProviderError>,
+) {
+    let outcome = match result {
+        Ok(true) => "released",
+        Ok(false) => "unchanged",
+        Err(_) => "error",
+    };
+    let attributes = [KeyValue::new("outcome", outcome)];
+    instruments().microvm_cleanup_attempts.add(1, &attributes);
+    instruments()
+        .microvm_cleanup_duration
+        .record(duration.as_secs_f64(), &attributes);
+}
+
+pub(crate) fn microvm_launch(duration: Duration, acknowledged: bool) {
+    let attributes = [KeyValue::new(
+        "outcome",
+        if acknowledged {
+            "acknowledged"
+        } else {
+            "unknown"
+        },
+    )];
+    instruments().microvm_launches.add(1, &attributes);
+    instruments()
+        .microvm_launch_duration
+        .record(duration.as_secs_f64(), &attributes);
 }
 
 fn instruments() -> &'static Instruments {
@@ -328,6 +420,50 @@ fn instruments() -> &'static Instruments {
             recovery_monitoring: meter
                 .u64_gauge("telchar.recovery.monitoring")
                 .with_unit("{build}")
+                .build(),
+            microvm_admissions: meter
+                .u64_counter("telchar.microvm.admissions")
+                .with_unit("{connection}")
+                .build(),
+            microvm_admission_rejections: meter
+                .u64_counter("telchar.microvm.admission.rejections")
+                .with_unit("{connection}")
+                .build(),
+            microvm_admission_duration: meter
+                .f64_histogram("telchar.microvm.admission.duration")
+                .with_unit("s")
+                .build(),
+            microvm_obligations: meter
+                .u64_histogram("telchar.microvm.obligations")
+                .with_unit("{obligation}")
+                .build(),
+            microvm_obligation_age: meter
+                .f64_histogram("telchar.microvm.obligation.age")
+                .with_unit("s")
+                .build(),
+            microvm_rendezvous: meter
+                .u64_counter("telchar.microvm.rendezvous")
+                .with_unit("{connection}")
+                .build(),
+            microvm_rendezvous_duration: meter
+                .f64_histogram("telchar.microvm.rendezvous.duration")
+                .with_unit("s")
+                .build(),
+            microvm_cleanup_attempts: meter
+                .u64_counter("telchar.microvm.cleanup.attempts")
+                .with_unit("{attempt}")
+                .build(),
+            microvm_cleanup_duration: meter
+                .f64_histogram("telchar.microvm.cleanup.duration")
+                .with_unit("s")
+                .build(),
+            microvm_launches: meter
+                .u64_counter("telchar.microvm.launches")
+                .with_unit("{launch}")
+                .build(),
+            microvm_launch_duration: meter
+                .f64_histogram("telchar.microvm.launch.duration")
+                .with_unit("s")
                 .build(),
             nomad_submissions: meter
                 .u64_counter("telchar.nomad.submissions")

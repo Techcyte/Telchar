@@ -26,7 +26,7 @@ hmac = "0.13"
 base64 = "0.23"
 postgres = "0.19"
 r2d2 = "0.8"
-r2d2_postgres = "0.18"
+tokio-postgres = "0.7"
 scheduled-thread-pool = "0.2.7"
 tokio-postgres-rustls = "0.14"
 rustls-native-certs = "0.8"
@@ -42,8 +42,11 @@ libc = "0.2"
 aws-config = { version = "1.12.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-ec2 = { version = "1.268.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-credential-types = "1.3.0"
+aws-sdk-sts = { version = "1.116.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-lambdamicrovms = { version = "1.13.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 
 [dev-dependencies]
+telchar-test-support = { path = "../telchar-test-support" }
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true

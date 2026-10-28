@@ -1,6 +1,6 @@
 //! Tests the bounded read-only operator command surface.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -8,7 +8,6 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use support::postgres::PostgresFixture;
 
 #[test]
 fn config_check_reports_configured_backends_without_database_access() {
@@ -110,6 +109,130 @@ fn durable_commands_report_empty_authoritative_state() {
     let report = json(&recovery);
     assert_eq!(report["builds"][0]["derivation_path"], derivation);
     assert_eq!(report["builds"][0]["recovery"], "output-only");
+
+    let attempt = telchar::persistence::read_shared_build_attempt(database.url(), derivation)
+        .unwrap()
+        .unwrap();
+    assert!(
+        telchar::persistence::reserve_microvm_launch(
+            database.url(),
+            &telchar::persistence::MicrovmLaunchIntent {
+                intent_id: "operator-intent".into(),
+                attempt_id: attempt.attempt_id,
+                backend_name: "local-main".into(),
+                account_id: "116392764028".into(),
+                region: "us-west-2".into(),
+                image_arn: "fixture-image".into(),
+                image_version: "1".into(),
+                vpc_egress_connector_arn:
+                    "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                configuration_digest: [1; 32],
+                request_digest: [2; 32],
+                client_token: "private-client-token".into(),
+                credential_verifier: [3; 32],
+                admission_cutoff: SystemTime::now() + std::time::Duration::from_secs(60),
+                maximum_duration_seconds: 600,
+            },
+            1,
+        )
+        .unwrap()
+    );
+    assert!(
+        telchar::persistence::dispatch_microvm_launch(database.url(), "operator-intent").unwrap()
+    );
+    assert!(
+        telchar::persistence::bind_microvm_launch(
+            database.url(),
+            "operator-intent",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    assert!(
+        telchar::persistence::cancel_microvm_launch(database.url(), "operator-intent").unwrap()
+    );
+    let expected = serde_json::json!({
+        "intent_id": "operator-intent", "backend_name": "local-main",
+        "account_id": "116392764028", "region": "us-west-2",
+        "provider_id": "microvm-exact", "phase": "closed",
+        "capacity_reserved": true, "cleanup_pending": true
+    });
+    let output = operator(&config, &["microvm", "--limit", "1"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        json(&output),
+        serde_json::json!({"obligations": [expected.clone()]})
+    );
+    database
+        .connect()
+        .execute(
+            "UPDATE microvm_launches SET reservation_released_at = clock_timestamp()",
+            &[],
+        )
+        .unwrap();
+    let output = operator(&config, &["microvm"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mut released = expected;
+    released["capacity_reserved"] = false.into();
+    assert_eq!(
+        json(&output),
+        serde_json::json!({"obligations": [released]})
+    );
+    assert!(
+        telchar::persistence::record_microvm_termination(
+            database.url(),
+            "operator-intent",
+            "microvm-exact"
+        )
+        .unwrap()
+    );
+    let output = operator(&config, &["microvm"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(json(&output), serde_json::json!({"obligations": []}));
+
+    let output = operator(&config, &["microvm-audit"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(json(&output), serde_json::json!({"resolutions": []}));
+    database.connect().batch_execute(
+        "INSERT INTO microvm_resolutions
+         (intent_id, action, provider_id, actor_uid, owner_generation, reason, evidence_reference, recorded_at)
+         VALUES ('operator-intent', 'risk-release', NULL, 0, 7, 'private reason', 'private evidence', to_timestamp(100)),
+                ('operator-intent', 'attach-identity', 'microvm-exact', 0, 8, 'private reason', 'private evidence', to_timestamp(200))"
+    ).unwrap();
+    let first = serde_json::json!({
+        "resolution_id": 1, "intent_id": "operator-intent", "action": "risk-release",
+        "provider_id": null, "actor_uid": 0, "owner_generation": 7,
+        "recorded_at_unix_seconds": 100.0
+    });
+    let second = serde_json::json!({
+        "resolution_id": 2, "intent_id": "operator-intent", "action": "attach-identity",
+        "provider_id": "microvm-exact", "actor_uid": 0, "owner_generation": 8,
+        "recorded_at_unix_seconds": 200.0
+    });
+    for (arguments, expected) in [
+        (
+            vec!["microvm-audit", "--limit", "1"],
+            serde_json::json!({"resolutions": [second.clone()]}),
+        ),
+        (
+            vec!["microvm-audit"],
+            serde_json::json!({"resolutions": [second, first]}),
+        ),
+    ] {
+        let output = operator(&config, &arguments);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(output.stderr.is_empty());
+        assert_eq!(json(&output), expected);
+    }
+    assert_eq!(
+        database
+            .connect()
+            .query_one("SELECT count(*) FROM microvm_resolutions", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
 }
 
 #[test]
@@ -124,6 +247,10 @@ fn operator_rejects_mutating_and_unbounded_requests() {
 
     for arguments in [
         vec!["cancel"],
+        vec!["microvm-audit", "--limit", "0"],
+        vec!["microvm-audit", "--limit", "257"],
+        vec!["microvm", "--limit", "0"],
+        vec!["microvm", "--limit", "257"],
         vec!["queue", "--limit", "0"],
         vec!["queue", "--limit", "257"],
         vec!["recovery", "--limit", "not-a-number"],

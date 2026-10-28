@@ -55,44 +55,70 @@ fn identical_connected_builds_share_one_execution() {
 #[test]
 fn thousand_concurrent_requests_coalesce_into_one_in_flight_build() {
     const REQUESTS: usize = 1_000;
-    let registry = Arc::new(SharedBuildRegistry::new());
-    let executions = Arc::new(AtomicUsize::new(0));
-    let start = Arc::new(Barrier::new(REQUESTS + 1));
-    let release = Arc::new(Barrier::new(2));
-
-    thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(REQUESTS);
-        for _ in 0..REQUESTS {
-            let registry = Arc::clone(&registry);
-            let executions = Arc::clone(&executions);
-            let start = Arc::clone(&start);
-            let release = Arc::clone(&release);
-            handles.push(scope.spawn(move || {
-                start.wait();
-                registry.execute_or_wait("large-fan-in", || {
-                    executions.fetch_add(1, Ordering::SeqCst);
-                    release.wait();
-                    successful_result()
+    const WORKERS: usize = 16;
+    let registry = SharedBuildRegistry::new();
+    let acquisitions = thread::scope(|scope| {
+        let handles = (0..WORKERS)
+            .map(|worker| {
+                let registry = &registry;
+                scope.spawn(move || {
+                    (worker..REQUESTS)
+                        .step_by(WORKERS)
+                        .map(|_| registry.acquire("large-fan-in"))
+                        .collect::<Vec<_>>()
                 })
-            }));
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("acquisitions join"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(acquisitions.len(), REQUESTS);
+    let mut leaders = Vec::new();
+    let mut followers = (0..WORKERS).map(|_| Vec::new()).collect::<Vec<_>>();
+    let mut follower_count = 0;
+    for access in acquisitions {
+        match access {
+            SharedBuildAccess::Leader(leader) => leaders.push(leader),
+            SharedBuildAccess::Follower(follower) => {
+                followers[follower_count % WORKERS].push(follower);
+                follower_count += 1;
+            }
         }
-        start.wait();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while registry.waiting_follower_count() != REQUESTS - 1 {
+    }
+    assert_eq!(leaders.len(), 1);
+    assert_eq!(follower_count, REQUESTS - 1);
+    assert_eq!(registry.active_build_count(), 1);
+    let leader = leaders.pop().expect("one leader");
+    let expected = successful_result();
+    thread::scope(|scope| {
+        let handles = followers
+            .into_iter()
+            .map(|followers| {
+                let expected = &expected;
+                scope.spawn(move || {
+                    for follower in followers {
+                        assert_eq!(
+                            follower.wait_timeout(Duration::from_secs(5)),
+                            Some(expected.clone())
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while registry.waiting_follower_count() != WORKERS {
             assert!(
                 std::time::Instant::now() < deadline,
-                "all followers did not coalesce"
+                "all worker threads did not begin waiting"
             );
             thread::yield_now();
         }
-        assert_eq!(registry.active_build_count(), 1);
-        assert_eq!(executions.load(Ordering::SeqCst), 1);
-        release.wait();
-        assert!(
-            handles
-                .into_iter()
-                .all(|handle| handle.join().expect("request joins").is_ok())
-        );
+        assert_eq!(leader.complete(expected.clone()), expected);
+        for handle in handles {
+            handle.join().expect("followers receive shared result");
+        }
     });
 
     assert_eq!(registry.active_build_count(), 0);

@@ -8,6 +8,38 @@ mod collector;
 use collector::{Collector, start_collector};
 
 #[test]
+fn microvm_worker_flushes_failure_telemetry_before_exit() {
+    let collector = start_collector();
+    let output = Command::new(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
+        .arg("private-marker-secret")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .env("RUST_LOG", "info")
+        .output()
+        .expect("MicroVM worker runs");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+    assert!(stderr.contains("MicroVM worker failed"), "{stderr}");
+    assert!(!stderr.contains("private-marker"), "{stderr}");
+    assert!(
+        collector.has_all_signals(),
+        "MicroVM worker must flush logs, spans and execution metrics"
+    );
+    assert!(collector.has_log_event("microvm.worker.failed"));
+    collector.assert_histogram_sample("telchar.microvm.worker.duration", "failure", 0.0);
+    for request in collector.log_requests.lock().expect("logs").iter() {
+        for resource in &request.resource_logs {
+            assert!(Collector::has_service_name(
+                resource.resource.as_ref(),
+                "telchar-microvm-worker"
+            ));
+        }
+    }
+    collector.assert_metric_attributes_are_bounded();
+}
+
+#[test]
 fn worker_flushes_failure_telemetry_before_exit() {
     let collector = start_collector();
     let output = Command::new(env!("CARGO_BIN_EXE_telchar-nomad-worker"))

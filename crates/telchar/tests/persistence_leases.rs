@@ -1,13 +1,41 @@
 //! Tests store-lease, retained-byte, and request-release persistence contracts and failure boundaries.
 
-mod support;
+struct PostgresFixture {
+    database: telchar::persistence::Database,
+    server: telchar_test_support::postgres::PostgresFixture,
+}
+
+impl PostgresFixture {
+    fn start() -> Self {
+        let server = telchar_test_support::postgres::PostgresFixture::start();
+        let database = telchar::persistence::Database::connect(server.url()).unwrap();
+        Self { database, server }
+    }
+
+    fn database(&self) -> &telchar::persistence::Database {
+        &self.database
+    }
+}
+
+impl std::ops::Deref for PostgresFixture {
+    type Target = telchar_test_support::postgres::PostgresFixture;
+
+    fn deref(&self) -> &Self::Target {
+        &self.server
+    }
+}
+
+impl std::ops::DerefMut for PostgresFixture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.server
+    }
+}
 
 use std::fmt;
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::Duration;
 
-use support::postgres::PostgresFixture;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;

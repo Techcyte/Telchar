@@ -105,6 +105,36 @@ const MIGRATIONS: &[Migration] = &[
         name: "shared_build_attempt_trace_context",
         sql: include_str!("../../migrations/0018_shared_build_attempt_trace_context.sql"),
     },
+    Migration {
+        version: 19,
+        name: "microvm_launches",
+        sql: include_str!("../../migrations/0019_microvm_launches.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "microvm_backend_identity",
+        sql: include_str!("../../migrations/0020_microvm_backend_identity.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "microvm_termination",
+        sql: include_str!("../../migrations/0021_microvm_termination.sql"),
+    },
+    Migration {
+        version: 22,
+        name: "microvm_resolutions",
+        sql: include_str!("../../migrations/0022_microvm_resolutions.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "microvm_identity_resolution",
+        sql: include_str!("../../migrations/0023_microvm_identity_resolution.sql"),
+    },
+    Migration {
+        version: 24,
+        name: "microvm_termination_resolution",
+        sql: include_str!("../../migrations/0024_microvm_termination_resolution.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -254,15 +284,8 @@ fn checksum(sql: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    mod postgres {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/postgres.rs"
-        ));
-    }
-
     use super::*;
-    use postgres::PostgresFixture;
+    use telchar_test_support::postgres::PostgresFixture;
 
     #[test]
     fn migration_metadata_is_valid() {

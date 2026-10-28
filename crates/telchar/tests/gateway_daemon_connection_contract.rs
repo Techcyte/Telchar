@@ -30,7 +30,7 @@ impl SocketFixture {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock is after epoch")
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
+            let root = Path::new("/tmp").join(format!(
                 "telchar-gateway-daemon-{}-{suffix}-{attempt}",
                 std::process::id()
             ));
@@ -218,7 +218,20 @@ fn build_derivation_preserves_bounded_daemon_diagnostic() {
     server.join().expect("server exits");
 }
 
-fn read_build_derivation_request(stream: &mut impl Read) {
+fn read_execution_options(stream: &mut impl Read) {
+    assert_eq!(read_integer(stream), 19);
+    for expected in [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1] {
+        assert_eq!(read_integer(stream), expected);
+    }
+    assert_eq!(read_integer(stream), 1);
+    assert_eq!(read_byte_string(stream), b"builders");
+    assert_eq!(read_byte_string(stream), b"");
+}
+
+fn read_build_derivation_request(stream: &mut (impl Read + Write)) {
+    read_execution_options(stream);
+    integer(stream, STDERR_LAST);
+    stream.flush().expect("options response flushes");
     assert_eq!(read_integer(stream), 36);
     let _derivation_path = read_byte_string(stream);
     let output_count = read_integer(stream);
@@ -291,6 +304,61 @@ fn build_derivation_preserves_bounded_protocol_failure() {
         "gateway Nix daemon BuildDerivation response failed: "
     );
     server.join().expect("server exits");
+}
+
+#[test]
+fn execution_setup_failure_prevents_build_submission() {
+    for rejected in [false, true] {
+        let fixture = SocketFixture::create();
+        let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection accepts");
+            complete_handshake(&mut stream, 1);
+            read_execution_options(&mut stream);
+            if rejected {
+                integer(&mut stream, STDERR_ERROR);
+                byte_string(&mut stream, b"Error");
+                integer(&mut stream, 1);
+                byte_string(&mut stream, b"daemon");
+                byte_string(&mut stream, b"options rejected");
+                integer(&mut stream, 0);
+                integer(&mut stream, 0);
+                stream.flush().expect("rejection flushes");
+            } else {
+                stream
+                    .shutdown(std::net::Shutdown::Write)
+                    .expect("response closes");
+            }
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).expect("request EOF reads"), 0);
+        });
+        let mut connection =
+            GatewayStoreConnection::connect(&fixture.endpoint()).expect("connection establishes");
+        let outputs = [nix_worker_protocol::BuildDerivationOutputRequest {
+            name: b"out",
+            path: STORE_PATH,
+            hash_algorithm: b"",
+            hash: b"",
+        }];
+        let request = nix_worker_protocol::BuildDerivationClientRequest {
+            drv_path: b"/nix/store/11111111111111111111111111111111-build.drv",
+            outputs: &outputs,
+            input_sources: &[],
+            platform: b"x86_64-linux",
+            builder: b"/bin/sh",
+            arguments: &[],
+            environment: &[],
+        };
+        let error = connection
+            .build_derivation(&request, &mut |_| Ok(()))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "gateway Nix daemon execution options failed"
+        );
+        drop(connection);
+        server.join().expect("server exits");
+    }
 }
 
 #[test]

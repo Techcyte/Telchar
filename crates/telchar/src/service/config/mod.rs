@@ -117,6 +117,8 @@ pub struct ServiceConfig {
     static_ssh_consul: Vec<StaticSshConsulConfig>,
     static_ssh_ec2: Vec<StaticSshEc2Config>,
     nomad_backends: Vec<NomadBackendConfig>,
+    microvm_backends: Vec<MicrovmBackendConfig>,
+    microvm_bind: Option<SocketAddr>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +229,14 @@ impl ServiceConfig {
         self.static_ssh_backends = static_ssh_backends;
     }
 
+    pub fn microvm_backends(&self) -> &[MicrovmBackendConfig] {
+        &self.microvm_backends
+    }
+
+    pub fn microvm_bind(&self) -> Option<SocketAddr> {
+        self.microvm_bind
+    }
+
     pub fn nomad_backends(&self) -> &[NomadBackendConfig] {
         &self.nomad_backends
     }
@@ -253,6 +263,8 @@ impl ServiceConfig {
             || self.static_ssh_consul != replacement.static_ssh_consul
             || self.static_ssh_ec2 != replacement.static_ssh_ec2
             || self.nomad_backends != replacement.nomad_backends
+            || self.microvm_backends != replacement.microvm_backends
+            || self.microvm_bind != replacement.microvm_bind
         {
             return Err(invalid("configuration reload changes immutable settings"));
         }
@@ -301,6 +313,11 @@ impl ServiceConfig {
                     .map(StaticSshBackendConfig::target),
             )
             .chain(self.nomad_backends.iter().map(NomadBackendConfig::target))
+            .chain(
+                self.microvm_backends
+                    .iter()
+                    .map(MicrovmBackendConfig::target),
+            )
     }
 
     pub fn system_features(&self) -> BTreeMap<&str, std::collections::BTreeSet<&str>> {
@@ -459,6 +476,38 @@ impl ServiceConfig {
             &static_ssh_backends,
             &nomad_backends,
         )?;
+        let microvm_bind = backends.microvm_bind;
+        if backends.microvm.is_empty() != microvm_bind.is_none()
+            || microvm_bind.is_some_and(|address| address.port() == 0)
+            || backends.microvm.len() > 256
+        {
+            return Err(invalid("MicroVM listener configuration is invalid"));
+        }
+        let microvm_backends = backends
+            .microvm
+            .into_iter()
+            .map(MicrovmBackendConfig::validate)
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut names = local_backend
+            .iter()
+            .map(|backend| backend.target().name())
+            .chain(
+                static_ssh_backends
+                    .iter()
+                    .map(|backend| backend.target().name()),
+            )
+            .chain(nomad_backends.iter().map(|backend| backend.target().name()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut capacity = 0usize;
+        for backend in &microvm_backends {
+            if !names.insert(backend.name()) {
+                return Err(invalid("duplicate backend name"));
+            }
+            capacity = capacity
+                .checked_add(backend.maximum_concurrent_builds())
+                .filter(|capacity| *capacity <= MAXIMUM_BACKEND_CONCURRENT_BUILDS)
+                .ok_or_else(|| invalid("MicroVM fleet capacity exceeds limit"))?;
+        }
         Ok(Self {
             running_disconnect_policy,
             output_retention,
@@ -479,14 +528,18 @@ impl ServiceConfig {
             static_ssh_consul,
             static_ssh_ec2,
             nomad_backends,
+            microvm_backends,
+            microvm_bind,
         })
     }
 }
 
+mod microvm;
 mod model;
 mod raw;
 mod validation;
 
+pub use microvm::MicrovmBackendConfig;
 pub use model::*;
 use raw::*;
 use validation::*;

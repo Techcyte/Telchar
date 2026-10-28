@@ -131,6 +131,10 @@ NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 nix develop -c cargo test --locked --workspace -- --test-threads=1
 ```
 
+Stock-client tests that require a shared canonical store can run through the
+[isolated canonical-store command runner](tests/canonical-store.md), without
+using the host Nix daemon or changing its store registration.
+
 The flake currently publishes and tests `x86_64-linux` outputs only.
 
 Useful packages:

@@ -1,10 +1,9 @@
 //! Tests shared build scheduling contracts and failure boundaries, including claim.
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use std::thread;
 
-use support::postgres::PostgresFixture;
 use telchar::backend::BackendKind;
 
 fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {

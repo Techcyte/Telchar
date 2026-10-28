@@ -33,7 +33,7 @@ impl ClassicBuildFixtureEnvelope {
             return Err(invalid("fixture daemon trust result changed"));
         }
 
-        let proxy_path = temporary_socket_path();
+        let proxy_path = fixture.root().join("observer.sock");
         let listener = UnixListener::bind(&proxy_path)?;
         let peer_socket = daemon.socket_path().to_path_buf();
         let observer = thread::spawn(move || -> io::Result<ClassicBuildFixtureEnvelope> {
@@ -243,7 +243,8 @@ fn assert_counts_within_fixture_envelope(
     for (field, value) in actual {
         assert!(
             *value <= limits[field],
-            "fixture count {field} exceeded its acceptance envelope"
+            "fixture count {field} measured {value}, exceeding limit {}",
+            limits[field]
         );
     }
 }
@@ -255,7 +256,8 @@ fn assert_lengths_within_fixture_envelope(
     for (field, value) in actual {
         assert!(
             *value <= limits[field],
-            "fixture length {field} exceeded its acceptance envelope"
+            "fixture length {field} measured {value}, exceeding limit {}",
+            limits[field]
         );
     }
 }
@@ -610,17 +612,6 @@ fn record_maximum(values: &mut BTreeMap<&'static str, u64>, field: &'static str,
         .entry(field)
         .and_modify(|maximum| *maximum = (*maximum).max(value))
         .or_insert(value);
-}
-
-fn temporary_socket_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "tc-envelope-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time after Unix epoch")
-            .as_nanos()
-    ))
 }
 
 fn invalid(message: &'static str) -> io::Error {

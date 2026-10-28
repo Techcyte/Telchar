@@ -74,6 +74,7 @@ in
           {
             networking.firewall.enable = false;
             virtualisation.docker.enable = true;
+            virtualisation.docker.extraPackages = [ pkgs.nftables ];
             services.postgresql = {
               enable = true;
               package = pkgs.postgresql;
@@ -165,11 +166,13 @@ in
           };
       };
       testScript = ''
+        ${builtins.readFile ../../../tests/nixos/docker-journal.py}
         start_all()
         gateway.wait_for_unit("docker.service")
         gateway.wait_for_unit("postgresql.service")
         gateway.wait_for_unit("nix-daemon.socket")
         gateway.succeed("docker load < ${telcharImage}")
+        check_docker_journal(gateway, signature_errors=1)
         gateway.succeed("install -d -m 0700 -o 995 -g 995 /etc/telchar-oci /run/telchar-oci /var/lib/telchar/import /var/lib/telchar/gc-roots /var/lib/telchar-oci/ingress/.ssh")
         gateway.succeed("cat > /etc/telchar-oci/telchar.toml <<'EOF'\nrunning_disconnect_policy = \"detach-and-finish\"\n\n[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n\n[backends.local]\nname = \"local\"\nsystem = \"${system}\"\nmaximum_concurrent_builds = 1\nEOF\nchmod 0444 /etc/telchar-oci/telchar.toml")
         client.succeed("mkdir -p /root/.ssh && ssh-keygen -q -t ed25519 -N \"\" -f /root/.ssh/telchar")
@@ -228,7 +231,10 @@ in
         gateway.succeed("docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true")
         gateway.succeed("systemctl start nix-daemon.socket")
         gateway.wait_for_unit("nix-daemon.socket")
+        crash_cursor = gateway.succeed("journalctl -b -u docker.service -n 1 --show-cursor --no-pager | sed -n 's/^-- cursor: //p'").strip()
         gateway.succeed("docker rm -f telchar-daemon >/dev/null")
+        gateway.succeed("test -z \"$(docker ps -aq --filter name=^/telchar-daemon$)\"")
+        check_docker_journal(gateway, channel_errors=1, after=crash_cursor)
         gateway.wait_until_succeeds("test $(sudo -u postgres psql -d telchar -Atc \"select count(*) from singleton_ownership where owner_kind = 'daemon' and lease_expires_at > clock_timestamp()\") -eq 0", timeout=30)
         gateway.succeed("docker run -d --name telchar-daemon --network host --user 995:995 -e HOME=/var/lib/telchar -e TELCHAR_CONFIG=/etc/telchar/telchar.toml -e TELCHAR_DATABASE_URL=postgresql://telchar@localhost/telchar -e TELCHAR_GATEWAY_DISK_RESERVE_BYTES=1048576 -e TELCHAR_GATEWAY_STORE_URI=unix:///nix/var/nix/daemon-socket/socket -e TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=/var/lib/telchar/gc-roots -e TMPDIR=/var/lib/telchar/import -v /etc/telchar-oci:/etc/telchar:ro -v /run/telchar-oci:/run/telchar -v /var/lib/telchar/import:/var/lib/telchar/import -v /var/lib/telchar/gc-roots:/var/lib/telchar/gc-roots -v /nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket ${telcharImageReference} daemon --socket /run/telchar/daemon.sock --frontend-uid 995")
         gateway.wait_until_succeeds("test -S /run/telchar-oci/daemon.sock && docker inspect -f '{{.State.Running}}' telchar-daemon | grep -qx true", timeout=30)
@@ -284,6 +290,7 @@ in
       {
         networking.firewall.enable = false;
         virtualisation.docker.enable = true;
+        virtualisation.docker.extraPackages = [ pkgs.nftables ];
         virtualisation.docker.daemon.settings.features.containerd-snapshotter = false;
         services.postgresql = {
           enable = true;
@@ -309,11 +316,13 @@ in
         system.stateVersion = "26.05";
       };
     testScript = ''
+      ${builtins.readFile ../../../tests/nixos/docker-journal.py}
       start_all()
       runtime.wait_for_unit("docker.service")
       runtime.wait_for_unit("postgresql.service")
       runtime.succeed("docker load < ${telcharImage}")
       runtime.succeed("docker load < ${nomadWorkerImage}")
+      check_docker_journal(runtime)
       runtime.succeed("docker image inspect ${telcharImageReference} --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' | grep -Fx '[\"/bin/telchar\"] [\"daemon\",\"--socket\",\"/run/telchar/daemon.sock\",\"--frontend-uid\",\"995\"]'")
       runtime.succeed("docker image inspect ${nomadWorkerImageReference} --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' | grep -Fx '[\"/bin/telchar-nomad-worker\"] null'")
       runtime.succeed("test \"$(docker run --rm --entrypoint /bin/telchar ${telcharImageReference})\" = 'Nix worker protocol'")
@@ -331,6 +340,7 @@ in
       runtime.succeed("sudo -u postgres psql -d telchar -Atc 'select max(version) from telchar_schema_migrations' | grep -qx ${toString currentSchemaVersion}")
       runtime.succeed("docker stop --time 10 telchar-runtime")
       runtime.succeed("test \"$(docker inspect -f '{{.State.ExitCode}}' telchar-runtime)\" -eq 0")
+      check_docker_journal(runtime)
     '';
   };
 }

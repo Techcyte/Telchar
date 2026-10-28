@@ -8,8 +8,6 @@ use std::time::{Duration, Instant};
 use telchar::nomad::callback_service::NomadCallbackService;
 use telchar::service::config::ServiceConfig;
 
-mod support;
-
 #[test]
 fn shutdown_stops_accepting_and_force_closes_after_bounded_drain() {
     let root = std::env::temp_dir().join(format!(
@@ -110,7 +108,7 @@ maximum_diagnostic_bytes = 1024
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let address = listener.local_addr().expect("address reads");
-    let database = support::postgres::PostgresFixture::start();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(database.url()).expect("database migrates");
     let mut service = NomadCallbackService::start(
         listener,

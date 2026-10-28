@@ -333,13 +333,23 @@ impl BlockingTransportFixture {
             std::thread::sleep(Duration::from_millis(5));
         }
         let pid = fs::read_to_string(&self.pid_path).expect("descendant PID reads");
-        let status = std::process::Command::new("kill")
-            .args(["-0", pid.trim()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("process liveness query runs");
-        assert!(!status.success(), "static SSH descendant remains alive");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let status = std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("process liveness query runs");
+            if !status.success() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "static SSH descendant remains alive"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 

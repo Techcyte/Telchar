@@ -9,9 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod support;
-
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn arbitrary_ssh_command_is_replaced_by_forced_command() {
@@ -56,9 +54,7 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             .spawn()
             .expect("local forwarding starts"),
     );
-    thread::sleep(Duration::from_millis(200));
-    let mut local_connection = TcpStream::connect(("127.0.0.1", local_port))
-        .expect("local forwarding listener should exist before channel denial");
+    let mut local_connection = connect_forwarding_listener(local_port, &mut local);
     local_connection
         .set_read_timeout(Some(Duration::from_millis(500)))
         .expect("local forwarding read timeout sets");
@@ -121,9 +117,7 @@ fn ssh_tcp_forwarding_modes_are_rejected() {
             .spawn()
             .expect("dynamic forwarding starts"),
     );
-    thread::sleep(Duration::from_millis(200));
-    let mut dynamic_connection = TcpStream::connect(("127.0.0.1", dynamic_port))
-        .expect("dynamic forwarding listener should exist before channel denial");
+    let mut dynamic_connection = connect_forwarding_listener(dynamic_port, &mut dynamic);
     dynamic_connection
         .set_read_timeout(Some(Duration::from_millis(500)))
         .expect("dynamic forwarding read timeout sets");
@@ -361,7 +355,7 @@ impl Fixture {
     }
 
     fn start_with_maximum_sessions(maximum_sessions: usize) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = Path::new("/tmp").join(format!(
             "telchar-openssh-integration-{}-{}",
             std::process::id(),
             unique_suffix()
@@ -633,6 +627,27 @@ fn wait_for_path(path: &Path, child: &mut Child) {
             "child exited before fixture was ready"
         );
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn connect_forwarding_listener(port: u16, child: &mut Child) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(
+            child.try_wait().expect("forwarding status").is_none(),
+            "forwarding process exited before listener was ready"
+        );
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(connection) => return connection,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                assert!(
+                    Instant::now() < deadline,
+                    "forwarding listener not ready: {error}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("forwarding listener connection failed: {error}"),
+        }
     }
 }
 

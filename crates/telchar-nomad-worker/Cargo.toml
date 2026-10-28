@@ -20,8 +20,15 @@ serde_json.workspace = true
 sha2 = "0.11"
 hmac = "0.13"
 url = "2"
+rustls.workspace = true
+rustix = { version = "1.1.4", features = ["event"] }
 
 [dev-dependencies]
+aws-sdk-sts = { version = "1.116.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-credential-types = "1.3.0"
+aws-sdk-lambdamicrovms = { version = "1.13.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+telchar-test-support = { path = "../telchar-test-support" }
+postgres = "0.19"
 opentelemetry-proto.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

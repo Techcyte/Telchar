@@ -1,9 +1,7 @@
-mod support;
-
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use support::postgres::PostgresFixture;
+use telchar_test_support::postgres::PostgresFixture;
 
 fn pool_workers() -> BTreeSet<std::path::PathBuf> {
     std::fs::read_dir("/proc/self/task")

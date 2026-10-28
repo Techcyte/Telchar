@@ -15,13 +15,11 @@ use nix_worker_protocol::{
 };
 use telchar::fixture::nix::{NixFixture, TrustMode};
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 #[allow(dead_code)]
 #[path = "../../../tests/telemetry/collector.rs"]
 mod collector;
-
-use support::postgres::PostgresFixture;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -228,7 +226,7 @@ impl FrontendFixture {
         running_disconnect_policy: Option<&str>,
         once: bool,
     ) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = std::path::Path::new("/tmp").join(format!(
             "telchar-operation-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
@@ -269,10 +267,11 @@ impl FrontendFixture {
         daemon_command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .stderr(fs::File::create(root.join("daemon.stderr")).expect("daemon stderr creates"));
         daemon_command
             .env("TELCHAR_CONFIG", &config_path)
             .env("TELCHAR_DATABASE_URL", database.url())
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
             .env_remove("TELCHAR_RUNNING_DISCONNECT_POLICY")
             .env_remove("TELCHAR_TEST_BUILD_HELPER")
             .env_remove("TELCHAR_TEST_EXPORT_HELPER")
@@ -345,6 +344,16 @@ impl FrontendFixture {
             .expect("frontend starts")
     }
 
+    fn wait_for_daemon(&mut self) -> std::process::Output {
+        let status = self.daemon.wait().expect("daemon exits");
+        let stderr = fs::read(self.root.join("daemon.stderr")).expect("daemon stderr reads");
+        std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr,
+        }
+    }
+
     fn finish(mut self) -> String {
         let mut frontend_stderr = String::new();
         self.frontend
@@ -364,7 +373,7 @@ impl FrontendFixture {
         } else {
             false
         };
-        let daemon_output = self.daemon.wait_with_output().expect("daemon exits");
+        let daemon_output = self.wait_for_daemon();
         let _ = fs::remove_dir_all(self.root);
         assert!(
             terminated || daemon_output.status.success(),

@@ -58,7 +58,7 @@
         gateway.succeed("printf '%s' '" + derivation_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
         build = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' '" + derivation_path + "^*'"
         stock_client.succeed("(" + build + " > /tmp/nomad-build-first.out 2>&1) & echo $! > /tmp/nomad-build-first.pid")
-        nomad_server.wait_until_succeeds("nomad job status -namespace telchar -json | ${pkgs.jq}/bin/jq -e 'length == 1'", timeout=60)
+        nomad_server.wait_until_succeeds("${pkgs.curl}/bin/curl --fail --silent --show-error 'http://127.0.0.1:4646/v1/jobs?namespace=telchar' | ${pkgs.jq}/bin/jq -e 'length == 1'", timeout=60)
         job_id = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select backend_execution_id from shared_builds where derivation_path = '" + derivation_path + "'\"").strip()
         assert job_id.startswith("telchar-gateway-")
         nomad_server.succeed("nomad job status -namespace telchar '" + job_id + "'")
@@ -74,7 +74,7 @@
         stock_client.succeed("grep -Fqx '" + output_path + "' /tmp/nomad-build-follower.out || { cat /tmp/nomad-build-follower.out >&2; exit 1; }")
         stock_client.succeed(build + " > /tmp/nomad-build-reused.out 2>&1 || { cat /tmp/nomad-build-reused.out >&2; exit 1; }")
         stock_client.succeed("grep -Fqx '" + output_path + "' /tmp/nomad-build-reused.out")
-        nomad_server.succeed("test $(nomad job status -namespace telchar -json | ${pkgs.jq}/bin/jq 'length') -eq 1")
+        nomad_server.succeed("${pkgs.curl}/bin/curl --fail --silent --show-error 'http://127.0.0.1:4646/v1/jobs?namespace=telchar' | ${pkgs.jq}/bin/jq -e 'length == 1'")
         nomad_server.succeed("nomad job stop -namespace telchar -purge '" + job_id + "'")
         nomad_server.wait_until_fails("nomad job status -namespace telchar '" + job_id + "'", timeout=30)
       '';

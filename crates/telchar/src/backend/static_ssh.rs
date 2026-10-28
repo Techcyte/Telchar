@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use nix_worker_protocol::{
     AddToStoreNarInfo, BuildDerivationClientRequest, BuildDerivationOutputRequest,
-    WorkerBuildStatus, WorkerClient, WorkerPathInfo,
+    WorkerBuildStatus, WorkerClient, WorkerOptions, WorkerPathInfo,
 };
 
 use crate::backend::{BuildBackend, BuildExecution, BuildResult, BuildStatus, OutputTrust};
@@ -390,6 +390,12 @@ fn execute_remote_build(
         output_count = outputs.len(),
         "static SSH worker protocol operation started"
     );
+    remote
+        .set_options(&WorkerOptions {
+            overrides: vec![(b"builders".to_vec(), Vec::new())],
+            ..WorkerOptions::default()
+        })
+        .map_err(|_| io::Error::other("static SSH execution options failed"))?;
     let remote_result =
         remote.build_derivation(&request, &mut |message| send_logs(logs, message))?;
     tracing::trace!(

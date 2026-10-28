@@ -213,6 +213,11 @@ fn configured_backends(config: &ServiceConfig) -> Vec<ConfiguredBackend> {
             configured_backend(backend.target(), backend.maximum_concurrent_builds())
         }),
     );
+    backends.extend(
+        config.microvm_backends().iter().map(|backend| {
+            configured_backend(backend.target(), backend.maximum_concurrent_builds())
+        }),
+    );
     backends
 }
 

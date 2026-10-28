@@ -225,7 +225,7 @@ fn daemon_rejects_oversized_and_stalled_envelopes_before_worker_protocol() {
 
 #[test]
 fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
-    let fixture = Fixture::start();
+    let mut fixture = Fixture::start();
     let mut stream = UnixStream::connect(&fixture.socket).expect("frontend connects");
     IpcListener::send_envelope(
         &mut stream,
@@ -245,13 +245,28 @@ fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
         },
     )
     .expect("error envelope sends");
-    write_word(&mut stream, CLIENT_WORKER_MAGIC);
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
         .expect("response timeout sets");
     let mut byte = [0; 1];
-    assert_eq!(stream.read(&mut byte).unwrap_or(0), 0);
-    fixture.finish_with_failure();
+    assert_eq!(
+        stream.read(&mut byte).expect("rejected connection closes"),
+        0
+    );
+    let output = wait_with_deadline(&mut fixture.daemon, Duration::from_secs(2));
+    assert!(!output.status.success(), "daemon accepted invalid envelope");
+    assert!(output.stdout.is_empty(), "daemon wrote to stdout");
+    let stderr = String::from_utf8(output.stderr).expect("daemon stderr is UTF-8");
+    assert!(
+        stderr.contains("frontend reported an IPC envelope error"),
+        "unexpected rejection: {stderr}"
+    );
+    assert!(
+        telchar::persistence::read_protocol_session(fixture.database.url(), "failed-session")
+            .expect("rejected session reads")
+            .is_none()
+    );
+    let _ = fs::remove_dir_all(&fixture.root);
 }
 
 #[test]

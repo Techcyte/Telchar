@@ -21,6 +21,7 @@ pub enum BackendKind {
     Local,
     StaticSsh,
     Nomad,
+    Microvm,
 }
 
 impl BackendKind {
@@ -29,6 +30,7 @@ impl BackendKind {
             Self::Local => "local",
             Self::StaticSsh => "static_ssh",
             Self::Nomad => "nomad",
+            Self::Microvm => "microvm",
         }
     }
 
@@ -37,6 +39,11 @@ impl BackendKind {
             Self::Local | Self::StaticSsh => BackendCapabilities::new(
                 ExecutionRecovery::OutputOnly,
                 CancellationCapability::ConnectionBound,
+                LogRecovery::LiveOnly,
+            ),
+            Self::Microvm => BackendCapabilities::new(
+                ExecutionRecovery::OutputOnly,
+                CancellationCapability::Explicit,
                 LogRecovery::LiveOnly,
             ),
             Self::Nomad => BackendCapabilities::new(
@@ -231,8 +238,8 @@ pub struct BackendPool {
 #[derive(Debug)]
 struct BackendPoolInner {
     targets: Vec<BackendTarget>,
-    permits: Mutex<Vec<BackendPermits>>,
-    changed: Condvar,
+    permits: Arc<Mutex<std::collections::BTreeMap<String, BackendPermits>>>,
+    changed: Arc<Condvar>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -249,6 +256,13 @@ impl BackendPool {
                 "backend pool is invalid",
             ));
         }
+        let mut names = std::collections::BTreeSet::new();
+        if targets.iter().any(|target| !names.insert(target.name())) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "duplicate backend name",
+            ));
+        }
         for (target, maximum) in targets.iter().zip(&maximums) {
             crate::service::metrics::backend_configured(
                 target.name(),
@@ -258,14 +272,50 @@ impl BackendPool {
         }
         Ok(Self {
             inner: Arc::new(BackendPoolInner {
-                targets,
-                permits: Mutex::new(
-                    maximums
-                        .into_iter()
-                        .map(|maximum| BackendPermits { maximum, active: 0 })
+                permits: Arc::new(Mutex::new(
+                    targets
+                        .iter()
+                        .zip(maximums)
+                        .map(|(target, maximum)| {
+                            (
+                                target.name().to_owned(),
+                                BackendPermits { maximum, active: 0 },
+                            )
+                        })
                         .collect(),
-                ),
-                changed: Condvar::new(),
+                )),
+                targets,
+                changed: Arc::new(Condvar::new()),
+            }),
+        })
+    }
+
+    pub(crate) fn retain_capacity(self, current: &Self) -> io::Result<Self> {
+        let desired = self.inner.permits.lock().unwrap_or_else(|p| p.into_inner());
+        let mut retained = current
+            .inner
+            .permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (name, permits) in desired.iter() {
+            if retained
+                .get(name)
+                .is_some_and(|existing| existing.maximum != permits.maximum)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "backend capacity changed during reload",
+                ));
+            }
+        }
+        for (name, permits) in desired.iter() {
+            retained.entry(name.clone()).or_insert(*permits);
+        }
+        Ok(Self {
+            inner: Arc::new(BackendPoolInner {
+                targets: self.inner.targets.clone(),
+                permits: Arc::clone(&current.inner.permits),
+                changed: Arc::clone(&current.inner.changed),
             }),
         })
     }
@@ -371,10 +421,10 @@ impl BackendPool {
                 .targets
                 .iter()
                 .enumerate()
-                .filter(|(index, target)| {
+                .filter(|(_, target)| {
                     target.supports(system, required_features)
                         && available(target)
-                        && permits[*index].active < permits[*index].maximum
+                        && permits[target.name()].active < permits[target.name()].maximum
                 })
                 .fold(None, |selected, (index, target)| match selected {
                     Some((_, priority)) if priority >= target.selection_priority() => selected,
@@ -382,7 +432,10 @@ impl BackendPool {
                 })
                 .map(|(index, _)| index);
             if let Some(index) = index {
-                permits[index].active += 1;
+                permits
+                    .get_mut(self.inner.targets[index].name())
+                    .expect("configured capacity")
+                    .active += 1;
                 let target = &self.inner.targets[index];
                 crate::service::metrics::backend_selection(
                     Some(target.name()),
@@ -463,7 +516,9 @@ impl BackendPool {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
-            let selected = &mut permits[index];
+            let selected = permits
+                .get_mut(self.inner.targets[index].name())
+                .expect("configured capacity");
             if selected.active < selected.maximum {
                 selected.active += 1;
                 let target = &self.inner.targets[index];
@@ -540,7 +595,10 @@ impl Drop for BackendPermit {
             .permits
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        permits[self.index].active -= 1;
+        permits
+            .get_mut(self.pool.targets[self.index].name())
+            .expect("configured capacity")
+            .active -= 1;
         let target = &self.pool.targets[self.index];
         crate::service::metrics::backend_permit_released(target.name(), target.kind().as_str());
         self.pool.changed.notify_all();

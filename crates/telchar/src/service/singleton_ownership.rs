@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::persistence::{Database, connect, validate_connection};
+use crate::persistence::{connect, validate_connection};
 
 const DAEMON_OWNER_KIND: &str = "daemon";
 const LOCAL_EXECUTOR_OWNER_KIND: &str = "local-executor";
@@ -47,8 +47,8 @@ impl fmt::Display for SingletonOwnershipError {
 impl std::error::Error for SingletonOwnershipError {}
 
 pub struct SingletonOwnership {
-    database: Database,
     database_url: String,
+    database: crate::persistence::Database,
     owner_kind: &'static str,
     owner_token: String,
     generation: i64,
@@ -83,9 +83,7 @@ impl SingletonOwnership {
     ) -> Result<Self, SingletonOwnershipError> {
         let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
         let owner_token = owner_token();
-        let database = Database::connect(database_url)
-            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
-        let mut connection = connect(&database)
+        let mut connection = connect(database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let row = connection
             .query_opt(
@@ -101,14 +99,20 @@ impl SingletonOwnership {
         let generation = row
             .try_get(0)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
-        Ok(Self {
+        drop(connection);
+        let database_url = fenced_database_url(database_url, owner_kind, &owner_token, generation)?;
+        let database = crate::persistence::Database::connect(&database_url)
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+        let ownership = Self {
+            database_url,
             database,
-            database_url: fenced_database_url(database_url, owner_kind, &owner_token, generation)?,
             owner_kind,
             owner_token,
             generation,
             lease_duration,
-        })
+        };
+        ownership.verify()?;
+        Ok(ownership)
     }
 
     pub fn generation(&self) -> i64 {
@@ -119,7 +123,11 @@ impl SingletonOwnership {
         &self.database_url
     }
 
-    pub fn renew(&mut self) -> Result<(), SingletonOwnershipError> {
+    pub fn database(&self) -> &crate::persistence::Database {
+        &self.database
+    }
+
+    pub fn renew(&self) -> Result<(), SingletonOwnershipError> {
         renew_lease(
             &self.database,
             self.owner_kind,
@@ -171,7 +179,14 @@ impl SingletonOwnership {
     }
 
     pub fn verify(&self) -> Result<(), SingletonOwnershipError> {
-        let mut connection = connect(&self.database)
+        self.verify_database(&self.database)
+    }
+
+    pub(crate) fn verify_database(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> Result<(), SingletonOwnershipError> {
+        let mut connection = connect(database)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
         let current = connection
             .query_opt(
@@ -188,7 +203,8 @@ impl SingletonOwnership {
 
 impl Drop for SingletonOwnership {
     fn drop(&mut self) {
-        let Ok(mut connection) = connect(&self.database) else {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        let Ok(mut connection) = self.database.connection_until(deadline) else {
             return;
         };
         let _ = connection.execute(
@@ -199,7 +215,7 @@ impl Drop for SingletonOwnership {
 }
 
 fn renew_lease(
-    database: &Database,
+    database: &crate::persistence::Database,
     owner_kind: &str,
     owner_token: &str,
     generation: i64,

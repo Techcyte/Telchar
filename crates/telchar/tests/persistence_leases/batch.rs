@@ -7,8 +7,8 @@ use telchar::persistence::{
 
 fn database() -> (PostgresFixture, Database) {
     let fixture = PostgresFixture::start();
-    persistence::migrate(fixture.url()).unwrap();
-    let database = Database::connect(fixture.url()).unwrap();
+    persistence::migrate(fixture.database()).unwrap();
+    let database = fixture.database().clone();
     (fixture, database)
 }
 

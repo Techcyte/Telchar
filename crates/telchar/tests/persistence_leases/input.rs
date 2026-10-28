@@ -5,9 +5,9 @@ use super::*;
 #[test]
 fn request_input_lease_batch_is_atomic_and_typed() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "input-batch-request",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
@@ -17,7 +17,7 @@ fn request_input_lease_batch_is_atomic_and_typed() {
     .expect("request persists");
 
     let records = telchar::persistence::create_request_input_leases_with_limit(
-        fixture.url(),
+        fixture.database(),
         "input-batch-request",
         30,
         &[
@@ -71,9 +71,9 @@ fn request_input_lease_batch_rejects_duplicate_paths_before_connection() {
 #[test]
 fn request_input_lease_batch_rolls_back_statement_failure() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "input-statement-failure",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
@@ -90,7 +90,7 @@ fn request_input_lease_batch_rolls_back_statement_failure() {
         .expect("failure trigger installs");
 
     let error = telchar::persistence::create_request_input_leases(
-        fixture.url(),
+        fixture.database(),
         "input-statement-failure",
         &[
             (
@@ -123,9 +123,9 @@ fn request_input_lease_batch_rolls_back_statement_failure() {
 #[test]
 fn request_input_lease_batch_rolls_back_deferred_commit_failure() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "input-commit-failure",
         "/nix/store/11111111111111111111111111111111-test.drv",
         "x86_64-linux",
@@ -142,7 +142,7 @@ fn request_input_lease_batch_rolls_back_deferred_commit_failure() {
         .expect("commit trigger installs");
 
     let error = telchar::persistence::create_request_input_leases(
-        fixture.url(),
+        fixture.database(),
         "input-commit-failure",
         &[(
             "input-commit-1".to_owned(),

@@ -25,9 +25,45 @@ struct ConfiguredBackendsInner {
     static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
     schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     nomad: Vec<NomadBackendConfig>,
+    microvm: Vec<(String, Arc<crate::microvm::service::Service>)>,
 }
 
 impl ConfiguredBackends {
+    pub fn with_microvm_services(
+        config: &ServiceConfig,
+        gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
+        services: Vec<Arc<crate::microvm::service::Service>>,
+    ) -> io::Result<Self> {
+        let health =
+            crate::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
+        let scheduling = Arc::new(RwLock::new(
+            config
+                .static_ssh_backends()
+                .iter()
+                .map(|backend| backend.target().name().to_owned())
+                .collect(),
+        ));
+        Self::compose(
+            config,
+            config.static_ssh_backends().to_vec(),
+            gateway_store.into(),
+            None,
+            health,
+            scheduling,
+            services,
+        )
+    }
+
+    fn microvm_ready(&self, target: &crate::backend::BackendTarget) -> bool {
+        target.kind() != BackendKind::Microvm
+            || self
+                .inner
+                .microvm
+                .iter()
+                .find(|(name, _)| name == target.name())
+                .is_some_and(|(_, service)| service.check().is_ok())
+    }
+
     pub fn new(
         config: &ServiceConfig,
         gateway_store: impl Into<Option<GatewayStoreEndpoint>>,
@@ -117,7 +153,26 @@ impl ConfiguredBackends {
         static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
         schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
     ) -> io::Result<Self> {
-        let gateway_store = gateway_store.into();
+        Self::compose(
+            config,
+            static_ssh,
+            gateway_store.into(),
+            local_build_helper,
+            static_ssh_health,
+            schedulable_static_ssh,
+            Vec::new(),
+        )
+    }
+
+    fn compose(
+        config: &ServiceConfig,
+        static_ssh: Vec<StaticSshBackendConfig>,
+        gateway_store: Option<GatewayStoreEndpoint>,
+        local_build_helper: Option<PathBuf>,
+        static_ssh_health: crate::backend::static_ssh::StaticSshHealth,
+        schedulable_static_ssh: Arc<RwLock<BTreeSet<String>>>,
+        services: Vec<Arc<crate::microvm::service::Service>>,
+    ) -> io::Result<Self> {
         let mut targets = Vec::new();
         let mut maximums = Vec::new();
         if let Some(local) = config.local_backend() {
@@ -132,6 +187,34 @@ impl ConfiguredBackends {
             targets.push(backend.target().clone());
             maximums.push(backend.maximum_concurrent_builds());
         }
+        for policy in config.microvm_backends() {
+            targets.push(policy.target().clone());
+            maximums.push(policy.maximum_concurrent_builds());
+        }
+        let mut microvm = Vec::with_capacity(services.len());
+        for service in services {
+            service.check()?;
+            let policy = service.configuration();
+            if microvm.iter().any(|(name, _)| name == policy.name())
+                || targets.iter().any(|target| {
+                    target.name() == policy.name() && target.kind() != BackendKind::Microvm
+                })
+                || config
+                    .microvm_backends()
+                    .iter()
+                    .any(|configured| configured.name() == policy.name() && configured != policy)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "duplicate backend name",
+                ));
+            }
+            if !targets.iter().any(|target| target.name() == policy.name()) {
+                targets.push(policy.target().clone());
+                maximums.push(policy.maximum_concurrent_builds());
+            }
+            microvm.push((policy.name().to_owned(), service));
+        }
         Ok(Self {
             inner: Arc::new(ConfiguredBackendsInner {
                 pool: BackendPool::new(targets, maximums)?,
@@ -142,8 +225,52 @@ impl ConfiguredBackends {
                 static_ssh_health,
                 schedulable_static_ssh,
                 nomad: config.nomad_backends().to_vec(),
+                microvm,
             }),
         })
+    }
+
+    pub fn attach_microvm_services(
+        self,
+        config: &ServiceConfig,
+        services: Vec<Arc<crate::microvm::service::Service>>,
+    ) -> io::Result<Self> {
+        Self::compose(
+            config,
+            self.inner.static_ssh.clone(),
+            self.inner.gateway_store.clone(),
+            self.inner.local_build_helper.clone(),
+            self.inner.static_ssh_health.clone(),
+            Arc::clone(&self.inner.schedulable_static_ssh),
+            services,
+        )
+    }
+
+    pub(crate) fn retain_microvm_services(
+        self,
+        config: &ServiceConfig,
+        current: &Self,
+    ) -> io::Result<Self> {
+        if current.inner.microvm.is_empty() {
+            return Ok(self);
+        }
+        let mut replacement = Self::compose(
+            config,
+            self.inner.static_ssh.clone(),
+            self.inner.gateway_store.clone(),
+            self.inner.local_build_helper.clone(),
+            self.inner.static_ssh_health.clone(),
+            Arc::clone(&self.inner.schedulable_static_ssh),
+            current
+                .inner
+                .microvm
+                .iter()
+                .map(|(_, service)| Arc::clone(service))
+                .collect(),
+        )?;
+        let inner = Arc::get_mut(&mut replacement.inner).expect("exclusive routing construction");
+        inner.pool = inner.pool.clone().retain_capacity(&current.inner.pool)?;
+        Ok(replacement)
     }
 
     pub fn targets(&self) -> impl Iterator<Item = &crate::backend::BackendTarget> {
@@ -216,6 +343,9 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
     }
 
     fn recover_outputs(&mut self, build: &crate::persistence::SharedBuild) -> io::Result<bool> {
+        if build.backend_kind == BackendKind::Microvm {
+            return Ok(false);
+        }
         let config = self
             .inner
             .static_ssh
@@ -318,7 +448,7 @@ impl BuildBackend for BackendExecutor {
                     shared_build_key,
                 )))
             }
-            BackendKind::Local | BackendKind::StaticSsh => Ok(None),
+            BackendKind::Local | BackendKind::StaticSsh | BackendKind::Microvm => Ok(None),
         }
     }
 
@@ -335,6 +465,9 @@ impl BuildBackend for BackendExecutor {
                 required_features,
                 self.backends.inner.permit_wait,
                 |target| {
+                    if !self.backends.microvm_ready(target) {
+                        return false;
+                    }
                     target.kind() != BackendKind::StaticSsh
                         || (self
                             .backends
@@ -365,6 +498,7 @@ impl BuildBackend for BackendExecutor {
             .targets()
             .filter(|target| {
                 target.supports(system, required_features)
+                    && self.backends.microvm_ready(target)
                     && (target.kind() != BackendKind::StaticSsh
                         || (self
                             .backends
@@ -482,6 +616,18 @@ impl BuildBackend for BackendExecutor {
             "backend execution started"
         );
         let mut backend: Box<dyn BuildBackend> = match target_kind {
+            BackendKind::Microvm => {
+                let (_, service) = self
+                    .backends
+                    .inner
+                    .microvm
+                    .iter()
+                    .find(|(name, _)| name == &target_name)
+                    .ok_or_else(|| {
+                        io::Error::other("selected MicroVM service is not configured")
+                    })?;
+                Box::new(Arc::clone(service))
+            }
             BackendKind::Local => match (
                 &self.backends.inner.local_build_helper,
                 &self.backends.inner.gateway_store,

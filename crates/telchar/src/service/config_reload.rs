@@ -102,9 +102,12 @@ impl BackendReload {
         backends: &ReloadableBackends,
         health_service: &mut StaticSshHealthService,
     ) -> io::Result<crate::service::config::StaticSshReloadChanges> {
+        let replacement = self
+            .backends
+            .retain_microvm_services(&self.config, &backends.snapshot())?;
         backends.disable_static_ssh_not_in(&self.desired_static_ssh);
         health_service.replace(self.health_service)?;
-        backends.replace(self.backends);
+        backends.replace(replacement);
         *current = self.config;
         Ok(self.changes)
     }

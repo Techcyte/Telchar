@@ -176,15 +176,39 @@ impl DiskReserve {
         staging_directory: &Path,
         nar_size: u64,
     ) -> Result<(), AdmissionFailure> {
+        self.admit_staging(probe, store_directory, staging_directory, nar_size, 1)
+    }
+
+    pub fn admit_promotion(
+        self,
+        probe: &dyn DiskReserveProbe,
+        store_directory: &Path,
+        staging_directory: &Path,
+        nar_size: u64,
+    ) -> Result<(), AdmissionFailure> {
+        self.admit_staging(probe, store_directory, staging_directory, nar_size, 2)
+    }
+
+    fn admit_staging(
+        self,
+        probe: &dyn DiskReserveProbe,
+        store_directory: &Path,
+        staging_directory: &Path,
+        nar_size: u64,
+        staging_copies: u64,
+    ) -> Result<(), AdmissionFailure> {
+        let staging_bytes = nar_size.checked_mul(staging_copies).ok_or_else(|| {
+            AdmissionFailure::failed("staging", RejectionReason::ArithmeticOverflow)
+        })?;
         let store = measure(probe, store_directory, "gateway-store");
         let staging = measure(probe, staging_directory, "staging");
         match (store, staging) {
             (Some(store), Some(staging)) => {
-                self.admit_transfer_filesystems(store, staging, nar_size)
+                self.admit_transfer_filesystems(store, staging, nar_size, staging_bytes)
             }
             (None, None) => Ok(()),
             (Some(measured), None) => self.admit_copy("gateway-store", measured, nar_size),
-            (None, Some(measured)) => self.admit_copy("staging", measured, nar_size),
+            (None, Some(measured)) => self.admit_copy("staging", measured, staging_bytes),
         }
     }
 
@@ -205,10 +229,11 @@ impl DiskReserve {
         store: Filesystem,
         staging: Filesystem,
         nar_size: u64,
+        staging_bytes: u64,
     ) -> Result<(), AdmissionFailure> {
         if store.identity == staging.identity {
             let required = nar_size
-                .checked_mul(2)
+                .checked_add(staging_bytes)
                 .and_then(|bytes| self.bytes.checked_add(bytes))
                 .ok_or_else(|| {
                     AdmissionFailure::failed("shared", RejectionReason::ArithmeticOverflow)
@@ -223,7 +248,7 @@ impl DiskReserve {
                 AdmissionFailure::failed("gateway-store", RejectionReason::ArithmeticOverflow)
             })?;
             admit("gateway-store", store.available_bytes, required)?;
-            admit("staging", staging.available_bytes, required)
+            self.admit_copy("staging", staging, staging_bytes)
         }
     }
 }

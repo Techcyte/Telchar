@@ -826,21 +826,21 @@ fn release_unattached_request_leases_inner(
 }
 
 fn lock_active_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     lock_request_leases(transaction, request_id, false)
 }
 
 fn lock_active_request_leases_for_reconciliation(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
     lock_request_leases(transaction, request_id, true)
 }
 
 fn lock_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
     allow_terminal_outputs: bool,
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
@@ -854,15 +854,13 @@ fn lock_request_leases(
         .iter()
         .map(|row| decode_store_lease(row).map_err(StoreLeaseError))
         .collect::<Result<Vec<_>, _>>()?;
-    if leases.is_empty()
-        || leases
-            .iter()
-            .filter(|lease| {
-                lease.state == StoreLeaseState::Active
-                    && lease.purpose == StoreLeasePurpose::Derivation
-            })
-            .count()
-            > 1
+    if leases
+        .iter()
+        .filter(|lease| {
+            lease.state == StoreLeaseState::Active && lease.purpose == StoreLeasePurpose::Derivation
+        })
+        .count()
+        > 1
         || leases.iter().any(|lease| {
             lease.owner_kind != StoreLeaseOwnerKind::Request
                 || lease.owner_id != request_id
@@ -887,7 +885,7 @@ fn lock_request_leases(
 }
 
 fn release_locked_request_leases(
-    transaction: &mut postgres::Transaction<'_>,
+    transaction: &mut DatabaseTransaction<'_>,
     request_id: &str,
     locked: &[StoreLeaseRecord],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {

@@ -50,7 +50,46 @@ let
     // {
       pname = "telchar-nomad-worker";
       inherit cargoArtifacts;
+      nativeCheckInputs = [
+        pkgs.cacert
+        pkgs.python3
+      ]
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.util-linux
+        pkgs.bubblewrap
+      ];
+      cargoTestCommand =
+        if pkgs.stdenv.hostPlatform.isLinux then
+          "bash scripts/test-worker-package.sh \"$workerTestStore\" bash -c 'cargoWithProfile test \"$@\"' bash"
+        else
+          "cargoWithProfile test";
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
+      preCheck = ''
+        export TELCHAR_NIX_BIN=${pkgs.nix}/bin/nix
+        daemonBuildLog=$(mktemp)
+        cargoWithProfile build --locked -p telchar --bin telchar \
+          --config "profile.''${CARGO_PROFILE:-dev}.package.telchar.debug-assertions=true" \
+          --message-format json-render-diagnostics > "$daemonBuildLog"
+        daemonExecutable=$(${pkgs.jq}/bin/jq -rs \
+          '[.[] | select(.reason == "compiler-artifact" and .target.name == "telchar" and .executable != null)] | last | .executable' \
+          "$daemonBuildLog")
+        test -x "$daemonExecutable"
+        export TELCHAR_TEST_DAEMON_BIN="$TMPDIR/telchar-test-daemon"
+        cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
+      ''
+      + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        export -f cargo cargoWithProfile
+        export workerTestStore="$TMPDIR/worker-test-store"
+        mkdir "$workerTestStore"
+        cp -a --reflink=auto /nix/store/. "$workerTestStore/"
+        chmod u+w "$workerTestStore"
+        checkCpus=$(${pkgs.python3}/bin/python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
+        taskset -pc "$checkCpus" $$
+      '';
+      postInstall = ''
+        test ! -e "$out/bin/telchar"
+        test ! -e "$out/bin/telchar-test-daemon"
+      '';
     }
   );
 

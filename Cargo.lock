@@ -163,6 +163,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-lambdamicrovms"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ee94e824df8a441e49f72dfe4833755c017f6f8229bba123368ee32d20e6554"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sts"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -683,9 +708,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -1929,16 +1954,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "r2d2_postgres"
-version = "0.18.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efd4b47636dbca581cd057e2f27a5d39be741ea4f85fd3c29e415c55f71c7595"
-dependencies = [
- "postgres",
- "r2d2",
-]
-
-[[package]]
 name = "rand"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2191,9 +2206,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -2555,6 +2570,8 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-ec2",
+ "aws-sdk-lambdamicrovms",
+ "aws-sdk-sts",
  "base64 0.23.1",
  "hmac",
  "jsonwebtoken",
@@ -2565,7 +2582,6 @@ dependencies = [
  "opentelemetry_sdk",
  "postgres",
  "r2d2",
- "r2d2_postgres",
  "reqwest",
  "rustix",
  "rustls",
@@ -2576,8 +2592,10 @@ dependencies = [
  "sha2",
  "signal-hook",
  "telchar-telemetry",
+ "telchar-test-support",
  "tempfile",
  "tokio",
+ "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-stream",
  "toml",
@@ -2593,17 +2611,24 @@ dependencies = [
 name = "telchar-nomad-worker"
 version = "2026.10.0"
 dependencies = [
+ "aws-credential-types",
+ "aws-sdk-lambdamicrovms",
+ "aws-sdk-sts",
  "base64 0.23.1",
  "hmac",
  "nix-worker-protocol",
  "opentelemetry",
  "opentelemetry-proto",
+ "postgres",
  "reqwest",
+ "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "telchar",
  "telchar-telemetry",
+ "telchar-test-support",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -2629,6 +2654,13 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "telchar-test-support"
+version = "0.1.0"
+dependencies = [
+ "postgres",
 ]
 
 [[package]]
@@ -3315,9 +3347,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -3328,14 +3360,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

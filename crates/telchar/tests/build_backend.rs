@@ -101,6 +101,33 @@ fn backend_pool_falls_back_to_available_capacity_by_priority() {
 }
 
 #[test]
+fn backend_pool_rejects_ambiguous_capacity_identity() {
+    let result = BackendPool::new(
+        vec![
+            BackendTarget::new(
+                "shared",
+                BackendKind::Local,
+                "x86_64-linux",
+                [] as [&str; 0],
+            )
+            .unwrap(),
+            BackendTarget::new(
+                "shared",
+                BackendKind::Microvm,
+                "aarch64-linux",
+                [] as [&str; 0],
+            )
+            .unwrap(),
+        ],
+        vec![1, 10],
+    );
+    assert_eq!(
+        result.err().expect("ambiguous identity rejected").kind(),
+        io::ErrorKind::InvalidInput
+    );
+}
+
+#[test]
 fn backend_pool_preserves_order_for_equal_priorities() {
     let pool = BackendPool::new(
         vec![

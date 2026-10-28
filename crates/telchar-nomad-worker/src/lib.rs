@@ -1,5 +1,7 @@
 //! Runs the allocation-side authenticated transfer session, resolves inputs, invokes Nix, and returns logs and outputs.
 
+pub mod microvm;
+
 use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +47,7 @@ pub struct WorkerSession {
     inputs: InputTransferSession,
     transfer_chunk_bytes: usize,
     connection_deadline: Instant,
+    deadline_monitor: Option<microvm::SessionDeadline>,
 }
 
 impl WorkerSession {
@@ -151,6 +154,17 @@ impl WorkerSession {
             arguments: &specification.arguments,
             environment: &specification.environment,
         };
+        let _monitor = self
+            .deadline_monitor
+            .as_ref()
+            .map(|_| {
+                microvm::BuildMonitor::start(
+                    &self.socket,
+                    store.shutdown_handle()?,
+                    self.connection_deadline,
+                )
+            })
+            .transpose()?;
         let socket = &mut self.socket;
         let protocol = &mut self.protocol;
         let mut sequence = 0_u64;
@@ -275,6 +289,14 @@ impl WorkerSession {
             if receipt.path != metadata.path || !receipt.accepted {
                 return Err(invalid("gateway rejected worker output"));
             }
+            opentelemetry::global::meter("telchar-worker")
+                .u64_counter("telchar.worker.output.accepted_bytes")
+                .with_unit("By")
+                .build()
+                .add(
+                    metadata.nar_size,
+                    &[opentelemetry::KeyValue::new("outcome", "accepted")],
+                );
             tracing::debug!(event = "worker.output.accepted", index, path = %metadata.path);
         }
         tracing::info!(
@@ -342,6 +364,14 @@ impl WorkerSession {
                 )));
             }
             source.finish()?;
+            opentelemetry::global::meter("telchar-worker")
+                .u64_counter("telchar.worker.input.validated_bytes")
+                .with_unit("By")
+                .build()
+                .add(
+                    entry.nar_size,
+                    &[opentelemetry::KeyValue::new("outcome", "validated")],
+                );
             tracing::debug!(event = "worker.input.imported", index, path = %entry.path, nar_size = entry.nar_size);
         }
         self.inputs.ready_to_build()
@@ -895,7 +925,30 @@ fn read_transfer_frame(
 }
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
-    let mut socket = connect(config).map_err(|error| startup_error("connect", error))?;
+    let socket = connect(config).map_err(|error| startup_error("connect", error))?;
+    receive_authenticated_manifest(
+        socket,
+        config.maximum_manifest_bytes(),
+        config.transfer_chunk_bytes(),
+        config.maximum_connection_lifetime(),
+    )
+}
+
+/// Receives the admitted build after the caller authenticates the execution connection.
+pub fn receive_authenticated_manifest(
+    mut socket: WorkerSocket,
+    maximum_manifest_bytes: usize,
+    transfer_chunk_bytes: usize,
+    maximum_connection_lifetime: std::time::Duration,
+) -> io::Result<WorkerSession> {
+    if maximum_manifest_bytes == 0
+        || maximum_manifest_bytes > MAXIMUM_MANIFEST_METADATA_BYTES
+        || transfer_chunk_bytes == 0
+        || transfer_chunk_bytes > MAXIMUM_NAR_CHUNK_BYTES
+        || maximum_connection_lifetime.is_zero()
+    {
+        return Err(invalid("worker session limits are invalid"));
+    }
     tracing::info!(event = "worker.manifest.waiting");
     let message =
         read_binary_message(&mut socket).map_err(|error| startup_error("receive", error))?;
@@ -904,11 +957,8 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         bytes = message.len()
     );
     let mut input = message.as_slice();
-    let frame = read_frame(
-        &mut input,
-        ProtocolLimits::new(config.maximum_manifest_bytes(), 0),
-    )
-    .map_err(|error| startup_error("frame", error))?;
+    let frame = read_frame(&mut input, ProtocolLimits::new(maximum_manifest_bytes, 0))
+        .map_err(|error| startup_error("frame", error))?;
     if !input.is_empty() || frame.kind() != FrameKind::InputManifest || !frame.payload().is_empty()
     {
         return Err(startup_error(
@@ -916,9 +966,8 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
             invalid("worker manifest frame is invalid"),
         ));
     }
-    let manifest: InputManifest =
-        decode_metadata(frame.metadata(), config.maximum_manifest_bytes())
-            .map_err(|error| startup_error("metadata", error))?;
+    let manifest: InputManifest = decode_metadata(frame.metadata(), maximum_manifest_bytes)
+        .map_err(|error| startup_error("metadata", error))?;
     manifest
         .validate(MAXIMUM_MANIFEST_PATHS, MAXIMUM_INPUT_NAR_BYTES)
         .map_err(|error| startup_error("validation", error))?;
@@ -943,9 +992,10 @@ pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
         manifest,
         protocol,
         inputs,
-        transfer_chunk_bytes: config.transfer_chunk_bytes(),
+        transfer_chunk_bytes,
+        deadline_monitor: None,
         connection_deadline: Instant::now()
-            .checked_add(config.maximum_connection_lifetime())
+            .checked_add(maximum_connection_lifetime)
             .ok_or_else(|| invalid("worker connection lifetime is invalid"))?,
     })
 }

@@ -1,14 +1,15 @@
 use std::path::PathBuf;
 
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use postgres::{Client, Config, NoTls};
 use r2d2::{Pool, PooledConnection};
-use r2d2_postgres::PostgresConnectionManager;
+use tokio_postgres::Config;
+
+mod io;
+pub use io::{DatabaseClient, DatabaseError, DatabaseTransaction};
+use io::{Manager, Security};
 use rustls::{ClientConfig, RootCertStore};
-use scheduled_thread_pool::{OnPoolDropBehavior, ScheduledThreadPool};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
 
@@ -20,40 +21,96 @@ enum ConnectionSecurity {
 
 #[derive(Clone)]
 pub struct Database {
-    pool: DatabasePool,
+    pool: Pool<Manager>,
+    request: Option<RequestBudget>,
 }
 
 #[derive(Clone)]
-enum DatabasePool {
-    Plain(Pool<PostgresConnectionManager<NoTls>>),
-    Tls(Pool<PostgresConnectionManager<MakeRustlsConnect>>),
+struct RequestBudget {
+    deadline: Instant,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-pub enum DatabaseConnection {
-    Plain(PooledConnection<PostgresConnectionManager<NoTls>>),
-    Tls(PooledConnection<PostgresConnectionManager<MakeRustlsConnect>>),
+impl RequestBudget {
+    fn check(&self) -> Result<(), DatabaseError> {
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(DatabaseError::Cancelled);
+        }
+        if Instant::now() >= self.deadline {
+            return Err(DatabaseError::Deadline);
+        }
+        Ok(())
+    }
 }
+
+pub struct DatabaseConnection(PooledConnection<Manager>);
 
 impl Database {
     pub fn connect(database_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (config, security) = connection_config(database_url)?;
-        let pool = match security {
-            ConnectionSecurity::Plain => {
-                DatabasePool::Plain(build_pool(PostgresConnectionManager::new(config, NoTls))?)
+        let security = match security {
+            ConnectionSecurity::Plain => Security::Plain,
+            ConnectionSecurity::Tls { root_certificate } => {
+                Security::Tls(tls_connector(root_certificate)?)
             }
-            ConnectionSecurity::Tls { root_certificate } => DatabasePool::Tls(build_pool(
-                PostgresConnectionManager::new(config, tls_connector(root_certificate)?),
-            )?),
         };
-        Ok(Self { pool })
+        Ok(Self {
+            pool: build_pool(Manager { config, security })?,
+            request: None,
+        })
+    }
+
+    pub fn for_request(
+        &self,
+        deadline: Instant,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            request: Some(RequestBudget {
+                deadline,
+                cancelled,
+            }),
+        }
     }
 
     pub fn connection(
         &self,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.pool {
-            DatabasePool::Plain(pool) => Ok(DatabaseConnection::Plain(pool.get()?)),
-            DatabasePool::Tls(pool) => Ok(DatabaseConnection::Tls(pool.get()?)),
+        self.connection_until(Instant::now() + Duration::from_secs(5))
+    }
+
+    pub(crate) fn connection_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
+        let deadline = self
+            .request
+            .as_ref()
+            .map_or(deadline, |request| deadline.min(request.deadline));
+        loop {
+            if let Some(request) = &self.request {
+                request.check()?;
+            }
+            if Instant::now() >= deadline {
+                return Err(DatabaseError::Deadline.into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait = if self.request.is_some() {
+                remaining.min(Duration::from_millis(50))
+            } else {
+                remaining
+            };
+            let mut connection = match self.pool.get_timeout(wait) {
+                Ok(connection) => connection,
+                Err(_) if self.request.is_some() => continue,
+                Err(error) => return Err(error.into()),
+            };
+            match connection.validate(deadline, self.request.clone()) {
+                Ok(()) => return Ok(DatabaseConnection(connection)),
+                Err(error) if Instant::now() >= deadline => return Err(error.into()),
+                Err(_) => {}
+            }
         }
     }
 }
@@ -99,43 +156,31 @@ pub(crate) fn connect(
 }
 
 impl Deref for DatabaseConnection {
-    type Target = Client;
+    type Target = DatabaseClient;
 
     fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Plain(connection) => connection,
-            Self::Tls(connection) => connection,
-        }
+        &self.0
     }
 }
 
 impl DerefMut for DatabaseConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Plain(connection) => connection,
-            Self::Tls(connection) => connection,
-        }
+        &mut self.0
     }
 }
 
-fn build_pool<T>(
-    manager: PostgresConnectionManager<T>,
-) -> Result<Pool<PostgresConnectionManager<T>>, r2d2::Error>
-where
-    T: postgres::tls::MakeTlsConnect<postgres::Socket> + Clone + Send + Sync + 'static,
-    T::Stream: Send + Sync,
-    T::TlsConnect: Send,
-    <T::TlsConnect as postgres::tls::TlsConnect<postgres::Socket>>::Future: Send,
-{
-    let workers = ScheduledThreadPool::builder()
+fn build_pool(manager: Manager) -> Result<Pool<Manager>, r2d2::Error> {
+    let maintenance = scheduled_thread_pool::ScheduledThreadPool::builder()
         .num_threads(3)
         .thread_name_pattern("r2d2-worker-{}")
-        .on_drop_behavior(OnPoolDropBehavior::DiscardPendingScheduled)
+        .on_drop_behavior(scheduled_thread_pool::OnPoolDropBehavior::DiscardPendingScheduled)
         .build();
     Ok(Pool::builder()
-        .thread_pool(Arc::new(workers))
+        .thread_pool(std::sync::Arc::new(maintenance))
         .max_size(16)
         .min_idle(Some(0))
+        // Validation runs after checkout under the caller's remaining absolute budget.
+        .test_on_check_out(false)
         .connection_timeout(Duration::from_secs(5))
         .build_unchecked(manager))
 }

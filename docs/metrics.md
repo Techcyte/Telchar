@@ -154,6 +154,73 @@ Nomad submission attributes are `backend.name`, `resource.profile`, bounded inte
 
 Nomad pending demand, placement duration, backend permit utilization, and backend permit wait are intended for external autoscalers. Telchar exports demand and observed service behavior; it does not choose scaling policy.
 
+`telchar.worker.input.validated_bytes` is a byte counter with only
+`outcome=validated`. Shared worker input transfer records each requested NAR size
+after Nix accepts the import and the transfer reader confirms completion.
+Already-present inputs and failed or incomplete imports do not contribute.
+
+`telchar.worker.output.accepted_bytes` is a byte counter with only
+`outcome=accepted`. Shared worker output transfer records each NAR size only
+after receiving a matching accepted gateway receipt. Rejected, incomplete, or
+unacknowledged transfers do not contribute. Receipt acceptance is not itself the
+durable terminal build result.
+
+## Dedicated MicroVM worker
+
+The dedicated worker exports `telchar.microvm.worker.duration` in seconds with
+`outcome=success|failure`. `telchar.microvm.worker.phase.duration` adds bounded
+`phase`: `connect`, `manifest`, `resolve-inputs`, `import-inputs`, `build`,
+`report-failure`, or `return-outputs`. Build duration excludes output return;
+it is not a compiler-only measurement.
+
+`telchar.microvm.worker.deadline` counts failed primary operations observed at or
+after the absolute execution cutoff, with `outcome=expired`. Failure reporting
+does not count again. This observation does not establish that expiry caused the
+error; transport errors can race the cutoff. Enforcement remains the absolute
+session/build deadlines, independent of telemetry export.
+
+## MicroVM lifecycle
+
+All instruments below carry only bounded `outcome`; no intent, provider, account,
+region, path or credential labels are emitted.
+
+| Instrument | Kind | Unit | Outcomes and meaning |
+| --- | --- | --- | --- |
+| `telchar.microvm.launches` | counter | `{launch}` | `acknowledged` / `unknown` provider-call responses. |
+| `telchar.microvm.launch.duration` | histogram | `s` | Provider-call duration, excluding pre-dispatch rejection. |
+| `telchar.microvm.admissions` | counter | `{connection}` | `accepted` / `rejected` / `capacity` callback admission outcomes. |
+| `telchar.microvm.admission.rejections` | counter | `{connection}` | Bounded rejection stage: `ownership`, `protocol`, `bootstrap`, `authentication`, `capacity`, `binding`, `deadline`, or `internal`. |
+| `telchar.microvm.admission.duration` | histogram | `s` | Admission duration; capacity rejection records zero. |
+| `telchar.microvm.rendezvous` | counter | `{connection}` | `connected` / `error` execution-side callback waits. |
+| `telchar.microvm.rendezvous.duration` | histogram | `s` | Wait after acknowledged dispatch; failed launches never enter this wait. |
+| `telchar.microvm.cleanup.attempts` | counter | `{attempt}` | `released` / `unchanged` / `error` cleanup API results. |
+| `telchar.microvm.cleanup.duration` | histogram | `s` | Cleanup API duration. |
+| `telchar.microvm.obligations` | histogram | `{obligation}` | Retained count sampled per account/region scan, split `identified` / `unidentified`. |
+| `telchar.microvm.obligation.age` | histogram | `s` | Oldest retained reservation age per scan/category; zero when empty. |
+
+Rejection stages identify the operation that failed, not a forensic verdict.
+For example, a socket deadline during upgrade belongs to `protocol`; `deadline`
+identifies the explicit admission cutoff check after bootstrap. Authentication
+covers capability lookup before backend admission; `binding` includes exact
+provider/single-use admission and waiting-peer checks. No peer-supplied diagnostic
+or credential becomes a label. These stages do not classify later delivery races
+between an admitted connection and its execution receiver.
+
+Launch acknowledgment and callback connection do not prove build success.
+Cleanup `unchanged` includes both unresolved observations and already-resolved
+no-ops. Only exact provider termination observation establishes cleanup release.
+Retained obligations include unreleased reservations and identified instances
+without observed termination, even when capacity was independently released.
+`unidentified` includes reservations without provider identity, not exclusively
+quarantined launches.
+
+Obligation histograms aggregate repeated scan observations, including scans made
+by callers outside maintenance. They are not current fleet gauges; do not sum
+samples to estimate outstanding instances. Age starts at reservation creation,
+not at cleanup eligibility, and can include active builds. Accounts and regions
+share histogram series deliberately. These instruments do not replace durable
+operator reports for exact obligation inventory.
+
 ## Interpretation
 
 Useful service-level views include:

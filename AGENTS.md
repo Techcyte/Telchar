@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_64-linux` only; `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker` and `lib.microvmAwsContext { trust = PUBLIC_DER_PATH; }` provide the same-source ARM worker/context. `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
@@ -25,6 +25,7 @@ Four Rust 2024 crates form the Cargo workspace. Nix flake outputs target `x86_64
 | `crates/telchar/` | Gateway library and `telchar` binary: ingress, coordination, stores, backends, operator inspection, telemetry. |
 | `crates/telchar-nomad-worker/` | Allocation-side worker binary/library: callback authentication, inputs, Nix build, logs, output return. Depends on the gateway, protocol, and telemetry crates. |
 | `crates/telchar-telemetry/` | Shared local tracing, bounded OTLP exporters, and phase progress reporting for the gateway and allocation worker. No scheduling or persistence policy. |
+| `crates/telchar-test-support/` | Shared isolated PostgreSQL integration fixtures; dev-dependency only, not published. |
 | `crates/telchar/migrations/` | Numbered PostgreSQL schema migrations, embedded by `persistence/migrations.rs`. |
 | `nix/` | Packages, OCI archives, Telchar NixOS service module, SSH identity adapter, product flake checks. |
 | `nix/checks/nixos/`, `tests/nixos/` | Executable VM contracts and shared fixtures. `tests/nixos/lib.nix` exports constructors; `common.nix`, `ingress.nix`, `static-ssh.nix`, `nomad.nix`, and `recovery.nix` own their topologies and setup. |
@@ -105,7 +106,7 @@ nix develop -c cargo test --locked -p telchar --test shared_build_recovery -- --
 nix develop -c cargo test --locked -p telchar-nomad-worker -- --test-threads=1
 ```
 
-Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL/admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
+Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL fixtures live in `crates/telchar-test-support/`; admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
 
 ### Workspace and flake checks
 
@@ -113,7 +114,9 @@ Most gateway integration suites live in `crates/telchar/tests/` and are named af
 nix develop -c cargo fmt --all -- --check
 nix develop -c cargo check --locked --workspace
 nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
-nix develop -c cargo test --locked --workspace -- --test-threads=1
+nix develop -c cargo build --locked -p telchar --bin telchar
+export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
+nix develop -c bash tests/workspace.sh --locked
 NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
 
 nix build --no-link .#telchar .#telchar-nomad-worker
@@ -125,16 +128,16 @@ Run available language-server diagnostics before builds. Inspect all test output
 
 Important distinctions:
 
-- Full process/PostgreSQL integration authority is the serial workspace Cargo command above. `nix/checks/rust.nix` runs sandbox-compatible library tests, not the full integration suite.
+- Full process/PostgreSQL integration authority is the package-partitioned `tests/workspace.sh` command above. It runs all packages serially, with the gateway's canonical-store boundary separate from worker-owned stores; see `tests/canonical-store.md`. `nix/checks/rust.nix` runs sandbox-compatible library tests, not the full integration suite.
 - Run real-Nix/PostgreSQL fixtures as a non-root user with process/socket permissions. Helpers start isolated stores and databases; do not redirect them at production state. Nix fixtures also hold a cross-process lock; waiting on another test process is not necessarily a hung test. Do not bypass fixture locking to force parallelism.
 - Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.
-- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts. It is not synonymous with building every flake check.
+- CI authority is `.github/workflows/ci.yml`. Curated release verification is `./scripts/check-release.sh`: Rust checks, security scans, packages, OCI and selected VM contracts, including `nixos-microvm-service` with a simulated provider. Neither path provisions AWS resources. It is not synonymous with building every flake check.
 - Service boundary: `nix build --no-link .#checks.x86_64-linux.nixos-service-boundary`. Provider credential helper tests belong to telchar-gateway. Release tooling tests: `nix develop -c scripts/test-prepare-release.py`.
 
 ## Deployment and release pitfalls
 
-- Never share a local client workload's Nix store with its Telchar gateway: recursive store locking can deadlock builds. Gateway, PostgreSQL, GC roots, and spool persistence must be considered together for recovery.
+- Never route a local client build back into its originating Nix store through Telchar: the original request can hold store locks while waiting for assigned execution that needs those locks. Connection-scoped empty builders prevent assigned builds from delegating onward, but do not remove this originating-store lock cycle. A worker host may otherwise use Telchar for ordinary requests. See [Assigned execution](docs/compatibility.md#assigned-execution). Gateway, PostgreSQL, GC roots, and spool persistence must be considered together for recovery.
 - `TELCHAR_CONFIG` selects explicit service TOML; `TELCHAR_GATEWAY_STORE_URI` selects the operator-owned daemon socket. `store/runtime.rs` captures store configuration once and passes explicit dependencies. Debug-only `TELCHAR_TEST_*` helpers are not deployment APIs.
 - `nixosModules.telchar`/`default` is the only service module. PostgreSQL provisioning, host trusted-user changes, retained GC-root directories, SSH ingress, and credential acquisition belong to the deployment. `lib.sshForcedCommand` exposes the authenticated stdio adapter. `examples/nixos/` contains explicit host and AWS/Vault compositions; none are public module exports. Deployment-owned tests live in telchar-gateway. Nomad backend token consumption/reload, submission, callbacks, and recovery remain product tests in Telchar.
 - SIGHUP supports transactional static SSH inventory changes and contents-only rotation of existing Nomad token files, not arbitrary configuration hot reload. Existing executions retain exact selected targets.

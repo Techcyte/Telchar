@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success() {
-    let root = std::env::temp_dir().join(format!(
+    let root = std::path::Path::new("/tmp").join(format!(
         "telchar-operation-request-identities-{}-{}",
         std::process::id(),
         FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)

@@ -5,9 +5,9 @@ use super::*;
 #[test]
 fn create_request_output_leases_commits_complete_ordered_set() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "output-batch-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
@@ -17,7 +17,7 @@ fn create_request_output_leases_commits_complete_ordered_set() {
     .expect("request persists");
 
     let records = telchar::persistence::create_request_output_leases(
-        fixture.url(),
+        fixture.database(),
         "output-batch-request",
         Duration::from_secs(3_600),
         &[
@@ -87,10 +87,10 @@ fn create_request_output_leases_rejects_fractional_or_out_of_range_retention() {
 #[test]
 fn create_request_output_leases_rolls_back_second_row_conflict() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     for request_id in ["output-conflict-request", "output-existing-request"] {
         telchar::persistence::create_build_request(
-            fixture.url(),
+            fixture.database(),
             request_id,
             "/nix/store/11111111111111111111111111111111-output-test.drv",
             "x86_64-linux",
@@ -100,7 +100,7 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
         .expect("request persists");
     }
     let existing = telchar::persistence::create_store_lease(
-        fixture.url(),
+        fixture.database(),
         "output-conflict-2",
         telchar::persistence::StoreLeaseOwnerKind::Request,
         "output-existing-request",
@@ -110,7 +110,7 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
     .expect("existing lease persists");
 
     let error = telchar::persistence::create_request_output_leases(
-        fixture.url(),
+        fixture.database(),
         "output-conflict-request",
         Duration::from_secs(3_600),
         &[
@@ -131,12 +131,12 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
         telchar::persistence::StoreLeaseFailure::Conflict
     );
     assert!(
-        telchar::persistence::read_store_lease(fixture.url(), "output-conflict-1")
+        telchar::persistence::read_store_lease(fixture.database(), "output-conflict-1")
             .expect("first output lease reads")
             .is_none()
     );
     assert_eq!(
-        telchar::persistence::read_store_lease(fixture.url(), "output-conflict-2")
+        telchar::persistence::read_store_lease(fixture.database(), "output-conflict-2")
             .expect("existing output lease reads"),
         Some(existing)
     );
@@ -145,9 +145,9 @@ fn create_request_output_leases_rolls_back_second_row_conflict() {
 #[test]
 fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "output-validation-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
@@ -183,7 +183,7 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
     ] {
         assert_eq!(
             telchar::persistence::create_request_output_leases(
-                fixture.url(),
+                fixture.database(),
                 "output-validation-request",
                 Duration::from_secs(3_600),
                 &leases,
@@ -195,7 +195,7 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
     }
     assert_eq!(
         telchar::persistence::create_request_output_leases(
-            fixture.url(),
+            fixture.database(),
             "missing-output-request",
             Duration::from_secs(3_600),
             &[valid],
@@ -220,9 +220,9 @@ fn create_request_output_leases_rejects_invalid_batches_before_mutation() {
 #[test]
 fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "expiry-request",
         "/nix/store/11111111111111111111111111111111-expiry.drv",
         "x86_64-linux",
@@ -231,7 +231,7 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
     )
     .expect("request persists");
     telchar::persistence::create_request_output_leases(
-        fixture.url(),
+        fixture.database(),
         "expiry-request",
         Duration::from_secs(60),
         &[
@@ -252,9 +252,13 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
     .expect("output leases persist");
     let now = std::time::SystemTime::now() + Duration::from_secs(61);
 
-    let first =
-        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 1)
-            .expect("first expiry page releases");
+    let first = telchar::persistence::release_expired_request_output_leases(
+        fixture.database(),
+        now,
+        None,
+        1,
+    )
+    .expect("first expiry page releases");
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].lease_id, "expiry-a");
     assert_eq!(
@@ -265,7 +269,7 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
     assert!(first[0].expires_at.is_some());
 
     let second = telchar::persistence::release_expired_request_output_leases(
-        fixture.url(),
+        fixture.database(),
         now,
         Some("expiry-a"),
         256,
@@ -279,9 +283,14 @@ fn release_expired_output_leases_obeys_deadline_cursor_bound_and_state() {
         vec!["expiry-b", "expiry-c"]
     );
     assert!(
-        telchar::persistence::release_expired_request_output_leases(fixture.url(), now, None, 256,)
-            .expect("released rows are not selected again")
-            .is_empty()
+        telchar::persistence::release_expired_request_output_leases(
+            fixture.database(),
+            now,
+            None,
+            256,
+        )
+        .expect("released rows are not selected again")
+        .is_empty()
     );
 }
 
@@ -318,9 +327,9 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
     );
 
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "output-telemetry-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
@@ -332,7 +341,7 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
     tracing::dispatcher::with_default(&dispatch, || {
         telchar::persistence::create_request_output_leases(
-            fixture.url(),
+            fixture.database(),
             "output-telemetry-request",
             Duration::from_secs(3_600),
             &[(
@@ -384,9 +393,9 @@ fn create_request_output_leases_empty_set_avoids_database_and_redacts_telemetry(
 #[test]
 fn create_request_output_leases_rolls_back_deferred_commit_failure() {
     let fixture = PostgresFixture::start();
-    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     telchar::persistence::create_build_request(
-        fixture.url(),
+        fixture.database(),
         "output-commit-failure-request",
         "/nix/store/11111111111111111111111111111111-output-test.drv",
         "x86_64-linux",
@@ -404,7 +413,7 @@ fn create_request_output_leases_rolls_back_deferred_commit_failure() {
 
     assert_eq!(
         telchar::persistence::create_request_output_leases(
-            fixture.url(),
+            fixture.database(),
             "output-commit-failure-request",
             Duration::from_secs(3_600),
             &[(

@@ -7,10 +7,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod support;
+use telchar_test_support::postgres::PostgresFixture;
 
 use nix_worker_protocol::{ProtocolSessionLimits, WorkerReader};
-use support::postgres::PostgresFixture;
 use telchar::backend::{BackendKind, BackendTarget};
 use telchar::build::BuildRequest;
 use telchar::service::executor_service::{
@@ -282,7 +281,7 @@ fn temporary_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock follows epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    Path::new("/tmp").join(format!(
         "telchar-executor-service-{}-{nanos}-{sequence}",
         std::process::id()
     ))

@@ -12,6 +12,18 @@ use telchar::service::ipc::IpcListener;
 
 use super::{invalid, protocol_session_limits};
 
+pub(super) struct MicrovmShutdown<'a>(pub &'a [Arc<telchar::microvm::service::Service>]);
+
+impl Drop for MicrovmShutdown<'_> {
+    fn drop(&mut self) {
+        for service in self.0 {
+            if let Err(error) = service.shutdown() {
+                tracing::error!(event = "microvm.shutdown.failed", error = %error, "MicroVM shutdown failed");
+            }
+        }
+    }
+}
+
 pub(super) fn shutdown_daemon_services(
     callback: &mut Option<telchar::nomad::callback_service::NomadCallbackService>,
     maintenance: &mut telchar::service::daemon_services::MaintenanceService,
@@ -286,10 +298,161 @@ impl Drop for SessionPermit {
     }
 }
 
+pub(super) struct AdminService {
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+    active: Arc<Mutex<Option<UnixStream>>>,
+    thread: Option<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+impl AdminService {
+    pub(super) fn start(
+        path: PathBuf,
+        database: telchar::persistence::Database,
+        services: Vec<Arc<telchar::microvm::service::Service>>,
+    ) -> io::Result<Self> {
+        prepare_socket_path(&path)?;
+        let listener = std::os::unix::net::UnixListener::bind(&path)?;
+        let guard = SocketGuard(path.clone());
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600))?;
+        Self::start_listener(listener, guard, database, services)
+    }
+
+    fn start_listener(
+        listener: std::os::unix::net::UnixListener,
+        guard: SocketGuard,
+        database: telchar::persistence::Database,
+        services: Vec<Arc<telchar::microvm::service::Service>>,
+    ) -> io::Result<Self> {
+        listener.set_nonblocking(true)?;
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = Arc::clone(&stopped);
+        let active = Arc::new(Mutex::new(None::<UnixStream>));
+        let serving = Arc::clone(&active);
+        let thread = std::thread::Builder::new()
+            .name("telchar-admin".into())
+            .spawn(move || {
+                let _guard = guard;
+                while !stopping.load(std::sync::atomic::Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            {
+                                let mut active =
+                                    serving.lock().expect("admin socket mutex is not poisoned");
+                                if stopping.load(std::sync::atomic::Ordering::Acquire) {
+                                    break;
+                                }
+                                *active = Some(stream.try_clone()?);
+                            }
+                            let result = telchar::service::admin::serve(
+                                stream,
+                                &database,
+                                &services,
+                                Arc::clone(&stopping),
+                            );
+                            serving
+                                .lock()
+                                .expect("admin socket mutex is not poisoned")
+                                .take();
+                            if result.is_err()
+                                && !stopping.load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                tracing::warn!(
+                                    event = "admin.request.rejected",
+                                    "administrative request rejected"
+                                );
+                            }
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::park_timeout(Duration::from_millis(10));
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(())
+            })?;
+        Ok(Self {
+            stopped,
+            active,
+            thread: Some(thread),
+        })
+    }
+
+    pub(super) fn check(&mut self) -> io::Result<()> {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return Ok(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| io::Error::other("administrative listener panicked"))??;
+        }
+        Err(io::Error::other("administrative listener stopped"))
+    }
+}
+
+impl Drop for AdminService {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(socket) = self
+            .active
+            .lock()
+            .expect("admin socket mutex is not poisoned")
+            .as_ref()
+        {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
 pub(super) struct SocketGuard(pub(super) PathBuf);
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+    use std::time::Instant;
+
+    #[test]
+    fn administrative_listener_failure_is_reported_and_socket_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("admin.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(listener);
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let listener = std::os::unix::net::UnixListener::from(OwnedFd::from(socket));
+        let database = telchar::persistence::Database::connect(
+            "host=/nonexistent-admin-health-fixture dbname=telchar",
+        )
+        .unwrap();
+        let mut service =
+            AdminService::start_listener(listener, SocketGuard(path.clone()), database, Vec::new())
+                .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while service.check().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "listener failure was not reported"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!path.exists());
+        assert!(service.check().is_err());
     }
 }
