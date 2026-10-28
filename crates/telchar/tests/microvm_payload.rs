@@ -32,11 +32,12 @@ fn gateway_payload_runs_image_hook_with_exact_capability_and_identity() {
 sys.path.insert(0, sys.argv[1])
 from execution import ExecutionState
 payload = sys.stdin.read()
+trust = pathlib.Path(sys.argv[2])
 with tempfile.TemporaryDirectory() as directory:
     destination = pathlib.Path(directory) / 'binding'
     state = ExecutionState([sys.executable, '-c', 'import time; time.sleep(30)'],
                            [sys.executable, '-c', 'raise SystemExit(0)'],
-                           [sys.executable, '-c', 'raise SystemExit(0)'], destination)
+                           [sys.executable, '-c', 'raise SystemExit(0)'], destination, trust)
     assert state.start_hook({'microvmId': 'provider-exact', 'runHookPayload': payload})
     state.join()
     assert state.status() == 'succeeded'
@@ -45,6 +46,7 @@ with tempfile.TemporaryDirectory() as directory:
 "#,
         )
         .arg(root.join("deploy/microvm"))
+        .arg(root.join("crates/telchar-nomad-worker/tests/fixtures/microvm-cert.der"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
