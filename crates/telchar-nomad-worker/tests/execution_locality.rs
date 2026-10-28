@@ -62,6 +62,7 @@ fn instantiate(name: &str) -> BuildSpecification {
     let drv = fs::canonicalize(drv).unwrap().to_str().unwrap().to_owned();
     let metadata: serde_json::Value = serde_json::from_str(&command(&[
         "nix",
+        "--offline",
         "--extra-experimental-features",
         "nix-command",
         "derivation",
