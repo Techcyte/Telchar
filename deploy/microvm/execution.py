@@ -15,11 +15,12 @@ from urllib.parse import urlsplit
 
 
 class ExecutionState:
-    def __init__(self, daemon_command, worker_command, ready_command, destination):
+    def __init__(self, daemon_command, worker_command, ready_command, destination, trust):
         self.daemon_command = daemon_command
         self.worker_command = worker_command
         self.ready_command = ready_command
         self.destination = destination
+        self.trust = trust
         self.lock = threading.Lock()
         self.binding = None
         self.result = "idle"
@@ -65,6 +66,9 @@ class ExecutionState:
         with self.lock:
             if self.binding is not None:
                 return self.binding == binding
+            if (not os.path.isfile(self.trust) or not os.access(self.trust, os.R_OK)
+                    or not 0 < os.path.getsize(self.trust) <= 65536):
+                raise ValueError("runtime trust unavailable")
             descriptor = os.open(self.destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w") as output:
                 json.dump(binding, output)
@@ -233,14 +237,14 @@ def main():
         parser.add_argument("--" + name, required=True)
     args = parser.parse_args()
     state = ExecutionState([args.daemon], [args.worker, args.binding, args.trust, args.store],
-                           [args.ready], args.binding)
+                           [args.ready], args.binding, args.trust)
     def image_ready():
         try:
             commands = (args.daemon, args.ready, args.worker)
             parent = os.path.dirname(os.path.abspath(args.binding))
             return (all(os.path.isfile(path) and os.access(path, os.X_OK) for path in commands)
                     and os.path.isfile(args.trust) and os.access(args.trust, os.R_OK)
-                    and os.path.getsize(args.trust) > 0
+                    and 0 < os.path.getsize(args.trust) <= 65536
                     and os.path.isdir(parent) and os.access(parent, os.W_OK | os.X_OK)
                     and not os.path.lexists(args.binding))
         except OSError:

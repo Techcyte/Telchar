@@ -1,4 +1,4 @@
-//! Runs one execution using a protected runtime binding and image-owned TLS trust.
+//! Runs one execution using a protected runtime binding and runtime-mounted TLS trust.
 
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;

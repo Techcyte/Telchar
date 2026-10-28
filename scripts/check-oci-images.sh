@@ -4,12 +4,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-for package in \
-  telchar-oci \
-  telchar-nix-daemon-oci \
-  telchar-ssh-ingress-oci \
-  telchar-nomad-worker-oci; do
-  archive=$(nix build --no-link --print-out-paths ".#$package")
+system=${IMAGE_SYSTEM:-x86_64-linux}
+case "$system" in
+  x86_64-linux)
+    packages=(telchar-oci telchar-nix-daemon-oci telchar-ssh-ingress-oci telchar-nomad-worker-oci)
+    ;;
+  aarch64-linux)
+    packages=(telchar-microvm-execution-oci)
+    ;;
+  *)
+    echo "unsupported image system: $system" >&2
+    exit 1
+    ;;
+esac
+
+for package in "${packages[@]}"; do
+  archive=$(nix build --no-link --print-out-paths ".#packages.$system.$package")
   nix run nixpkgs#trivy -- image \
     --input "$archive" \
     --scanners secret \

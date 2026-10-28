@@ -1,5 +1,5 @@
 # Dedicated execution image composition; native sandbox and snapshot qualification required.
-{ pkgs, worker, trust }:
+{ pkgs, worker }:
 assert pkgs.stdenv.hostPlatform.system == "aarch64-linux";
 let
   runtime = pkgs.runCommand "microvm-execution-runtime" { } ''
@@ -15,11 +15,25 @@ let
   '';
   etc = import ./microvm-store.nix { inherit pkgs; };
   closure = pkgs.closureInfo {
-    rootPaths = [ pkgs.nix pkgs.python3 pkgs.coreutils pkgs.bash worker runtime daemon ready trust ];
+    rootPaths = [
+      pkgs.nix
+      pkgs.python3
+      pkgs.coreutils
+      pkgs.bash
+      worker
+      runtime
+      daemon
+      ready
+    ];
   };
   entrypoint = pkgs.writeShellScript "microvm-execution-entrypoint" ''
     set -euo pipefail
-    export PATH=${pkgs.lib.makeBinPath [ pkgs.nix pkgs.coreutils ]}
+    export PATH=${
+      pkgs.lib.makeBinPath [
+        pkgs.nix
+        pkgs.coreutils
+      ]
+    }
     umask 077
     mkdir -p /nix/var/nix/daemon-socket /run/telchar-microvm /tmp
     chmod 0700 /run/telchar-microvm
@@ -32,13 +46,31 @@ let
       --daemon ${daemon} --ready ${ready} \
       --worker ${worker}/bin/telchar-microvm-worker \
       --binding /run/telchar-microvm/execution.json \
-      --trust ${trust} --store unix:///nix/var/nix/daemon-socket/socket
+      --trust /run/telchar-microvm/trust.der --store unix:///nix/var/nix/daemon-socket/socket
   '';
+  imageConfig = {
+    User = "0:0";
+    Entrypoint = [ "/bin/telchar-microvm-execution" ];
+    Env = [
+      "HOME=/root"
+      "PYTHONDONTWRITEBYTECODE=1"
+    ];
+    Labels = {
+      "org.opencontainers.image.source" = "https://github.com/techcyte/telchar";
+      "org.opencontainers.image.title" = "Telchar MicroVM execution";
+    };
+  };
 in
 pkgs.dockerTools.buildLayeredImage {
   name = "telchar-microvm-execution";
-  tag = "unqualified";
-  contents = [ pkgs.nix pkgs.python3 pkgs.coreutils pkgs.bash ];
+  tag = worker.version;
+  passthru = { inherit imageConfig; };
+  contents = [
+    pkgs.nix
+    pkgs.python3
+    pkgs.coreutils
+    pkgs.bash
+  ];
   extraCommands = ''
     mkdir -p ./bin
     ln -s ${entrypoint} ./bin/telchar-microvm-execution
@@ -48,9 +80,5 @@ pkgs.dockerTools.buildLayeredImage {
     mkdir -p ./tmp ./run ./root ./var/empty
     chmod 1777 ./tmp
   '';
-  config = {
-    User = "0:0";
-    Entrypoint = [ "/bin/telchar-microvm-execution" ];
-    Env = [ "HOME=/root" "PYTHONDONTWRITEBYTECODE=1" ];
-  };
+  config = imageConfig;
 }

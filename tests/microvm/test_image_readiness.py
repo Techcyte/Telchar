@@ -1,5 +1,6 @@
 """Static image prerequisites through the actual lifecycle HTTP process."""
 import http.client
+import json
 import os
 import socket
 import subprocess
@@ -24,7 +25,6 @@ class ImageReadinessTests(unittest.TestCase):
                 command.chmod(0o700)
                 commands.append(command)
             trust = root / "trust.der"
-            trust.write_bytes(b"image-trust")
             binding = root / "binding"
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -38,10 +38,10 @@ class ImageReadinessTests(unittest.TestCase):
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
 
-            def request(route):
+            def request(route, body="{}"):
                 connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
                 try:
-                    connection.request("POST", "/aws/lambda-microvms/runtime/v1/" + route, "{}")
+                    connection.request("POST", "/aws/lambda-microvms/runtime/v1/" + route, body)
                     response = connection.getresponse()
                     response.read()
                     return response.status
@@ -52,21 +52,32 @@ class ImageReadinessTests(unittest.TestCase):
                 deadline = time.monotonic() + 3
                 while True:
                     try:
-                        self.assertEqual(request("ready"), 200)
+                        self.assertEqual(request("ready"), 503)
                         break
                     except OSError:
                         if time.monotonic() >= deadline or process.poll() is not None:
                             self.fail("image listener did not start")
                         time.sleep(.02)
+                payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm",
+                           "address": "127.0.0.1:443", "intent_id": "intent",
+                           "bearer": "a" * 43, "lifetime_seconds": 1}
+                hook = json.dumps({"microvmId": "exact", "runHookPayload": json.dumps(payload)})
+                self.assertEqual(request("run", hook), 400)
+                self.assertFalse(binding.exists())
+                trust.write_bytes(b"runtime-trust")
+                self.assertEqual(request("ready"), 200)
                 for command in commands:
                     command.chmod(0o600)
                     self.assertEqual(request("ready"), 503)
                     command.chmod(0o700)
                 trust.unlink()
                 self.assertEqual(request("validate"), 503)
-                trust.write_bytes(b"")
-                self.assertEqual(request("ready"), 503)
-                trust.write_bytes(b"image-trust")
+                for content in (b"", b"x" * 65537):
+                    trust.write_bytes(content)
+                    self.assertEqual(request("ready"), 503)
+                    self.assertEqual(request("run", hook), 400)
+                    self.assertFalse(binding.exists())
+                trust.write_bytes(b"runtime-trust")
                 binding.write_text("retained binding")
                 self.assertEqual(request("ready"), 503)
                 binding.unlink()
