@@ -107,6 +107,9 @@ jobs:
             keep-derivations = true
             keep-outputs = true
 
+      - name: Allow test namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Restore and save Nix store
         # v7
         uses: >-
