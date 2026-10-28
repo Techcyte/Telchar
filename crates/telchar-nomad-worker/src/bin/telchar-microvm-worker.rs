@@ -1,4 +1,4 @@
-//! Runs one execution using a protected runtime binding and runtime-mounted TLS trust.
+//! Runs one execution using a protected runtime binding and configured TLS roots.
 
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
@@ -52,6 +52,32 @@ fn phase<T>(
     result
 }
 
+fn trust_roots(path: impl AsRef<std::path::Path>) -> io::Result<rustls::RootCertStore> {
+    use rustls::pki_types::pem::PemObject;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(1048577)
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > 1048576 {
+        return Err(invalid());
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    if bytes.first() != Some(&0x30) {
+        for certificate in rustls::pki_types::CertificateDer::pem_slice_iter(&bytes) {
+            roots
+                .add(certificate.map_err(|_| invalid())?)
+                .map_err(|_| invalid())?;
+        }
+    } else {
+        roots.add(bytes.into()).map_err(|_| invalid())?;
+    }
+    if roots.is_empty() {
+        return Err(invalid());
+    }
+    Ok(roots)
+}
+
 fn run() -> io::Result<()> {
     let started = Instant::now();
     let mut arguments = std::env::args_os().skip(1);
@@ -88,15 +114,7 @@ fn run() -> io::Result<()> {
     let deadline = started
         .checked_add(Duration::from_secs(execution.lifetime_seconds))
         .ok_or_else(invalid)?;
-    let mut certificate = Vec::new();
-    std::fs::File::open(trust)?
-        .take(65537)
-        .read_to_end(&mut certificate)?;
-    if certificate.len() > 65536 {
-        return Err(invalid());
-    }
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(certificate.into()).map_err(|_| invalid())?;
+    let roots = trust_roots(trust)?;
     let tls = rustls::ClientConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
@@ -182,5 +200,52 @@ fn main() -> std::process::ExitCode {
             eprintln!("MicroVM worker failed");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trust_roots;
+
+    #[test]
+    fn loads_standard_ca_bundle_and_private_der() {
+        let bundle = std::env::var_os("SSL_CERT_FILE").expect("test CA bundle");
+        let roots = trust_roots(bundle).expect("standard CA roots");
+        assert!(roots.len() > 1);
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/microvm-cert.der"
+        );
+        assert_eq!(trust_roots(fixture).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_or_missing_explicit_trust() {
+        let path = std::env::temp_dir().join(format!("microvm-trust-{}", std::process::id()));
+        for bytes in [
+            Vec::new(),
+            b"invalid certificate".to_vec(),
+            vec![0; 1048577],
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(trust_roots(&path).is_err());
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(trust_roots(&path).is_err());
+    }
+
+    #[test]
+    fn loads_private_pem_bundle() {
+        let fixture = include_bytes!("../../tests/fixtures/microvm-cert.der");
+        use base64::Engine;
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::engine::general_purpose::STANDARD.encode(fixture)
+        );
+        let path = std::env::temp_dir().join(format!("microvm-pem-{}", std::process::id()));
+        std::fs::write(&path, &pem).unwrap();
+        let roots = trust_roots(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(roots.len(), 1);
     }
 }

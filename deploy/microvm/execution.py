@@ -67,7 +67,7 @@ class ExecutionState:
             if self.binding is not None:
                 return self.binding == binding
             if (not os.path.isfile(self.trust) or not os.access(self.trust, os.R_OK)
-                    or not 0 < os.path.getsize(self.trust) <= 65536):
+                    or not 0 < os.path.getsize(self.trust) <= 1048576):
                 raise ValueError("runtime trust unavailable")
             descriptor = os.open(self.destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w") as output:
@@ -233,8 +233,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--listen", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
-    for name in ("daemon", "ready", "worker", "binding", "trust", "store"):
+    for name in ("daemon", "ready", "worker", "binding", "store"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--trust", default=(os.environ.get("TELCHAR_MICROVM_TRUST_FILE")
+                        or os.environ.get("SSL_CERT_FILE") or "/etc/ssl/certs/ca-bundle.crt"))
     args = parser.parse_args()
     state = ExecutionState([args.daemon], [args.worker, args.binding, args.trust, args.store],
                            [args.ready], args.binding, args.trust)
@@ -244,7 +246,7 @@ def main():
             parent = os.path.dirname(os.path.abspath(args.binding))
             return (all(os.path.isfile(path) and os.access(path, os.X_OK) for path in commands)
                     and os.path.isfile(args.trust) and os.access(args.trust, os.R_OK)
-                    and 0 < os.path.getsize(args.trust) <= 65536
+                    and 0 < os.path.getsize(args.trust) <= 1048576
                     and os.path.isdir(parent) and os.access(parent, os.W_OK | os.X_OK)
                     and not os.path.lexists(args.binding))
         except OSError:

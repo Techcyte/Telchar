@@ -12,6 +12,7 @@ let
   closure = pkgs.closureInfo {
     rootPaths = [
       pkgs.nix
+      pkgs.cacert
       worker
       daemon
       ready
@@ -21,6 +22,7 @@ let
     #!/bin/sh
     set -eu
     umask 077
+    export SSL_CERT_FILE="''${SSL_CERT_FILE:-${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt}"
     mkdir -p /nix/var/nix/daemon-socket /run/telchar-microvm /tmp
     chmod 0700 /run/telchar-microvm
     chmod 1777 /tmp
@@ -31,7 +33,7 @@ let
       --listen 0.0.0.0 --daemon ${daemon} --ready ${ready} \
       --worker ${worker}/bin/telchar-microvm-worker \
       --binding /run/telchar-microvm/execution.json \
-      --trust /run/telchar-microvm/trust.der --store unix:///nix/var/nix/daemon-socket/socket
+      --store unix:///nix/var/nix/daemon-socket/socket
   '';
 in
 pkgs.runCommand "microvm-aws-context" { } ''

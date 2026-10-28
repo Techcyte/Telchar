@@ -157,7 +157,8 @@ nix build .#telchar-ssh-ingress-oci
 
 OCI images are published as `ghcr.io/techcyte/telchar`, `telchar-nomad-worker`, `telchar-microvm-execution` (ARM64), `telchar-nix-daemon`, and `telchar-ssh-ingress`. Use an exact `YYYY.M.PATCH` tag for a release or `main` for the latest unreleased main-branch build.
 
-The microVM image requires a runtime-mounted public gateway trust certificate;
+The microVM image uses standard CA certificates by default and supports an
+explicit runtime trust file for private PKI;
 see [microVM runtime packaging](docs/microvm.md#same-source-arm-worker-and-image-context).
 
 The gateway and worker images are application runtimes. The Nix-daemon image provides an isolated gateway-store sidecar, and the optional SSH-ingress image provides restricted stock-Nix ingress. See the [operator guide](docs/operations.md) for deployment requirements and the [Nomad guide](docs/nomad.md) for worker configuration.

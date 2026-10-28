@@ -146,27 +146,68 @@ nix build --impure --no-link --print-out-paths --expr '
   in flake.lib.microvmAwsContext'
 ```
 
-Both compositions require deployment to mount a public DER-encoded gateway TLS
-trust certificate read-only at `/run/telchar-microvm/trust.der`. No certificate
-is an image-build input or image content. Never mount a private key. Operators
-own certificate identity, validity, TLS termination and rotation. Certificate
-rotation replaces the runtime mount and starts a fresh execution; it does not
-require rebuilding the software image. There is no insecure or fixture-trust
-fallback. Missing, empty or oversized trust prevents readiness and run admission;
-the worker validates DER parsing, hostname and TLS certificate trust before
-connecting. `/run/telchar-microvm` is root-only and also holds the per-execution
-binding; mount the certificate file, not a directory that hides that binding.
+Both compositions include the pinned standard CA certificate bundle and select
+it through `SSL_CERT_FILE`. A gateway callback endpoint with a publicly trusted
+TLS certificate needs no custom certificate provisioning. Configure the TLS
+terminator to serve its full certificate chain and use a callback hostname
+covered by that certificate. TLS certificate and hostname verification remain
+mandatory; there is no insecure mode. Refresh the standard CA bundle through
+normal image rebuilds and releases.
+
+For private PKI, the lifecycle listener accepts `--trust PATH`, or
+`TELCHAR_MICROVM_TRUST_FILE=PATH`; these override `SSL_CERT_FILE` rather than
+adding roots to it. Files may contain a PEM certificate bundle or a single DER
+certificate. Explicit missing, empty, oversized (over 1 MiB) or malformed trust
+never falls back to public roots. Readiness checks file availability and size;
+the worker parses certificates before connecting. Operators obtain public CA
+certificates from their PKI administrator, not from an unauthenticated endpoint.
+Never supply a private key.
+
+For an ordinary container runtime that supports file mounts, for example:
+
+```sh
+docker run --rm \
+  --mount type=bind,src=/absolute/path/callback-ca.pem,dst=/run/telchar-microvm/ca.pem,readonly \
+  -e TELCHAR_MICROVM_TRUST_FILE=/run/telchar-microvm/ca.pem \
+  ghcr.io/techcyte/telchar-microvm-execution:YYYY.M.PATCH
+```
+
+This illustrates certificate wiring, not sandbox capability or AWS qualification.
+`/run/telchar-microvm` is root-only and also holds the execution binding; mount
+the certificate file, not a directory that hides that binding. Rotate private
+trust by replacing the provisioned public file and starting a fresh execution.
 
 The AWS context contains its Dockerfile and worker/Nix runtime closure, not a
 callback server or private key. The OCI image is a dedicated Linux execution
 runtime, not the AWS base image or an AWS snapshot. Deployment owns runtime
-certificate provisioning and AWS image construction. Use exact image versions
+private-certificate provisioning and AWS image construction. Use exact image versions
 and retain preceding artifacts for rollback.
 
 Derivation evaluation establishes source/version correspondence, not successful
 ARM compilation or runtime qualification. Image construction, selected-artifact
 sandbox qualification and AWS lifecycle evidence remain separate release gates.
 The flake does not create an AWS image, connector or deployment.
+
+## AWS runtime configuration boundary
+
+AWS [RunMicrovm](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_RunMicrovm.html)
+exposes `runHookPayload`, execution role and network connectors, not a host-file
+bind-mount parameter. AWS [launch documentation](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html)
+delivers that payload to `/run` after snapshot restore. Image environment
+variables are [set at image build time](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images.html#microvms-images-env-vars),
+not per launch. Thus the Docker mount example above is not an AWS deployment
+instruction.
+
+The supported stock AWS path uses the packaged public CA bundle and a publicly
+trusted gateway callback certificate. No trust bytes or private keys need to be
+sent in the launch payload. Telchar's strict run payload contains execution
+identity and capability, not certificate provisioning fields. Private-CA file
+retrieval from a trusted service during `/run` would require a deployment
+bootstrap integration; the shipped AWS context does not implement that retrieval
+or accept arbitrary certificate fields. Setting a trust-file path alone does not
+provision the file. Do not configure a private-CA gateway on AWS without that
+integration. No AWS API calls or live provisioning qualification are implied by
+this documented API review.
 
 ## Image version policy
 
@@ -359,8 +400,8 @@ Nix daemon and worker start only after an accepted run hook. No custom OpenSSL
 patch is used. Context construction is not full OCI or AWS runtime qualification.
 
 `nix/microvm-execution.nix` provides the ARM64-only dedicated execution OCI image
-with a runtime-mounted public DER trust certificate and the coordinated worker
-version. Registry publication is not AWS runtime or snapshot qualification. The
+with standard CA trust by default, an explicit runtime trust-file override and
+the coordinated worker version. Registry publication is not AWS runtime or snapshot qualification. The
 binding lives under root-only `/run/telchar-microvm`. Lifecycle `ready`,
 `validate`, `suspend` and `resume` accept only idle state; completed or failed execution cannot become
 a reusable snapshot through those hooks. That guard does not erase secrets from

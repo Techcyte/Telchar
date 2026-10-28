@@ -17,7 +17,7 @@ For questions and reviews, stay read-only unless Travis requests changes. For im
 
 ## Repository map
 
-Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker`, `packages.aarch64-linux.telchar-microvm-execution-oci` and `lib.microvmAwsContext` provide the same-source ARM worker, OCI image and AWS context. MicroVM trust is mounted at runtime, never supplied during image construction. `flake.lock` pins the tool and system-test dependencies.
+Four product Rust 2024 crates and a private test-support crate form the Cargo workspace. Gateway packages and checks target `x86_64-linux`; `packages.aarch64-linux.telchar-nomad-worker`, `packages.aarch64-linux.telchar-microvm-execution-oci` and `lib.microvmAwsContext` provide the same-source ARM worker, OCI image and AWS context. MicroVM TLS uses the packaged standard CA bundle by default; private trust is an explicit runtime file override, never a deployment certificate baked into the image. AWS has no host bind-mount launch field; private-CA retrieval requires deployment bootstrap integration. `flake.lock` pins the tool and system-test dependencies.
 
 | Location | Responsibility |
 | --- | --- |
