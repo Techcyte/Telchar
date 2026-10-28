@@ -127,10 +127,24 @@ jobs:
         run: nix build --impure --out-link "$RUNNER_TEMP/telchar" .#telchar
 
       - name: Build Nomad worker
-        run: >-
-          nix build --impure
-          --out-link "$RUNNER_TEMP/telchar-nomad-worker"
-          .#telchar-nomad-worker
+        run: |
+          log="$RUNNER_TEMP/telchar-nomad-worker.log"
+          set +e
+          nix build --impure -L --log-lines 120 \
+            --out-link "$RUNNER_TEMP/telchar-nomad-worker" \
+            .#telchar-nomad-worker 2>&1 | tee "$log"
+          build_status=("${PIPESTATUS[@]}")
+          set -e
+          if ((build_status[0] != 0)); then
+            diagnostics=$(tail -n 120 "$log" | tail -c 24000)
+            diagnostics=${diagnostics//'%'/'%25'}
+            diagnostics=${diagnostics//$'\r'/'%0D'}
+            diagnostics=${diagnostics//$'\n'/'%0A'}
+            printf '::error title=Worker package failure::%s\n' \
+              "$diagnostics"
+            exit "${build_status[0]}"
+          fi
+          exit "${build_status[1]}"
 
       - name: Test OCI publication contracts
         run: nix develop -c python scripts/test-publish-oci-images.py
