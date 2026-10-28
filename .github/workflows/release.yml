@@ -32,6 +32,9 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Allow test namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Verify prepared release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
