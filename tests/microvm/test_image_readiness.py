@@ -14,7 +14,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ImageReadinessTests(unittest.TestCase):
+    def test_standard_ca_bundle_without_custom_trust(self):
+        self.check_readiness(mode="standard")
+
     def test_readiness_requires_artifacts_without_executing_them(self):
+        self.check_readiness(mode="argument")
+
+    def test_private_trust_environment_overrides_standard_bundle(self):
+        self.check_readiness(mode="environment")
+
+    def check_readiness(self, mode):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / "executed"
@@ -29,14 +38,17 @@ class ImageReadinessTests(unittest.TestCase):
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
+            trust_arguments = ["--trust", str(trust)] if mode == "argument" else []
             process = subprocess.Popen([
                 sys.executable, str(ROOT / "deploy/microvm/execution.py"),
                 "--listen", "127.0.0.1", "--port", str(port),
                 "--daemon", str(commands[0]), "--ready", str(commands[1]),
-                "--worker", str(commands[2]), "--trust", str(trust),
+                "--worker", str(commands[2]), *trust_arguments,
                 "--binding", str(binding), "--store", "unix:///isolated-nix.sock",
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                     "SSL_CERT_FILE": str(trust if mode == "standard" else root / "unused-public.pem"),
+                     "TELCHAR_MICROVM_TRUST_FILE": str(trust) if mode == "environment" else ""})
 
             def request(route, body="{}"):
                 connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
@@ -72,7 +84,7 @@ class ImageReadinessTests(unittest.TestCase):
                     command.chmod(0o700)
                 trust.unlink()
                 self.assertEqual(request("validate"), 503)
-                for content in (b"", b"x" * 65537):
+                for content in (b"", b"x" * 1048577):
                     trust.write_bytes(content)
                     self.assertEqual(request("ready"), 503)
                     self.assertEqual(request("run", hook), 400)
