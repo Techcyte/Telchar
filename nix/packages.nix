@@ -50,7 +50,10 @@ let
     // {
       pname = "telchar-nomad-worker";
       inherit cargoArtifacts;
-      nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+      nativeCheckInputs = [
+        pkgs.python3
+      ]
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
         pkgs.util-linux
         pkgs.bubblewrap
       ];
@@ -72,7 +75,8 @@ let
         test -x "$daemonExecutable"
         export TELCHAR_TEST_DAEMON_BIN="$TMPDIR/telchar-test-daemon"
         cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
-      '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+      ''
+      + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
         export -f cargo cargoWithProfile
         export workerTestStore="$TMPDIR/worker-test-store"
         mkdir "$workerTestStore"
