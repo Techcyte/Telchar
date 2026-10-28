@@ -51,6 +51,7 @@ let
       pname = "telchar-nomad-worker";
       inherit cargoArtifacts;
       nativeCheckInputs = [
+        pkgs.cacert
         pkgs.python3
       ]
       ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [

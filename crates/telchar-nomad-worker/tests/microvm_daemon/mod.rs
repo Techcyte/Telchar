@@ -133,6 +133,9 @@ chunk_bytes = 262144
         .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
+    if let Some(certificates) = std::env::var_os("SSL_CERT_FILE") {
+        command.env("SSL_CERT_FILE", certificates);
+    }
     if let Some(collector) = &collector {
         command
             .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
