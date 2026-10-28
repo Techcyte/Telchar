@@ -50,7 +50,15 @@ let
     // {
       pname = "telchar-nomad-worker";
       inherit cargoArtifacts;
-      nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
+      nativeCheckInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.util-linux
+        pkgs.bubblewrap
+      ];
+      cargoTestCommand =
+        if pkgs.stdenv.hostPlatform.isLinux then
+          "bash scripts/test-worker-package.sh bash -c 'cargoWithProfile test \"$@\"' bash"
+        else
+          "cargoWithProfile test";
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
       preCheck = ''
         export TELCHAR_NIX_BIN=${pkgs.nix}/bin/nix
@@ -65,10 +73,7 @@ let
         export TELCHAR_TEST_DAEMON_BIN="$TMPDIR/telchar-test-daemon"
         cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
       '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-        mkdir -p /var/empty
-        if ! test -e /noshell; then
-          ln -s ${pkgs.bash}/bin/bash /noshell
-        fi
+        export -f cargo cargoWithProfile
         checkCpus=$(${pkgs.python3}/bin/python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
         taskset -pc "$checkCpus" $$
       '';
