@@ -56,7 +56,7 @@ let
       ];
       cargoTestCommand =
         if pkgs.stdenv.hostPlatform.isLinux then
-          "bash scripts/test-worker-package.sh bash -c 'cargoWithProfile test \"$@\"' bash"
+          "bash scripts/test-worker-package.sh \"$workerTestStore\" bash -c 'cargoWithProfile test \"$@\"' bash"
         else
           "cargoWithProfile test";
       cargoExtraArgs = "--locked -p telchar-nomad-worker";
@@ -74,6 +74,10 @@ let
         cp "$daemonExecutable" "$TELCHAR_TEST_DAEMON_BIN"
       '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
         export -f cargo cargoWithProfile
+        export workerTestStore="$TMPDIR/worker-test-store"
+        mkdir "$workerTestStore"
+        cp -a --reflink=auto /nix/store/. "$workerTestStore/"
+        chmod u+w "$workerTestStore"
         checkCpus=$(${pkgs.python3}/bin/python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
         taskset -pc "$checkCpus" $$
       '';

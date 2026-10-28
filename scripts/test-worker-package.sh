@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Supply worker test prerequisites in a private root without changing the build sandbox.
 set -euo pipefail
+store=$(realpath "$1")
+shift
 root=$(mktemp -d)
 cleanup() {
     rm -rf "$root"
@@ -26,4 +28,5 @@ bwrap --unshare-user --uid 1000 --gid 1000 --die-with-parent \
     --symlink "$(command -v bash)" /noshell \
     --ro-bind "$root/passwd" /etc/passwd \
     --ro-bind "$root/group" /etc/group \
+    --bind "$store" /nix/store \
     --chdir "$PWD" -- "$@"
