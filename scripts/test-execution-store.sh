@@ -9,7 +9,7 @@ cleanup() {
     if ((status != 0)); then
         printf 'Execution fixture retained: %s\n' "$root" >&2
     else
-        find "$root" -type d -exec chmod u+w {} +
+        find "$root" -type d -exec chmod u+rwx {} \;
         rm -rf "$root"
     fi
 }
