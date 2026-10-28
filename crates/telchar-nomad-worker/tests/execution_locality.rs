@@ -322,10 +322,11 @@ fn assigned_builds_do_not_delegate_and_ordinary_connections_retain_builders() {
     let root = PathBuf::from(root);
     let marker = root.join("remote-attempts");
     let hook = root.join("build-hook");
+    let python = command(&["python3", "-c", "import sys; print(sys.executable)"]);
     fs::write(
         &hook,
         format!(
-            r#"#!/usr/bin/env python3
+            r#"#!{python}
 import struct, sys
 from pathlib import Path
 stream = sys.stdin.buffer
