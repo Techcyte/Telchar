@@ -3,6 +3,7 @@
 pub mod callback_service;
 pub mod execution;
 pub mod outputs;
+pub mod pricing;
 pub mod rendezvous;
 pub mod service;
 pub mod session;
@@ -219,7 +220,12 @@ pub struct Provider {
     client: Client,
     account_id: Option<String>,
     authority: Option<std::sync::Arc<ProviderAuthority>>,
+    timeout: Duration,
+    prices: std::sync::Arc<std::sync::Mutex<ComputeQuotes>>,
 }
+
+type ComputeQuotes =
+    std::collections::BTreeMap<(String, String), (pricing::ComputePrice, std::time::SystemTime)>;
 
 struct ProviderAuthority {
     source: aws_credential_types::provider::SharedCredentialsProvider,
@@ -308,6 +314,8 @@ impl Provider {
             client: Client::from_conf(config),
             account_id: None,
             authority: None,
+            timeout,
+            prices: Default::default(),
         })
     }
 
@@ -411,6 +419,17 @@ impl Provider {
         image_arn: &str,
         image_version: &str,
     ) -> Result<(), ProviderError> {
+        self.image(image_arn, image_version).await.map(|_| ())
+    }
+
+    async fn image(
+        &self,
+        image_arn: &str,
+        image_version: &str,
+    ) -> Result<
+        aws_sdk_lambdamicrovms::operation::get_microvm_image_version::GetMicrovmImageVersionOutput,
+        ProviderError,
+    > {
         use aws_sdk_lambdamicrovms::types::{
             Architecture, MicrovmImageVersionState, MicrovmImageVersionStatus,
         };
@@ -432,7 +451,57 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        Ok(())
+        Ok(image)
+    }
+
+    pub(crate) fn quota_reservation(
+        &self,
+        config: &crate::service::config::MicrovmBackendConfig,
+    ) -> Result<Option<crate::persistence::MicrovmQuotaReservation>, ProviderError> {
+        let Some(quota) = config.quota() else {
+            return Ok(None);
+        };
+        if let Some(hours) = quota.monthly_vm_hours() {
+            return crate::persistence::MicrovmQuotaReservation::vm_seconds(
+                i64::try_from(hours)
+                    .map_err(|_| ProviderError)?
+                    .checked_mul(3600)
+                    .ok_or(ProviderError)?,
+            )
+            .map(Some)
+            .map_err(|_| ProviderError);
+        }
+        let key = config.image_identity();
+        let mut cache = self.prices.lock().map_err(|_| ProviderError)?;
+        let now = std::time::SystemTime::now();
+        if cache.get(&key).is_none_or(|(_, expires)| *expires <= now) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| ProviderError)?;
+            let image = runtime.block_on(self.image(&key.0, &key.1))?;
+            if image.resources().len() != 1 {
+                return Err(ProviderError);
+            }
+            let quote = pricing::fetch(
+                config.region(),
+                image.resources()[0].minimum_memory_in_mib(),
+                self.timeout,
+            )?;
+            cache.insert(key.clone(), quote);
+        }
+        let (price, expires) = cache.get(&key).ok_or(ProviderError)?;
+        let allowance = i64::try_from(quota.monthly_usd().ok_or(ProviderError)?)
+            .map_err(|_| ProviderError)?
+            .checked_mul(1_000_000_000_000)
+            .ok_or(ProviderError)?;
+        Ok(Some(crate::persistence::MicrovmQuotaReservation {
+            unit: "usd-picodollars",
+            allowance,
+            amount_per_second: price.picodollars_per_second(),
+            pricing_reference: Some(price.reference().to_owned()),
+            pricing_expires_at: Some(*expires),
+        }))
     }
 
     /// Verifies provider metadata, not the instance's linkage to a launch intent.

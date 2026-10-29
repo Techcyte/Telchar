@@ -524,6 +524,15 @@ pub fn reserve_microvm_launch(
     intent: &MicrovmLaunchIntent,
     maximum_reservations: usize,
 ) -> Result<bool, MicrovmLaunchError> {
+    reserve_microvm_launch_with_quota(database, intent, maximum_reservations, None)
+}
+
+pub fn reserve_microvm_launch_with_quota(
+    database: &(impl DatabaseSource + ?Sized),
+    intent: &MicrovmLaunchIntent,
+    maximum_reservations: usize,
+    quota: Option<&MicrovmQuotaReservation>,
+) -> Result<bool, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(reserve_microvm_launch));
     let maximum = i64::try_from(maximum_reservations).map_err(|_| MicrovmLaunchError)?;
@@ -588,6 +597,12 @@ pub fn reserve_microvm_launch(
             ],
         )
         .map_err(|_| MicrovmLaunchError)?;
+    if inserted == 1
+        && let Some(quota) = quota
+        && !super::microvm_quotas::reserve_microvm_quota(&mut transaction, intent, quota)?
+    {
+        return Ok(false);
+    }
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(inserted == 1)
 }
@@ -906,6 +921,25 @@ fn dispatch_launch(
             return Err(MicrovmLaunchError);
         }
     }
+    let quote_valid: bool = transaction
+        .query_one(
+            "SELECT NOT EXISTS (
+            SELECT 1 FROM microvm_quota_reservations
+            WHERE intent_id = $1 AND pricing_expires_at <= clock_timestamp()
+         ) AND NOT EXISTS (
+            SELECT 1 FROM microvm_quota_reservations q
+            JOIN microvm_launches l USING (intent_id)
+            WHERE l.intent_id = $1
+              AND date_trunc('month', l.created_at AT TIME ZONE 'UTC') <>
+                  date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC')
+         )",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?
+        .get(0);
+    if !quote_valid {
+        return Ok(false);
+    }
     let granted = transaction
         .execute(
             "UPDATE microvm_launches SET phase = 'dispatching'
@@ -915,6 +949,15 @@ fn dispatch_launch(
             &[&intent_id],
         )
         .map_err(|_| MicrovmLaunchError)?;
+    if granted == 1 {
+        transaction
+            .execute(
+                "UPDATE microvm_quota_reservations SET dispatched_at = clock_timestamp()
+             WHERE intent_id = $1",
+                &[&intent_id],
+            )
+            .map_err(|_| MicrovmLaunchError)?;
+    }
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(granted == 1)
 }

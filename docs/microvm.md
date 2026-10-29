@@ -218,6 +218,58 @@ at most 128 bytes overall. Aliases such as `"latest"` are rejected. Telchar send
 the configured string unchanged and requires AWS image verification to return
 that exact version in `SUCCESSFUL` and `ACTIVE` state.
 
+## Optional monthly quotas
+
+Each backend can opt into exactly one positive integer allowance:
+
+```toml
+[[backends.microvm]]
+# Other required backend fields belong here.
+[backends.microvm.quota]
+monthly_vm_hours = 100
+# Alternatively: monthly_usd = 50
+```
+
+Without `quota`, no monthly admission limit applies. All aliases using the same
+AWS account and region must have identical quota policies, including whether a
+quota exists. Configuration changes require restart. Quotas are local to this
+gateway database, not shared with other gateways or AWS consumers.
+
+Admission reserves the full AWS maximum lifetime, not the execution timeout or
+expected build time. VM-hours are elapsed instance-hours, independent of size.
+USD allowance reserves **estimated maximum compute cost**, using ARM CPU and
+memory rates from AWS's public regional `AWSLambda` Price List catalog and the
+image's supported peak resources. No credentials or paid Cost Explorer queries
+are required for price retrieval. Rates use checked integer picodollars with
+upward rounding, no discounts or free-tier assumptions. A cached quote is valid
+for one hour; unavailable, malformed, ambiguous or unsupported prices/image
+sizes block launches. Expired quotes cannot dispatch.
+
+Allowance uses UTC calendar months. PostgreSQL serializes reservations across
+backend aliases. Dispatched reservations are not refunded for early completion,
+failed builds or operator risk release. Prepared cancellation returns allowance.
+Unresolved launches retain their debit across month boundaries; an execution
+whose maximum lifetime overlaps the current month also retains its full debit.
+A reservation prepared in a previous month cannot dispatch. Restart does not
+reset accounting. Cleanup and exact termination verification remain available
+when allowance is exhausted or pricing unavailable.
+
+Enabling a quota when unaccounted current-month or unresolved executions exist
+fails closed. Changing units or allowance while relevant debits exist also blocks
+admission rather than reinterpreting historical amounts. Inspect retained state
+before configuration changes. `telchar operator microvm` includes configured
+policies and bounded `quota_debits`, with units, amounts and price provenance;
+these are reservations, not an AWS bill, and the list may be truncated by `--limit`.
+
+**Neither quota guarantees an AWS invoice ceiling.** USD covers compute only.
+Snapshot reads/writes, image storage and its minimum retention, VPC/NAT/data
+transfer, CloudWatch, image builds and other consumers are excluded. Telchar does
+not bound arbitrary build network traffic or operator-owned infrastructure costs.
+AWS can change rates after a quote is issued. Use deployment-owned networking,
+logging and retention controls plus AWS billing alerts for those exposures.
+Conservative full-lifetime peak reservations deliberately leave allowance unused;
+there is no automatic build retry or quota-triggered backend migration.
+
 ## VPC egress policy
 
 Every `[[backends.microvm]]` policy requires an operator-owned

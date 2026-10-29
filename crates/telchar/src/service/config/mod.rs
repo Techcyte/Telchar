@@ -499,7 +499,14 @@ impl ServiceConfig {
             .chain(nomad_backends.iter().map(|backend| backend.target().name()))
             .collect::<std::collections::BTreeSet<_>>();
         let mut capacity = 0usize;
+        let mut quotas = std::collections::BTreeMap::new();
         for backend in &microvm_backends {
+            let identity = (backend.account_id(), backend.region());
+            if let Some(quota) = quotas.insert(identity, backend.quota())
+                && quota != backend.quota()
+            {
+                return Err(invalid("MicroVM account/region quotas must agree"));
+            }
             if !names.insert(backend.name()) {
                 return Err(invalid("duplicate backend name"));
             }
@@ -539,7 +546,7 @@ mod model;
 mod raw;
 mod validation;
 
-pub use microvm::MicrovmBackendConfig;
+pub use microvm::{MicrovmBackendConfig, MicrovmQuota};
 pub use model::*;
 use raw::*;
 use validation::*;

@@ -28,6 +28,52 @@ chunk_bytes = 262144
 mod image;
 
 #[test]
+fn monthly_quota_is_optional_and_rejects_invalid_allowances() {
+    let plain = MicrovmBackendConfig::parse(CONFIG).unwrap();
+    let hours =
+        MicrovmBackendConfig::parse(&format!("{CONFIG}\n[quota]\nmonthly_vm_hours = 100\n"))
+            .expect("monthly VM-hours quota validates");
+    let dollars = MicrovmBackendConfig::parse(&format!("{CONFIG}\n[quota]\nmonthly_usd = 50\n"))
+        .expect("monthly USD quota validates");
+    assert!(plain.quota().is_none());
+    assert_eq!(hours.quota().unwrap().monthly_vm_hours(), Some(100));
+    assert_eq!(dollars.quota().unwrap().monthly_usd(), Some(50));
+    assert_ne!(plain.fingerprint(), hours.fingerprint());
+    assert_ne!(hours.fingerprint(), dollars.fingerprint());
+    for policy in [
+        "",
+        "monthly_vm_hours = 0",
+        "monthly_usd = 0",
+        "monthly_vm_hours = -1",
+        "monthly_usd = -1",
+        "monthly_vm_hours = 1\nmonthly_usd = 1",
+        "monthly_vm_hours = 1\nunknown = 1",
+        "monthly_vm_hours = 9223372036854775807",
+    ] {
+        assert!(
+            MicrovmBackendConfig::parse(&format!("{CONFIG}\n[quota]\n{policy}\n")).is_err(),
+            "invalid quota: {policy}"
+        );
+    }
+}
+
+#[test]
+fn account_region_aliases_require_identical_quotas() {
+    let first = format!("{CONFIG}\n[backends.microvm.quota]\nmonthly_vm_hours = 100");
+    let second = CONFIG.replace("name = \"arm\"", "name = \"arm-alias\"");
+    let prefix = "[backends]\nmicrovm_bind = \"127.0.0.1:7444\"\n";
+    let mismatched =
+        format!("{prefix}[[backends.microvm]]\n{first}\n[[backends.microvm]]\n{second}");
+    assert!(service_configuration(&mismatched).is_err());
+    let matched = format!("{mismatched}\n[backends.microvm.quota]\nmonthly_vm_hours = 100");
+    assert!(service_configuration(&matched).is_ok());
+    assert!(
+        service_configuration(&matched.replace("monthly_vm_hours = 100", "monthly_usd = 100"))
+            .is_ok()
+    );
+}
+
+#[test]
 fn configured_provider_rejects_unavailable_image() {
     configured_provider("configured_provider_rejects_unavailable_image", false);
 }

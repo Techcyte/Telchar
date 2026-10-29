@@ -27,7 +27,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "resolutions": telchar::persistence::read_microvm_resolutions(&database(&config)?, limit)?
         }),
         Command::Microvm { limit } => serde_json::json!({
-            "obligations": telchar::persistence::read_microvm_obligations(&database(&config)?, limit)?
+            "obligations": telchar::persistence::read_microvm_obligations(&database(&config)?, limit)?,
+            "quota_debits": telchar::persistence::read_microvm_quota_debits(&database(&config)?, limit)?,
+            "quota_policies": config.microvm_backends().iter().map(|backend| serde_json::json!({
+                "backend": backend.name(), "account_id": backend.account_id(),
+                "region": backend.region(), "quota": backend.quota()
+            })).collect::<Vec<_>>()
         }),
     };
     serde_json::to_writer(std::io::stdout().lock(), &value)?;

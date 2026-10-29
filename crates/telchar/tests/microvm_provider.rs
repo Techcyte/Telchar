@@ -157,6 +157,85 @@ fn execution_closes_admission_without_releasing_provider_reservation() {
 }
 
 #[test]
+fn configured_vm_hours_quota_records_maximum_lifetime_before_provider_dispatch() {
+    launch_exchange(false, "configured-quota");
+}
+
+#[test]
+fn configured_usd_quota_reserves_peak_cost_and_reuses_catalog() {
+    const CHILD: &str = "TELCHAR_TEST_USD_QUOTA";
+    if std::env::var_os(CHILD).is_some() {
+        launch_exchange(false, "configured-usd");
+        return;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut requests = 0;
+        while std::time::Instant::now() < deadline {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            requests += 1;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 16384);
+            }
+            let mut products = serde_json::Map::new();
+            let mut terms = serde_json::Map::new();
+            for (sku, group, unit, rate) in [
+                ("cpu", "vCPU-Second", "vCPU-Seconds", "0.0000276944"),
+                ("memory", "Memory-GB-Second", "GB-Seconds", "0.0000036667"),
+            ] {
+                products.insert(
+                    sku.into(),
+                    serde_json::json!({"attributes": {
+                        "servicecode":"AWSLambda", "regionCode":"us-west-2",
+                        "group":format!("AWS-Lambda-MicroVM-{group}-ARM")
+                    }}),
+                );
+                terms.insert(sku.into(), serde_json::json!({"term": {"priceDimensions": {"rate": {
+                    "unit":unit, "beginRange":"0", "endRange":"Inf", "appliesTo":[], "pricePerUnit":{"USD":rate}
+                }}}}));
+            }
+            let body = serde_json::json!({"offerCode":"AWSLambda", "version":"20261022183959", "products":products, "terms":{"OnDemand":terms}}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        requests
+    });
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "configured_usd_quota_reserves_peak_cost_and_reuses_catalog",
+        ])
+        .env(CHILD, "1")
+        .env("TELCHAR_TEST_MICROVM_PRICING_ENDPOINT", endpoint)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        server.join().unwrap(),
+        1,
+        "capacity waits reuse unexpired catalog"
+    );
+}
+
+#[test]
 fn launch_rejects_hook_coordinates_that_disagree_with_reservation() {
     for mismatch in [
         "hook-intent",
@@ -201,7 +280,11 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         .expect("attempt exists");
     if matches!(
         ownership,
-        "configured" | "configured-cancelled" | "configured-shutdown"
+        "configured"
+            | "configured-cancelled"
+            | "configured-shutdown"
+            | "configured-quota"
+            | "configured-usd"
     ) {
         let source = r#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","provider"),("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider"),("system","aarch64-linux")])"#;
         let target = telchar::backend::BackendTarget::new(
@@ -328,13 +411,25 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                             name.eq_ignore_ascii_case("content-length")
                                 .then(|| value.trim().parse().expect("body length"))
                         })
-                        .expect("bounded body");
+                        .unwrap_or_else(|| {
+                            assert!(ownership == "configured-usd" && headers.starts_with("GET "));
+                            0
+                        });
                     assert!(length < 32768);
                     let mut body = vec![0; length];
                     socket.read_exact(&mut body).expect("request body");
                     if ownership.starts_with("credentials-") && headers.starts_with("POST / HTTP") {
                         let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                        continue;
+                    }
+                    if ownership == "configured-usd" && headers.starts_with("GET ") {
+                        let body = serde_json::json!({
+                            "baseImageArn":"base", "buildRoleArn":"role", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                            "imageVersion":"1.0", "state":"SUCCESSFUL", "status":"ACTIVE", "createdAt":1,
+                            "cpuConfigurations":[{"architecture":"ARM_64"}], "resources":[{"minimumMemoryInMiB":2048}]
+                        }).to_string();
+                        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
                         continue;
                     }
                     let launch: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -477,11 +572,22 @@ maximum_total_bytes = 2048
 metadata_bytes = 8192
 chunk_bytes = 1024
 "#;
+                let deployment = if ownership == "configured-quota" {
+                    format!("{deployment}\n[quota]\nmonthly_vm_hours = 1")
+                } else if ownership == "configured-usd" {
+                    format!("{deployment}\n[quota]\nmonthly_usd = 1")
+                } else {
+                    deployment.to_owned()
+                };
                 let policy =
-                    telchar::service::config::MicrovmBackendConfig::parse(deployment).unwrap();
+                    telchar::service::config::MicrovmBackendConfig::parse(&deployment).unwrap();
                 if matches!(
                     ownership,
-                    "configured" | "configured-cancelled" | "configured-shutdown"
+                    "configured"
+                        | "configured-cancelled"
+                        | "configured-shutdown"
+                        | "configured-quota"
+                        | "configured-usd"
                 ) {
                     let request = telchar::persistence::microvm_attempt_request(
                         owner.database(),
@@ -584,6 +690,27 @@ chunk_bytes = 1024
                         return;
                     }
                     assert!(executor.run_build(&policy, &build, |_| {}).is_err());
+                    if ownership == "configured-quota" || ownership == "configured-usd" {
+                        let debits =
+                            telchar::persistence::read_microvm_quota_debits(owner.database(), 10)
+                                .unwrap();
+                        assert_eq!(debits.len(), 1);
+                        if ownership == "configured-usd" {
+                            assert_eq!(debits[0].amount, 84_066_720_000);
+                            assert_eq!(debits[0].allowance, 1_000_000_000_000);
+                            assert!(
+                                debits[0]
+                                    .pricing_reference
+                                    .as_ref()
+                                    .unwrap()
+                                    .contains("20261022183959")
+                            );
+                        } else {
+                            assert_eq!(debits[0].amount, 600);
+                            assert_eq!(debits[0].allowance, 3600);
+                        }
+                        assert!(debits[0].dispatched);
+                    }
                 } else {
                     assert!(
                         executor

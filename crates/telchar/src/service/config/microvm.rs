@@ -25,6 +25,33 @@ pub(super) struct Deployment {
     maximum_total_bytes: u64,
     metadata_bytes: usize,
     chunk_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quota: Option<MicrovmQuota>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MicrovmQuota {
+    monthly_vm_hours: Option<u64>,
+    monthly_usd: Option<u64>,
+}
+
+impl MicrovmQuota {
+    fn validate(&self) -> bool {
+        match (self.monthly_vm_hours, self.monthly_usd) {
+            (Some(hours), None) => hours > 0 && hours <= i64::MAX as u64 / 3600,
+            (None, Some(usd)) => usd > 0 && usd <= i64::MAX as u64 / 1_000_000_000_000,
+            _ => false,
+        }
+    }
+
+    pub fn monthly_vm_hours(&self) -> Option<u64> {
+        self.monthly_vm_hours
+    }
+
+    pub fn monthly_usd(&self) -> Option<u64> {
+        self.monthly_usd
+    }
 }
 
 /// Validated deployment policy; parsing does not attest AWS credentials or image contents.
@@ -79,6 +106,7 @@ impl MicrovmBackendConfig {
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir))
             || !(1..=1_000_000).contains(&d.maximum_paths)
+            || d.quota.as_ref().is_some_and(|quota| !quota.validate())
             || d.maximum_nar_bytes == 0
             || d.maximum_total_bytes < d.maximum_nar_bytes
             || d.maximum_total_bytes > i64::MAX as u64
@@ -206,6 +234,14 @@ impl MicrovmBackendConfig {
             chunk_bytes: self.0.chunk_bytes,
         }
     }
+    pub(crate) fn image_identity(&self) -> (String, String) {
+        (self.0.image_arn.clone(), self.0.image_version.clone())
+    }
+
+    pub fn quota(&self) -> Option<&MicrovmQuota> {
+        self.0.quota.as_ref()
+    }
+
     pub fn staging_directory(&self) -> &Path {
         &self.0.staging_directory
     }
