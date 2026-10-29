@@ -162,7 +162,7 @@ fn durable_commands_report_empty_authoritative_state() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         json(&output),
-        serde_json::json!({"obligations": [expected.clone()]})
+        serde_json::json!({"obligations": [expected.clone()], "quota_debits": [], "quota_policies": []})
     );
     database
         .connect()
@@ -177,7 +177,7 @@ fn durable_commands_report_empty_authoritative_state() {
     released["capacity_reserved"] = false.into();
     assert_eq!(
         json(&output),
-        serde_json::json!({"obligations": [released]})
+        serde_json::json!({"obligations": [released], "quota_debits": [], "quota_policies": []})
     );
     assert!(
         telchar::persistence::record_microvm_termination(
@@ -189,7 +189,10 @@ fn durable_commands_report_empty_authoritative_state() {
     );
     let output = operator(&config, &["microvm"]);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(json(&output), serde_json::json!({"obligations": []}));
+    assert_eq!(
+        json(&output),
+        serde_json::json!({"obligations": [], "quota_debits": [], "quota_policies": []})
+    );
 
     let output = operator(&config, &["microvm-audit"]);
     assert!(output.status.success(), "{}", stderr(&output));

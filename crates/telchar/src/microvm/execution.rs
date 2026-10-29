@@ -239,11 +239,16 @@ impl Execution<'_> {
             {
                 return Err(io::Error::other("MicroVM attempt is not active"));
             }
+            let quota = self
+                .provider
+                .quota_reservation(config)
+                .map_err(|_| io::Error::other("MicroVM quota pricing unavailable"))?;
             let (intent, payload) = config.launch(attempt_id)?;
-            if crate::persistence::reserve_microvm_launch(
+            if crate::persistence::reserve_microvm_launch_with_quota(
                 self.owner.database(),
                 &intent,
                 config.maximum_concurrent_builds(),
+                quota.as_ref(),
             )
             .map_err(io::Error::other)?
             {
