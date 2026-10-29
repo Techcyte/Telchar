@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "nix-worker-protocol"
-version = "2026.10.1"
+version = "2026.10.2"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "telchar"
-version = "2026.10.1"
+version = "2026.10.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "telchar-nomad-worker"
-version = "2026.10.1"
+version = "2026.10.2"
 dependencies = [
  "aws-credential-types",
  "aws-sdk-lambdamicrovms",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "telchar-telemetry"
-version = "2026.10.1"
+version = "2026.10.2"
 dependencies = [
  "opentelemetry",
  "opentelemetry-appender-tracing",
