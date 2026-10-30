@@ -37,6 +37,7 @@ in
         pkgs.nix
         pkgs.openssh
       ];
+      nativeCheckInputs = [ pkgs.cacert ];
       cargoTestExtraArgs = "--workspace --lib";
     }
   );

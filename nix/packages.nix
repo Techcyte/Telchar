@@ -42,6 +42,7 @@ let
       inherit cargoArtifacts;
       cargoExtraArgs = "--locked -p telchar";
       cargoTestExtraArgs = "--lib";
+      nativeCheckInputs = [ pkgs.cacert ];
     }
   );
 

@@ -35,14 +35,16 @@ post('run', b'{"microvmId":"local-sandbox-test"}')
 while time.monotonic() < deadline:
     try:
         result = post('ready')['status']
-        if result == 'failed':
-            raise RuntimeError('sandbox probe failed')
-        if result == 'succeeded':
-            print('sandbox probe passed')
-            break
     except urllib.error.HTTPError as error:
-        if error.code != 409:
-            raise
+        with error:
+            if error.code != 409:
+                raise
+            result = json.load(error)['status']
+    if result == 'failed':
+        raise RuntimeError('sandbox probe failed')
+    if result == 'succeeded':
+        print('sandbox probe passed')
+        break
     time.sleep(.1)
 else:
     raise TimeoutError('sandbox probe did not finish')

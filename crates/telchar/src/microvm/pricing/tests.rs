@@ -10,9 +10,23 @@ fn catalog_transport_rejects_errors_redirects_and_invalid_bodies() {
         ("200 OK", "{}"),
     ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "catalog client did not connect before fixture deadline"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("catalog fixture accept failed: {error}"),
+                }
+            };
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
