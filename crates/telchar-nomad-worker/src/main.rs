@@ -44,6 +44,7 @@ fn phase<T>(
 }
 
 fn main() -> std::process::ExitCode {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let telemetry = match telchar_telemetry::Telemetry::initialize(
         "telchar-nomad-worker",
         env!("CARGO_PKG_VERSION"),

@@ -100,6 +100,83 @@ fn worker_reports_configuration_failure_without_environment_values() {
 }
 
 #[test]
+fn worker_rejects_untrusted_callback_without_panicking() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
+    listener
+        .set_nonblocking(true)
+        .expect("listener is nonblocking");
+    let endpoint = format!("wss://{}/callback", listener.local_addr().expect("address"));
+    let mut environment = workload_environment(&endpoint);
+    environment.insert("TELCHAR_SETUP_TIMEOUT_SECONDS".to_owned(), "1".to_owned());
+    let server = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "worker must connect");
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("callback accept failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .expect("read timeout");
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+            .expect("write timeout");
+        let config = rustls::ServerConfig::builder_with_provider(
+            rustls::crypto::ring::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(
+                include_bytes!("fixtures/microvm-key.der").to_vec().into(),
+            ),
+        )
+        .expect("server certificate");
+        let mut tls = rustls::StreamOwned::new(
+            rustls::ServerConnection::new(std::sync::Arc::new(config)).expect("TLS connection"),
+            stream,
+        );
+        tls.conn
+            .complete_io(&mut tls.sock)
+            .expect_err("untrusted certificate is rejected")
+    });
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_telchar-nomad-worker"))
+        .env_clear()
+        .envs(environment)
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .output()
+        .expect("worker runs");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.contains("worker startup failed at connect"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("worker.manifest.received"), "{stderr}");
+    assert!(!stderr.contains("jwt"), "{stderr}");
+    let error = server.join().expect("server joins");
+    assert!(
+        matches!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::AlertReceived(
+                rustls::AlertDescription::UnknownCA
+            ))
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn worker_reports_manifest_and_store_failure_without_payloads() {
     for level in ["info", "debug"] {
         check_manifest_failure(level);
