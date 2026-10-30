@@ -613,7 +613,9 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
     fixture
         .connect()
         .batch_execute(
-            "DROP TABLE microvm_resolutions;
+            "DROP TABLE microvm_quota_reservations;
+         DROP INDEX microvm_launches_account_region_created_idx;
+         DROP TABLE microvm_resolutions;
          DROP FUNCTION preserve_microvm_resolution();
          ALTER TABLE microvm_launches DROP COLUMN termination_observed_at CASCADE;
          DELETE FROM telchar_schema_migrations WHERE version >= 21;",
@@ -623,7 +625,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        4
+        5
     );
     fixture.restart();
     let row = fixture.connect().query_one(
