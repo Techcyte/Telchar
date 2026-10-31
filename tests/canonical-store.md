@@ -4,7 +4,24 @@ Some stock-client contracts instantiate `/nix/store` derivations and connect to
 `/nix/var/nix/daemon-socket/socket`. Their client and gateway must share an isolated
 registration domain. A private noncanonical store cannot satisfy those contracts.
 
-From the repository root, inside the flake development environment:
+CI and release qualification build the complete Nix-owned result:
+
+```bash
+nix build -L --no-link .#checks.x86_64-linux.workspace-tests
+```
+
+This requires a VM-capable Linux builder with KVM. Crane caches dependency
+compilation independently of source changes and precompiles all workspace test
+artifacts with debug assertions. The VM restores source, Cargo configuration and
+target artifacts to their original absolute paths before invoking the same
+package-partitioned runner offline. This preserves embedded `CARGO_BIN_EXE_*` and
+`CARGO_MANIFEST_DIR` paths and keeps Cargo responsible for doctests and target
+selection. The guest is a nonroot NSS user; the VM check result depends on every
+package group succeeding. Workspace output streams to the VM console and is
+copied as `workspace.log` to the test driver output (on failure, inspect the
+retained Nix build directory or use the interactive test driver).
+
+For focused development, from the repository root inside the flake environment:
 
 ```bash
 bash tests/canonical-store.sh \

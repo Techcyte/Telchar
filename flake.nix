@@ -33,8 +33,12 @@
           craneLib.filterCargoSources path type
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" pathString
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar-nomad-worker/tests/fixtures/" pathString
+          || pathString == "${toString ./.}/tests/canonical-store.sh"
+          || pathString == "${toString ./.}/tests/workspace.sh"
           || pathString == "${toString ./.}/tests/microvm/canonical-store.sh"
           || pathString == "${toString ./.}/deploy"
+          || pathString == "${toString ./.}/deploy/microvm"
+          || pkgs.lib.hasPrefix "${toString ./.}/deploy/microvm/" pathString
           || pathString == sshDeployment
           || pkgs.lib.hasPrefix "${sshDeployment}/" pathString
           || pathString == "${toString ./.}/deny.toml"

@@ -6,13 +6,13 @@ cd "$(dirname "$0")/.."
 
 export NIXPKGS_ALLOW_UNFREE=1
 
-nix develop -c cargo fmt --all -- --check
-nix develop -c scripts/test-prepare-release.py
-nix develop -c cargo build --locked -p telchar --bin telchar
-export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
-nix develop -c bash tests/workspace.sh --locked
-nix develop -c cargo check --locked --workspace
-nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
+nix build -L --no-link \
+  .#checks.x86_64-linux.format \
+  .#checks.x86_64-linux.workspace-check \
+  .#checks.x86_64-linux.lint \
+  .#checks.x86_64-linux.workspace-tests
+nix build -L --no-link .#checks.x86_64-linux.release-tooling
+# Live advisory freshness and exception expiry must not use a cached result.
 nix develop -c scripts/check-advisory-exceptions.py
 nix develop -c cargo deny check advisories licenses sources
 
@@ -30,4 +30,3 @@ nix build --no-link .#checks.x86_64-linux.nixos-fixed-output-local
 nix build --no-link .#checks.x86_64-linux.nixos-oci-gateway
 nix build --no-link .#checks.x86_64-linux.nixos-static-ssh-gateway
 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-gateway
-nix develop -c cargo test --locked -p telchar --test shared_build_recovery

@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,8 +24,10 @@ class ReleaseNotesTests(unittest.TestCase):
             arguments = root / "arguments"
             gh = root / "gh"
             gh.write_text(
-                "#!/usr/bin/env bash\n"
-                "printf '%s\\0' \"$@\" > \"$CAPTURED_ARGUMENTS\"\n"
+                f"#!{sys.executable}\n"
+                "import os, pathlib, sys\n"
+                "pathlib.Path(os.environ['CAPTURED_ARGUMENTS']).write_bytes(\n"
+                "    b''.join(os.fsencode(arg) + b'\\0' for arg in sys.argv[1:]))\n"
             )
             gh.chmod(0o755)
             subprocess.run(
