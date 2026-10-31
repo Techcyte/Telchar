@@ -12,7 +12,6 @@ harness.mkNomadGatewayTest {
   name = "telchar-nixos-nomad-polling";
   worker = nomadWorker;
   testScript = ''
-    import json
     import shlex
     import uuid
 

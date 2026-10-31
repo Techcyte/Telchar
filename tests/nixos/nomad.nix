@@ -127,6 +127,7 @@ in
             networking.firewall.enable = false;
             system.stateVersion = "26.05";
             environment.variables.TELCHAR_NIX_STORE_URI = "local";
+            systemd.services.nomad.wantedBy = pkgs.lib.mkForce [ ];
             services.nomad = {
               enable = true;
               enableDocker = false;
@@ -158,8 +159,10 @@ in
         start_all()
         gateway.wait_for_unit("postgresql.service")
         nomad_server.wait_for_unit("nomad.service")
-        nomad_client.wait_for_unit("nomad.service")
         nomad_server.wait_until_succeeds("nomad operator raft list-peers | grep -q true", timeout=60)
+        nomad_server.wait_until_succeeds("nomad operator root keyring list | grep -qw active", timeout=60)
+        nomad_client.succeed("systemctl start nomad.service")
+        nomad_client.wait_for_unit("nomad.service")
         nomad_server.wait_until_succeeds("nomad namespace apply telchar", timeout=60)
         nomad_server.wait_until_succeeds("nomad node status -json | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].Status == \"ready\"'", timeout=60)
         check_nomad_journal(nomad_server)

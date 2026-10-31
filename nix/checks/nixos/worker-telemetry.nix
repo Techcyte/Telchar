@@ -41,7 +41,6 @@ harness.mkNomadGatewayTest {
   name = "telchar-nixos-worker-telemetry";
   inherit worker;
   testScript = ''
-    import json
     import shlex
     import uuid
 
@@ -74,7 +73,11 @@ harness.mkNomadGatewayTest {
         logs = nomad_server.succeed("nomad alloc logs -namespace telchar -stderr " + shlex.quote(allocation) + " build")
         for event in ["worker.started", "worker.phase.running", "worker.inputs.resolved", "worker.completed", "worker.inputs.summary", "worker.outputs.summary"]:
             assert event in logs, logs
-        assert ("path=/nix/store/" in logs) == (level == "debug"), logs
+        identity_logs = [line for line in logs.splitlines() if 'event="worker.derivation.received"' in line]
+        assert len(identity_logs) == 1 and " INFO " in identity_logs[0] and "path=" + drv in identity_logs[0], logs
+        path_logs = [line for line in logs.splitlines() if "path=/nix/store/" in line and 'event="worker.derivation.received"' not in line]
+        assert bool(path_logs) == (level == "debug"), logs
+        assert all(" DEBUG " in line for line in path_logs), logs
         assert ("WORKER_BUILD_BEGIN" in logs) == (level == "debug"), logs
         assert ("WORKER_BUILD_END" in logs) == (level == "debug"), logs
         assert logs.index("worker.phase.running") < logs.index("worker.completed"), logs
@@ -115,8 +118,9 @@ harness.mkNomadGatewayTest {
     assert len(failures) == 2, failures
     assert len(completed) == 2, completed
     assert len({item["traceId"] for item in completed}) == 2, completed
-    for item in completed + failures:
-        assert any(span["traceId"] == item["traceId"] and span["name"] == "worker.execution" for resource in signals["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]), item
+    for items, span_name in [(completed, "worker.execution"), (failures, "worker.configuration")]:
+        for item in items:
+            assert any(span["traceId"] == item["traceId"] and span["name"] == span_name for resource in signals["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]), item
     output_logs = [item for item in logs if attributes(item).get("event", {}).get("stringValue") == "worker.build.output"]
     assert output_logs and all(item["severityText"] == "DEBUG" for item in output_logs), output_logs
     assert len({item["traceId"] for item in output_logs}) == 1, output_logs
