@@ -76,52 +76,22 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Allow test namespaces
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Check VM acceleration
+        run: test -r /dev/kvm && test -w /dev/kvm
 
-      - name: Check canonical-store prerequisites
+      - name: Build Rust checks and full workspace integration result
         run: |
-          started=$(date --iso-8601=seconds)
-          if nix develop -c bash tests/canonical-store.sh true; then
-            exit 0
-          else
-            fixture_exit=$?
-          fi
-          for setting in kernel.apparmor_restrict_unprivileged_userns \
-                         kernel.unprivileged_userns_clone \
-                         user.max_user_namespaces; do
-            sysctl "$setting" || true
-          done
-          sudo -n journalctl --kernel --since "$started" --no-pager \
-            --grep='apparmor=.*(userns_create|capable)' || true
-          exit "$fixture_exit"
-
-      - name: Check execution-store prerequisites
-        run: >-
-          nix develop -c bash scripts/test-execution-store.sh /bin/sh -c true
-
-      - name: Check formatting
-        run: nix develop -c cargo fmt --all -- --check
-
-      - name: Check workspace
-        run: nix develop -c cargo check --locked --workspace
-
-      - name: Lint workspace
-        run: >-
-          nix develop -c cargo clippy --locked --workspace
-          --all-targets -- -D warnings
-
-      - name: Run workspace tests
-        run: |
-          nix develop -c cargo build --locked -p telchar --bin telchar
-          export TELCHAR_TEST_DAEMON_BIN="$PWD/target/debug/telchar"
-          nix develop -c bash tests/workspace.sh --locked
+          nix build -L --no-link \
+            .#checks.x86_64-linux.format \
+            .#checks.x86_64-linux.workspace-check \
+            .#checks.x86_64-linux.lint \
+            .#checks.x86_64-linux.workspace-tests
 
       - name: Run release tooling tests
-        run: |
-          nix develop -c scripts/test-prepare-release.py
-          nix develop -c scripts/test-release-notes.py
+        run: nix build -L --no-link .#checks.x86_64-linux.release-tooling
 
+      # Live security policy intentionally stays outside cached Nix results:
+      # advisory freshness and exception expiry must be checked on every run.
       - name: Check Rust dependencies and licenses
         run: |
           nix develop -c scripts/check-advisory-exceptions.py

@@ -152,15 +152,17 @@ Release-relevant files:
 - `scripts/check-release.sh`: curated release verification across Rust, packages, and selected VM contracts;
 - `flake.nix`: output composition;
 - `nix/packages.nix`: packages and OCI archives;
-- `nix/checks/rust.nix`: sandbox-compatible Rust checks;
+- `nix/checks/rust.nix`: cached Rust compilation, formatting and lint checks;
+- `nix/checks/workspace.nix`: precompiled full workspace qualification in a nonroot NixOS VM;
+- `nix/checks/release-tooling.nix`: sandboxed release preparation and release-note contracts;
 - `nix/checks/nixos.nix`: VM integration derivations;
 - `nix/tests/oci-images.nix`: OCI metadata and loadability contract;
 - `tests/nixos/lib.nix`: reusable VM topology.
 
-Full process and PostgreSQL authority remains:
+Full process and PostgreSQL qualification (including worker stores and doctests):
 
 ```text
-nix develop -c cargo test --locked --workspace -- --test-threads=1
+nix build -L --no-link .#checks.x86_64-linux.workspace-tests
 ```
 
 Flake evaluation authority remains:

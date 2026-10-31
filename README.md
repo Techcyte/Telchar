@@ -124,14 +124,21 @@ Keep the gateway store separate from the requesting client's store. **Execution 
 
 ## Development
 
-Run the sandbox-compatible flake evaluation and full integration suite:
+Evaluate the flake and build the Nix-owned Rust qualification checks:
 
 ```bash
 NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build
-nix develop -c cargo test --locked --workspace -- --test-threads=1
+nix build -L --no-link .#checks.x86_64-linux.format \
+  .#checks.x86_64-linux.workspace-check .#checks.x86_64-linux.lint \
+  .#checks.x86_64-linux.workspace-tests
 ```
 
-Stock-client tests that require a shared canonical store can run through the
+The workspace check compiles with cached Crane dependencies, then runs every
+package's unit, integration, and documentation tests serially in a NixOS VM as a
+nonroot account. It requires a VM-capable Linux builder (KVM); no host Cargo target
+or host daemon state is used. Live dependency/advisory checks remain outside
+cached Nix results so each CI run checks current advisories and exception expiry.
+For focused development, stock-client tests that require a shared canonical store can run through the
 [isolated canonical-store command runner](tests/canonical-store.md), without
 using the host Nix daemon or changing its store registration.
 
