@@ -52,6 +52,8 @@ jobs:
         run: |
           branch="release/v$VERSION"
           title="release: prepare v$VERSION"
+          body="Prepares Telchar v$VERSION. Merge after review, "
+          body+="then run the Publish release workflow for this version."
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" || true
@@ -63,9 +65,12 @@ jobs:
           fi
           git commit -m "$title"
           git push --force-with-lease origin "$branch"
-          if gh pr view "$branch" >/dev/null 2>&1; then
-            gh pr edit "$branch" --title "$title" --body "Prepares Telchar v$VERSION. Merge after review, then run the Publish release workflow for this version."
+          pr_number=$(gh pr list --state open --base main --head "$branch" \
+            --json number --jq '.[0].number // empty')
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" --title "$title" --body "$body"
           else
-            gh pr create --base main --head "$branch" --title "$title" --body "Prepares Telchar v$VERSION. Merge after review, then run the Publish release workflow for this version."
+            gh pr create --base main --head "$branch" \
+              --title "$title" --body "$body"
           fi
           gh workflow run ci.yml --ref "$branch"
