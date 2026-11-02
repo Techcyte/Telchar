@@ -32,6 +32,7 @@
           in
           craneLib.filterCargoSources path type
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" pathString
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/tests/fixtures/" pathString
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar-nomad-worker/tests/fixtures/" pathString
           || pathString == "${toString ./.}/tests/canonical-store.sh"
           || pathString == "${toString ./.}/tests/workspace.sh"

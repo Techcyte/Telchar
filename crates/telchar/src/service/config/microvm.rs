@@ -1,6 +1,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+mod tests;
+mod transport;
+
 #[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Deployment {
@@ -18,7 +22,7 @@ pub(super) struct Deployment {
     provider_timeout_seconds: u64,
     cleanup_interval_seconds: u64,
     callback_url: String,
-    callback_address: SocketAddr,
+    callback_host: String,
     staging_directory: PathBuf,
     maximum_paths: usize,
     maximum_nar_bytes: u64,
@@ -129,8 +133,7 @@ impl MicrovmBackendConfig {
             || url.query().is_some()
             || url.fragment().is_some()
             || url.port_or_known_default() == Some(0)
-            || d.callback_address.port() == 0
-            || d.callback_address.ip().is_unspecified()
+            || !transport::valid_host(&d.callback_host)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -249,18 +252,36 @@ impl MicrovmBackendConfig {
     pub(crate) fn launch(
         &self,
         attempt_id: i64,
+        deadline: std::time::Instant,
     ) -> io::Result<(crate::persistence::MicrovmLaunchIntent, String)> {
+        self.launch_with_resolver(attempt_id, |host, port| {
+            transport::resolve(
+                host,
+                port,
+                deadline.min(
+                    std::time::Instant::now()
+                        + Duration::from_secs(self.0.provider_timeout_seconds),
+                ),
+            )
+        })
+    }
+
+    fn launch_with_resolver(
+        &self,
+        attempt_id: i64,
+        resolve: impl FnOnce(&str, u16) -> io::Result<SocketAddr>,
+    ) -> io::Result<(crate::persistence::MicrovmLaunchIntent, String)> {
+        let endpoint = url::Url::parse(&self.0.callback_url).map_err(io::Error::other)?;
+        let address = resolve(
+            &self.0.callback_host,
+            endpoint.port_or_known_default().unwrap_or(443),
+        )?;
         let capability = crate::microvm::Capability::generate().map_err(io::Error::other)?;
         let identity = crate::microvm::Capability::generate().map_err(io::Error::other)?;
         let intent_id = identity.bearer().to_owned();
         let lifetime = self.0.maximum_duration_seconds as i32;
         let payload = capability
-            .launch_payload(
-                &self.0.callback_url,
-                self.0.callback_address,
-                &intent_id,
-                lifetime,
-            )
+            .launch_payload(&self.0.callback_url, address, &intent_id, lifetime)
             .map_err(io::Error::other)?;
         let intent = crate::persistence::MicrovmLaunchIntent {
             intent_id: intent_id.clone(),

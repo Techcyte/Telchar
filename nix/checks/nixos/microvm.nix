@@ -104,7 +104,7 @@ pkgs.testers.nixosTest {
             provider_timeout_seconds = 2;
             cleanup_interval_seconds = 5;
             callback_url = "wss://gateway:7444/microvm";
-            callback_address = "192.168.1.2:7444";
+            callback_host = "gateway";
             staging_directory = "/var/lib/telchar";
             maximum_paths = 64;
             maximum_nar_bytes = 67108864;

@@ -1,31 +1,29 @@
 use telchar::service::config::MicrovmBackendConfig;
 
-const CONFIG: &str = r#"
-name = "arm"
-system = "aarch64-linux"
-account_id = "116392764028"
-region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder"
-image_version = "1"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
-maximum_concurrent_builds = 2
-maximum_duration_seconds = 600
-execution_timeout_seconds = 540
-admission_timeout_seconds = 30
-provider_timeout_seconds = 10
-cleanup_interval_seconds = 5
-callback_url = "wss://gateway.example/microvm"
-callback_address = "192.0.2.1:443"
-staging_directory = "/var/lib/telchar/microvm"
-maximum_paths = 65536
-maximum_nar_bytes = 1073741824
-maximum_total_bytes = 2147483648
-metadata_bytes = 1048576
-chunk_bytes = 262144
-"#;
+const CONFIG: &str = include_str!("fixtures/microvm.toml");
 
 #[path = "../../../tests/microvm/image.rs"]
 mod image;
+
+#[test]
+fn callback_transport_accepts_dns_without_resolving_during_configuration() {
+    let configuration = CONFIG;
+    MicrovmBackendConfig::parse(configuration).expect("transport DNS name validates offline");
+    for host in [
+        "",
+        "bad host",
+        "user@host",
+        "host/path",
+        "host:443",
+        "-host.example",
+    ] {
+        assert!(
+            MicrovmBackendConfig::parse(&configuration.replace("internal-builder.example", host))
+                .is_err(),
+            "invalid callback host: {host}"
+        );
+    }
+}
 
 #[test]
 fn monthly_quota_is_optional_and_rejects_invalid_allowances() {
@@ -573,11 +571,12 @@ fn daemon_lifecycle(exit: DaemonExit) {
     let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = callback.local_addr().unwrap();
     let callback = (exit == DaemonExit::AccountMismatch).then_some(callback);
+    let configuration = CONFIG.replace("internal-builder.example", "localhost");
     let config = directory.path().join("service.toml");
     let socket = directory.path().join("daemon.sock");
     std::fs::write(
         &config,
-        format!("[backends]\nmicrovm_bind = \"{address}\"\n[[backends.microvm]]\n{CONFIG}"),
+        format!("[backends]\nmicrovm_bind = \"{address}\"\n[[backends.microvm]]\n{configuration}"),
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
@@ -979,7 +978,7 @@ fn rejects_untrusted_or_unbounded_deployment_configuration() {
             "wss://gateway.example/microvm",
             "wss://user:secret@gateway.example/microvm",
         ),
-        ("192.0.2.1:443", "0.0.0.0:443"),
+        ("internal-builder.example", "0.0.0.0"),
         ("/var/lib/telchar/microvm", "relative/staging"),
         ("maximum_paths = 65536", "maximum_paths = 0"),
         (

@@ -298,6 +298,15 @@ mandatory. Configuration validation checks ARN identity and syntax, not connecto
 readiness, routing or security-group policy; AWS launch rejection remains a
 fail-closed, non-retried provider failure.
 
+`callback_host` names the connector-reachable transport host, without a port.
+Telchar resolves its IPv4 addresses for each launch, bounded by the provider
+and execution deadlines. The port comes from `callback_url`; that URL's hostname
+remains the TLS verification identity and SNI even when the transport uses an
+internal load-balancer hostname. DNS failure or no usable IPv4 answer fails the
+launch without a cached-address fallback. The resolved address is fixed in the
+launch payload and request digest, so retries of that reserved request cannot
+change its transport coordinates.
+
 ## Local administrative resolution
 
 An optional `TELCHAR_ADMIN_SOCKET` path enables a dedicated daemon-owned Unix

@@ -243,7 +243,7 @@ impl Execution<'_> {
                 .provider
                 .quota_reservation(config)
                 .map_err(|_| io::Error::other("MicroVM quota pricing unavailable"))?;
-            let (intent, payload) = config.launch(attempt_id)?;
+            let (intent, payload) = config.launch(attempt_id, deadline)?;
             if crate::persistence::reserve_microvm_launch_with_quota(
                 self.owner.database(),
                 &intent,

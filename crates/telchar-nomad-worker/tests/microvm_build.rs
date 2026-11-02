@@ -673,7 +673,7 @@ admission_timeout_seconds = 20
 provider_timeout_seconds = 2
 cleanup_interval_seconds = 5
 callback_url = "wss://localhost:{}/microvm"
-callback_address = "{}"
+callback_host = "localhost"
 staging_directory = "{}"
 maximum_paths = 10
 maximum_nar_bytes = 1048576
@@ -682,7 +682,6 @@ metadata_bytes = 8192
 chunk_bytes = 262144
 "#,
                     address.port(),
-                    address,
                     execution.staging.display()
                 );
                 let policy =
