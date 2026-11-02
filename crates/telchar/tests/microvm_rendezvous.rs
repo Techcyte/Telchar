@@ -1,6 +1,6 @@
 //! MicroVM bootstrap admission over real loopback sockets and PostgreSQL.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest;
@@ -21,6 +21,9 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
         "query",
         "protocol",
         "headers",
+        "http",
+        "http-fragmented",
+        "http-incomplete",
         "silent",
         "bootstrap-silent",
         "text",
@@ -50,6 +53,40 @@ fn socket_rejects_invalid_upgrade_bootstrap_and_silent_peers() {
             stream
                 .set_write_timeout(Some(Duration::from_secs(2)))
                 .expect("write timeout");
+            if matches!(case, "http" | "http-fragmented" | "http-incomplete") {
+                let request =
+                    b"GET /microvm HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                if case == "http-fragmented" {
+                    for chunk in request.chunks(3) {
+                        stream.write_all(chunk).expect("fragment writes");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                } else {
+                    let length = if case == "http-incomplete" {
+                        request.len() - 1
+                    } else {
+                        request.len()
+                    };
+                    stream
+                        .write_all(&request[..length])
+                        .expect("HTTP probe writes");
+                }
+                assert!(
+                    server.join().expect("server"),
+                    "probe must not admit a build"
+                );
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).expect("HTTP response");
+                if case == "http-incomplete" {
+                    assert!(
+                        response.is_empty(),
+                        "incomplete headers must expire silently"
+                    );
+                } else {
+                    assert_eq!(response, b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", "{case}");
+                }
+                return;
+            }
             if case == "headers" {
                 let header = format!(
                     "GET /microvm HTTP/1.1\r\nHost: localhost\r\nX-Padding: {}",

@@ -89,6 +89,8 @@ pub struct SessionStream {
     inner: TcpStream,
     deadline: Instant,
     header_bytes: Option<usize>,
+    header_tail: u32,
+    header_complete: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionStream {
@@ -137,6 +139,13 @@ impl Read for SessionStream {
             let maximum = output.len().min(8192 - *bytes).min(1024);
             let length = self.inner.read(&mut output[..maximum])?;
             *bytes += length;
+            for byte in &output[..length] {
+                self.header_tail = (self.header_tail << 8) | u32::from(*byte);
+                if self.header_tail == u32::from_be_bytes(*b"\r\n\r\n") {
+                    self.header_complete
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             return Ok(length);
         }
         self.inner.read(output)
@@ -359,10 +368,20 @@ fn accept_session_for(
     let mut observation = AdmissionObservation(Some("ownership"));
     owner.verify().map_err(|_| ProviderError)?;
     observation.0 = Some("protocol");
+    let header_complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut rejected_stream = SessionStream {
+        inner: stream.try_clone().map_err(|_| ProviderError)?,
+        deadline,
+        header_bytes: None,
+        header_tail: 0,
+        header_complete: std::sync::Arc::clone(&header_complete),
+    };
     let stream = SessionStream {
         inner: stream,
         deadline,
         header_bytes: Some(0),
+        header_tail: 0,
+        header_complete: std::sync::Arc::clone(&header_complete),
     };
     #[allow(clippy::result_large_err)]
     let upgrade = |request: &Request, mut response: Response| {
@@ -387,8 +406,23 @@ fn accept_session_for(
     let config = WebSocketConfig::default()
         .max_message_size(Some(4096))
         .max_frame_size(Some(4096));
-    let mut socket = tungstenite::accept_hdr_with_config(stream, upgrade, Some(config))
-        .map_err(|_| ProviderError)?;
+    let mut socket = match tungstenite::accept_hdr_with_config(stream, upgrade, Some(config)) {
+        Ok(socket) => socket,
+        Err(error) => {
+            if matches!(
+                error,
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Protocol(_))
+            ) && header_complete.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                rejected_stream.write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                ).map_err(|_| ProviderError)?;
+                rejected_stream.flush().map_err(|_| ProviderError)?;
+            }
+            return Err(ProviderError);
+        }
+    };
+    drop(rejected_stream);
     socket.get_mut().header_bytes = None;
     observation.0 = Some("bootstrap");
     let Message::Binary(message) = socket.read().map_err(|_| ProviderError)? else {
