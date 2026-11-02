@@ -151,6 +151,9 @@ impl Drop for GatewayStoreImport {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 fn declared_path_info(info: &AddMultipleToStorePathInfo) -> io::Result<DeclaredPathInfo> {
     Ok(DeclaredPathInfo {
         path: path(info.path())?,
@@ -162,7 +165,7 @@ fn declared_path_info(info: &AddMultipleToStorePathInfo) -> io::Result<DeclaredP
             .map(|reference| path(reference))
             .collect::<io::Result<_>>()?,
         deriver: info.deriver().map(path).transpose()?,
-        content_address: None,
+        content_address: info.content_address().map(text).transpose()?,
         signatures: info
             .signatures()
             .iter()
