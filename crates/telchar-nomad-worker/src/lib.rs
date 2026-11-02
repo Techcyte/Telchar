@@ -1,5 +1,6 @@
 //! Runs the allocation-side authenticated transfer session, resolves inputs, invokes Nix, and returns logs and outputs.
 
+mod callback_connection;
 pub mod microvm;
 
 use std::io;
@@ -760,13 +761,17 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     let mut attempt = 0_u64;
     loop {
         attempt = attempt.saturating_add(1);
-        match connect_once(config) {
+        callback_connection::remaining(deadline)?;
+        match connect_once(config, deadline) {
             Ok(socket) => {
                 tracing::info!(event = "worker.callback.connected", attempt);
                 return Ok(socket);
             }
             Err(error) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(
+                    std::time::Duration::from_millis(100)
+                        .min(callback_connection::remaining(deadline)?),
+                );
                 if attempt == 1 || attempt.is_multiple_of(10) {
                     tracing::warn!(event = "worker.callback.retry", attempt, error_kind = ?error.kind());
                 }
@@ -776,7 +781,7 @@ pub fn connect(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     }
 }
 
-fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
+fn connect_once(config: &WorkerConfig, deadline: Instant) -> io::Result<WorkerSocket> {
     let metadata = encode_metadata(
         config.authentication(),
         MAXIMUM_AUTHENTICATION_METADATA_BYTES,
@@ -816,17 +821,13 @@ fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
         "sec-websocket-protocol",
         tungstenite::http::HeaderValue::from_static("telchar-nomad-transfer-v1"),
     );
-    let (mut socket, response) = tungstenite::client::connect_with_config(
+    let (mut socket, response, monitor) = callback_connection::connect(
         request,
-        Some(
-            tungstenite::protocol::WebSocketConfig::default()
-                .max_message_size(Some(config.maximum_manifest_bytes()))
-                .max_frame_size(Some(config.maximum_manifest_bytes())),
-        ),
-        3,
-    )
-    .map_err(|_| io::Error::other("worker callback connection failed"))?;
-    set_socket_timeouts(&mut socket, config.transfer_idle_timeout())?;
+        tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(config.maximum_manifest_bytes()))
+            .max_frame_size(Some(config.maximum_manifest_bytes())),
+        deadline,
+    )?;
     if response.headers().get("sec-websocket-protocol")
         != Some(&tungstenite::http::HeaderValue::from_static(
             "telchar-nomad-transfer-v1",
@@ -837,6 +838,10 @@ fn connect_once(config: &WorkerConfig) -> io::Result<WorkerSocket> {
     socket
         .send(tungstenite::Message::Binary(body.into()))
         .map_err(|_| io::Error::other("worker callback authentication failed"))?;
+    callback_connection::remaining(deadline)?;
+    set_socket_timeouts(&mut socket, config.transfer_idle_timeout())?;
+    drop(monitor);
+    callback_connection::remaining(deadline)?;
     Ok(socket)
 }
 

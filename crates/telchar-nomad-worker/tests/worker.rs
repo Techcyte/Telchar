@@ -177,6 +177,145 @@ fn worker_rejects_untrusted_callback_without_panicking() {
 }
 
 #[test]
+fn setup_deadline_bounds_silent_tls_and_trickling_websocket_peers() {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    for (scheme, trickling) in [("ws", false), ("ws", true), ("wss", false)] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let endpoint = format!("{scheme}://{}/callback", listener.local_addr().unwrap());
+        let mut environment = workload_environment(&endpoint);
+        environment.insert("TELCHAR_SETUP_TIMEOUT_SECONDS".into(), "1".into());
+        let config = WorkerConfig::from_lookup(|key| environment.get(key).cloned()).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut bytes = [0; 4096];
+            let mut response =
+                b"HTTP/1.1 101 Switching Protocols\r\nX-Padding: indefinitely-incomplete".iter();
+            while Instant::now() < deadline {
+                match stream.read(&mut bytes) {
+                    Ok(0) => return true,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => return true,
+                }
+                // Activity must not restart the setup budget. TLS deliberately stays silent.
+                if trickling {
+                    let byte = response.next().copied().unwrap_or(b'a');
+                    if stream.write_all(&[byte]).is_err() {
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+        let started = Instant::now();
+        let result = telchar_nomad_worker::connect(&config);
+        let elapsed = started.elapsed();
+        let peer_closed = server.join().unwrap();
+        assert!(result.is_err(), "{scheme} setup must fail");
+        assert!(
+            elapsed < Duration::from_millis(1800),
+            "{scheme} setup took {elapsed:?}"
+        );
+        assert!(
+            peer_closed,
+            "{scheme} setup must close the abandoned socket"
+        );
+    }
+}
+
+#[test]
+fn setup_retries_share_the_original_deadline() {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}/callback", listener.local_addr().unwrap());
+    let mut environment = workload_environment(&endpoint);
+    environment.insert("TELCHAR_SETUP_TIMEOUT_SECONDS".into(), "1".into());
+    let config = WorkerConfig::from_lookup(|key| environment.get(key).cloned()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(first.read(&mut bytes).unwrap() > 0);
+        thread::sleep(Duration::from_millis(600));
+        first
+            .write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        drop(first);
+        let (mut retry, _) = listener.accept().unwrap();
+        retry
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        loop {
+            match retry.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) => panic!("retry must close at setup deadline: {error}"),
+            }
+        }
+    });
+    let started = Instant::now();
+    assert!(telchar_nomad_worker::connect(&config).is_err());
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    server.join().unwrap();
+}
+
+#[test]
+fn setup_preserves_redirects_and_explicit_loopback_plaintext() {
+    use std::io::{Read, Write};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}/callback", listener.local_addr().unwrap());
+    let location = format!(
+        "ws://localhost:{}/redirected",
+        target.local_addr().unwrap().port()
+    );
+    let environment = workload_environment(&endpoint);
+    let config = WorkerConfig::from_lookup(|key| environment.get(key).cloned()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(stream.read(&mut bytes).unwrap() > 0);
+        write!(
+            stream,
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+        )
+        .unwrap();
+        drop(stream);
+        let (stream, _) = target.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut socket = tungstenite::accept_hdr(stream, select_protocol).unwrap();
+        let message = socket.read().unwrap();
+        assert!(message.is_binary(), "authentication follows the redirect");
+    });
+    let socket = telchar_nomad_worker::connect(&config).unwrap();
+    drop(socket);
+    server.join().unwrap();
+}
+
+#[test]
 fn worker_reports_manifest_and_store_failure_without_payloads() {
     for level in ["info", "debug"] {
         check_manifest_failure(level);
