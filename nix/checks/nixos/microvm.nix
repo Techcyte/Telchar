@@ -164,7 +164,8 @@ pkgs.testers.nixosTest {
         builder = "${pkgs.bash}/bin/bash";
         builderPackage = builtins.storePath "${pkgs.bash}";
         sleepPackage = builtins.storePath "${pkgs.coreutils}";
-        args = [ "-c" "test $EUID != 0 && ${pkgs.coreutils}/bin/sleep ''${builtins.toString delay} && printf 'microvm-service-success\\n' > $out && ${pkgs.coreutils}/bin/head -c ''${builtins.toString payloadBytes} /dev/zero >> $out" ];
+        textInput = builtins.toFile "telchar-microvm-text-input" "reference: ''${builtins.toFile "telchar-microvm-text-reference" "microvm reference"}";
+        args = [ "-c" "test -s $textInput && test $EUID != 0 && ${pkgs.coreutils}/bin/sleep ''${builtins.toString delay} && printf 'microvm-service-success\\n' > $out && ${pkgs.coreutils}/bin/head -c ''${builtins.toString payloadBytes} /dev/zero >> $out" ];
       }
     '';
     system.stateVersion = "26.05";
@@ -198,8 +199,18 @@ pkgs.testers.nixosTest {
     gateway.wait_until_succeeds("test -s /run/microvm-staging.jsonl", timeout=10)
     client.succeed("nix-instantiate /etc/microvm-build.nix --arg delay 15 --arg payloadBytes 16777216 --add-root /root/derivation")
     derivation = client.succeed("readlink -f /root/derivation").strip()
+    import json
+    import shlex
+    text_input = json.loads(client.succeed("nix-instantiate --eval --strict --json --expr '(import /etc/microvm-build.nix {}).textInput'"))
+    fresh_paths = [derivation, text_input]
+    source_info = json.loads(client.succeed("nix path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+    for path in fresh_paths:
+        gateway.succeed("test ! -e " + shlex.quote(path))
+        gateway.fail("nix-store --check-validity " + shlex.quote(path))
+        assert source_info[path]["ca"].startswith("text:sha256:"), source_info[path]
+    assert len(source_info[text_input]["references"]) == 1, source_info[text_input]
     def submit(name, path, key="key"):
-        command = "PATH=/run/current-system/sw/bin NIX_SSHOPTS='-i /root/" + key + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux - 4' " + path + "^* > /root/" + name + "-output 2>/root/" + name + "-stderr; echo $? > /root/" + name + "-status"
+        command = "PATH=/run/current-system/sw/bin NIX_CONFIG='substituters =\nbuilders =\npost-build-hook =' NIX_SSHOPTS='-i /root/" + key + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' nix --offline build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar@gateway aarch64-linux - 4' " + path + "^* > /root/" + name + "-output 2>/root/" + name + "-stderr; echo $? > /root/" + name + "-status"
         import shlex
         client.succeed("systemd-run --unit=" + name + " /bin/sh -c " + shlex.quote(command))
     submit("first", derivation)
@@ -234,6 +245,12 @@ pkgs.testers.nixosTest {
     client.wait_until_succeeds("test -f /root/first-status -a -f /root/queued-status -a -f /root/second-status", timeout=90)
     print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT provider_id, reservation_released_at IS NULL, termination_observed_at IS NULL FROM microvm_launches'\""))
     assert client.succeed("cat /root/first-status /root/queued-status /root/second-status").strip().splitlines() == ["0", "0", "0"], client.succeed("cat /root/first-stderr /root/queued-stderr /root/second-stderr")
+    destination_info = json.loads(gateway.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+    for path in fresh_paths:
+        for field in ["narHash", "narSize", "references", "ca"]:
+            assert source_info[path][field] == destination_info[path][field], (path, field)
+        assert client.succeed("cat " + shlex.quote(path)) == gateway.succeed("cat " + shlex.quote(path)), path
+        gateway.succeed("nix-store --verify-path " + shlex.quote(path))
     assert client.succeed("cat $(cat /root/queued-output)") == "microvm-service-success\n"
     client.succeed("cp /root/first-output /root/output")
     assert client.succeed("wc -c < $(cat /root/output)").strip() == "16777240"

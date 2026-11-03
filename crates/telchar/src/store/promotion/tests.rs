@@ -78,7 +78,7 @@ fn staging_coalesces_small_nar_writes_and_publishes_complete_bytes() {
     let path = directory.path().join("archive");
     let mut file = std::fs::File::create(&path).unwrap();
     let before = write_syscalls();
-    let fingerprint = super::stage_nar_to_file(nar.as_slice(), &mut file).unwrap();
+    let fingerprint = super::stage_nar_to_file(nar.as_slice(), &mut file, false).unwrap();
     let writes = write_syscalls() - before;
     assert_eq!(std::fs::read(path).unwrap(), nar);
     assert_eq!(fingerprint.size, nar.len() as u64);
@@ -101,7 +101,7 @@ fn staging_reports_pending_write_failure() {
         .open("/dev/full")
         .unwrap();
     let before = write_syscalls();
-    let error = super::stage_nar_to_file(nar.as_slice(), &mut file)
+    let error = super::stage_nar_to_file(nar.as_slice(), &mut file, false)
         .expect_err("failed staging write cannot report success");
     let writes = write_syscalls() - before;
     assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));

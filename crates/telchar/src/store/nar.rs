@@ -101,15 +101,20 @@ impl<R: Read, W: Write> NarReader<R, W> {
         Ok(())
     }
 
-    fn parse_node(&mut self, depth: usize) -> io::Result<()> {
+    fn parse_node(&mut self, depth: usize, text_root: bool) -> io::Result<()> {
         if depth >= 64 {
             return Err(invalid("NAR directory nesting is too deep"));
         }
         self.string_equals(b"(")?;
         self.string_equals(b"type")?;
         let node_type = self.read_string_word()?;
+        if text_root && node_type != b"regular" {
+            return Err(invalid(
+                "text NAR root must be a non-executable regular file",
+            ));
+        }
         match node_type.as_slice() {
-            b"regular" => self.parse_regular()?,
+            b"regular" => self.parse_regular(text_root)?,
             b"symlink" => {
                 self.string_equals(b"target")?;
                 let target = self.read_bounded_string(4095)?;
@@ -131,9 +136,14 @@ impl<R: Read, W: Write> NarReader<R, W> {
         })
     }
 
-    fn parse_regular(&mut self) -> io::Result<()> {
+    fn parse_regular(&mut self, text_root: bool) -> io::Result<()> {
         let marker = self.read_string_word()?;
         if marker == b"executable" {
+            if text_root {
+                return Err(invalid(
+                    "text NAR root must be a non-executable regular file",
+                ));
+            }
             if !self.read_string_word()?.is_empty() {
                 return Err(invalid("NAR executable marker must be empty"));
             }
@@ -175,7 +185,7 @@ impl<R: Read, W: Write> NarReader<R, W> {
             }
             previous_name = Some(name);
             self.string_equals(b"node")?;
-            self.parse_node(depth + 1)?;
+            self.parse_node(depth + 1, false)?;
             self.string_equals(b")")?;
         }
     }
@@ -244,9 +254,24 @@ pub fn read_regular_nar_with_fingerprint<R: Read>(
 }
 
 pub fn stage_nar<R: Read, W: Write>(source: R, staging: W) -> io::Result<NarFingerprint> {
+    stage_nar_with_text_root(source, staging, false)
+}
+
+pub(crate) fn stage_text_nar<R: Read, W: Write>(
+    source: R,
+    staging: W,
+) -> io::Result<NarFingerprint> {
+    stage_nar_with_text_root(source, staging, true)
+}
+
+fn stage_nar_with_text_root<R: Read, W: Write>(
+    source: R,
+    staging: W,
+    text_root: bool,
+) -> io::Result<NarFingerprint> {
     let mut nar = NarReader::new(source, staging);
     nar.string_equals(b"nix-archive-1")?;
-    nar.parse_node(0)?;
+    nar.parse_node(0, text_root)?;
 
     let mut trailing = [0; 1];
     if nar.source.read(&mut trailing)? != 0 {

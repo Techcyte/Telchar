@@ -359,3 +359,68 @@ fn rejects_missing_reference_before_staging() {
     assert!(backend.request.is_none());
     assert_directory_empty(staging.path());
 }
+
+#[test]
+fn rejects_malformed_text_and_fixed_content_addresses_before_staging() {
+    let cases = [
+        "text:sha1:00000000000000000000000000000000".to_owned(),
+        "text:r:sha256:0000000000000000000000000000000000000000000000000000".to_owned(),
+        format!("text:sha256:{}", "0".repeat(51)),
+        format!("text:sha256:{}", "0".repeat(53)),
+        format!("text:sha256:{}e", "0".repeat(51)),
+        format!("text:sha256:{}", "f".repeat(64)),
+        "text:sha256:".to_owned(),
+        "fixed:sha256:".to_owned(),
+        format!("fixed:r:sha256:{}", "0".repeat(51)),
+        format!("fixed:r:sha256:{}e", "0".repeat(51)),
+        format!("fixed:r:blake3:{}", "0".repeat(52)),
+        format!("git:sha256:{}", "0".repeat(52)),
+    ];
+    for address in cases {
+        let staging = TestDirectory::create();
+        let mut declared = declared_path_info();
+        declared.content_address = Some(address.clone());
+        let mut backend = RecordingBackend::accepting(registered_path_info());
+        let error = validate_and_promote_nar(
+            Cursor::new(regular_nar(CONTENT)),
+            staging.path(),
+            Path::new(STORE_DIRECTORY),
+            &declared,
+            &mut backend,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("content address"),
+            "{address}: {error}"
+        );
+        assert!(backend.request.is_none());
+        assert!(backend.queried_paths.is_empty());
+        assert_directory_empty(staging.path());
+    }
+}
+
+#[test]
+fn rejects_text_self_reference_before_contacting_daemon() {
+    let staging = TestDirectory::create();
+    let mut declared = declared_path_info();
+    declared.content_address = Some(format!("text:sha256:{}", "0".repeat(52)));
+    declared.references.push(declared.path.clone());
+    let mut backend = RecordingBackend::accepting(registered_path_info());
+    let error = validate_and_promote_nar(
+        Cursor::new(regular_nar(CONTENT)),
+        staging.path(),
+        Path::new(STORE_DIRECTORY),
+        &declared,
+        &mut backend,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("text content address cannot reference itself"),
+        "{error}"
+    );
+    assert!(backend.request.is_none());
+    assert!(backend.queried_paths.is_empty());
+    assert_directory_empty(staging.path());
+}

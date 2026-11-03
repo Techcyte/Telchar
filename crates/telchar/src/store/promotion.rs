@@ -7,7 +7,7 @@ use nix_worker_protocol::AddToStoreNarInfo;
 
 use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
-use crate::store::nar::stage_nar;
+use crate::store::nar::{stage_nar, stage_text_nar};
 
 #[cfg(test)]
 mod tests;
@@ -446,7 +446,11 @@ fn promote_staged(
     backend: &mut impl StorePromotionBackend,
 ) -> io::Result<RegisteredPathInfo> {
     let mut staged = std::fs::File::create(nar_path)?;
-    let fingerprint = stage_nar_to_file(source, &mut staged)?;
+    let text_root = declared
+        .content_address
+        .as_deref()
+        .is_some_and(|address| address.starts_with("text:"));
+    let fingerprint = stage_nar_to_file(source, &mut staged, text_root)?;
     if fingerprint.sha256 != declared.nar_hash {
         let error = io::Error::new(io::ErrorKind::InvalidData, "NAR hash mismatch");
         let _ = backend.is_valid_path(&declared.path);
@@ -510,9 +514,15 @@ fn promote_staged(
 fn stage_nar_to_file(
     source: impl Read,
     file: &mut std::fs::File,
+    text_root: bool,
 ) -> io::Result<crate::store::nar::NarFingerprint> {
     let mut staged = io::BufWriter::new(file);
-    let result = stage_nar(source, &mut staged).and_then(|fingerprint| {
+    let result = if text_root {
+        stage_text_nar(source, &mut staged)
+    } else {
+        stage_nar(source, &mut staged)
+    }
+    .and_then(|fingerprint| {
         staged.flush()?;
         Ok(fingerprint)
     });
@@ -522,12 +532,25 @@ fn stage_nar_to_file(
 }
 
 fn validate_declaration(declared: &DeclaredPathInfo, store_directory: &Path) -> io::Result<()> {
-    if declared
-        .content_address
-        .as_deref()
-        .is_some_and(|address| !valid_fixed_content_address(address))
-    {
-        return Err(invalid("invalid fixed-output content address"));
+    if let Some(address) = declared.content_address.as_deref() {
+        if let Some(hash) = address.strip_prefix("text:sha256:") {
+            if hash.len() != 52
+                || !hash
+                    .bytes()
+                    .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+            {
+                return Err(invalid("invalid text content address"));
+            }
+            // Nix text paths may reference other paths, but its path-info
+            // construction asserts that they cannot reference themselves.
+            if declared.references.contains(&declared.path) {
+                return Err(invalid("text content address cannot reference itself"));
+            }
+            // Staging enforces a non-executable regular root; the typed daemon
+            // import validates the text hash and reference-dependent store path.
+        } else if !valid_fixed_content_address(address) {
+            return Err(invalid("invalid fixed-output content address"));
+        }
     }
     if declared.references.len() > MAXIMUM_PROMOTION_REFERENCES {
         return Err(invalid("too many references"));

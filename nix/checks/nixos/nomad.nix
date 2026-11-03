@@ -40,7 +40,8 @@
           name = "telchar-nomad-gateway";
           system = builtins.currentSystem;
           builder = builtins.storePath "${pkgs.runtimeShell}";
-          args = [ "-c" "sleep 10; printf nomad > $out" ];
+          textInput = builtins.toFile "telchar-nomad-text-input" "reference: ''${builtins.toFile "telchar-nomad-text-reference" "nomad reference"}";
+          args = [ "-c" "test -s $textInput; sleep 10; printf nomad > $out" ];
         }
       '';
     in
@@ -54,9 +55,18 @@
         stock_client.succeed("cp ${nomadDerivation} /tmp/telchar-nomad-gateway.nix")
         derivation_path = stock_client.succeed("nix-instantiate /tmp/telchar-nomad-gateway.nix").strip()
         stock_client.succeed("ln -s '" + derivation_path + "' /tmp/nomad-drv-root")
-        derivation_export = stock_client.succeed("nix-store --export '" + derivation_path + "' | ${pkgs.coreutils}/bin/base64 -w0").strip()
-        gateway.succeed("printf '%s' '" + derivation_export + "' | ${pkgs.coreutils}/bin/base64 -d | nix-store --import >/dev/null")
-        build = "HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' '" + derivation_path + "^*'"
+        import json
+        import shlex
+        text_input = stock_client.succeed("nix-instantiate --eval --strict --json --expr '(import /tmp/telchar-nomad-gateway.nix).textInput'").strip()
+        text_input = json.loads(text_input)
+        fresh_paths = [derivation_path, text_input]
+        source_info = json.loads(stock_client.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+        for path in fresh_paths:
+            gateway.succeed("test ! -e " + shlex.quote(path))
+            gateway.fail("nix-store --check-validity " + shlex.quote(path))
+            assert source_info[path]["ca"].startswith("text:sha256:"), source_info[path]
+        assert len(source_info[text_input]["references"]) == 1, source_info[text_input]
+        build = "HOME=/root NIX_CONFIG='substituters =\nbuilders =\npost-build-hook =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' nix --extra-experimental-features nix-command build --no-link --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway ${pkgs.stdenv.hostPlatform.system} - 1 1' '" + derivation_path + "^*'"
         stock_client.succeed("(" + build + " > /tmp/nomad-build-first.out 2>&1) & echo $! > /tmp/nomad-build-first.pid")
         nomad_server.wait_until_succeeds("${pkgs.curl}/bin/curl --fail --silent --show-error 'http://127.0.0.1:4646/v1/jobs?namespace=telchar' | ${pkgs.jq}/bin/jq -e 'length == 1'", timeout=60)
         job_id = gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select backend_execution_id from shared_builds where derivation_path = '" + derivation_path + "'\"").strip()
@@ -68,6 +78,12 @@
         stock_client.succeed("kill $(cat /tmp/nomad-build-first.pid)")
         nomad_server.wait_until_succeeds("nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].ClientStatus == \"complete\"'", timeout=60)
         gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"select state from shared_builds where derivation_path = '" + derivation_path + "'\" | grep -qx succeeded", timeout=60)
+        destination_info = json.loads(gateway.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+        for path in fresh_paths:
+            for field in ["narHash", "narSize", "references", "ca"]:
+                assert source_info[path][field] == destination_info[path][field], (path, field)
+            assert stock_client.succeed("cat " + shlex.quote(path)) == gateway.succeed("cat " + shlex.quote(path)), path
+            gateway.succeed("nix-store --verify-path " + shlex.quote(path))
         output_path = stock_client.succeed("nix-store -q --outputs '" + derivation_path + "'").strip()
         gateway.succeed("nix-store --verify-path '" + output_path + "' && test \"$(cat '" + output_path + "')\" = nomad")
         stock_client.wait_until_fails("kill -0 $(cat /tmp/nomad-build-follower.pid)", timeout=60)

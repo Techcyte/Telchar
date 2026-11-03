@@ -25,6 +25,8 @@ const PATH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-telchar-fixture"
 mod failure_cleanup;
 #[path = "store_promotion/real_store.rs"]
 mod real_store;
+#[path = "store_promotion/text_content_address.rs"]
+mod text_content_address;
 #[path = "store_promotion/validation.rs"]
 mod validation;
 
