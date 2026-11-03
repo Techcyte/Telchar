@@ -509,13 +509,14 @@ impl OwnershipHealth {
         owner_kind: &str,
         uncertainty_sequence: u64,
     ) {
-        if self.recovering && self.uncertainty_sequence == uncertainty_sequence {
+        if self.failure.is_some() || self.uncertainty_sequence != uncertainty_sequence {
+            return;
+        }
+        if self.recovering {
             tracing::info!(event = "database.singleton_ownership.recovered", owner_kind);
         }
         self.deadline = started + duration;
-        if self.uncertainty_sequence == uncertainty_sequence {
-            self.recovering = false;
-        }
+        self.recovering = false;
     }
 
     fn check(&mut self) -> Result<(), SingletonOwnershipError> {
@@ -543,12 +544,8 @@ impl OwnershipHealth {
             }
             self.recovering = true;
         } else if self.failure.is_none() {
+            // The process lifecycle reports terminal ownership loss once on shutdown.
             self.failure = Some(failure);
-            tracing::error!(
-                event = "database.singleton_ownership.lost",
-                owner_kind,
-                failure_class = failure.as_str()
-            );
         }
     }
 }
@@ -577,7 +574,10 @@ mod tests {
             DAEMON_OWNER_KIND,
             sequence,
         );
-        assert_eq!(health.deadline, original_deadline, "stale response extended the conservative stop bound");
+        assert_eq!(
+            health.deadline, original_deadline,
+            "stale response extended the conservative stop bound"
+        );
         assert!(
             health.recovering,
             "older renewal response erased newer uncertainty"
@@ -596,6 +596,14 @@ mod tests {
         assert_eq!(health.deadline, candidate_start + Duration::from_secs(10));
         health.record_failure(SingletonOwnershipFailure::Fenced, DAEMON_OWNER_KIND);
         health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
+        let terminal_deadline = health.deadline;
+        health.confirm_renewal(
+            candidate_start,
+            Duration::from_secs(20),
+            DAEMON_OWNER_KIND,
+            health.uncertainty_sequence,
+        );
+        assert_eq!(health.deadline, terminal_deadline);
         assert_eq!(
             health.check().unwrap_err().failure(),
             SingletonOwnershipFailure::Fenced

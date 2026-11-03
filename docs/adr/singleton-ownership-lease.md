@@ -37,8 +37,9 @@ Renewal and verification use a separate pool from application traffic, so satura
 application checkouts cannot consume renewal capacity. All owner application
 connections, including MicroVM session and cleanup reads, observe transport failures
 before persistence errors are flattened. Uncertainty observations have a sequence
-under the shared health mutex: a renewal begun before a newer observation may
-confirm its lease deadline but cannot clear that observation or reopen admission.
+under the shared health mutex: a renewal begun before a newer observation preserves
+the prior conservative stop deadline and recovery state. Only a confirmation with
+a matching observation sequence can advance that deadline and reopen admission.
 
 A monotonic local stop deadline starts **before** each confirmed acquisition or
 renewal SQL operation, with the millisecond lease duration added. It is only a
