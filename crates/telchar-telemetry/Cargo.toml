@@ -1,6 +1,6 @@
 [package]
 name = "telchar-telemetry"
-version = "2026.10.2"
+version = "2026.11.0"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
