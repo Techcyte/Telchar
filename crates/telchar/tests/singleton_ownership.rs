@@ -304,3 +304,20 @@ fn ownership_renews_after_database_restart() {
         telchar::service::singleton_ownership::SingletonOwnershipFailure::Contended
     );
 }
+
+#[test]
+fn startup_survives_connection_outage_within_confirmed_lease() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(), Duration::from_secs(15),
+    ).unwrap();
+    let generation = owner.generation();
+    owner.maintain_during(Duration::from_millis(100), || {
+        fixture.stop();
+        std::thread::sleep(Duration::from_secs(6));
+        fixture.restart();
+    }).expect("startup recovers the existing lease after connection failure");
+    assert_eq!(owner.generation(), generation);
+    owner.verify().unwrap();
+}

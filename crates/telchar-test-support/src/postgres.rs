@@ -147,7 +147,7 @@ impl Drop for PostgresFixture {
 }
 
 impl PostgresFixture {
-    fn stop(&mut self) {
+    pub fn stop(&mut self) {
         let _ = Command::new("pg_ctl")
             .args([
                 "-D",
