@@ -566,22 +566,25 @@ mod tests {
             uncertainty_sequence: 0,
             failure: None,
         };
+        let original_deadline = health.deadline;
+        let candidate_start = started + Duration::from_secs(1);
         let sequence = health.uncertainty_sequence;
         // Deterministic order: renewal begins, application fails, renewal response is applied.
         health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
         health.confirm_renewal(
-            started,
+            candidate_start,
             Duration::from_secs(10),
             DAEMON_OWNER_KIND,
             sequence,
         );
+        assert_eq!(health.deadline, original_deadline, "stale response extended the conservative stop bound");
         assert!(
             health.recovering,
             "older renewal response erased newer uncertainty"
         );
         let sequence = health.uncertainty_sequence;
         health.confirm_renewal(
-            started,
+            candidate_start,
             Duration::from_secs(10),
             DAEMON_OWNER_KIND,
             sequence,
@@ -590,6 +593,7 @@ mod tests {
             !health.recovering,
             "subsequent renewal did not restore authority"
         );
+        assert_eq!(health.deadline, candidate_start + Duration::from_secs(10));
         health.record_failure(SingletonOwnershipFailure::Fenced, DAEMON_OWNER_KIND);
         health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
         assert_eq!(
