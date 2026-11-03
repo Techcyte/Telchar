@@ -1,4 +1,5 @@
-//! Real PostgreSQL outages must not interrupt an admitted transfer before lease expiry.
+//! Component test: real PostgreSQL and production transfer observers, simulated gateway metadata.
+//! No NAR transfer or real Nix execution is claimed.
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -8,8 +9,70 @@ use telchar::nomad::protocol::{FrameKind, ProtocolLimits, read_frame};
 use telchar_test_support::postgres::PostgresFixture;
 use tungstenite::client::IntoClientRequest;
 
+// Same worker-wire contract as gateway_daemon_connection_contract's path-info fixture.
+fn serve_input_metadata(listener: std::os::unix::net::UnixListener, input: &[u8]) {
+    use nix_worker_protocol::{
+        CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC, STDERR_LAST,
+    };
+    use std::io::{Read, Write};
+    fn integer(stream: &mut impl Write, value: u64) {
+        stream.write_all(&value.to_le_bytes()).unwrap();
+    }
+    fn read_integer(stream: &mut impl Read) -> u64 {
+        let mut bytes = [0; 8];
+        stream.read_exact(&mut bytes).unwrap();
+        u64::from_le_bytes(bytes)
+    }
+    fn string(stream: &mut impl Write, value: &[u8]) {
+        integer(stream, value.len() as u64);
+        stream.write_all(value).unwrap();
+        stream
+            .write_all(&vec![0; (8 - value.len() % 8) % 8])
+            .unwrap();
+    }
+    let (mut stream, _) = listener.accept().unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    assert_eq!(read_integer(&mut stream), CLIENT_WORKER_MAGIC);
+    assert_eq!(read_integer(&mut stream), LATEST_WORKER_VERSION.to_wire());
+    integer(&mut stream, SERVER_WORKER_MAGIC);
+    integer(&mut stream, LATEST_WORKER_VERSION.to_wire());
+    stream.flush().unwrap();
+    assert_eq!(read_integer(&mut stream), 0);
+    integer(&mut stream, 0);
+    stream.flush().unwrap();
+    assert_eq!(read_integer(&mut stream), 0);
+    assert_eq!(read_integer(&mut stream), 0);
+    string(&mut stream, b"2.34.8");
+    integer(&mut stream, 1);
+    integer(&mut stream, STDERR_LAST);
+    stream.flush().unwrap();
+    assert_eq!(read_integer(&mut stream), 26);
+    let length = read_integer(&mut stream) as usize;
+    assert_eq!(length, input.len());
+    let mut path = vec![0; length.next_multiple_of(8)];
+    stream.read_exact(&mut path).unwrap();
+    assert_eq!(&path[..length], input);
+    integer(&mut stream, STDERR_LAST);
+    integer(&mut stream, 1);
+    string(&mut stream, b"");
+    string(
+        &mut stream,
+        b"6c2be2f12a168605ebcba3782286c38eaf3f5d787b7a8bb24a540d2267ff68e1",
+    );
+    integer(&mut stream, 0);
+    integer(&mut stream, 42);
+    integer(&mut stream, 136);
+    integer(&mut stream, 0);
+    integer(&mut stream, 0);
+    string(&mut stream, b"");
+    stream.flush().unwrap();
+}
+
 #[test]
 fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_takeover() {
+    let input_path = "/nix/store/cccccccccccccccccccccccccccccccc-ownership-input";
     for interruption in ["recover", "expire", "takeover"] {
         let mut fixture = PostgresFixture::start();
         telchar::persistence::migrate(fixture.url()).unwrap();
@@ -29,7 +92,7 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
         let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ownership.drv";
         let output = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ownership";
         let derivation = format!(
-            r#"Derive([("out","{output}","","")],[],[],"aarch64-linux","/bin/sh",[],[("out","{output}"),("system","aarch64-linux"),("builder","/bin/sh"),("name","ownership")])"#
+            r#"Derive([("out","{output}","","")],[],["{input_path}"],"aarch64-linux","/bin/sh",[],[("out","{output}"),("system","aarch64-linux"),("builder","/bin/sh"),("name","ownership")])"#
         );
         let request = telchar::build::BuildRequest::from_stored_derivation(
             drv.as_bytes(),
@@ -129,11 +192,21 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
             let connection = waiting.receive_active(&owner).unwrap();
             let staging = tempfile::tempdir().unwrap();
             let transfer_owner = Arc::clone(&owner);
+            let gateway = tempfile::tempdir().unwrap();
+            let path = gateway.path().join("gateway.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            let metadata =
+                scope.spawn(move || serve_input_metadata(listener, input_path.as_bytes()));
+            let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(&format!(
+                "unix://{}",
+                path.display()
+            ))
+            .unwrap();
             let transfer = scope.spawn(move || {
                 telchar::microvm::session::run_admitted(
                     connection,
                     &transfer_owner,
-                    telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
+                    endpoint,
                     staging.path().into(),
                     telchar::microvm::session::Limits {
                         maximum_paths: 10,
@@ -145,13 +218,20 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
                     |_| {},
                 )
             });
-            let manifest = client.read().unwrap().into_data();
+            let manifest = match client.read() {
+                Ok(message) => message.into_data(),
+                Err(error) => panic!(
+                    "transfer ended before manifest: {error}; server: {:?}",
+                    transfer.join().unwrap()
+                ),
+            };
             assert_eq!(
                 read_frame(&mut manifest.as_ref(), ProtocolLimits::new(8192, 256))
                     .unwrap()
                     .kind(),
                 FrameKind::InputManifest
             );
+            metadata.join().unwrap();
             fixture.stop();
             let until = Instant::now() + Duration::from_secs(2);
             while matches!(owner.admission_available(), Ok(true)) {
