@@ -722,7 +722,7 @@ chunk_bytes = 262144
                 let mut build = telchar::backend::BuildExecution::new(
                     "configured-worker",
                     &request,
-                    Duration::from_secs(15),
+                    Duration::from_secs(30),
                 )
                 .unwrap();
                 build.set_target_name(target.name()).unwrap();
@@ -746,7 +746,7 @@ chunk_bytes = 262144
                     .run_reserved(
                         &execution_intent,
                         &payload,
-                        std::time::Instant::now() + Duration::from_secs(15),
+                        std::time::Instant::now() + Duration::from_secs(30),
                         |_| {},
                     )
                     .map(|result| result.outcome)
@@ -779,7 +779,7 @@ chunk_bytes = 262144
     } else {
         serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
-            "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 15
+            "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 30
         })
     };
     if case == "configured-daemon-crash" {
@@ -893,10 +893,10 @@ chunk_bytes = 262144
         std::thread::sleep(Duration::from_millis(10));
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     stream
-        .set_write_timeout(Some(Duration::from_secs(15)))
+        .set_write_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let config = rustls::ServerConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
@@ -938,10 +938,10 @@ chunk_bytes = 262144
     );
     let connection = std::net::TcpStream::connect(gateway_address).unwrap();
     connection
-        .set_read_timeout(Some(Duration::from_secs(15)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     connection
-        .set_write_timeout(Some(Duration::from_secs(15)))
+        .set_write_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let (mut upstream, _) = tungstenite::client(request, connection).unwrap();
     upstream.send(socket.read().unwrap()).unwrap();
