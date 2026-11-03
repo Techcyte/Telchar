@@ -220,6 +220,8 @@ pkgs.testers.nixosTest {
         print(client.succeed("cat /root/first-stderr; cat /root/first-status 2>/dev/null || true"))
         print(gateway.succeed("journalctl -u telchar.service -u microvm-provider.service --no-pager -n 120"))
         print(worker.succeed("journalctl -u microvm-worker.service --no-pager -n 80"))
+        print(worker.succeed("${pkgs.python3}/bin/python3 -c \"import json, pathlib; print([(v['endpoint'], v['address']) for p in pathlib.Path('/run/microvm-worker').glob('*/execution.json') for v in [json.loads(p.read_text())]])\""))
+        print(gateway.succeed("getent ahostsv4 gateway"))
         print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT state, backend_name FROM shared_builds; SELECT phase, session_consumed_at IS NOT NULL FROM microvm_launches; SELECT owner_kind, generation, lease_expires_at > clock_timestamp() FROM singleton_ownership'\""))
         raise
     client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name alice-queued --add-root /root/queued")
