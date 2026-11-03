@@ -218,6 +218,9 @@ pkgs.testers.nixosTest {
         gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE session_consumed_at IS NOT NULL'\" | grep -qx 1", timeout=20)
     except Exception:
         print(client.succeed("cat /root/first-stderr; cat /root/first-status 2>/dev/null || true"))
+        print(gateway.succeed("journalctl -u telchar.service -u microvm-provider.service --no-pager -n 120"))
+        print(worker.succeed("journalctl -u microvm-worker.service --no-pager -n 80"))
+        print(gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT state, backend_name FROM shared_builds; SELECT phase, session_consumed_at IS NOT NULL FROM microvm_launches; SELECT owner_kind, generation, lease_expires_at > clock_timestamp() FROM singleton_ownership'\""))
         raise
     client.succeed("nix-instantiate /etc/microvm-build.nix --argstr name alice-queued --add-root /root/queued")
     queued = client.succeed("readlink -f /root/queued").strip()
