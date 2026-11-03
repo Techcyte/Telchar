@@ -35,12 +35,16 @@ pub fn run_admitted(
             std::thread::sleep(std::time::Duration::from_millis(10));
             continue;
         }
+        let uncertainty_sequence = owner.uncertainty_sequence();
         match crate::persistence::microvm_session_request(owner.database(), &intent_id) {
             Ok(request) => {
                 return request.ok_or_else(|| io::Error::other("MicroVM execution is not active"));
             }
             Err(error) => {
-                if owner.verify_available().map_err(io::Error::other)? {
+                // The application connection reports transport uncertainty before flattening errors.
+                // Only retry this read after a subsequent confirmed renewal, never a mutation.
+                owner.admission_available().map_err(io::Error::other)?;
+                if owner.uncertainty_sequence() == uncertainty_sequence {
                     return Err(io::Error::other(error));
                 }
             }

@@ -50,11 +50,12 @@ impl std::error::Error for SingletonOwnershipError {}
 pub struct SingletonOwnership {
     database_url: String,
     database: crate::persistence::Database,
+    renewal_database: crate::persistence::Database,
     owner_kind: &'static str,
     owner_token: String,
     generation: i64,
     lease_duration: Duration,
-    health: Mutex<OwnershipHealth>,
+    health: Arc<Mutex<OwnershipHealth>>,
     renewal: Mutex<()>,
 }
 
@@ -62,7 +63,47 @@ struct OwnershipHealth {
     // Starts before the confirmed SQL operation, never at response receipt.
     deadline: Instant,
     recovering: bool,
+    uncertainty_sequence: u64,
     failure: Option<SingletonOwnershipFailure>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OwnershipObserver {
+    health: Arc<Mutex<OwnershipHealth>>,
+    owner_kind: &'static str,
+}
+
+impl OwnershipObserver {
+    pub(crate) fn wait_for_authority(&self) -> std::io::Result<()> {
+        loop {
+            let mut health = self.health.lock().expect("ownership health mutex");
+            health.check().map_err(std::io::Error::other)?;
+            if !health.recovering {
+                return Ok(());
+            }
+            drop(health);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub(crate) fn observe_database_error(&self, error: &crate::persistence::DatabaseError) {
+        match query_failure(error) {
+            SingletonOwnershipFailure::Connection | SingletonOwnershipFailure::Fenced => {
+                self.health
+                    .lock()
+                    .expect("ownership health mutex")
+                    .record_failure(query_failure(error), self.owner_kind);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn observe_connection_failure(&self) {
+        self.health
+            .lock()
+            .expect("ownership health mutex")
+            .record_failure(SingletonOwnershipFailure::Connection, self.owner_kind);
+    }
 }
 
 pub struct OwnershipRenewal {
@@ -129,18 +170,27 @@ impl SingletonOwnership {
         let database_url = fenced_database_url(database_url, owner_kind, &owner_token, generation)?;
         let database = crate::persistence::Database::connect(&database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+        let health = Arc::new(Mutex::new(OwnershipHealth {
+            deadline: confirmed_start + lease_duration,
+            recovering: false,
+            uncertainty_sequence: 0,
+            failure: None,
+        }));
+        let renewal_database = crate::persistence::Database::connect(&database_url)
+            .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
+        let database = database.with_ownership_observer(OwnershipObserver {
+            health: Arc::clone(&health),
+            owner_kind,
+        });
         let ownership = Self {
             database_url,
             database,
+            renewal_database,
             owner_kind,
             owner_token,
             generation,
             lease_duration,
-            health: Mutex::new(OwnershipHealth {
-                deadline: confirmed_start + lease_duration,
-                recovering: false,
-                failure: None,
-            }),
+            health,
             renewal: Mutex::new(()),
         };
         ownership.verify()?;
@@ -162,14 +212,14 @@ impl SingletonOwnership {
     /// Renew only the existing generation, within its last confirmed conservative window.
     pub fn renew(&self) -> Result<(), SingletonOwnershipError> {
         let _renewal = self.renewal.lock().expect("ownership renewal mutex");
-        let deadline = {
+        let (deadline, uncertainty_sequence) = {
             let mut health = self.health.lock().expect("ownership health mutex");
             health.check()?;
-            health.deadline
+            (health.deadline, health.uncertainty_sequence)
         };
         let started = Instant::now();
         let result = renew_lease(
-            &self.database,
+            &self.renewal_database,
             self.owner_kind,
             &self.owner_token,
             self.generation,
@@ -181,7 +231,12 @@ impl SingletonOwnership {
         health.check()?;
         match result {
             Ok(()) => {
-                health.confirm_renewal(started, self.lease_duration, self.owner_kind);
+                health.confirm_renewal(
+                    started,
+                    self.lease_duration,
+                    self.owner_kind,
+                    uncertainty_sequence,
+                );
                 Ok(())
             }
             Err(error) => {
@@ -284,7 +339,7 @@ impl SingletonOwnership {
     }
 
     pub fn verify(&self) -> Result<(), SingletonOwnershipError> {
-        self.verify_database(&self.database)
+        self.verify_database(&self.renewal_database)
     }
 
     /// Observers may pause on transport uncertainty, but cannot restore authority.
@@ -325,20 +380,15 @@ impl SingletonOwnership {
         self.health.lock().expect("ownership health mutex").check()
     }
 
-    pub(crate) fn observe_database_error(&self, error: &crate::persistence::DatabaseError) {
-        match query_failure(error) {
-            SingletonOwnershipFailure::Connection => {
-                self.observe_failure(SingletonOwnershipFailure::Connection);
-            }
-            SingletonOwnershipFailure::Fenced => {
-                self.observe_failure(SingletonOwnershipFailure::Fenced);
-            }
-            _ => {}
-        }
+    pub(crate) fn uncertainty_sequence(&self) -> u64 {
+        self.health.lock().expect("ownership health mutex").uncertainty_sequence
     }
 
-    pub(crate) fn observe_connection_failure(&self) {
-        self.observe_failure(SingletonOwnershipFailure::Connection);
+    pub(crate) fn observer(&self) -> OwnershipObserver {
+        OwnershipObserver {
+            health: Arc::clone(&self.health),
+            owner_kind: self.owner_kind,
+        }
     }
 
     fn observe_failure(&self, failure: SingletonOwnershipFailure) -> SingletonOwnershipError {
@@ -353,7 +403,7 @@ impl SingletonOwnership {
 impl Drop for SingletonOwnership {
     fn drop(&mut self) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
-        let Ok(mut connection) = self.database.connection_until(deadline) else {
+        let Ok(mut connection) = self.renewal_database.connection_until(deadline) else {
             return;
         };
         let _ = connection.execute(
@@ -444,12 +494,20 @@ fn owner_token() -> String {
 }
 
 impl OwnershipHealth {
-    fn confirm_renewal(&mut self, started: Instant, duration: Duration, owner_kind: &str) {
-        if self.recovering {
+    fn confirm_renewal(
+        &mut self,
+        started: Instant,
+        duration: Duration,
+        owner_kind: &str,
+        uncertainty_sequence: u64,
+    ) {
+        if self.recovering && self.uncertainty_sequence == uncertainty_sequence {
             tracing::info!(event = "database.singleton_ownership.recovered", owner_kind);
         }
         self.deadline = started + duration;
-        self.recovering = false;
+        if self.uncertainty_sequence == uncertainty_sequence {
+            self.recovering = false;
+        }
     }
 
     fn check(&mut self) -> Result<(), SingletonOwnershipError> {
@@ -470,6 +528,10 @@ impl OwnershipHealth {
                     owner_kind,
                     failure_class = failure.as_str()
                 );
+            }
+            match self.uncertainty_sequence.checked_add(1) {
+                Some(sequence) => self.uncertainty_sequence = sequence,
+                None => self.failure = Some(SingletonOwnershipFailure::Fenced),
             }
             self.recovering = true;
         } else if self.failure.is_none() {
@@ -493,12 +555,38 @@ mod tests {
         let mut health = OwnershipHealth {
             deadline: started + Duration::from_secs(10),
             recovering: false,
+            uncertainty_sequence: 0,
             failure: None,
         };
+        let sequence = health.uncertainty_sequence;
         // Deterministic order: renewal begins, application fails, renewal response is applied.
         health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
-        health.confirm_renewal(started, Duration::from_secs(10), DAEMON_OWNER_KIND);
-        assert!(health.recovering, "older renewal response erased newer uncertainty");
+        health.confirm_renewal(
+            started,
+            Duration::from_secs(10),
+            DAEMON_OWNER_KIND,
+            sequence,
+        );
+        assert!(
+            health.recovering,
+            "older renewal response erased newer uncertainty"
+        );
+        let sequence = health.uncertainty_sequence;
+        health.confirm_renewal(
+            started,
+            Duration::from_secs(10),
+            DAEMON_OWNER_KIND,
+            sequence,
+        );
+        assert!(
+            !health.recovering,
+            "subsequent renewal did not restore authority"
+        );
+        health.record_failure(SingletonOwnershipFailure::Fenced, DAEMON_OWNER_KIND);
+        health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
+        assert_eq!(health.check().unwrap_err().failure(), SingletonOwnershipFailure::Fenced);
+        health.deadline = Instant::now();
+        assert_eq!(health.check().unwrap_err().failure(), SingletonOwnershipFailure::Fenced);
     }
 }
 

@@ -23,7 +23,7 @@ enum ConnectionSecurity {
 pub struct Database {
     pool: Pool<Manager>,
     request: Option<RequestBudget>,
-    ownership: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
+    ownership: Option<crate::service::singleton_ownership::OwnershipObserver>,
 }
 
 #[derive(Clone)]
@@ -67,17 +67,21 @@ impl Database {
         mut self,
         owner: &std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
     ) -> Self {
-        self.ownership = Some(std::sync::Arc::downgrade(owner));
+        self.ownership = Some(owner.observer());
+        self
+    }
+
+    pub(crate) fn with_ownership_observer(
+        mut self,
+        observer: crate::service::singleton_ownership::OwnershipObserver,
+    ) -> Self {
+        self.ownership = Some(observer);
         self
     }
 
     pub fn wait_for_ownership(&self) -> std::io::Result<()> {
         match &self.ownership {
-            Some(owner) => owner
-                .upgrade()
-                .ok_or_else(|| std::io::Error::other("singleton ownership unavailable"))?
-                .wait_for_authority()
-                .map_err(std::io::Error::other),
+            Some(owner) => owner.wait_for_authority(),
             None => Ok(()),
         }
     }
@@ -128,8 +132,7 @@ impl Database {
                 Ok(connection) => connection,
                 Err(_) if self.request.is_some() => continue,
                 Err(error) => {
-                    if let Some(owner) = self.ownership.as_ref().and_then(std::sync::Weak::upgrade)
-                    {
+                    if let Some(owner) = &self.ownership {
                         owner.observe_connection_failure();
                     }
                     return Err(error.into());

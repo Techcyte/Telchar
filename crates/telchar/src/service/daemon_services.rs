@@ -154,6 +154,7 @@ impl MicrovmCleanupService {
             if !owner.verify_available().map_err(io::Error::other)? {
                 return Ok(true);
             }
+            let uncertainty_sequence = owner.uncertainty_sequence();
             let pending = match crate::persistence::pending_microvm_cleanup(
                 owner.database(),
                 &account_id,
@@ -162,7 +163,7 @@ impl MicrovmCleanupService {
                 after_intent.as_deref(),
             ) {
                 Ok(pending) => pending,
-                Err(error) => return background_result(&owner, Err(io::Error::other(error)), true),
+                Err(error) => return background_result(&owner, Err(io::Error::other(error)), true, uncertainty_sequence),
             };
             for cleanup in pending {
                 after_intent = Some(cleanup.intent_id.clone());
@@ -209,7 +210,8 @@ impl MaintenanceService {
             if !owner.verify_available().map_err(io::Error::other)? {
                 return Ok(());
             }
-            background_result(&owner, maintain(), ())
+            let uncertainty_sequence = owner.uncertainty_sequence();
+            background_result(&owner, maintain(), (), uncertainty_sequence)
         })
     }
 
@@ -251,7 +253,8 @@ impl RecoveryMonitorService {
             if !owner.verify_available().map_err(io::Error::other)? {
                 return Ok(true);
             }
-            background_result(&owner, reconcile(), true)
+            let uncertainty_sequence = owner.uncertainty_sequence();
+            background_result(&owner, reconcile(), true, uncertainty_sequence)
         })
     }
 
@@ -325,11 +328,13 @@ fn background_result<T>(
     owner: &crate::service::singleton_ownership::SingletonOwnership,
     result: io::Result<T>,
     paused: T,
+    uncertainty_sequence: u64,
 ) -> io::Result<T> {
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            if !owner.verify_available().map_err(io::Error::other)? {
+            owner.admission_available().map_err(io::Error::other)?;
+            if owner.uncertainty_sequence() != uncertainty_sequence {
                 tracing::warn!(
                     event = "database.background.interrupted",
                     "background pass interrupted during ownership recovery; outcome may be unknown"

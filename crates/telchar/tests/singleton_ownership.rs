@@ -331,16 +331,25 @@ fn saturated_application_pool_does_not_starve_renewal() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();
     let owner = std::sync::Arc::new(
-        telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url(), Duration::from_secs(3)).unwrap(),
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(3),
+        )
+        .unwrap(),
     );
     let application = owner.database().clone();
-    let held = (0..16).map(|_| application.connection().unwrap()).collect::<Vec<_>>();
+    let held = (0..16)
+        .map(|_| application.connection().unwrap())
+        .collect::<Vec<_>>();
     let renewal = owner.with_renewal(Duration::from_millis(100)).unwrap();
     std::thread::sleep(Duration::from_millis(3_200));
     let available = owner.admission_available();
     drop(held);
     drop(renewal);
-    assert!(matches!(available, Ok(true)), "healthy database ownership was starved by application traffic: {available:?}");
+    assert!(
+        matches!(available, Ok(true)),
+        "healthy database ownership was starved by application traffic: {available:?}"
+    );
     owner.verify().unwrap();
 }
 
@@ -350,33 +359,56 @@ fn microvm_read_transport_failure_pauses_even_when_verification_can_succeed() {
         let fixture = PostgresFixture::start();
         telchar::persistence::migrate(fixture.url()).unwrap();
         let owner = std::sync::Arc::new(
-            telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url(), Duration::from_secs(15)).unwrap(),
+            telchar::service::singleton_ownership::SingletonOwnership::acquire(
+                fixture.url(),
+                Duration::from_secs(15),
+            )
+            .unwrap(),
         );
         let mut observer = fixture.connect();
         let mut lock = observer.transaction().unwrap();
-        lock.batch_execute("LOCK TABLE microvm_launches IN ACCESS EXCLUSIVE MODE").unwrap();
+        lock.batch_execute("LOCK TABLE microvm_launches IN ACCESS EXCLUSIVE MODE")
+            .unwrap();
         std::thread::scope(|scope| {
             let read = scope.spawn(|| {
                 if cleanup {
-                    telchar::persistence::pending_microvm_cleanup(owner.database(), "000000000001", "us-west-2", 1, None).map(|_| ())
+                    telchar::persistence::pending_microvm_cleanup(
+                        owner.database(),
+                        "000000000001",
+                        "us-west-2",
+                        1,
+                        None,
+                    )
+                    .map(|_| ())
                 } else {
-                    telchar::persistence::microvm_session_request(owner.database(), "fixture").map(|_| ())
+                    telchar::persistence::microvm_session_request(owner.database(), "fixture")
+                        .map(|_| ())
                 }
             });
             let mut killer = fixture.connect();
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             let pid = loop {
                 let row = killer.query_opt("SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM microvm_launches%' AND pid <> pg_backend_pid()", &[]).unwrap();
-                if let Some(row) = row { break row.get::<_, i32>(0); }
-                assert!(std::time::Instant::now() < deadline, "MicroVM read did not reach database");
+                if let Some(row) = row {
+                    break row.get::<_, i32>(0);
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "MicroVM read did not reach database"
+                );
                 std::thread::sleep(Duration::from_millis(10));
             };
-            killer.execute("SELECT pg_terminate_backend($1)", &[&pid]).unwrap();
+            killer
+                .execute("SELECT pg_terminate_backend($1)", &[&pid])
+                .unwrap();
             assert!(read.join().unwrap().is_err());
         });
         lock.rollback().unwrap();
         owner.verify().unwrap();
-        assert!(!owner.admission_available().unwrap(), "actual MicroVM transport failure was erased by healthy verification; cleanup={cleanup}");
+        assert!(
+            !owner.admission_available().unwrap(),
+            "actual MicroVM transport failure was erased by healthy verification; cleanup={cleanup}"
+        );
         owner.renew().unwrap();
         assert!(owner.admission_available().unwrap());
     }

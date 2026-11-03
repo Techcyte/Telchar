@@ -113,7 +113,7 @@ struct Driver {
     connection: Option<ConnectionFuture>,
     deadline: Instant,
     request: Option<super::RequestBudget>,
-    ownership: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
+    ownership: Option<crate::service::singleton_ownership::OwnershipObserver>,
 }
 
 impl Driver {
@@ -151,7 +151,7 @@ impl Driver {
             }
         });
         if let Err(error) = &result
-            && let Some(owner) = self.ownership.as_ref().and_then(std::sync::Weak::upgrade)
+            && let Some(owner) = &self.ownership
         {
             owner.observe_database_error(error);
         }
@@ -180,7 +180,7 @@ pub struct DatabaseClient {
 impl DatabaseClient {
     pub(super) fn observe_ownership(
         &mut self,
-        owner: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
+        owner: Option<crate::service::singleton_ownership::OwnershipObserver>,
     ) {
         self.driver.ownership = owner;
     }
