@@ -253,9 +253,12 @@ fn ownership_recovery_blocks_queued_dispatch_even_after_database_returns() {
         !waiting.is_finished(),
         "read-only verification resumed queued dispatch"
     );
-    owner.renew().unwrap();
+    // Replacing a stale application connection may itself observe uncertainty after
+    // the first renewal; keep the real renewal worker active for that observation.
+    let renewal = owner.with_renewal(Duration::from_millis(100)).unwrap();
     assert_eq!(
         waiting.join().unwrap().unwrap().state,
         telchar::persistence::SharedBuildState::Running
     );
+    drop(renewal);
 }

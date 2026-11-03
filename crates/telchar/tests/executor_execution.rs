@@ -153,8 +153,13 @@ fn running_work_survives_submitter_disconnect(outage: bool, renewal_blocked: boo
         }
         // For blocked renewal the first helper has finished, so mutex serialization cannot explain this state.
         assert_eq!(
-            telchar::persistence::read_local_backend_execution(database.url(), "queued-during-outage")
-                .unwrap().unwrap().state,
+            telchar::persistence::read_local_backend_execution(
+                database.url(),
+                "queued-during-outage"
+            )
+            .unwrap()
+            .unwrap()
+            .state,
             telchar::persistence::LocalBackendExecutionState::Accepted
         );
         if let Some(transaction) = held_lease.take() {
