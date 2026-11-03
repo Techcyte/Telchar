@@ -41,7 +41,7 @@
           system = builtins.currentSystem;
           builder = builtins.storePath "${pkgs.runtimeShell}";
           textInput = builtins.toFile "telchar-nomad-text-input" "reference: ''${builtins.toFile "telchar-nomad-text-reference" "nomad reference"}";
-          args = [ "-c" "test -s $textInput; sleep 10; printf nomad > $out" ];
+          args = [ "-c" "test -s \"$textInput\" && sleep 10 && printf nomad > \"$out\"" ];
         }
       '';
     in
