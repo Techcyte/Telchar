@@ -550,6 +550,32 @@ impl OwnershipHealth {
     }
 }
 
+fn query_failure(error: &crate::persistence::DatabaseError) -> SingletonOwnershipFailure {
+    use crate::persistence::DatabaseError;
+    match error {
+        DatabaseError::Query(error)
+            if error.code().is_some_and(|code| code.code() == "55000")
+                && error
+                    .as_db_error()
+                    .is_some_and(|error| error.message() == "singleton ownership fenced") =>
+        {
+            SingletonOwnershipFailure::Fenced
+        }
+        DatabaseError::Closed | DatabaseError::Deadline => SingletonOwnershipFailure::Connection,
+        DatabaseError::Query(error) if error.is_closed() || error.as_db_error().is_none() => {
+            SingletonOwnershipFailure::Connection
+        }
+        DatabaseError::Query(error)
+            if error.code().is_some_and(|code| {
+                code.code().starts_with("08") || matches!(code.code(), "57P01" | "57P02" | "57P03")
+            }) =>
+        {
+            SingletonOwnershipFailure::Connection
+        }
+        _ => SingletonOwnershipFailure::Query,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,31 +639,5 @@ mod tests {
             health.check().unwrap_err().failure(),
             SingletonOwnershipFailure::Fenced
         );
-    }
-}
-
-fn query_failure(error: &crate::persistence::DatabaseError) -> SingletonOwnershipFailure {
-    use crate::persistence::DatabaseError;
-    match error {
-        DatabaseError::Query(error)
-            if error.code().is_some_and(|code| code.code() == "55000")
-                && error
-                    .as_db_error()
-                    .is_some_and(|error| error.message() == "singleton ownership fenced") =>
-        {
-            SingletonOwnershipFailure::Fenced
-        }
-        DatabaseError::Closed | DatabaseError::Deadline => SingletonOwnershipFailure::Connection,
-        DatabaseError::Query(error) if error.is_closed() || error.as_db_error().is_none() => {
-            SingletonOwnershipFailure::Connection
-        }
-        DatabaseError::Query(error)
-            if error.code().is_some_and(|code| {
-                code.code().starts_with("08") || matches!(code.code(), "57P01" | "57P02" | "57P03")
-            }) =>
-        {
-            SingletonOwnershipFailure::Connection
-        }
-        _ => SingletonOwnershipFailure::Query,
     }
 }
