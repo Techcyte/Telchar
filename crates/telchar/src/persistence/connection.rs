@@ -23,6 +23,7 @@ enum ConnectionSecurity {
 pub struct Database {
     pool: Pool<Manager>,
     request: Option<RequestBudget>,
+    ownership: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
 }
 
 #[derive(Clone)]
@@ -57,7 +58,28 @@ impl Database {
         Ok(Self {
             pool: build_pool(Manager { config, security })?,
             request: None,
+            ownership: None,
         })
+    }
+
+    /// Carry the process admission/dispatch gate without changing write semantics.
+    pub fn with_ownership(
+        mut self,
+        owner: &std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
+    ) -> Self {
+        self.ownership = Some(std::sync::Arc::downgrade(owner));
+        self
+    }
+
+    pub fn wait_for_ownership(&self) -> std::io::Result<()> {
+        match &self.ownership {
+            Some(owner) => owner
+                .upgrade()
+                .ok_or_else(|| std::io::Error::other("singleton ownership unavailable"))?
+                .wait_for_authority()
+                .map_err(std::io::Error::other),
+            None => Ok(()),
+        }
     }
 
     pub fn for_request(
@@ -71,6 +93,7 @@ impl Database {
                 deadline,
                 cancelled,
             }),
+            ownership: self.ownership.clone(),
         }
     }
 

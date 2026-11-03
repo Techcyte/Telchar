@@ -52,14 +52,14 @@ fn run_executor() -> io::Result<()> {
         .to_owned();
     telchar::persistence::migrate(&database_url)
         .map_err(|_| invalid("database migration failed"))?;
-    let ownership =
+    let ownership = Arc::new(
         telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
             &database_url,
             config.ownership_lease_duration(),
         )
-        .map_err(|_| invalid("local executor ownership refused"))?;
-    let database = telchar::persistence::Database::connect(ownership.database_url())
-        .map_err(|_| invalid("database connection failed"))?;
+        .map_err(|_| invalid("local executor ownership refused"))?,
+    );
+    let database = ownership.database().clone().with_ownership(&ownership);
     let ownership_renewal_interval = config.ownership_renewal_interval();
     let socket = required_path("TELCHAR_EXECUTOR_SOCKET")?;
     let expected_uid = u32_from_env("TELCHAR_EXECUTOR_UID", rustix::process::getuid().as_raw())?;
@@ -71,13 +71,13 @@ fn run_executor() -> io::Result<()> {
     let executor = Arc::new(Mutex::new(
         telchar::backend::local::executor_from_environment()?,
     ));
-    let mut next_ownership_renewal = std::time::Instant::now() + ownership_renewal_interval;
+    let _ownership_renewal = ownership
+        .with_renewal(ownership_renewal_interval)
+        .map_err(io::Error::other)?;
     loop {
-        if std::time::Instant::now() >= next_ownership_renewal {
-            ownership
-                .renew()
-                .map_err(|_| invalid("local executor ownership lost"))?;
-            next_ownership_renewal = std::time::Instant::now() + ownership_renewal_interval;
+        if !ownership.admission_available().map_err(io::Error::other)? {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
         }
         let mut stream = match listener.accept() {
             Ok((stream, _)) => stream,
@@ -103,6 +103,12 @@ fn run_executor() -> io::Result<()> {
                 let specification = specification.clone();
                 let executor = Arc::clone(&executor);
                 std::thread::spawn(move || {
+                    let Ok(mut executor) = executor.lock() else {
+                        return;
+                    };
+                    if database.wait_for_ownership().is_err() {
+                        return;
+                    }
                     if telchar::persistence::record_local_backend_running(
                         &database,
                         &backend_execution_id,
@@ -119,9 +125,9 @@ fn run_executor() -> io::Result<()> {
                         return;
                     };
                     request.set_trace_context(telchar_telemetry::TraceContext::capture_current());
-                    let Ok(mut executor) = executor.lock() else {
+                    if database.wait_for_ownership().is_err() {
                         return;
-                    };
+                    }
                     let terminal = match executor.execute_with_logs(
                         &request,
                         &mut |_| Ok(()),
@@ -378,7 +384,7 @@ fn run_daemon() -> io::Result<()> {
         resulting_schema_version = migration.resulting_version,
         "database migration completed"
     );
-    let mut singleton_ownership =
+    let singleton_ownership =
         match telchar::service::singleton_ownership::SingletonOwnership::acquire(
             &database_url,
             config.ownership_lease_duration(),
@@ -403,18 +409,23 @@ fn run_daemon() -> io::Result<()> {
                 return Err(invalid("singleton daemon ownership refused"));
             }
         };
-    let database = telchar::persistence::Database::connect(singleton_ownership.database_url())
-        .map_err(|_| invalid("database connection failed"))?;
+    let singleton_ownership = Arc::new(singleton_ownership);
+    let _ownership_renewal = singleton_ownership
+        .with_renewal(config.ownership_renewal_interval())
+        .map_err(io::Error::other)?;
+    let database = singleton_ownership
+        .database()
+        .clone()
+        .with_ownership(&singleton_ownership);
     let mut store_retention = gateway_store.retention()?;
+    telchar::store::retention::reconcile_startup_retention(
+        &database,
+        store_retention.as_mut(),
+        SystemTime::now(),
+    )?;
     singleton_ownership
-        .maintain_during(config.ownership_renewal_interval(), || {
-            telchar::store::retention::reconcile_startup_retention(
-                &database,
-                store_retention.as_mut(),
-                SystemTime::now(),
-            )
-        })
-        .map_err(|_| invalid("singleton daemon ownership lost"))??;
+        .wait_for_authority()
+        .map_err(io::Error::other)?;
     tracing::info!(
         event = "gateway.request_lease_release.completed",
         operation = "reconcile-release",
@@ -438,24 +449,24 @@ fn run_daemon() -> io::Result<()> {
             "MicroVM cleanup requires configured account and region",
         ));
     }
-    let deployments = singleton_ownership
-        .maintain_during(config.ownership_renewal_interval(), || {
-            if config.microvm_backends().is_empty() {
-                return Ok(Vec::new());
+    let deployments = (|| {
+        if config.microvm_backends().is_empty() {
+            return Ok(Vec::new());
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let mut deployments = Vec::new();
+            for policy in config.microvm_backends() {
+                deployments.push((policy.clone(), policy.provider().await?));
             }
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            runtime.block_on(async {
-                let mut deployments = Vec::new();
-                for policy in config.microvm_backends() {
-                    deployments.push((policy.clone(), policy.provider().await?));
-                }
-                Ok::<_, io::Error>(deployments)
-            })
+            Ok::<_, io::Error>(deployments)
         })
-        .map_err(io::Error::other)??;
-    let singleton_ownership = Arc::new(singleton_ownership);
+    })()?;
+    singleton_ownership
+        .wait_for_authority()
+        .map_err(io::Error::other)?;
     let microvm_services = match config.microvm_bind() {
         Some(bind) => telchar::microvm::service::Service::start_many(
             deployments,
@@ -546,11 +557,13 @@ fn run_daemon() -> io::Result<()> {
         let database = database.clone();
         let backends = backends.clone();
         let retention = output_retention.duration();
+        let recovery_owner = Arc::clone(&singleton_ownership);
         let gateway_store = gateway_store.endpoint().cloned();
         recovery_services.push(
             telchar::service::daemon_services::RecoveryMonitorService::start(
                 Duration::from_millis(100),
                 move || {
+                    if !recovery_owner.admission_available().map_err(io::Error::other)? { return Ok(true); }
                     let mut configured_backends = backends.snapshot();
                     let mut outputs =
                         telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
@@ -637,6 +650,9 @@ fn run_daemon() -> io::Result<()> {
     )?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown_requested))?;
     signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_requested))?;
+    singleton_ownership
+        .wait_for_authority()
+        .map_err(io::Error::other)?;
     let socket = daemon_socket_argument()?;
     let expected_uid = daemon_uid_argument()?;
     prepare_socket_path(&socket)?;
@@ -684,9 +700,16 @@ fn run_daemon() -> io::Result<()> {
     }
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
+    let maintenance_owner = Arc::clone(&singleton_ownership);
     let mut maintenance_service = telchar::service::daemon_services::MaintenanceService::start(
         Duration::from_secs(60),
         move || {
+            if !maintenance_owner
+                .admission_available()
+                .map_err(io::Error::other)?
+            {
+                return Ok(());
+            }
             let mut backend = maintenance_gateway_store.retention()?;
             telchar::store::retention::reconcile_output_retention(
                 &maintenance_database,
@@ -703,12 +726,8 @@ fn run_daemon() -> io::Result<()> {
     let mut discovered_static_ssh = Vec::new();
     let mut consul_static_ssh = Vec::new();
     let mut ec2_static_ssh = Vec::new();
-    let mut next_ownership_check = std::time::Instant::now() + ownership_check_interval;
     loop {
         if let Some(service) = admin_service.as_mut() {
-            service.check()?;
-        }
-        for service in &microvm_services {
             service.check()?;
         }
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
@@ -720,6 +739,23 @@ fn run_daemon() -> io::Result<()> {
                 &mut recovery_services,
             )?;
             return Ok(());
+        }
+        match singleton_ownership.admission_available() {
+            Ok(true) => {}
+            Ok(false) => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(error) => {
+                tracing::error!(
+                    event = "database.singleton_ownership.lost",
+                    failure_class = error.failure().as_str()
+                );
+                return Err(invalid("singleton daemon ownership lost"));
+            }
+        }
+        for service in &microvm_services {
+            service.check()?;
         }
         if reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
             let reload_started = std::time::Instant::now();
@@ -848,26 +884,6 @@ fn run_daemon() -> io::Result<()> {
                     return Err(error);
                 }
             }
-        }
-        if std::time::Instant::now() >= next_ownership_check {
-            if let Err(error) = singleton_ownership.renew() {
-                tracing::error!(
-                    event = "database.singleton_ownership.lost",
-                    operation = "check",
-                    result = "failed",
-                    failure_class = error.failure().as_str(),
-                    "singleton daemon ownership lost"
-                );
-                shutdown_daemon_services(
-                    &mut callback_service,
-                    &mut maintenance_service,
-                    &mut static_ssh_health_service,
-                    &mut static_ssh_consul_service,
-                    &mut recovery_services,
-                )?;
-                return Err(invalid("singleton daemon ownership lost"));
-            }
-            next_ownership_check = std::time::Instant::now() + ownership_check_interval;
         }
         let connection = match listener.accept_pending() {
             Ok(connection) => connection,

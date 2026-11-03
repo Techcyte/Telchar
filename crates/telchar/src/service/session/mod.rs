@@ -119,6 +119,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                database.wait_for_ownership()?;
                 let request_id = build_request_id();
                 if let Err(error) = crate::persistence::create_build_request(
                     database,
@@ -478,6 +479,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             "request became shared-build leader"
                         );
                         let execution_started = std::time::Instant::now();
+                        database.wait_for_ownership()?;
                         let durable_claim = crate::persistence::claim_shared_build_with_request(
                             database,
                             derivation_path,

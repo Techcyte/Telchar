@@ -593,6 +593,7 @@ impl BuildBackend for BackendExecutor {
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
         cancelled: &mut dyn FnMut() -> io::Result<bool>,
     ) -> io::Result<BuildResult> {
+        self.database.wait_for_ownership()?;
         let target_name = permit.target().name().to_owned();
         let target_kind = permit.target().kind();
         let execution_span = tracing::info_span!(

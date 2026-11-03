@@ -310,14 +310,113 @@ fn startup_survives_connection_outage_within_confirmed_lease() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();
     let mut owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
-        fixture.url(), Duration::from_secs(15),
-    ).unwrap();
+        fixture.url(),
+        Duration::from_secs(15),
+    )
+    .unwrap();
     let generation = owner.generation();
-    owner.maintain_during(Duration::from_millis(100), || {
-        fixture.stop();
-        std::thread::sleep(Duration::from_secs(6));
-        fixture.restart();
-    }).expect("startup recovers the existing lease after connection failure");
+    owner
+        .maintain_during(Duration::from_millis(100), || {
+            fixture.stop();
+            std::thread::sleep(Duration::from_secs(6));
+            fixture.restart();
+        })
+        .expect("startup recovers the existing lease after connection failure");
     assert_eq!(owner.generation(), generation);
     owner.verify().unwrap();
+}
+
+fn wait_until(mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "ownership state did not change");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn renewal_worker_pauses_admission_and_recovers_same_generation_for_both_owners() {
+    for local_executor in [false, true] {
+        let mut fixture = PostgresFixture::start();
+        telchar::persistence::migrate(fixture.url()).unwrap();
+        let owner = std::sync::Arc::new(if local_executor {
+            telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
+                fixture.url(), Duration::from_secs(10),
+            )
+        } else {
+            telchar::service::singleton_ownership::SingletonOwnership::acquire(
+                fixture.url(), Duration::from_secs(10),
+            )
+        }.unwrap());
+        let generation = owner.generation();
+        let renewal = owner.with_renewal(Duration::from_millis(100)).unwrap();
+        fixture.stop();
+        wait_until(|| matches!(owner.admission_available(), Ok(false)));
+        let gated = owner.database().clone().with_ownership(&owner);
+        let waiting = std::thread::spawn(move || gated.wait_for_ownership());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!waiting.is_finished(), "admission proceeded without database authority");
+        fixture.restart();
+        wait_until(|| matches!(owner.admission_available(), Ok(true)));
+        waiting.join().unwrap().unwrap();
+        assert_eq!(owner.generation(), generation);
+        owner.verify().unwrap();
+        drop(renewal);
+    }
+}
+
+#[test]
+fn outage_through_expiry_never_revives_owner_or_reacquires_after_takeover() {
+    for local_executor in [false, true] {
+        let mut fixture = PostgresFixture::start();
+        telchar::persistence::migrate(fixture.url()).unwrap();
+        let acquire = |url: &str| if local_executor {
+            telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(url, Duration::from_secs(2))
+        } else {
+            telchar::service::singleton_ownership::SingletonOwnership::acquire(url, Duration::from_secs(2))
+        };
+        let owner = std::sync::Arc::new(acquire(fixture.url()).unwrap());
+        let renewal = owner.with_renewal(Duration::from_millis(100)).unwrap();
+        fixture.stop();
+        wait_until(|| owner.admission_available().is_err());
+        assert!(owner.wait_for_authority().is_err());
+        fixture.restart();
+        let replacement = acquire(fixture.url()).unwrap();
+        assert!(replacement.generation() > owner.generation());
+        assert_eq!(owner.renew().unwrap_err().failure(), telchar::service::singleton_ownership::SingletonOwnershipFailure::Fenced);
+        assert!(owner.admission_available().is_err());
+        assert!(telchar::persistence::create_build_request(
+            owner.database(), "expired-write", "/nix/store/00000000000000000000000000000000-expired.drv",
+            "x86_64-linux", "fixture", "fixture",
+        ).is_err());
+        drop(renewal);
+        drop(owner);
+        replacement.verify().unwrap();
+    }
+}
+
+#[test]
+fn nontransient_renewal_query_error_is_terminal_not_recovery() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url(), Duration::from_secs(10)).unwrap();
+    fixture.connect().batch_execute("ALTER TABLE singleton_ownership RENAME TO unavailable_ownership").unwrap();
+    assert_eq!(owner.renew().unwrap_err().failure(), telchar::service::singleton_ownership::SingletonOwnershipFailure::Query);
+    assert_eq!(owner.admission_available().unwrap_err().failure(), telchar::service::singleton_ownership::SingletonOwnershipFailure::Query);
+    fixture.connect().batch_execute("ALTER TABLE unavailable_ownership RENAME TO singleton_ownership").unwrap();
+    assert!(owner.renew().is_err(), "terminal owner revived after schema repair");
+}
+
+#[test]
+fn verification_cannot_restore_admission_without_confirmed_renewal() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(fixture.url(), Duration::from_secs(10)).unwrap();
+    fixture.stop();
+    assert!(!owner.verify_available().unwrap());
+    fixture.restart();
+    owner.verify().unwrap();
+    assert!(!owner.admission_available().unwrap(), "read-only observation reopened admission");
+    owner.renew().unwrap();
+    assert!(owner.admission_available().unwrap());
 }

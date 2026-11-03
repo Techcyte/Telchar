@@ -151,7 +151,9 @@ impl MicrovmCleanupService {
         }
         let mut after_intent = None;
         BackgroundService::start(interval, "MicroVM cleanup maintenance failed", move || {
-            owner.verify().map_err(io::Error::other)?;
+            if !owner.verify_available().map_err(io::Error::other)? {
+                return Ok(true);
+            }
             let pending = crate::persistence::pending_microvm_cleanup(
                 owner.database(),
                 &account_id,
@@ -162,7 +164,9 @@ impl MicrovmCleanupService {
             .map_err(io::Error::other)?;
             for cleanup in pending {
                 after_intent = Some(cleanup.intent_id.clone());
-                owner.verify().map_err(io::Error::other)?;
+                if !owner.verify_available().map_err(io::Error::other)? {
+                    return Ok(true);
+                }
                 if provider.cleanup(&owner, &cleanup).is_err() {
                     // Provider uncertainty retains the durable obligation for a later pass.
                     tracing::warn!(
@@ -170,7 +174,9 @@ impl MicrovmCleanupService {
                         "MicroVM cleanup remains pending"
                     );
                 }
-                owner.verify().map_err(io::Error::other)?;
+                if !owner.verify_available().map_err(io::Error::other)? {
+                    return Ok(true);
+                }
             }
             Ok(true)
         })

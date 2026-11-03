@@ -31,6 +31,7 @@ pub fn run_admitted(
 ) -> io::Result<BuildResultMetadata> {
     let (intent_id, socket) = connection.into_parts();
     let load = || {
+        owner.wait_for_authority().map_err(io::Error::other)?;
         owner.verify().map_err(io::Error::other)?;
         crate::persistence::microvm_session_request(owner.database(), &intent_id)
             .map_err(io::Error::other)?
@@ -51,7 +52,18 @@ pub fn run_admitted(
                         Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    if load_request().map_or(true, |active| &active != active_request) {
+                    let available = match owner.verify_available() {
+                        Ok(false) => continue,
+                        Ok(true) => true,
+                        Err(_) => false,
+                    };
+                    let changed = !available
+                        || match load_request() {
+                            Ok(active) => &active != active_request,
+                            Err(_) if matches!(owner.admission_available(), Ok(false)) => continue,
+                            Err(_) => true,
+                        };
+                    if changed {
                         let _ = interrupt.shutdown(std::net::Shutdown::Both);
                         return;
                     }

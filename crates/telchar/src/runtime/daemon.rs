@@ -101,6 +101,7 @@ pub(super) fn serve_accepted_connection(
     shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
     gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
 ) -> io::Result<()> {
+    database.wait_for_ownership()?;
     if connection.envelope().error.is_some() {
         tracing::warn!(
             event = "ipc.daemon.session_rejected",

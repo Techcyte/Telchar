@@ -51,6 +51,7 @@ impl SharedBuildScheduler {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
+            self.database.wait_for_ownership()?;
             self.admit_eligible_builds(&mut state)?;
             let build = persistence::read_shared_build(&self.database, derivation_path)
                 .map_err(shared_build_error)?
@@ -93,6 +94,7 @@ impl SharedBuildScheduler {
         );
         let mut cursor = state.last_admitted_subject.clone();
         while examined_subjects < MAXIMUM_SCHEDULING_SUBJECTS {
+            self.database.wait_for_ownership()?;
             let Some(entry) = persistence::read_next_queued_shared_build(
                 &self.database,
                 cursor.as_deref(),

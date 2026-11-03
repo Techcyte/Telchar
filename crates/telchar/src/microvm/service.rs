@@ -143,7 +143,9 @@ impl Service {
                 .verify_database(&scope.database(self.owner.database()))
                 .map_err(io::Error::other)?;
         } else {
-            self.owner.verify().map_err(io::Error::other)?;
+            if !self.owner.verify_available().map_err(io::Error::other)? {
+                return Ok(());
+            }
         }
         let lifecycle = loop {
             if let Some(scope) = scope {

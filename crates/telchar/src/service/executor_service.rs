@@ -91,6 +91,10 @@ pub fn handle_connection_with_submit(
     stream.set_read_timeout(Some(EXECUTOR_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(EXECUTOR_IO_TIMEOUT))?;
     let request: ExecutorRequest = read_frame(stream)?;
+    let database =
+        crate::persistence::DatabaseSource::database(database).map_err(io::Error::other)?;
+    database.wait_for_ownership()?;
+    let database = &database;
     let response = match request {
         ExecutorRequest::Submit {
             version,

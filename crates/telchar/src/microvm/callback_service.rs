@@ -48,7 +48,10 @@ impl CallbackService {
                 let result = (|| {
                     while !stopping.load(Ordering::Acquire) {
                         if Instant::now() >= next_authority_check {
-                            owner.verify().map_err(io::Error::other)?;
+                            if !owner.verify_available().map_err(io::Error::other)? {
+                                std::thread::sleep(Duration::from_millis(10));
+                                continue;
+                            }
                             next_authority_check = Instant::now() + Duration::from_millis(100);
                         }
                         let mut index = 0;
@@ -60,6 +63,10 @@ impl CallbackService {
                             } else {
                                 index += 1;
                             }
+                        }
+                        if !owner.admission_available().map_err(io::Error::other)? {
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
                         }
                         let (stream, _) = match listener.accept() {
                             Ok(connection) => connection,
