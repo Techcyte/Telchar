@@ -204,8 +204,10 @@ pkgs.testers.nixosTest {
     import json
     import shlex
     text_input = json.loads(client.succeed("nix-instantiate --eval --strict --json --expr '(import /etc/microvm-build.nix {}).textInput'"))
-    fresh_paths = [derivation, text_input]
-    source_info = json.loads(client.succeed("nix path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+    # BuildDerivation sends a derivation value, not its .drv store path.
+    source_info = json.loads(client.succeed("nix path-info --json --recursive " + shlex.quote(text_input)))
+    fresh_paths = list(source_info)
+    assert len(fresh_paths) == 2, source_info
     for path in fresh_paths:
         gateway.succeed("test ! -e " + shlex.quote(path))
         gateway.fail("nix-store --check-validity " + shlex.quote(path))
