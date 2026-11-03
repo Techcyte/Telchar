@@ -210,3 +210,102 @@ fn second_daemon_cannot_replace_live_socket() {
     let _ = first.wait();
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn daemon_pauses_new_sessions_during_outage_and_recovers_without_takeover() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut database = PostgresFixture::start();
+    let command = daemon_command(&socket, 1_000, false, database.url());
+    let config = socket.with_extension("toml");
+    let settings = fs::read_to_string(&config).unwrap().replace(
+        "ownership_lease_seconds = 3",
+        "ownership_lease_seconds = 10",
+    );
+    fs::write(config, settings).unwrap();
+    let mut daemon = command;
+    let mut daemon = daemon.spawn().unwrap();
+    wait_for_socket(&socket, &mut daemon);
+    let generation: i64 = database
+        .connect()
+        .query_one(
+            "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    database.stop();
+    std::thread::sleep(Duration::from_millis(2_200));
+    assert!(
+        daemon.try_wait().unwrap().is_none(),
+        "daemon exited on recoverable outage"
+    );
+    let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_IPC_SOCKET", &socket)
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let handshake = std::thread::spawn(move || {
+        complete_handshake(&mut frontend);
+        frontend
+    });
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        !handshake.is_finished(),
+        "daemon admitted a session during ownership recovery"
+    );
+    database.restart();
+    let mut frontend = handshake.join().unwrap();
+    let current: i64 = database
+        .connect()
+        .query_one(
+            "SELECT generation FROM singleton_ownership WHERE owner_kind = 'daemon'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(current, generation);
+    assert!(daemon.try_wait().unwrap().is_none());
+    frontend.kill().unwrap();
+    let _ = frontend.wait();
+    daemon.kill().unwrap();
+    let _ = daemon.wait();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn daemon_shuts_down_while_database_is_still_unavailable_at_expiry() {
+    let root = temporary_root();
+    let socket = root.join("daemon.sock");
+    let mut database = PostgresFixture::start();
+    let mut daemon = daemon_command(&socket, 1_000, false, database.url())
+        .spawn()
+        .unwrap();
+    wait_for_socket(&socket, &mut daemon);
+    database.stop();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not exit within confirmed lease bound"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!socket.exists());
+    database.restart();
+    let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        database.url(),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    replacement.verify().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

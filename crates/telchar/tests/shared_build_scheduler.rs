@@ -214,3 +214,48 @@ fn saturated_subject_does_not_block_another_subject() {
         telchar::persistence::SharedBuildState::Claimed
     );
 }
+
+#[test]
+fn ownership_recovery_blocks_queued_dispatch_even_after_database_returns() {
+    let mut fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let owner = Arc::new(
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+    );
+    let path = "/nix/store/99999999999999999999999999999999-paused.drv";
+    claim(&fixture, path, 9);
+    telchar::persistence::enqueue_shared_build(owner.database(), path, "alice", 1).unwrap();
+    let scheduler = telchar::shared_build::scheduler::SharedBuildScheduler::new(
+        owner.database().clone().with_ownership(&owner),
+        |_| SchedulingLimits::new(1, 1).unwrap(),
+    )
+    .unwrap();
+    fixture.stop();
+    assert!(owner.renew().is_err());
+    fixture.restart();
+    let waiting = thread::spawn(move || scheduler.wait_for_admission(path));
+    thread::sleep(Duration::from_millis(150));
+    assert!(!waiting.is_finished());
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), path)
+            .unwrap()
+            .unwrap()
+            .state,
+        telchar::persistence::SharedBuildState::Claimed
+    );
+    owner.verify().unwrap();
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        !waiting.is_finished(),
+        "read-only verification resumed queued dispatch"
+    );
+    owner.renew().unwrap();
+    assert_eq!(
+        waiting.join().unwrap().unwrap().state,
+        telchar::persistence::SharedBuildState::Running
+    );
+}

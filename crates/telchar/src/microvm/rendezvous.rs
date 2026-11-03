@@ -268,10 +268,15 @@ impl ExecutionSession<'_> {
         owner: &SingletonOwnership,
     ) -> Result<AdmittedConnection, ProviderError> {
         self.receive_checked(|| {
-            owner.verify().map_err(|_| ProviderError)?;
-            if !crate::persistence::microvm_execution_active(owner.database(), &self.intent_id)
-                .map_err(|_| ProviderError)?
-            {
+            if !owner.verify_available().map_err(|_| ProviderError)? {
+                return Ok(());
+            }
+            let active =
+                crate::persistence::microvm_execution_active(owner.database(), &self.intent_id);
+            if active.is_err() && !owner.verify_available().map_err(|_| ProviderError)? {
+                return Ok(());
+            }
+            if !active.map_err(|_| ProviderError)? {
                 return Err(ProviderError);
             }
             Ok(())
@@ -366,6 +371,9 @@ fn accept_session_for(
     mut execution_deadline: impl FnMut(&str) -> Result<Instant, ProviderError>,
 ) -> Result<AdmittedConnection, ProviderError> {
     let mut observation = AdmissionObservation(Some("ownership"));
+    if !owner.admission_available().map_err(|_| ProviderError)? {
+        return Err(ProviderError);
+    }
     owner.verify().map_err(|_| ProviderError)?;
     observation.0 = Some("protocol");
     let header_complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

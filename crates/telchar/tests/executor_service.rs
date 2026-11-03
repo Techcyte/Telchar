@@ -1,6 +1,7 @@
 //! Tests executor service contracts and failure boundaries, including executor service persists idempotent submit and status across restart.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -285,4 +286,47 @@ fn temporary_root() -> PathBuf {
         "telchar-executor-service-{}-{nanos}-{sequence}",
         std::process::id()
     ))
+}
+
+#[test]
+fn executor_exits_at_expiry_even_with_a_silent_ipc_connection() {
+    let root = temporary_root();
+    fs::create_dir_all(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let config = root.join("executor.toml");
+    fs::write(
+        &config,
+        "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 3\n",
+    )
+    .unwrap();
+    let socket = root.join("executor.sock");
+    let mut database = PostgresFixture::start();
+    let mut executor = executor_command(&socket, database.url())
+        .env("TELCHAR_CONFIG", &config)
+        .spawn()
+        .unwrap();
+    wait_for_socket(&socket, &mut executor);
+    let _silent = UnixStream::connect(&socket).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    database.stop();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = executor.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "silent IPC blocked executor ownership shutdown"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!socket.exists());
+    database.restart();
+    telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
+        database.url(),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    fs::remove_dir_all(root).unwrap();
 }

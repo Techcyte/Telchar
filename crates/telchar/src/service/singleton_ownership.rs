@@ -106,6 +106,7 @@ impl SingletonOwnership {
         lease_duration: Duration,
     ) -> Result<Self, SingletonOwnershipError> {
         let lease_milliseconds = lease_milliseconds(database_url, lease_duration)?;
+        let lease_duration = Duration::from_millis(lease_milliseconds as u64);
         let owner_token = owner_token();
         let mut connection = connect(database_url)
             .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Connection))?;
@@ -328,7 +329,23 @@ impl SingletonOwnership {
         if current.is_none() {
             return Err(self.observe_failure(SingletonOwnershipFailure::Fenced));
         }
-        Ok(())
+        self.health.lock().expect("ownership health mutex").check()
+    }
+
+    pub(crate) fn observe_database_error(&self, error: &crate::persistence::DatabaseError) {
+        match query_failure(error) {
+            SingletonOwnershipFailure::Connection => {
+                self.observe_failure(SingletonOwnershipFailure::Connection);
+            }
+            SingletonOwnershipFailure::Fenced => {
+                self.observe_failure(SingletonOwnershipFailure::Fenced);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn observe_connection_failure(&self) {
+        self.observe_failure(SingletonOwnershipFailure::Connection);
     }
 
     fn observe_failure(&self, failure: SingletonOwnershipFailure) -> SingletonOwnershipError {
@@ -388,7 +405,11 @@ fn lease_milliseconds(
         ));
     }
     i64::try_from(lease_duration.as_millis())
-        .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Configuration))
+        .ok()
+        .filter(|duration| *duration > 0)
+        .ok_or(SingletonOwnershipError(
+            SingletonOwnershipFailure::Configuration,
+        ))
 }
 
 fn fenced_database_url(
@@ -464,6 +485,14 @@ impl OwnershipHealth {
 fn query_failure(error: &crate::persistence::DatabaseError) -> SingletonOwnershipFailure {
     use crate::persistence::DatabaseError;
     match error {
+        DatabaseError::Query(error)
+            if error.code().is_some_and(|code| code.code() == "55000")
+                && error
+                    .as_db_error()
+                    .is_some_and(|error| error.message() == "singleton ownership fenced") =>
+        {
+            SingletonOwnershipFailure::Fenced
+        }
         DatabaseError::Closed | DatabaseError::Deadline => SingletonOwnershipFailure::Connection,
         DatabaseError::Query(error) if error.is_closed() || error.as_db_error().is_none() => {
             SingletonOwnershipFailure::Connection

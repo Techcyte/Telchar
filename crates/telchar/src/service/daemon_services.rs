@@ -154,14 +154,16 @@ impl MicrovmCleanupService {
             if !owner.verify_available().map_err(io::Error::other)? {
                 return Ok(true);
             }
-            let pending = crate::persistence::pending_microvm_cleanup(
+            let pending = match crate::persistence::pending_microvm_cleanup(
                 owner.database(),
                 &account_id,
                 &region,
                 batch_size,
                 after_intent.as_deref(),
-            )
-            .map_err(io::Error::other)?;
+            ) {
+                Ok(pending) => pending,
+                Err(error) => return background_result(&owner, Err(io::Error::other(error)), true),
+            };
             for cleanup in pending {
                 after_intent = Some(cleanup.intent_id.clone());
                 if !owner.verify_available().map_err(io::Error::other)? {
@@ -195,6 +197,22 @@ impl MicrovmCleanupService {
 pub struct MaintenanceService(BackgroundService);
 
 impl MaintenanceService {
+    pub fn start_with_ownership<F>(
+        interval: Duration,
+        owner: std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
+        mut maintain: F,
+    ) -> io::Result<Self>
+    where
+        F: FnMut() -> io::Result<()> + Send + 'static,
+    {
+        Self::start(interval, move || {
+            if !owner.verify_available().map_err(io::Error::other)? {
+                return Ok(());
+            }
+            background_result(&owner, maintain(), ())
+        })
+    }
+
     pub fn start<F>(interval: Duration, mut maintain: F) -> io::Result<Self>
     where
         F: FnMut() -> io::Result<()> + Send + 'static,
@@ -221,6 +239,22 @@ pub struct RecoveryMonitorService {
 }
 
 impl RecoveryMonitorService {
+    pub fn start_with_ownership<F>(
+        interval: Duration,
+        owner: std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
+        mut reconcile: F,
+    ) -> io::Result<Self>
+    where
+        F: FnMut() -> io::Result<bool> + Send + 'static,
+    {
+        Self::start(interval, move || {
+            if !owner.verify_available().map_err(io::Error::other)? {
+                return Ok(true);
+            }
+            background_result(&owner, reconcile(), true)
+        })
+    }
+
     pub fn start<F>(interval: Duration, mut reconcile: F) -> io::Result<Self>
     where
         F: FnMut() -> io::Result<bool> + Send + 'static,
@@ -282,5 +316,28 @@ impl RecoveryMonitorService {
             crate::service::metrics::recovery_monitoring_changed(-1);
         }
         result
+    }
+}
+
+// Do not replay a possibly committed mutation. A later maintenance pass reconciles
+// durable state normally; only transport uncertainty suppresses service termination.
+fn background_result<T>(
+    owner: &crate::service::singleton_ownership::SingletonOwnership,
+    result: io::Result<T>,
+    paused: T,
+) -> io::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if !owner.verify_available().map_err(io::Error::other)? {
+                tracing::warn!(
+                    event = "database.background.interrupted",
+                    "background pass interrupted during ownership recovery; outcome may be unknown"
+                );
+                Ok(paused)
+            } else {
+                Err(error)
+            }
+        }
     }
 }

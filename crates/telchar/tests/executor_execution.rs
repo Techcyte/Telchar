@@ -23,7 +23,16 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn executor_owns_running_work_after_submitter_disconnects() {
-    let database = PostgresFixture::start();
+    running_work_survives_submitter_disconnect(false);
+}
+
+#[test]
+fn executor_retains_running_work_and_pauses_queued_dispatch_during_database_outage() {
+    running_work_survives_submitter_disconnect(true);
+}
+
+fn running_work_survives_submitter_disconnect(outage: bool) {
+    let mut database = PostgresFixture::start();
     let root = temporary_root();
     fs::create_dir_all(&root).expect("fixture root creates");
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("fixture root is private");
@@ -39,7 +48,14 @@ fn executor_owns_running_work_after_submitter_disconnects() {
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executes");
+    let config = root.join("executor.toml");
+    fs::write(
+        &config,
+        "[database]\nownership_renewal_seconds = 1\nownership_lease_seconds = 10\n",
+    )
+    .unwrap();
     let mut executor = executor_command(&socket, database.url(), &helper)
+        .env("TELCHAR_CONFIG", &config)
         .spawn()
         .expect("executor starts");
     wait_for_socket(&socket, &mut executor);
@@ -54,7 +70,7 @@ fn executor_owns_running_work_after_submitter_disconnects() {
     assert_eq!(response.result, ExecutorResult::Accepted);
     drop(response);
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         let status = request(
             &socket,
@@ -81,8 +97,40 @@ fn executor_owns_running_work_after_submitter_disconnects() {
             .is_none()
     );
 
+    if outage {
+        let mut queued = submit.clone();
+        if let ExecutorRequest::Submit {
+            backend_execution_id,
+            idempotency_key,
+            ..
+        } = &mut queued
+        {
+            *backend_execution_id = "queued-during-outage".into();
+            *idempotency_key = "queued-during-outage:1".into();
+        }
+        assert_eq!(request(&socket, &queued).result, ExecutorResult::Accepted);
+        database.stop();
+        std::thread::sleep(Duration::from_millis(2_200));
+        assert!(executor.try_wait().unwrap().is_none());
+        assert!(!release.exists(), "running helper was cancelled");
+        database.restart();
+        // The queued execution must still be accepted, not running behind the held helper.
+        assert_eq!(
+            request(
+                &socket,
+                &ExecutorRequest::Status {
+                    version: EXECUTOR_PROTOCOL_VERSION,
+                    backend_execution_id: "queued-during-outage".into(),
+                }
+            )
+            .execution
+            .unwrap()
+            .state,
+            ExecutorExecutionState::Accepted
+        );
+    }
     fs::write(&release, b"release").expect("execution releases");
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         let status = request(
             &socket,

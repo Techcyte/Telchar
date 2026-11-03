@@ -127,8 +127,16 @@ impl Database {
             let mut connection = match self.pool.get_timeout(wait) {
                 Ok(connection) => connection,
                 Err(_) if self.request.is_some() => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    if let Some(owner) = self.ownership.as_ref().and_then(std::sync::Weak::upgrade)
+                    {
+                        owner.observe_connection_failure();
+                    }
+                    return Err(error.into());
+                }
             };
+            // Validation failures are transport uncertainty, even if a later checkout succeeds.
+            connection.observe_ownership(self.ownership.clone());
             match connection.validate(deadline, self.request.clone()) {
                 Ok(()) => return Ok(DatabaseConnection(connection)),
                 Err(error) if Instant::now() >= deadline => return Err(error.into()),

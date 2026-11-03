@@ -134,6 +134,9 @@ pub fn admit_session(
     provider_id: &str,
     bearer: &str,
 ) -> Result<bool, ProviderError> {
+    if !owner.admission_available().map_err(|_| ProviderError)? {
+        return Err(ProviderError);
+    }
     owner.verify().map_err(|_| ProviderError)?;
     let Some(verifier) = bearer_verifier(bearer) else {
         return Ok(false);
@@ -641,12 +644,14 @@ impl Provider {
             .build()
             .map_err(|_| ProviderError)?;
         let client = runtime.block_on(self.authorized_client())?;
+        owner.wait_for_authority().map_err(|_| ProviderError)?;
         owner.verify().map_err(|_| ProviderError)?;
         if !crate::persistence::dispatch_microvm_launch_intent(database, intent)
             .map_err(|_| ProviderError)?
         {
             return Ok(None);
         }
+        owner.wait_for_authority().map_err(|_| ProviderError)?;
         owner.verify().map_err(|_| ProviderError)?;
         let started = std::time::Instant::now();
         let response = runtime.block_on(Self::launch(

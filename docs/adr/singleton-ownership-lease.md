@@ -25,6 +25,29 @@ Connections used by an owner carry its kind, token, and generation as PostgreSQL
 
 A replacement may acquire only after expiration. It receives a higher generation. Any surviving prior process is then unable to renew or mutate durable state. Its next renewal fails, causing fail-closed daemon shutdown and IPC socket removal.
 
+Transport uncertainty enters ownership recovery for both the daemon and local executor.
+New admission and execution dispatch pause; already running work is not cancelled
+solely because a database connection failed. Renewal retries use bounded exponential
+backoff (50 milliseconds to one second) and each attempt is bounded by one second
+and the last confirmed lease window, whichever is shorter. A successful conditional
+renewal must confirm the same kind, token and generation while the database lease is
+still unexpired before admission resumes. Read-only verification cannot reopen it.
+There is no reacquisition and no increase to the configured lease duration.
+
+A monotonic local stop deadline starts **before** each confirmed acquisition or
+renewal SQL operation, with the millisecond lease duration added. It is only a
+conservative stop bound, not an ownership authority. An unconfirmed or ambiguous
+renewal never advances it. Reaching that deadline, definite fencing, or a
+nontransport renewal error is terminal, even if PostgreSQL later returns or the
+ambiguous update actually committed. Database time and generation triggers still
+decide whether any durable write is permitted.
+
+A failed in-flight persistence operation is not replayed or reported as durable
+success. Running execution may finish during recovery, but terminal writes can
+fail or have unknown outcomes; exact persisted identity and gateway-output restart
+reconciliation remain the recovery path. Background maintenance skips uncertain
+passes and later reconciles normally, rather than replaying failed writes.
+
 ## Consequences
 
 Abrupt process, node, proxy, and network loss release ownership within the configured lease duration without manual database-session termination. Graceful shutdown deletes only the caller's matching lease generation.

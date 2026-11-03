@@ -8,8 +8,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use telchar::service::ipc::IpcListener;
-
 use super::{invalid, protocol_session_limits};
 
 pub(super) struct MicrovmShutdown<'a>(pub &'a [Arc<telchar::microvm::service::Service>]);
@@ -43,44 +41,6 @@ pub(super) fn shutdown_daemon_services(
         service.shutdown()?;
     }
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn serve_connection(
-    listener: &IpcListener,
-    envelope_timeout: Duration,
-    database: &telchar::persistence::Database,
-    service_config: &telchar::service::config::ServiceConfig,
-    running_disconnect_policy: telchar::service::deployment::RunningDisconnectPolicy,
-    output_retention: telchar::service::deployment::OutputRetention,
-    maximum_retained_input_bytes: u64,
-    transfer_limits: &telchar::service::transfer_limits::TransferLimits,
-    object_admission: &telchar::service::transfer_limits::ObjectAdmissionState,
-    rate_admission: &telchar::service::transfer_limits::RateAdmissionState,
-    disk_reserve: telchar::service::disk_reserve::DiskReserve,
-    disk_probe: &dyn telchar::service::disk_reserve::DiskReserveProbe,
-    backends: &telchar::backend::routing::ConfiguredBackends,
-    shared_builds: &Arc<telchar::shared_build::SharedBuildRegistry>,
-    shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
-    gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
-) -> io::Result<()> {
-    serve_accepted_connection(
-        listener.accept_with_envelope_timeout(envelope_timeout)?,
-        database,
-        service_config,
-        running_disconnect_policy,
-        output_retention,
-        maximum_retained_input_bytes,
-        transfer_limits,
-        object_admission,
-        rate_admission,
-        disk_reserve,
-        disk_probe,
-        backends,
-        shared_builds,
-        shared_build_scheduler,
-        gateway_store,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]

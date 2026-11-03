@@ -202,3 +202,83 @@ fn shutdown_drains_silent_bootstrap_and_closes_listener() {
     );
     assert!(TcpStream::connect(address).is_err());
 }
+
+#[test]
+fn listener_and_background_observers_pause_on_outage_and_resume_same_owner() {
+    let mut fixture = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let owner = Arc::new(
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            fixture.url(),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+    );
+    let renewal = owner.with_renewal(Duration::from_millis(100)).unwrap();
+    let sessions = Arc::new(telchar::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut service = telchar::microvm::callback_service::CallbackService::start(
+        listener,
+        Arc::clone(&owner),
+        sessions,
+        1,
+        1,
+        Duration::from_millis(200),
+    )
+    .unwrap();
+    let passes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&passes);
+    let mut maintenance =
+        telchar::service::daemon_services::MaintenanceService::start_with_ownership(
+            Duration::from_millis(50),
+            Arc::clone(&owner),
+            move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let mut recovery =
+        telchar::service::daemon_services::RecoveryMonitorService::start_with_ownership(
+            Duration::from_millis(50),
+            Arc::clone(&owner),
+            || Ok(true),
+        )
+        .unwrap();
+    fixture.stop();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while owner.admission_available().unwrap() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let before = passes.load(std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(before, passes.load(std::sync::atomic::Ordering::SeqCst));
+    service.check().unwrap();
+    maintenance.check().unwrap();
+    assert!(recovery.check().unwrap());
+    fixture.restart();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !owner.admission_available().unwrap()
+        || passes.load(std::sync::atomic::Ordering::SeqCst) == before
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    use std::io::Write;
+    let mut peer = TcpStream::connect(address).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    peer.write_all(b"invalid bootstrap\r\n\r\n").unwrap();
+    let mut response = [0; 512];
+    assert!(
+        peer.read(&mut response).is_ok(),
+        "listener failed to resume"
+    );
+    service.check().unwrap();
+    maintenance.shutdown().unwrap();
+    recovery.shutdown().unwrap();
+    service.shutdown().unwrap();
+    drop(renewal);
+}

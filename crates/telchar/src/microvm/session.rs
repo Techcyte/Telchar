@@ -30,12 +30,21 @@ pub fn run_admitted(
     log: impl FnMut(&[u8]),
 ) -> io::Result<BuildResultMetadata> {
     let (intent_id, socket) = connection.into_parts();
-    let load = || {
-        owner.wait_for_authority().map_err(io::Error::other)?;
-        owner.verify().map_err(io::Error::other)?;
-        crate::persistence::microvm_session_request(owner.database(), &intent_id)
-            .map_err(io::Error::other)?
-            .ok_or_else(|| io::Error::other("MicroVM execution is not active"))
+    let load = || loop {
+        if !owner.verify_available().map_err(io::Error::other)? {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+        match crate::persistence::microvm_session_request(owner.database(), &intent_id) {
+            Ok(request) => {
+                return request.ok_or_else(|| io::Error::other("MicroVM execution is not active"));
+            }
+            Err(error) => {
+                if owner.verify_available().map_err(io::Error::other)? {
+                    return Err(io::Error::other(error));
+                }
+            }
+        }
     };
     let request = load()?;
     let session = Session::new(&request, store, staging, limits)?;

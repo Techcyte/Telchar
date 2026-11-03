@@ -17,7 +17,7 @@ mod daemon_runtime;
 
 use daemon_runtime::{
     MicrovmShutdown, SessionPermit, SocketGuard, prepare_socket_path, serve_accepted_connection,
-    serve_connection, shutdown_daemon_services,
+    shutdown_daemon_services,
 };
 
 pub(crate) fn validate_database_tls() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -74,11 +74,16 @@ fn run_executor() -> io::Result<()> {
     let _ownership_renewal = ownership
         .with_renewal(ownership_renewal_interval)
         .map_err(io::Error::other)?;
+    let active_connections = Arc::new(Mutex::new(0_usize));
     loop {
         if !ownership.admission_available().map_err(io::Error::other)? {
             std::thread::sleep(Duration::from_millis(10));
             continue;
         }
+        let Some(permit) = SessionPermit::acquire(Arc::clone(&active_connections), 1) else {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        };
         let mut stream = match listener.accept() {
             Ok((stream, _)) => stream,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -90,107 +95,124 @@ fn run_executor() -> io::Result<()> {
         if telchar::service::ipc::authorize_peer(&stream, expected_uid).is_err() {
             continue;
         }
-        let mut submit =
-            |backend_execution_id: &str,
-             specification: &telchar::service::executor_service::ExecutorSpecification,
-             execution: &telchar::persistence::LocalBackendExecution| {
-                specification.build.validate_for_execution()?;
-                if execution.state != telchar::persistence::LocalBackendExecutionState::Accepted {
-                    return Ok(());
-                }
-                let backend_execution_id = backend_execution_id.to_owned();
-                let database = database.clone();
-                let specification = specification.clone();
-                let executor = Arc::clone(&executor);
-                std::thread::spawn(move || {
-                    let Ok(mut executor) = executor.lock() else {
-                        return;
-                    };
-                    if database.wait_for_ownership().is_err() {
-                        return;
-                    }
-                    if telchar::persistence::record_local_backend_running(
-                        &database,
-                        &backend_execution_id,
-                    )
-                    .is_err()
+        let database = database.clone();
+        let executor = Arc::clone(&executor);
+        std::thread::spawn(move || {
+            let _permit = permit;
+            let mut submit =
+                |backend_execution_id: &str,
+                 specification: &telchar::service::executor_service::ExecutorSpecification,
+                 execution: &telchar::persistence::LocalBackendExecution| {
+                    specification.build.validate_for_execution()?;
+                    if execution.state != telchar::persistence::LocalBackendExecutionState::Accepted
                     {
-                        return;
+                        return Ok(());
                     }
-                    let Ok(mut request) = telchar::backend::BuildExecution::new(
-                        &specification.request_id,
-                        &specification.build,
-                        Duration::from_secs(specification.timeout_seconds),
-                    ) else {
-                        return;
-                    };
-                    request.set_trace_context(telchar_telemetry::TraceContext::capture_current());
-                    if database.wait_for_ownership().is_err() {
-                        return;
-                    }
-                    let terminal = match executor.execute_with_logs(
-                        &request,
-                        &mut |_| Ok(()),
-                        &mut || Ok(false),
-                    ) {
-                        Ok(result) => {
-                            let outputs = result
-                                .outputs()
-                                .iter()
-                                .map(|(name, path)| {
-                                    let name = String::from_utf8(name.clone()).map_err(|_| ())?;
-                                    let path = String::from_utf8(path.clone()).map_err(|_| ())?;
-                                    Ok(serde_json::json!({"name": name, "path": path}))
-                                })
-                                .collect::<Result<Vec<_>, ()>>();
-                            match outputs {
-                                Ok(outputs) => Some((
-                                    telchar::persistence::LocalBackendExecutionState::Succeeded,
-                                    "succeeded",
-                                    serde_json::json!({
-                                        "status": match result.status() {
-                                            telchar::backend::BuildStatus::Built => "built",
-                                            telchar::backend::BuildStatus::AlreadyValid => "already-valid",
-                                        },
-                                        "outputs": outputs,
-                                    }),
-                                )),
-                                Err(()) => Some((
-                                    telchar::persistence::LocalBackendExecutionState::Failed,
-                                    "output-failure",
-                                    serde_json::json!({}),
-                                )),
-                            }
+                    let backend_execution_id = backend_execution_id.to_owned();
+                    let database = database.clone();
+                    let specification = specification.clone();
+                    let executor = Arc::clone(&executor);
+                    std::thread::spawn(move || {
+                        let Ok(mut executor) = executor.lock() else {
+                            return;
+                        };
+                        if database.wait_for_ownership().is_err() {
+                            return;
                         }
-                        Err(_) => Some((
-                            telchar::persistence::LocalBackendExecutionState::Failed,
-                            "infrastructure-failure",
-                            serde_json::json!({}),
-                        )),
-                    };
-                    if let Some((state, classification, metadata)) = terminal {
-                        let _ = telchar::persistence::complete_local_backend_execution(
+                        if telchar::persistence::record_local_backend_running(
                             &database,
                             &backend_execution_id,
-                            state,
-                            classification,
-                            &metadata,
-                        );
-                    }
-                });
-                Ok(())
-            };
-        if let Err(error) = telchar::service::executor_service::handle_connection_with_submit(
-            &database,
-            &mut stream,
-            &mut submit,
-        ) {
-            tracing::warn!(
-                event = "executor.connection.failed",
-                reason = error_reason(&error),
-                "local executor connection failed"
-            );
-        }
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                        let Ok(mut request) = telchar::backend::BuildExecution::new(
+                            &specification.request_id,
+                            &specification.build,
+                            Duration::from_secs(specification.timeout_seconds),
+                        ) else {
+                            return;
+                        };
+                        request
+                            .set_trace_context(telchar_telemetry::TraceContext::capture_current());
+                        if database.wait_for_ownership().is_err() {
+                            return;
+                        }
+                        let terminal = match executor.execute_with_logs(
+                            &request,
+                            &mut |_| Ok(()),
+                            &mut || Ok(false),
+                        ) {
+                            Ok(result) => {
+                                let outputs = result
+                                    .outputs()
+                                    .iter()
+                                    .map(|(name, path)| {
+                                        let name =
+                                            String::from_utf8(name.clone()).map_err(|_| ())?;
+                                        let path =
+                                            String::from_utf8(path.clone()).map_err(|_| ())?;
+                                        Ok(serde_json::json!({"name": name, "path": path}))
+                                    })
+                                    .collect::<Result<Vec<_>, ()>>();
+                                match outputs {
+                                    Ok(outputs) => Some((
+                                        telchar::persistence::LocalBackendExecutionState::Succeeded,
+                                        "succeeded",
+                                        serde_json::json!({
+                                            "status": match result.status() {
+                                                telchar::backend::BuildStatus::Built => "built",
+                                                telchar::backend::BuildStatus::AlreadyValid => "already-valid",
+                                            },
+                                            "outputs": outputs,
+                                        }),
+                                    )),
+                                    Err(()) => Some((
+                                        telchar::persistence::LocalBackendExecutionState::Failed,
+                                        "output-failure",
+                                        serde_json::json!({}),
+                                    )),
+                                }
+                            }
+                            Err(_) => Some((
+                                telchar::persistence::LocalBackendExecutionState::Failed,
+                                "infrastructure-failure",
+                                serde_json::json!({}),
+                            )),
+                        };
+                        if let Some((state, classification, metadata)) = terminal {
+                            if let Err(error) =
+                                telchar::persistence::complete_local_backend_execution(
+                                    &database,
+                                    &backend_execution_id,
+                                    state,
+                                    classification,
+                                    &metadata,
+                                )
+                            {
+                                tracing::warn!(
+                                    event = "executor.result.persistence_failed",
+                                    failure_class = ?error.failure(),
+                                    "local execution finished without a durable terminal result"
+                                );
+                            }
+                        }
+                    });
+                    Ok(())
+                };
+            if let Err(error) = telchar::service::executor_service::handle_connection_with_submit(
+                &database,
+                &mut stream,
+                &mut submit,
+            ) {
+                tracing::warn!(
+                    event = "executor.connection.failed",
+                    reason = error_reason(&error),
+                    "local executor connection failed"
+                );
+            }
+        });
     }
 }
 
@@ -480,7 +502,6 @@ fn run_daemon() -> io::Result<()> {
         None => Vec::new(),
     };
     let _microvm_shutdown = MicrovmShutdown(&microvm_services);
-    let disk_probe = telchar::service::disk_reserve::OsDiskReserveProbe;
     let static_ssh_health =
         telchar::backend::static_ssh::StaticSshHealth::probe_all(config.static_ssh_backends());
     let mut configured_backends = telchar::backend::routing::ConfiguredBackends::with_health(
@@ -557,13 +578,12 @@ fn run_daemon() -> io::Result<()> {
         let database = database.clone();
         let backends = backends.clone();
         let retention = output_retention.duration();
-        let recovery_owner = Arc::clone(&singleton_ownership);
         let gateway_store = gateway_store.endpoint().cloned();
         recovery_services.push(
-            telchar::service::daemon_services::RecoveryMonitorService::start(
+            telchar::service::daemon_services::RecoveryMonitorService::start_with_ownership(
                 Duration::from_millis(100),
+                Arc::clone(&singleton_ownership),
                 move || {
-                    if !recovery_owner.admission_available().map_err(io::Error::other)? { return Ok(true); }
                     let mut configured_backends = backends.snapshot();
                     let mut outputs =
                         telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
@@ -671,53 +691,21 @@ fn run_daemon() -> io::Result<()> {
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
-    if once {
-        let result = serve_connection(
-            &listener,
-            envelope_timeout,
-            &database,
-            &config,
-            running_disconnect_policy,
-            output_retention,
-            maximum_retained_input_bytes,
-            &transfer_limits,
-            &object_admission,
-            &rate_admission,
-            disk_reserve,
-            &disk_probe,
-            &backends.snapshot(),
-            &shared_builds,
-            &shared_build_scheduler,
-            &gateway_store,
-        );
-        if let Some(service) = callback_service.as_mut() {
-            service.shutdown()?;
-        }
-        for service in &mut recovery_services {
-            service.shutdown()?;
-        }
-        return result;
-    }
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
-    let maintenance_owner = Arc::clone(&singleton_ownership);
-    let mut maintenance_service = telchar::service::daemon_services::MaintenanceService::start(
-        Duration::from_secs(60),
-        move || {
-            if !maintenance_owner
-                .admission_available()
-                .map_err(io::Error::other)?
-            {
-                return Ok(());
-            }
-            let mut backend = maintenance_gateway_store.retention()?;
-            telchar::store::retention::reconcile_output_retention(
-                &maintenance_database,
-                backend.as_mut(),
-                SystemTime::now(),
-            )
-        },
-    )?;
+    let mut maintenance_service =
+        telchar::service::daemon_services::MaintenanceService::start_with_ownership(
+            Duration::from_secs(60),
+            Arc::clone(&singleton_ownership),
+            move || {
+                let mut backend = maintenance_gateway_store.retention()?;
+                telchar::store::retention::reconcile_output_retention(
+                    &maintenance_database,
+                    backend.as_mut(),
+                    SystemTime::now(),
+                )
+            },
+        )?;
     let ownership_check_interval = config.ownership_renewal_interval();
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
@@ -726,7 +714,27 @@ fn run_daemon() -> io::Result<()> {
     let mut discovered_static_ssh = Vec::new();
     let mut consul_static_ssh = Vec::new();
     let mut ec2_static_ssh = Vec::new();
+    let (once_result, completed_session) = std::sync::mpsc::channel();
+    let mut once_started = false;
     loop {
+        if once_started {
+            match completed_session.try_recv() {
+                Ok(result) => {
+                    shutdown_daemon_services(
+                        &mut callback_service,
+                        &mut maintenance_service,
+                        &mut static_ssh_health_service,
+                        &mut static_ssh_consul_service,
+                        &mut recovery_services,
+                    )?;
+                    return result;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(invalid("daemon session worker stopped"));
+                }
+            }
+        }
         if let Some(service) = admin_service.as_mut() {
             service.check()?;
         }
@@ -885,6 +893,10 @@ fn run_daemon() -> io::Result<()> {
                 }
             }
         }
+        if once_started {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
         let connection = match listener.accept_pending() {
             Ok(connection) => connection,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -918,6 +930,8 @@ fn run_daemon() -> io::Result<()> {
         let shared_builds = Arc::clone(&shared_builds);
         let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
         let gateway_store = gateway_store.clone();
+        let once_result = once_result.clone();
+        once_started = once;
         std::thread::spawn(move || {
             let _permit = permit;
             let mut accepted_session_id = None;
@@ -944,7 +958,7 @@ fn run_daemon() -> io::Result<()> {
                         &gateway_store,
                     )
                 });
-            if let Err(error) = result {
+            if let Err(error) = &result {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
                     session_id = accepted_session_id.as_deref().unwrap_or("unavailable"),
@@ -952,6 +966,9 @@ fn run_daemon() -> io::Result<()> {
                     diagnostic = %error,
                     "frontend session failed"
                 );
+            }
+            if once {
+                let _ = once_result.send(result);
             }
         });
         let _ = &socket_guard;

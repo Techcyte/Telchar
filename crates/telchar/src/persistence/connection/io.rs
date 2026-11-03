@@ -92,6 +92,7 @@ impl r2d2::ManageConnection for Manager {
                 connection: Some(connection),
                 deadline,
                 request: None,
+                ownership: None,
             },
         })
     }
@@ -112,6 +113,7 @@ struct Driver {
     connection: Option<ConnectionFuture>,
     deadline: Instant,
     request: Option<super::RequestBudget>,
+    ownership: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
 }
 
 impl Driver {
@@ -148,6 +150,11 @@ impl Driver {
                 result = operation => result.map_err(DatabaseError::Query),
             }
         });
+        if let Err(error) = &result
+            && let Some(owner) = self.ownership.as_ref().and_then(std::sync::Weak::upgrade)
+        {
+            owner.observe_database_error(error);
+        }
         if disconnected
             || matches!(
                 result,
@@ -171,6 +178,13 @@ pub struct DatabaseClient {
 }
 
 impl DatabaseClient {
+    pub(super) fn observe_ownership(
+        &mut self,
+        owner: Option<std::sync::Weak<crate::service::singleton_ownership::SingletonOwnership>>,
+    ) {
+        self.driver.ownership = owner;
+    }
+
     pub(super) fn validate(
         &mut self,
         deadline: Instant,
