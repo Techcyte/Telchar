@@ -17,6 +17,8 @@ pkgs.testers.nixosTest {
     virtualisation.writableStoreUseTmpfs = false;
     networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.2"; prefixLength = 24; }];
     networking.firewall.enable = false;
+    # Resolve the worker-facing callback without NixOS's local hostname loopback alias.
+    networking.hosts."192.168.1.2" = [ "microvm-callback" ];
     nix.settings.trusted-users = [ "root" "telchar" ];
     nix.settings.substituters = pkgs.lib.mkForce [];
     environment.systemPackages = [ pkgs.openssl ];
@@ -104,7 +106,7 @@ pkgs.testers.nixosTest {
             provider_timeout_seconds = 2;
             cleanup_interval_seconds = 5;
             callback_url = "wss://gateway:7444/microvm";
-            callback_host = "gateway";
+            callback_host = "microvm-callback";
             staging_directory = "/var/lib/telchar";
             maximum_paths = 64;
             maximum_nar_bytes = 67108864;
