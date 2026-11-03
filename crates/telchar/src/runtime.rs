@@ -181,8 +181,8 @@ fn run_executor() -> io::Result<()> {
                                 serde_json::json!({}),
                             )),
                         };
-                        if let Some((state, classification, metadata)) = terminal {
-                            if let Err(error) =
+                        if let Some((state, classification, metadata)) = terminal
+                            && let Err(error) =
                                 telchar::persistence::complete_local_backend_execution(
                                     &database,
                                     &backend_execution_id,
@@ -190,13 +190,12 @@ fn run_executor() -> io::Result<()> {
                                     classification,
                                     &metadata,
                                 )
-                            {
-                                tracing::warn!(
-                                    event = "executor.result.persistence_failed",
-                                    failure_class = ?error.failure(),
-                                    "local execution finished without a durable terminal result"
-                                );
-                            }
+                        {
+                            tracing::warn!(
+                                event = "executor.result.persistence_failed",
+                                failure_class = ?error.failure(),
+                                "local execution finished without a durable terminal result"
+                            );
                         }
                     });
                     Ok(())
@@ -962,7 +961,7 @@ fn run_daemon() -> io::Result<()> {
                 tracing::warn!(
                     event = "ipc.daemon.session_failed",
                     session_id = accepted_session_id.as_deref().unwrap_or("unavailable"),
-                    reason = error_reason(&error),
+                    reason = error_reason(error),
                     diagnostic = %error,
                     "frontend session failed"
                 );
