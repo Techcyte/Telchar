@@ -23,15 +23,20 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn executor_owns_running_work_after_submitter_disconnects() {
-    running_work_survives_submitter_disconnect(false);
+    running_work_survives_submitter_disconnect(false, false);
 }
 
 #[test]
-fn executor_retains_running_work_and_pauses_queued_dispatch_during_database_outage() {
-    running_work_survives_submitter_disconnect(true);
+fn executor_retains_running_work_during_database_outage() {
+    running_work_survives_submitter_disconnect(true, false);
 }
 
-fn running_work_survives_submitter_disconnect(outage: bool) {
+#[test]
+fn executor_recovery_gates_dispatch_after_running_helper_releases_mutex() {
+    running_work_survives_submitter_disconnect(true, true);
+}
+
+fn running_work_survives_submitter_disconnect(outage: bool, renewal_blocked: bool) {
     let mut database = PostgresFixture::start();
     let root = temporary_root();
     fs::create_dir_all(&root).expect("fixture root creates");
@@ -109,25 +114,52 @@ fn running_work_survives_submitter_disconnect(outage: bool) {
             *idempotency_key = "queued-during-outage:1".into();
         }
         assert_eq!(request(&socket, &queued).result, ExecutorResult::Accepted);
-        database.stop();
+        let mut observer = database.connect();
+        let mut held_lease = if renewal_blocked {
+            let mut transaction = observer.transaction().unwrap();
+            transaction.query_one("SELECT generation FROM singleton_ownership WHERE owner_kind = 'local-executor' FOR SHARE", &[]).unwrap();
+            Some(transaction)
+        } else {
+            database.stop();
+            None
+        };
         std::thread::sleep(Duration::from_millis(2_200));
         assert!(executor.try_wait().unwrap().is_none());
         assert!(!release.exists(), "running helper was cancelled");
-        database.restart();
-        // The queued execution must still be accepted, not running behind the held helper.
-        assert_eq!(
-            request(
-                &socket,
-                &ExecutorRequest::Status {
-                    version: EXECUTOR_PROTOCOL_VERSION,
-                    backend_execution_id: "queued-during-outage".into(),
+        if renewal_blocked {
+            fs::write(&release, b"release").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let state = telchar::persistence::read_local_backend_execution(
+                    database.url(),
+                    "local-owned-running",
+                )
+                .unwrap()
+                .unwrap()
+                .state;
+                if state == telchar::persistence::LocalBackendExecutionState::Succeeded {
+                    break;
                 }
-            )
-            .execution
-            .unwrap()
-            .state,
-            ExecutorExecutionState::Accepted
+                assert!(
+                    Instant::now() < deadline,
+                    "first helper did not finish and free executor mutex"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Give the queued worker time to acquire the now-free executor; only ownership gates it.
+            std::thread::sleep(Duration::from_millis(200));
+        } else {
+            database.restart();
+        }
+        // For blocked renewal the first helper has finished, so mutex serialization cannot explain this state.
+        assert_eq!(
+            telchar::persistence::read_local_backend_execution(database.url(), "queued-during-outage")
+                .unwrap().unwrap().state,
+            telchar::persistence::LocalBackendExecutionState::Accepted
         );
+        if let Some(transaction) = held_lease.take() {
+            transaction.rollback().unwrap();
+        }
     }
     fs::write(&release, b"release").expect("execution releases");
     let deadline = Instant::now() + Duration::from_secs(4);

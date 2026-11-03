@@ -381,7 +381,10 @@ impl SingletonOwnership {
     }
 
     pub(crate) fn uncertainty_sequence(&self) -> u64 {
-        self.health.lock().expect("ownership health mutex").uncertainty_sequence
+        self.health
+            .lock()
+            .expect("ownership health mutex")
+            .uncertainty_sequence
     }
 
     pub(crate) fn observer(&self) -> OwnershipObserver {
@@ -402,6 +405,11 @@ impl SingletonOwnership {
 
 impl Drop for SingletonOwnership {
     fn drop(&mut self) {
+        self.health
+            .lock()
+            .expect("ownership health mutex")
+            .failure
+            .get_or_insert(SingletonOwnershipFailure::Fenced);
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
         let Ok(mut connection) = self.renewal_database.connection_until(deadline) else {
             return;
@@ -584,9 +592,15 @@ mod tests {
         );
         health.record_failure(SingletonOwnershipFailure::Fenced, DAEMON_OWNER_KIND);
         health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
-        assert_eq!(health.check().unwrap_err().failure(), SingletonOwnershipFailure::Fenced);
+        assert_eq!(
+            health.check().unwrap_err().failure(),
+            SingletonOwnershipFailure::Fenced
+        );
         health.deadline = Instant::now();
-        assert_eq!(health.check().unwrap_err().failure(), SingletonOwnershipFailure::Fenced);
+        assert_eq!(
+            health.check().unwrap_err().failure(),
+            SingletonOwnershipFailure::Fenced
+        );
     }
 }
 

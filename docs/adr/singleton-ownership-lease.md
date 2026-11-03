@@ -33,6 +33,12 @@ and the last confirmed lease window, whichever is shorter. A successful conditio
 renewal must confirm the same kind, token and generation while the database lease is
 still unexpired before admission resumes. Read-only verification cannot reopen it.
 There is no reacquisition and no increase to the configured lease duration.
+Renewal and verification use a separate pool from application traffic, so saturated
+application checkouts cannot consume renewal capacity. All owner application
+connections, including MicroVM session and cleanup reads, observe transport failures
+before persistence errors are flattened. Uncertainty observations have a sequence
+under the shared health mutex: a renewal begun before a newer observation may
+confirm its lease deadline but cannot clear that observation or reopen admission.
 
 A monotonic local stop deadline starts **before** each confirmed acquisition or
 renewal SQL operation, with the millisecond lease duration added. It is only a

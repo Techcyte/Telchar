@@ -163,7 +163,14 @@ impl MicrovmCleanupService {
                 after_intent.as_deref(),
             ) {
                 Ok(pending) => pending,
-                Err(error) => return background_result(&owner, Err(io::Error::other(error)), true, uncertainty_sequence),
+                Err(error) => {
+                    return background_result(
+                        &owner,
+                        Err(io::Error::other(error)),
+                        true,
+                        uncertainty_sequence,
+                    );
+                }
             };
             for cleanup in pending {
                 after_intent = Some(cleanup.intent_id.clone());

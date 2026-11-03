@@ -1,11 +1,28 @@
 //! Component test: real PostgreSQL and production transfer observers, simulated gateway metadata.
-//! No NAR transfer or real Nix execution is claimed.
+//! Valid failed terminal delivery after recovery is covered; no successful NAR/output promotion or real Nix execution is claimed.
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use telchar::microvm::rendezvous::{ExecutionSessions, PendingConnections};
 use telchar::nomad::protocol::{FrameKind, ProtocolLimits, read_frame};
+
+fn send_metadata(
+    client: &mut tungstenite::WebSocket<TcpStream>,
+    kind: FrameKind,
+    metadata: serde_json::Value,
+) {
+    let mut bytes = Vec::new();
+    telchar::nomad::protocol::write_frame(
+        &mut bytes,
+        &telchar::nomad::protocol::Frame::new(kind, serde_json::to_vec(&metadata).unwrap(), vec![]),
+        ProtocolLimits::new(8192, 256),
+    )
+    .unwrap();
+    client
+        .send(tungstenite::Message::Binary(bytes.into()))
+        .unwrap();
+}
 use telchar_test_support::postgres::PostgresFixture;
 use tungstenite::client::IntoClientRequest;
 
@@ -250,10 +267,33 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 assert!(!transfer.is_finished(), "transfer did not survive recovery");
-                // Invalid application data ends the held session; no success is fabricated.
-                client
-                    .send(tungstenite::Message::Binary(vec![0].into()))
-                    .unwrap();
+                // Valid application progress and terminal delivery after recovery (no output success claim).
+                send_metadata(
+                    &mut client,
+                    FrameKind::ValidPaths,
+                    serde_json::json!({"paths": [input_path]}),
+                );
+                send_metadata(
+                    &mut client,
+                    FrameKind::InputRequest,
+                    serde_json::json!({"paths": []}),
+                );
+                send_metadata(
+                    &mut client,
+                    FrameKind::BuildStarted,
+                    serde_json::json!({"derivation_path": drv}),
+                );
+                let result = telchar::nomad::protocol::BuildResultMetadata {
+                    outcome: telchar::nomad::protocol::BuildOutcome::Failed,
+                    diagnostic: Some("fixture completed after ownership recovery".into()),
+                };
+                send_metadata(
+                    &mut client,
+                    FrameKind::BuildResult,
+                    serde_json::to_value(&result).unwrap(),
+                );
+                assert_eq!(transfer.join().unwrap().unwrap(), result);
+                return;
             } else if interruption == "takeover" {
                 fixture.restart();
                 fixture.expire_singleton_ownership("daemon");
