@@ -55,7 +55,6 @@
         stock_client.succeed("cp ${nomadDerivation} /tmp/telchar-nomad-gateway.nix")
         derivation_path = stock_client.succeed("nix-instantiate /tmp/telchar-nomad-gateway.nix").strip()
         stock_client.succeed("ln -s '" + derivation_path + "' /tmp/nomad-drv-root")
-        import json
         import shlex
         text_input = stock_client.succeed("nix-instantiate --eval --strict --json --expr '(import /tmp/telchar-nomad-gateway.nix).textInput'").strip()
         text_input = json.loads(text_input)

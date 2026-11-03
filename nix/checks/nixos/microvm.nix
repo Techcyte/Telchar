@@ -266,7 +266,6 @@ pkgs.testers.nixosTest {
     gateway.succeed("touch /run/microvm-staging-stop")
     gateway.wait_until_succeeds("test $(systemctl show microvm-staging.service -p ExecMainStatus --value) = 0 && ! systemctl is-active --quiet microvm-staging.service", timeout=10)
     gateway.copy_from_machine("/run/microvm-staging.jsonl")
-    import json
     with open(os.environ["out"] + "/microvm-staging.jsonl") as samples_file:
         staging_samples = [json.loads(line) for line in samples_file]
     assert max(sample["logical_bytes"] for sample in staging_samples) - staging_samples[0]["logical_bytes"] >= 16777216, staging_samples
