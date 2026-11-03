@@ -181,14 +181,7 @@ impl SingletonOwnership {
         health.check()?;
         match result {
             Ok(()) => {
-                if health.recovering {
-                    tracing::info!(
-                        event = "database.singleton_ownership.recovered",
-                        owner_kind = self.owner_kind
-                    );
-                }
-                health.deadline = started + self.lease_duration;
-                health.recovering = false;
+                health.confirm_renewal(started, self.lease_duration, self.owner_kind);
                 Ok(())
             }
             Err(error) => {
@@ -451,6 +444,14 @@ fn owner_token() -> String {
 }
 
 impl OwnershipHealth {
+    fn confirm_renewal(&mut self, started: Instant, duration: Duration, owner_kind: &str) {
+        if self.recovering {
+            tracing::info!(event = "database.singleton_ownership.recovered", owner_kind);
+        }
+        self.deadline = started + duration;
+        self.recovering = false;
+    }
+
     fn check(&mut self) -> Result<(), SingletonOwnershipError> {
         if Instant::now() >= self.deadline && self.failure.is_none() {
             self.failure = Some(SingletonOwnershipFailure::Fenced);
@@ -479,6 +480,25 @@ impl OwnershipHealth {
                 failure_class = failure.as_str()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renewal_confirmation_preserves_newer_uncertainty() {
+        let started = Instant::now();
+        let mut health = OwnershipHealth {
+            deadline: started + Duration::from_secs(10),
+            recovering: false,
+            failure: None,
+        };
+        // Deterministic order: renewal begins, application fails, renewal response is applied.
+        health.record_failure(SingletonOwnershipFailure::Connection, DAEMON_OWNER_KIND);
+        health.confirm_renewal(started, Duration::from_secs(10), DAEMON_OWNER_KIND);
+        assert!(health.recovering, "older renewal response erased newer uncertainty");
     }
 }
 
