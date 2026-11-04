@@ -438,8 +438,8 @@ pub fn pending_microvm_cleanup(
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.account_id = $1 AND l.region = $4 AND l.provider_id IS NOT NULL
            AND l.termination_observed_at IS NULL
-           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
-                OR b.state NOT IN ('running', 'collecting'))
+           AND (l.phase = 'closed' OR ((w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
+                AND (a.state NOT IN ('running', 'collecting') OR b.state NOT IN ('running', 'collecting'))))
          ORDER BY CASE WHEN $3::text IS NULL THEN false ELSE l.intent_id <= $3 END,
                   l.intent_id LIMIT $2",
             &[&account_id, &(limit as i64), &after_intent, &region],
@@ -494,8 +494,8 @@ pub fn pending_microvm_cleanup_identity(
          JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.termination_observed_at IS NULL
-           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
-                OR b.state NOT IN ('running', 'collecting'))",
+           AND (l.phase = 'closed' OR ((w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
+                AND (a.state NOT IN ('running', 'collecting') OR b.state NOT IN ('running', 'collecting'))))",
             &[&intent_id, &provider_id],
         )
         .map_err(|_| MicrovmLaunchError)?;
@@ -523,6 +523,7 @@ pub fn begin_microvm_cleanup(
              SELECT 1 FROM shared_build_attempts a JOIN shared_builds b USING(derivation_path)
              LEFT JOIN microvm_workers w ON w.intent_id=l.intent_id
              WHERE a.attempt_id=COALESCE(w.attempt_id,l.attempt_id)
+               AND (w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
                AND (a.state NOT IN ('running','collecting') OR b.state NOT IN ('running','collecting'))))",
         &[&intent_id,&provider_id],
     ).map_err(|_| MicrovmLaunchError)?;

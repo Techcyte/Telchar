@@ -21,6 +21,8 @@ pub(super) struct Deployment {
     admission_timeout_seconds: u64,
     provider_timeout_seconds: u64,
     cleanup_interval_seconds: u64,
+    #[serde(default)]
+    idle_retention_seconds: u64,
     callback_url: String,
     callback_host: String,
     staging_directory: PathBuf,
@@ -105,6 +107,7 @@ impl MicrovmBackendConfig {
             || !(1..=60).contains(&d.provider_timeout_seconds)
             || d.provider_timeout_seconds >= d.admission_timeout_seconds
             || !(1..=300).contains(&d.cleanup_interval_seconds)
+            || d.idle_retention_seconds > d.maximum_duration_seconds
             || !d.staging_directory.is_absolute()
             || d.staging_directory
                 .components()
@@ -221,6 +224,9 @@ impl MicrovmBackendConfig {
     }
     pub fn admission_timeout(&self) -> Duration {
         Duration::from_secs(self.0.admission_timeout_seconds)
+    }
+    pub fn idle_retention(&self) -> Duration {
+        Duration::from_secs(self.0.idle_retention_seconds)
     }
     pub fn cleanup_interval(&self) -> Duration {
         Duration::from_secs(self.0.cleanup_interval_seconds)

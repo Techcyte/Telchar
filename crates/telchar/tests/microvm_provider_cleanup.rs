@@ -346,6 +346,7 @@ fn exchange(
             "us-west-2".to_owned(),
             Duration::from_millis(25),
             1,
+            std::collections::BTreeMap::new(),
         )
         .expect("cleanup service starts");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);

@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn idle_retention_is_bounded_by_worker_lifetime() {
+    let raw = include_str!("../../../../tests/fixtures/microvm.toml");
+    assert_eq!(
+        MicrovmBackendConfig::parse(raw).unwrap().idle_retention(),
+        Duration::ZERO
+    );
+    let mut deployment: Deployment = toml::from_str(raw).unwrap();
+    deployment.idle_retention_seconds = 30;
+    assert_eq!(
+        MicrovmBackendConfig::validate(deployment.clone())
+            .unwrap()
+            .idle_retention(),
+        Duration::from_secs(30)
+    );
+    deployment.idle_retention_seconds = deployment.maximum_duration_seconds + 1;
+    assert!(MicrovmBackendConfig::validate(deployment).is_err());
+}
+
+#[test]
 fn launches_resolve_current_transport_without_changing_tls_identity() {
     let config =
         MicrovmBackendConfig::parse(include_str!("../../../../tests/fixtures/microvm.toml"))

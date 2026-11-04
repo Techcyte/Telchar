@@ -62,6 +62,7 @@ impl Provider {
         epoch: i64,
         attempt_id: i64,
         provider_id: &str,
+        retention: std::time::Duration,
     ) -> Result<bool, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
         let database = owner.database();
@@ -146,8 +147,10 @@ impl Provider {
             return Ok(false);
         }
         owner.verify().map_err(|_| ProviderError)?;
-        crate::persistence::reset_and_retire_microvm_worker(database, intent_id, epoch, attempt_id)
-            .map_err(|_| ProviderError)
+        crate::persistence::reset_microvm_worker_until(
+            database, intent_id, epoch, attempt_id, retention,
+        )
+        .map_err(|_| ProviderError)
     }
 }
 

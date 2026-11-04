@@ -631,7 +631,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        8
+        9
     );
     fixture.restart();
     let row = fixture.connect().query_one(

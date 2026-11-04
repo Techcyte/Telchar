@@ -215,6 +215,32 @@ fn worker_lifecycle(retain: bool) {
         .unwrap()
         .unwrap()
         .attempt_id;
+    assert!(
+        !db::begin_microvm_cleanup(fixture.url(), &intent.intent_id, "provider-worker").unwrap(),
+        "retained idle worker cannot be cleaned before deadline"
+    );
+    client.execute("UPDATE microvm_workers SET idle_until=clock_timestamp()-interval '1 second' WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
+    assert!(
+        !db::claim_microvm_worker(
+            fixture.url(),
+            &intent.intent_id,
+            2,
+            next,
+            Duration::from_secs(10)
+        )
+        .unwrap(),
+        "expired idle worker cannot be claimed"
+    );
+    assert!(
+        db::pending_microvm_cleanup_identity(fixture.url(), &intent.intent_id, "provider-worker")
+            .unwrap()
+    );
+    client
+        .execute(
+            "UPDATE microvm_workers SET idle_until=expires_at WHERE intent_id=$1",
+            &[&intent.intent_id],
+        )
+        .unwrap();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let claim_barrier = barrier.clone();
     let url = fixture.url().to_owned();
@@ -223,12 +249,11 @@ fn worker_lifecycle(retain: bool) {
         db::claim_microvm_worker(&url, "worker-launch", 2, next, Duration::from_secs(10)).unwrap()
     });
     barrier.wait();
-    let retired =
-        db::begin_microvm_cleanup(fixture.url(), &intent.intent_id, "provider-worker").unwrap();
+    let retired = db::retire_microvm_worker(fixture.url(), &intent.intent_id, 2).unwrap();
     let claimed = claim.join().unwrap();
     assert_ne!(
         claimed, retired,
-        "claim and cleanup must have exactly one winner"
+        "claim and retirement must have exactly one winner"
     );
     if claimed {
         db::collect_shared_build(fixture.url(), third).unwrap();

@@ -155,6 +155,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "microvm_assignments",
         sql: include_str!("../../migrations/0028_microvm_assignments.sql"),
     },
+    Migration {
+        version: 29,
+        name: "microvm_idle_deadline",
+        sql: include_str!("../../migrations/0029_microvm_idle_deadline.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
