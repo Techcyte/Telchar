@@ -155,7 +155,8 @@ fn durable_commands_report_empty_authoritative_state() {
         "intent_id": "operator-intent", "backend_name": "local-main",
         "account_id": "116392764028", "region": "us-west-2",
         "provider_id": "microvm-exact", "phase": "closed",
-        "capacity_reserved": true, "cleanup_pending": true
+        "capacity_reserved": true, "cleanup_pending": true,
+        "worker_state": "draining", "assignment_epoch": 1, "completed_jobs": 0
     });
     let output = operator(&config, &["microvm", "--limit", "1"]);
     assert!(output.status.success(), "{}", stderr(&output));
