@@ -35,14 +35,16 @@ payload = sys.stdin.read()
 trust = pathlib.Path(sys.argv[2])
 with tempfile.TemporaryDirectory() as directory:
     destination = pathlib.Path(directory) / 'binding'
+    captured = pathlib.Path(directory) / 'captured'
+    worker = "import pathlib,sys; p=pathlib.Path(sys.argv[1]); assert p.stat().st_mode & 0o777 == 0o600; pathlib.Path(sys.argv[2]).write_text(p.read_text())"
     state = ExecutionState([sys.executable, '-c', 'import time; time.sleep(30)'],
-                           [sys.executable, '-c', 'raise SystemExit(0)'],
+                           [sys.executable, '-c', worker, str(destination), str(captured)],
                            [sys.executable, '-c', 'raise SystemExit(0)'], destination, trust)
     assert state.start_hook({'microvmId': 'provider-exact', 'runHookPayload': payload})
     state.join()
     assert state.status() == 'succeeded'
-    assert destination.stat().st_mode & 0o777 == 0o600
-    print(destination.read_text())
+    assert not destination.exists()
+    print(captured.read_text())
 "#,
         )
         .arg(root.join("deploy/microvm"))
