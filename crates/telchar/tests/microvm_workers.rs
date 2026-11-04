@@ -103,7 +103,26 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
     }
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
-    assert!(db::cancel_microvm_launch(fixture.url(), &intent.intent_id).unwrap());
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let row = client.query_one("SELECT w.state, l.phase, l.reservation_released_at IS NULL FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
+    assert_eq!(row.get::<_, String>(0), "draining");
+    assert_eq!(row.get::<_, String>(1), "closed");
+    assert!(row.get::<_, bool>(2));
+    assert!(
+        !db::claim_microvm_worker(
+            owner.database(),
+            &intent.intent_id,
+            1,
+            next,
+            Duration::from_secs(10)
+        )
+        .unwrap()
+    );
+    assert!(!db::cancel_microvm_launch(owner.database(), &intent.intent_id).unwrap());
     let row = client.query_one("SELECT w.state, l.reservation_released_at IS NULL FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
     assert_eq!(row.get::<_, String>(0), "draining");
     assert!(row.get::<_, bool>(1));

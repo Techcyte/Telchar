@@ -15,6 +15,7 @@ pub fn reset_microvm_worker(
          FROM microvm_launches l WHERE w.intent_id=$1 AND l.intent_id=w.intent_id
             AND w.state='busy' AND w.assignment_epoch=$2 AND w.attempt_id=$3
             AND l.phase='bound' AND l.reservation_released_at IS NULL
+            AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
             AND w.expires_at > clock_timestamp()
             AND EXISTS (SELECT 1 FROM shared_build_attempts a WHERE a.attempt_id=$3
                         AND a.state='succeeded')",
@@ -54,12 +55,26 @@ pub fn claim_microvm_worker(
          FROM microvm_launches l WHERE w.intent_id=$1 AND l.intent_id=w.intent_id
              AND w.state='idle' AND w.assignment_epoch=$2 AND l.backend_name=$4
              AND l.phase='bound' AND l.reservation_released_at IS NULL
+             AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
              AND w.expires_at > clock_timestamp()+make_interval(secs => $5::integer)",
             &[&intent_id, &epoch, &attempt_id, &backend, &seconds],
         )
         .map_err(|_| MicrovmLaunchError)?;
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(changed == 1)
+}
+
+pub(crate) fn drain_previous_microvm_workers(
+    database: &(impl DatabaseSource + ?Sized),
+) -> Result<(), MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    client.execute(
+        "UPDATE microvm_launches l SET phase='closed' FROM microvm_workers w
+         WHERE l.intent_id=w.intent_id AND l.phase <> 'closed'
+           AND w.owner_generation <> NULLIF(current_setting('telchar.owner_generation', true), '')::bigint",
+        &[],
+    ).map_err(|_| MicrovmLaunchError)?;
+    Ok(())
 }
 
 pub fn retire_microvm_worker(

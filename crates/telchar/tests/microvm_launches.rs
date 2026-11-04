@@ -628,7 +628,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        6
+        7
     );
     fixture.restart();
     let row = fixture.connect().query_one(
@@ -743,15 +743,15 @@ fn runtime_capability_authenticates_one_fenced_session_without_persisting_bearer
     assert!(
         telchar::persistence::dispatch_microvm_launch(&database, "intent-one").expect("dispatch")
     );
-    assert!(
-        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
-            .expect("bind")
-    );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
     )
     .expect("owner");
+    assert!(
+        telchar::persistence::bind_microvm_launch(owner.database(), "intent-one", "microvm-exact")
+            .expect("bind")
+    );
     for bearer in ["", "invalid", &"a".repeat(4096), other.bearer()] {
         assert!(
             !telchar::microvm::admit_session(&owner, "intent-one", "microvm-exact", bearer)
