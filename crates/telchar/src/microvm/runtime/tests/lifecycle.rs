@@ -24,6 +24,24 @@ fn request(stream: &mut impl Read) -> String {
     headers + &String::from_utf8(body).unwrap()
 }
 
+fn accept(listener: &std::net::TcpListener) -> std::net::TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "fixture accept deadline"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("accept: {error}"),
+        }
+    }
+}
+
 fn reply(stream: &mut impl Write, status: u16, body: &str) {
     write!(
         stream,
@@ -35,7 +53,7 @@ fn reply(stream: &mut impl Write, status: u16, body: &str) {
 }
 
 #[test]
-fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
+fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     crate::persistence::migrate(fixture.url()).unwrap();
     let owner = std::sync::Arc::new(
@@ -45,6 +63,15 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         )
         .unwrap(),
     );
+    let callback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let callback_address = callback.local_addr().unwrap();
+    let raw = include_str!("../../../../tests/fixtures/microvm.toml")
+        .replace("internal-builder.example", "localhost")
+        .replace(
+            "wss://gateway.example/microvm",
+            &format!("wss://localhost:{}/microvm", callback_address.port()),
+        );
+    let config = crate::service::config::MicrovmBackendConfig::parse(&raw).unwrap();
     let database = owner.database();
     let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-runtime.drv";
     let kind = crate::backend::BackendKind::Microvm;
@@ -73,7 +100,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         image_arn: "image-fixture".into(),
         image_version: "1".into(),
         vpc_egress_connector_arn: "connector".into(),
-        configuration_digest: [1; 32],
+        configuration_digest: config.fingerprint(),
         request_digest: [2; 32],
         client_token: "runtime-intent".into(),
         credential_verifier: [3; 32],
@@ -100,6 +127,25 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
     let certificate =
         include_bytes!("../../../../../telchar-nomad-worker/tests/fixtures/microvm-cert.der");
     let key = include_bytes!("../../../../../telchar-nomad-worker/tests/fixtures/microvm-key.der");
+    let sessions =
+        std::sync::Arc::new(crate::microvm::rendezvous::ExecutionSessions::new(1).unwrap());
+    let callback_sessions = sessions.clone();
+    let callback_owner = owner.clone();
+    let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_admitted = admitted.clone();
+    let callback_server = std::thread::spawn(move || {
+        let stream = accept(&callback);
+        let pending = crate::microvm::rendezvous::PendingConnections::new(1, 1).unwrap();
+        callback_sessions
+            .accept(
+                stream,
+                &callback_owner,
+                std::time::Instant::now() + Duration::from_secs(10),
+                pending.reserve().unwrap(),
+            )
+            .unwrap();
+        callback_admitted.store(true, std::sync::atomic::Ordering::Release);
+    });
     let runtime_server = std::thread::spawn(move || {
         let config = rustls::ServerConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
@@ -113,7 +159,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         )
         .unwrap();
         for run in [false, true] {
-            let (stream, _) = tls.accept().unwrap();
+            let stream = accept(&tls);
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -139,6 +185,24 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
                 assert_eq!(payload["assignment_epoch"], 2);
                 assert_eq!(payload["intent_id"], "runtime-intent");
                 reply(&mut stream, 200, "{}");
+                use tungstenite::client::IntoClientRequest;
+                let connection = std::net::TcpStream::connect(callback_address).unwrap();
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut handshake = format!("ws://{callback_address}/microvm")
+                    .into_client_request()
+                    .unwrap();
+                handshake.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    "telchar-microvm-v1".parse().unwrap(),
+                );
+                let (mut socket, _) = tungstenite::client(handshake, connection).unwrap();
+                socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"intent_id":payload["intent_id"],"assignment_epoch":payload["assignment_epoch"],"provider_id":"microvm-exact","bearer":payload["bearer"]})).unwrap().into())).unwrap();
+                while !admitted.load(std::sync::atomic::Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                socket.close(None).unwrap();
             } else {
                 assert!(incoming.starts_with("POST /aws/lambda-microvms/runtime/v1/validate "));
                 reply(
@@ -153,7 +217,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
     let endpoint = format!("http://{}", control.local_addr().unwrap());
     let control_server = std::thread::spawn(move || {
         for index in 0..5 {
-            let (mut stream, _) = control.accept().unwrap();
+            let mut stream = accept(&control);
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -176,7 +240,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         None,
         "fixture",
     );
-    let config = aws_sdk_lambdamicrovms::Config::builder()
+    let provider_config = aws_sdk_lambdamicrovms::Config::builder()
         .behavior_version_latest()
         .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
         .credentials_provider(credentials.clone())
@@ -193,7 +257,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         .unwrap();
     let mut provider = runtime
         .block_on(Provider::verify_account(
-            config,
+            provider_config,
             identity,
             aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
             "116392764028",
@@ -208,7 +272,7 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         "us-west-2".into(),
         Duration::from_millis(25),
         10,
-        std::collections::BTreeMap::from([([1; 32], (Duration::from_secs(60), 100))]),
+        std::collections::BTreeMap::from([(config.fingerprint(), (Duration::from_secs(60), 100))]),
     )
     .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -243,33 +307,47 @@ fn attested_provider_reset_retains_worker_and_delivers_next_assignment() {
         &["/nix/store/dddddddddddddddddddddddddddddddd-output"],
     )
     .unwrap();
+    let source = r#"Derive([("out","/nix/store/dddddddddddddddddddddddddddddddd-output","","")],[],[],"aarch64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","runtime"),("out","/nix/store/dddddddddddddddddddddddddddddddd-output"),("system","aarch64-linux")])"#;
+    let target =
+        crate::backend::BackendTarget::new("arm", kind, "aarch64-linux", Vec::<String>::new())
+            .unwrap();
+    let build = crate::build::BuildRequest::from_stored_derivation(
+        next.as_bytes(),
+        source.as_bytes(),
+        &[target],
+    )
+    .unwrap();
+    fixture.connect().execute("UPDATE shared_builds SET build_request=$1::text::jsonb,request_digest=$2 WHERE derivation_path=$3", &[&serde_json::to_string(&build).unwrap(),&&build.shared_build_digest()[..],&next]).unwrap();
     crate::persistence::start_shared_build(database, next).unwrap();
     let attempt = crate::persistence::read_shared_build_attempt(database, next)
         .unwrap()
         .unwrap()
         .attempt_id;
-    let selected = crate::persistence::select_microvm_worker(
-        database,
-        attempt,
-        &[1; 32],
-        Duration::from_secs(10),
-        &[4; 32],
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(selected.2, 2);
-    provider
-        .deliver_worker_assignment(
-            &owner,
-            &selected.0,
-            &selected.1,
-            &serde_json::json!({"intent_id":selected.0,"assignment_epoch":selected.2}).to_string(),
-        )
-        .unwrap();
+    let executor = crate::microvm::execution::Execution {
+        provider: &provider,
+        owner: &owner,
+        sessions: &sessions,
+        store: crate::store::daemon::GatewayStoreEndpoint::parse("unix:///not-used/microvm.sock")
+            .unwrap(),
+        staging: std::env::temp_dir(),
+        limits: config.transfer_limits(),
+    };
+    let error = executor
+        .run_configured(&config, attempt, |_| {})
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "Nomad transfer manifest path count is invalid"
+    );
+    callback_server.join().unwrap();
+    let assignment=fixture.connect().query_one("SELECT assignment_epoch,admitted_at IS NOT NULL FROM microvm_assignments WHERE intent_id='runtime-intent' ORDER BY assignment_epoch DESC LIMIT 1",&[]).unwrap();
+    assert_eq!(assignment.get::<_, i64>(0), 2);
+    assert!(assignment.get::<_, bool>(1));
     runtime_server.join().unwrap();
     control_server.join().unwrap();
     let row=fixture.connect().query_one("SELECT l.phase,l.reservation_released_at IS NULL,w.state FROM microvm_launches l JOIN microvm_workers w USING(intent_id) WHERE intent_id='runtime-intent'",&[]).unwrap();
-    assert_eq!(row.get::<_, String>(0), "bound");
+    assert_eq!(row.get::<_, String>(0), "closed");
     assert!(row.get::<_, bool>(1));
-    assert_eq!(row.get::<_, String>(2), "busy");
+    assert_eq!(row.get::<_, String>(2), "draining");
 }
