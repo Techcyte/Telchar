@@ -21,12 +21,22 @@ def main():
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(environment["TELCHAR_MICROVM_JOB_SOCKET"])
             listener.listen(1)
-            listener.settimeout(30)
+            listener.settimeout(.05)
             worker = subprocess.Popen(sys.argv[1:], env=environment)
             try:
-                channel, _ = listener.accept()
+                deadline = time.monotonic() + 60
+                while True:
+                    status = worker.poll()
+                    if status is not None:
+                        return status
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("worker preparation deadline")
+                    try:
+                        channel, _ = listener.accept()
+                        break
+                    except socket.timeout:
+                        continue
                 with channel:
-                    deadline = time.monotonic() + 60
                     wait_prepared(channel, deadline)
                     retained = directory / "inputs"
                     with sqlite3.connect(str(Path(os.environ["NIX_STATE_DIR"]) / "db/db.sqlite")) as database:
@@ -67,12 +77,6 @@ def main():
                                 raise RuntimeError(checked.stderr.decode())
                             channel.sendall(endpoint.encode() + b"\n")
                             status = worker.wait(timeout=max(.001, deadline - time.monotonic()))
-                            if status:
-                                sys.stderr.write((directory / "job/daemon.log").read_text())
-                                for path in paths:
-                                    if path.endswith('.drv'):
-                                        diagnostic = subprocess.run(['nix', 'build', '--store', endpoint, path + '^*', '--no-link'], env=daemon_environment, capture_output=True)
-                                        sys.stderr.write(diagnostic.stderr.decode())
                             return status
                         finally:
                             if worker.poll() is None:

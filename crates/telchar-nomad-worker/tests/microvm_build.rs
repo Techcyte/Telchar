@@ -1240,7 +1240,18 @@ chunk_bytes = 262144
         "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",
         &[&intent_id],
     ).unwrap();
-    assert_eq!(row.get::<_, String>(0), "bound");
+    assert_eq!(
+        row.get::<_, String>(0),
+        if matches!(
+            case.as_str(),
+            "configured-daemon-restart" | "configured-daemon-output-recovery"
+        ) {
+            "closed"
+        } else {
+            "bound"
+        },
+        "launch lifecycle in {case}"
+    );
     assert_eq!(row.get::<_, String>(1), "microvm-build");
     assert!(row.get::<_, bool>(2));
     assert!(
