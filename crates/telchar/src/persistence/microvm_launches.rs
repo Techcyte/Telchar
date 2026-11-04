@@ -433,7 +433,8 @@ pub fn pending_microvm_cleanup(
     let rows = client
         .query(
             "SELECT l.intent_id, l.provider_id, l.account_id, l.region
-         FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.account_id = $1 AND l.region = $4 AND l.provider_id IS NOT NULL
            AND l.termination_observed_at IS NULL
@@ -487,14 +488,17 @@ pub fn pending_microvm_cleanup_identity(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(pending_microvm_cleanup_identity));
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
-    let row = client.query_opt(
-        "SELECT 1 FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+    let row = client
+        .query_opt(
+            "SELECT 1 FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.termination_observed_at IS NULL
            AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
                 OR b.state NOT IN ('running', 'collecting'))",
-        &[&intent_id, &provider_id],
-    ).map_err(|_| MicrovmLaunchError)?;
+            &[&intent_id, &provider_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
     Ok(row.is_some())
 }
 

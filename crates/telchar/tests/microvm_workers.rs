@@ -171,6 +171,17 @@ fn worker_lifecycle(retain: bool) {
             .is_none(),
         "previous epoch cannot load later assignment even if request identity matches"
     );
+    assert!(
+        db::pending_microvm_cleanup(fixture.url(), &intent.account_id, &intent.region, 10, None)
+            .unwrap()
+            .is_empty(),
+        "original terminal attempt cannot schedule current assignment for cleanup"
+    );
+    assert!(
+        !db::pending_microvm_cleanup_identity(fixture.url(), &intent.intent_id, "provider-worker")
+            .unwrap(),
+        "stale cleanup candidate cannot terminate current assignment"
+    );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
     db::collect_shared_build(fixture.url(), second).unwrap();
     db::complete_shared_build_success(
@@ -180,6 +191,11 @@ fn worker_lifecycle(retain: bool) {
         Duration::from_secs(60),
     )
     .unwrap();
+    assert!(
+        db::pending_microvm_cleanup_identity(fixture.url(), &intent.intent_id, "provider-worker")
+            .unwrap(),
+        "terminal current assignment remains eligible for maintenance"
+    );
     assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, next).unwrap());
     let third = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-worker.drv";
     db::claim_shared_build(
