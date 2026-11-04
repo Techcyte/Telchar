@@ -167,6 +167,52 @@ pub fn claim_microvm_worker(
     Ok(changed == 1)
 }
 
+/// Claim one compatible idle worker and issue assignment authority in the same transaction.
+pub fn select_microvm_worker(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+    configuration: &[u8; 32],
+    budget: Duration,
+    verifier: &[u8; 32],
+) -> Result<Option<(String, String, i64, i32)>, MicrovmLaunchError> {
+    let seconds = i32::try_from(budget.as_secs()).map_err(|_| MicrovmLaunchError)?;
+    if seconds <= 0 || budget.subsec_nanos() != 0 {
+        return Err(MicrovmLaunchError);
+    }
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let active = transaction.query_opt("SELECT a.backend_name FROM shared_build_attempts a JOIN shared_builds b USING(derivation_path) WHERE a.attempt_id=$1 AND a.state='running' AND b.state='running' AND a.backend_name=b.backend_name FOR UPDATE OF a,b", &[&attempt_id]).map_err(|_| MicrovmLaunchError)?;
+    let Some(active) = active else {
+        return Ok(None);
+    };
+    let backend: String = active.get(0);
+    let worker = transaction.query_opt(
+        "SELECT w.intent_id,l.provider_id,w.assignment_epoch,l.maximum_duration_seconds
+         FROM microvm_workers w JOIN microvm_launches l USING(intent_id)
+         WHERE w.state='idle' AND w.idle_until>clock_timestamp()
+           AND w.expires_at>clock_timestamp()+make_interval(secs=>$3::integer)
+           AND l.backend_name=$1 AND l.configuration_digest=$2 AND l.phase='bound'
+           AND l.provider_id IS NOT NULL AND l.reservation_released_at IS NULL
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation',true),'')::bigint,0)
+         ORDER BY w.idle_since,w.intent_id FOR UPDATE OF w SKIP LOCKED LIMIT 1",
+        &[&backend,&&configuration[..],&seconds],
+    ).map_err(|_| MicrovmLaunchError)?;
+    let Some(worker) = worker else {
+        return Ok(None);
+    };
+    let intent: String = worker.get(0);
+    let provider: String = worker.get(1);
+    let epoch: i64 = worker.get(2);
+    let lifetime: i32 = worker.get(3);
+    transaction.execute("UPDATE microvm_workers SET state='busy',idle_since=NULL,idle_until=NULL,attempt_id=$2,assignment_epoch=assignment_epoch+1 WHERE intent_id=$1", &[&intent,&attempt_id]).map_err(|_| MicrovmLaunchError)?;
+    let issued = transaction.execute("UPDATE microvm_assignments SET credential_verifier=$3 WHERE intent_id=$1 AND assignment_epoch=$2 AND credential_verifier IS NULL AND admitted_at IS NULL AND completed_at IS NULL", &[&intent,&(epoch+1),&&verifier[..]]).map_err(|_| MicrovmLaunchError)?;
+    if issued != 1 {
+        return Err(MicrovmLaunchError);
+    }
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(Some((intent, provider, epoch + 1, lifetime)))
+}
+
 pub fn completed_microvm_worker(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

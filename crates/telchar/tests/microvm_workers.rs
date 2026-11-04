@@ -216,14 +216,35 @@ fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
         .unwrap()
         .attempt_id;
     assert!(
-        db::claim_microvm_worker(
+        db::select_microvm_worker(
             fixture.url(),
-            &intent.intent_id,
-            1,
             next,
-            Duration::from_secs(10)
+            &[9; 32],
+            Duration::from_secs(10),
+            &[7; 32]
         )
         .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        db::select_microvm_worker(
+            fixture.url(),
+            next,
+            &intent.configuration_digest,
+            Duration::from_secs(10),
+            &[7; 32]
+        )
+        .unwrap(),
+        Some((
+            intent.intent_id.clone(),
+            "provider-worker".to_owned(),
+            2,
+            120
+        ))
+    );
+    assert!(
+        !db::authorize_microvm_assignment(fixture.url(), &intent.intent_id, 2, &[8; 32]).unwrap(),
+        "selected assignment capability issued atomically"
     );
     assert!(
         db::microvm_execution_active(fixture.url(), &intent.intent_id).unwrap(),

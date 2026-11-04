@@ -87,6 +87,7 @@ impl Capability {
 #[serde(deny_unknown_fields)]
 struct LaunchPayload {
     version: u8,
+    assignment_epoch: i64,
     endpoint: String,
     address: std::net::SocketAddr,
     intent_id: String,
@@ -104,6 +105,7 @@ fn validate_launch_payload(
     let hook: LaunchPayload = serde_json::from_str(payload).map_err(|_| ProviderError)?;
     let verifier = bearer_verifier(&hook.bearer).ok_or(ProviderError)?;
     if hook.version != 1
+        || hook.assignment_epoch != 1
         || hook.intent_id != intent.intent_id
         || hook.lifetime_seconds != intent.maximum_duration_seconds
         || verifier != intent.credential_verifier

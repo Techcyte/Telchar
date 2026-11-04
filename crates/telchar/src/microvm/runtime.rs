@@ -40,6 +40,7 @@ fn read_reset_report(
     Ok(bytes.len() <= 16384 && reset_matches(&bytes, intent, provider, epoch))
 }
 
+#[cfg(test)]
 fn post_status(
     client: &reqwest::blocking::Client,
     url: url::Url,
@@ -55,23 +56,21 @@ fn post_status(
 }
 
 impl Provider {
-    pub fn observe_worker_reset(
+    fn worker_request(
         &self,
         owner: &crate::service::singleton_ownership::SingletonOwnership,
         intent_id: &str,
-        epoch: i64,
-        attempt_id: i64,
         provider_id: &str,
-        retention: std::time::Duration,
-        maximum_jobs: u32,
-    ) -> Result<bool, ProviderError> {
+        path: &str,
+        payload: &serde_json::Value,
+    ) -> Result<reqwest::blocking::Response, ProviderError> {
         owner.verify().map_err(|_| ProviderError)?;
         let database = owner.database();
         let Some(identity) =
             crate::persistence::microvm_termination_identity(database, intent_id, provider_id)
                 .map_err(|_| ProviderError)?
         else {
-            return Ok(false);
+            return Err(ProviderError);
         };
         let mut connection = crate::persistence::connect(database).map_err(|_| ProviderError)?;
         let image = connection.query_one("SELECT image_arn,image_version FROM microvm_launches WHERE intent_id=$1 AND provider_id=$2", &[&intent_id, &provider_id]).map_err(|_| ProviderError)?;
@@ -136,14 +135,64 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        url.set_path("/aws/lambda-microvms/runtime/v1/validate");
+        url.set_path(path);
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .timeout(remaining)
             .build()
             .map_err(|_| ProviderError)?;
-        let response = post_status(&client, url, &token)?;
+        client
+            .post(url)
+            .header("X-aws-proxy-auth", token)
+            .header("X-aws-proxy-port", "8080")
+            .json(payload)
+            .send()
+            .map_err(|_| ProviderError)
+    }
+
+    pub fn deliver_worker_assignment(
+        &self,
+        owner: &crate::service::singleton_ownership::SingletonOwnership,
+        intent_id: &str,
+        provider_id: &str,
+        payload: &str,
+    ) -> Result<(), ProviderError> {
+        let payload: serde_json::Value =
+            serde_json::from_str(payload).map_err(|_| ProviderError)?;
+        let response = self.worker_request(
+            owner,
+            intent_id,
+            provider_id,
+            "/aws/lambda-microvms/runtime/v1/run",
+            &payload,
+        )?;
+        owner.verify().map_err(|_| ProviderError)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(ProviderError)
+        }
+    }
+
+    pub fn observe_worker_reset(
+        &self,
+        owner: &crate::service::singleton_ownership::SingletonOwnership,
+        intent_id: &str,
+        epoch: i64,
+        attempt_id: i64,
+        provider_id: &str,
+        retention: std::time::Duration,
+        maximum_jobs: u32,
+    ) -> Result<bool, ProviderError> {
+        let response = self.worker_request(
+            owner,
+            intent_id,
+            provider_id,
+            "/aws/lambda-microvms/runtime/v1/validate",
+            &serde_json::json!({}),
+        )?;
+        let database = owner.database();
         if !read_reset_report(response, intent_id, provider_id, epoch)? {
             return Ok(false);
         }
