@@ -637,10 +637,14 @@ pub fn microvm_session_request(
         .query_opt(
             "SELECT b.build_request::text, b.request_digest, b.derivation_path
          FROM microvm_launches l
-         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN microvm_workers w ON w.intent_id=l.intent_id AND w.state='busy'
+         JOIN microvm_assignments s ON s.intent_id=w.intent_id AND s.assignment_epoch=w.assignment_epoch
+         JOIN shared_build_attempts a ON a.attempt_id = s.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.phase = 'bound'
-           AND l.session_consumed_at IS NOT NULL AND l.reservation_released_at IS NULL
+           AND s.admitted_at IS NOT NULL AND s.completed_at IS NULL
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
+           AND w.expires_at > clock_timestamp() AND l.reservation_released_at IS NULL
            AND b.state = 'running' AND a.state = 'running'
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
             &[&intent_id],
@@ -774,6 +778,21 @@ pub fn admit_microvm_session(
             &[&intent_id, &provider_id, &&credential_verifier[..]],
         )
         .map_err(|_| MicrovmLaunchError)?;
+    if consumed == 1 {
+        let assignment = transaction.execute(
+            "UPDATE microvm_assignments s SET credential_verifier=$2, admitted_at=clock_timestamp()
+             FROM microvm_workers w WHERE s.intent_id=$1 AND w.intent_id=s.intent_id
+               AND s.assignment_epoch=w.assignment_epoch AND w.state='busy'
+               AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
+               AND w.expires_at > clock_timestamp()
+               AND s.admitted_at IS NULL AND s.completed_at IS NULL
+               AND (s.credential_verifier IS NULL OR s.credential_verifier=$2)",
+            &[&intent_id, &&credential_verifier[..]],
+        ).map_err(|_| MicrovmLaunchError)?;
+        if assignment != 1 {
+            return Ok(false);
+        }
+    }
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(consumed == 1)
 }

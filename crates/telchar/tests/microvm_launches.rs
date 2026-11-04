@@ -835,6 +835,18 @@ fn admission_consumes_exact_bound_capability_once_across_restart() {
         .map(|caller| caller.join().expect("admission joins"))
         .collect();
     assert_eq!(results.into_iter().filter(|admitted| *admitted).count(), 1);
+    let assignment = fixture.connect().query_one(
+        "SELECT admitted_at IS NOT NULL, credential_verifier FROM microvm_assignments WHERE intent_id='intent-one' AND assignment_epoch=1", &[],
+    ).unwrap();
+    assert!(
+        assignment.get::<_, bool>(0),
+        "session must atomically consume assignment capability"
+    );
+    assert_eq!(assignment.get::<_, Vec<u8>>(1), vec![3; 32]);
+    assert!(
+        !telchar::persistence::admit_microvm_assignment(&database, "intent-one", 1, &[3; 32])
+            .unwrap()
+    );
     fixture.restart();
     assert!(
         !telchar::persistence::admit_microvm_session(
@@ -845,6 +857,37 @@ fn admission_consumes_exact_bound_capability_once_across_restart() {
         )
         .expect("consumed session cannot reconnect")
     );
+}
+
+#[test]
+fn assignment_denial_does_not_consume_launch_session() {
+    let (fixture, database) = prepared_launch();
+    assert!(telchar::persistence::dispatch_microvm_launch(&database, "intent-one").unwrap());
+    assert!(
+        telchar::persistence::bind_microvm_launch(&database, "intent-one", "microvm-exact")
+            .unwrap()
+    );
+    assert!(
+        telchar::persistence::authorize_microvm_assignment(&database, "intent-one", 1, &[4; 32])
+            .unwrap()
+    );
+    assert!(
+        !telchar::persistence::admit_microvm_session(
+            &database,
+            "intent-one",
+            "microvm-exact",
+            &[3; 32]
+        )
+        .unwrap()
+    );
+    let row = fixture
+        .connect()
+        .query_one(
+            "SELECT session_consumed_at IS NULL FROM microvm_launches WHERE intent_id='intent-one'",
+            &[],
+        )
+        .unwrap();
+    assert!(row.get::<_, bool>(0));
 }
 
 #[test]
