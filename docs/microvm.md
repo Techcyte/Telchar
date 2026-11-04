@@ -27,7 +27,8 @@ termination observation.
 
 Both image entrypoints accept `TELCHAR_MICROVM_MAXIMUM_STORE_BYTES` (default
 8 GiB) and `TELCHAR_MICROVM_MINIMUM_FREE_BYTES` (default 1 GiB). Runtime scans
-allocated retained-store bytes before import and before freezing the lower store,
+allocated retained-store files and retained Nix metadata bytes before import and
+before freezing the lower store,
 and rejects work outside these bounds. These are admission checks, not filesystem
 quotas: one import may overshoot before rejection, and private upper/metadata usage
 is not capped by this scan. No garbage collection runs against an active lower.
@@ -47,7 +48,12 @@ is 1–256. Rows are ordered by creation time and intent ID, oldest first; this 
 a bounded snapshot, not a complete inventory when more rows exist.
 
 Each row exposes intent/backend/account/region/provider identity, phase,
-`capacity_reserved` and `cleanup_pending`. A risk-released known instance remains
+`capacity_reserved` and `cleanup_pending`. When a worker exists, `worker_state`,
+`assignment_epoch` and `completed_jobs` describe its current durable assignment
+lifecycle; these fields are null for intents without a worker. Completed-job counts
+advance only after validated reset, not merely receipt of a build result. The
+launch intent can outlive its initial attempt, so use the worker epoch rather than
+launch phase alone when inspecting retained workers. A risk-released known instance remains
 visible until termination is observed. Unknown-identity risk-released intents
 are not included in this obligation view. Client tokens, credential verifiers,
 request/configuration digests and operator-supplied evidence are excluded.
