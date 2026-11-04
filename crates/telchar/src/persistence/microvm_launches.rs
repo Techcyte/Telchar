@@ -891,17 +891,25 @@ pub fn cancel_microvm_attempt(
     database: &(impl DatabaseSource + ?Sized),
     attempt_id: i64,
 ) -> Result<bool, MicrovmLaunchError> {
-    let row = connect(database)
-        .map_err(|_| MicrovmLaunchError)?
-        .query_opt(
-            "SELECT intent_id FROM microvm_launches WHERE attempt_id = $1",
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    transaction
+        .query(
+            "SELECT intent_id FROM microvm_workers WHERE attempt_id=$1 FOR UPDATE",
             &[&attempt_id],
         )
         .map_err(|_| MicrovmLaunchError)?;
-    match row {
-        Some(row) => cancel_microvm_launch(database, &row.get::<_, String>(0)),
-        None => Ok(false),
-    }
+    let changed=transaction.execute(
+        "UPDATE microvm_launches l
+         SET phase=CASE WHEN l.phase='prepared' THEN 'closed' WHEN l.provider_id IS NULL THEN 'ambiguous' ELSE 'closed' END,
+             reservation_released_at=CASE WHEN l.phase='prepared' THEN clock_timestamp() ELSE l.reservation_released_at END
+         WHERE l.phase IN ('prepared','dispatching','bound')
+           AND (EXISTS (SELECT 1 FROM microvm_workers w WHERE w.intent_id=l.intent_id AND w.attempt_id=$1 AND w.state='busy')
+                OR (l.attempt_id=$1 AND NOT EXISTS (SELECT 1 FROM microvm_workers w WHERE w.intent_id=l.intent_id)))",
+        &[&attempt_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
 }
 
 pub fn cancel_microvm_launch(

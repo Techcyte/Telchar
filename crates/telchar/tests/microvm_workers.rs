@@ -18,6 +18,11 @@ fn job_limit_reset_never_publishes_claimable_worker() {
     worker_lifecycle(true, 1);
 }
 
+#[test]
+fn current_assignment_cancellation_drains_reused_worker() {
+    worker_lifecycle(true, 2);
+}
+
 fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
     let fixture = PostgresFixture::start();
     db::migrate(fixture.url()).unwrap();
@@ -247,6 +252,10 @@ fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
         "selected assignment capability issued atomically"
     );
     assert!(
+        !db::cancel_microvm_attempt(fixture.url(), attempt).unwrap(),
+        "completed predecessor cannot cancel current assignment"
+    );
+    assert!(
         db::microvm_execution_active(fixture.url(), &intent.intent_id).unwrap(),
         "second assignment must not inherit terminal launch-attempt state"
     );
@@ -256,6 +265,15 @@ fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
             .is_none(),
         "previous epoch cannot load later assignment even if request identity matches"
     );
+    if maximum_jobs == 2 {
+        assert!(db::cancel_microvm_attempt(fixture.url(), next).unwrap());
+        assert!(!db::microvm_execution_active(fixture.url(), &intent.intent_id).unwrap());
+        let row=client.query_one("SELECT w.state,l.phase,l.reservation_released_at IS NULL FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "draining");
+        assert_eq!(row.get::<_, String>(1), "closed");
+        assert!(row.get::<_, bool>(2));
+        return;
+    }
     assert!(
         db::pending_microvm_cleanup(fixture.url(), &intent.account_id, &intent.region, 10, None)
             .unwrap()
