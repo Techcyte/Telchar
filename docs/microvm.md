@@ -1,10 +1,42 @@
 # Lambda MicroVM backend
 
 **MicroVM integration is experimental, not production-ready.** The gateway
-launches one ARM64 execution per admitted build, validates outputs in its own
+assigns one ARM64 derivation at a time to a worker, validates outputs in its own
 store, and retains durable cleanup obligations. Output-only recovery never adopts
 or relaunches interrupted MicroVM executions. AWS Lambda MicroVMs are distinct
 from ordinary Lambda functions.
+
+## Demand-driven retention
+
+`idle_retention_seconds` defaults to `0`: successful reset drains the worker
+immediately. Positive retention keeps clean workers available until their persisted
+idle deadline, capped by provider expiry. No workers are launched without demand;
+there is no nonzero warm floor. `maximum_concurrent_builds` bounds reserved worker
+capacity, including idle and ambiguous workers, not just actively executing builds.
+`maximum_duration_seconds` bounds the entire VM lifetime, including idle time;
+quota reservation covers that lifetime once. `maximum_jobs_per_worker` defaults to
+`100` (range 1–1,000,000); completing the final job drains atomically.
+
+Reuse requires the same deployment fingerprint, current daemon ownership, an
+unexpired idle deadline and enough remaining lifetime for execution. Each assignment
+has a fresh capability and increasing epoch. Clean reset requires succeeded gateway
+collection plus authenticated runtime teardown acknowledgement. Failures drain;
+execution and assignment delivery are not retried. Restart drains predecessor
+workers rather than adopting them. Provider capacity remains reserved until exact
+termination observation.
+
+Both image entrypoints accept `TELCHAR_MICROVM_MAXIMUM_STORE_BYTES` (default
+8 GiB) and `TELCHAR_MICROVM_MINIMUM_FREE_BYTES` (default 1 GiB). Runtime scans
+allocated retained-store bytes before import and before freezing the lower store,
+and rejects work outside these bounds. These are admission checks, not filesystem
+quotas: one import may overshoot before rejection, and private upper/metadata usage
+is not capped by this scan. No garbage collection runs against an active lower.
+
+Reusable-worker qualification remains incomplete. Local Rust fixtures verify two
+builds with a shared input snapshot and omitted warm transfer, but use separate
+canonical namespaces/databases. Control-plane fixtures verify maintenance,
+authenticated delivery and later-epoch admission with simulated provider/runtime
+boundaries. Neither establishes two derivations on one actual provider VM.
 
 ## Read-only obligation inspection
 
