@@ -41,9 +41,12 @@ def job_store(retained, directory):
     try:
         lower = directory / "lower"
         lower.mkdir()
-        mount(retained, lower, flags=4096)
-        mounted.append(lower)
-        mount(None, lower, flags=4096 | 32 | 1)
+        for name in ("nix/store", "nix/var/nix"):
+            target = lower / name
+            target.mkdir(parents=True)
+            mount(retained / name, target, flags=4096)
+            mounted.append(target)
+            mount(None, target, flags=4096 | 32 | 1)
         upper = directory / "upper"
         work = directory / "work"
         merged = directory / "merged"
