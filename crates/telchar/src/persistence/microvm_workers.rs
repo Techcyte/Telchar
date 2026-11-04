@@ -158,6 +158,21 @@ pub fn claim_microvm_worker(
     Ok(changed == 1)
 }
 
+pub fn completed_microvm_worker(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+) -> Result<Option<(i64, i64)>, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client.query_opt(
+        "SELECT w.assignment_epoch,w.attempt_id FROM microvm_workers w
+         JOIN microvm_launches l USING(intent_id) JOIN shared_build_attempts a ON a.attempt_id=w.attempt_id
+         WHERE w.intent_id=$1 AND w.state='busy' AND l.phase='bound' AND a.state='succeeded'
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation',true),'')::bigint,0)
+           AND w.expires_at > clock_timestamp()", &[&intent_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    Ok(row.map(|row| (row.get(0), row.get(1))))
+}
+
 pub(crate) fn drain_previous_microvm_workers(
     database: &(impl DatabaseSource + ?Sized),
 ) -> Result<(), MicrovmLaunchError> {

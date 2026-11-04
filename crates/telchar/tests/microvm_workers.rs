@@ -74,6 +74,11 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
             .unwrap()
     );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
+    assert!(
+        db::completed_microvm_worker(fixture.url(), &intent.intent_id)
+            .unwrap()
+            .is_none()
+    );
     db::collect_shared_build(fixture.url(), path).unwrap();
     db::complete_shared_build_success(
         fixture.url(),
@@ -82,6 +87,10 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         Duration::from_secs(60),
     )
     .unwrap();
+    assert_eq!(
+        db::completed_microvm_worker(fixture.url(), &intent.intent_id).unwrap(),
+        Some((1, attempt))
+    );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, attempt).unwrap());
     assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());

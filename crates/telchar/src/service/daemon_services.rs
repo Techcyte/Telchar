@@ -177,6 +177,32 @@ impl MicrovmCleanupService {
                 if !owner.verify_available().map_err(io::Error::other)? {
                     return Ok(true);
                 }
+                if let Some((epoch, attempt)) = crate::persistence::completed_microvm_worker(
+                    owner.database(),
+                    &cleanup.intent_id,
+                )
+                .map_err(io::Error::other)?
+                {
+                    if matches!(
+                        provider.observe_worker_reset(
+                            &owner,
+                            &cleanup.intent_id,
+                            epoch,
+                            attempt,
+                            &cleanup.provider_id
+                        ),
+                        Ok(true)
+                    ) {
+                        crate::persistence::retire_microvm_worker(
+                            owner.database(),
+                            &cleanup.intent_id,
+                            epoch,
+                        )
+                        .map_err(io::Error::other)?;
+                    }
+                    crate::persistence::cancel_microvm_launch(owner.database(), &cleanup.intent_id)
+                        .map_err(io::Error::other)?;
+                }
                 if provider.cleanup(&owner, &cleanup).is_err() {
                     // Provider uncertainty retains the durable obligation for a later pass.
                     tracing::warn!(

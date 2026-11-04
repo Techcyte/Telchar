@@ -280,8 +280,11 @@ impl Execution<'_> {
         };
         let result = execution.run_reserved(&intent, &payload, deadline, log);
         self.owner.verify().map_err(io::Error::other)?;
-        crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
-            .map_err(io::Error::other)?;
+        if !matches!(&result, Ok(result) if result.outcome == crate::nomad::protocol::BuildOutcome::Built)
+        {
+            crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
+                .map_err(io::Error::other)?;
+        }
         result
     }
 
