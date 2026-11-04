@@ -146,7 +146,7 @@ impl Provider {
             return Ok(false);
         }
         owner.verify().map_err(|_| ProviderError)?;
-        crate::persistence::reset_microvm_worker(database, intent_id, epoch, attempt_id)
+        crate::persistence::reset_and_retire_microvm_worker(database, intent_id, epoch, attempt_id)
             .map_err(|_| ProviderError)
     }
 }

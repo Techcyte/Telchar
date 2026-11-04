@@ -179,6 +179,27 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         "claim and retirement must have exactly one winner"
     );
     if claimed {
+        db::collect_shared_build(fixture.url(), third).unwrap();
+        db::complete_shared_build_success(
+            fixture.url(),
+            third,
+            &serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 3, next).unwrap()
+        );
+        assert!(
+            !db::claim_microvm_worker(
+                fixture.url(),
+                &intent.intent_id,
+                3,
+                next,
+                Duration::from_secs(10)
+            )
+            .unwrap()
+        );
         assert!(!db::retire_microvm_worker(fixture.url(), &intent.intent_id, 1).unwrap());
         assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
     }

@@ -7,11 +7,30 @@ pub fn reset_microvm_worker(
     epoch: i64,
     attempt_id: i64,
 ) -> Result<bool, MicrovmLaunchError> {
+    complete_microvm_reset(database, intent_id, epoch, attempt_id, true)
+}
+
+pub fn reset_and_retire_microvm_worker(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    attempt_id: i64,
+) -> Result<bool, MicrovmLaunchError> {
+    complete_microvm_reset(database, intent_id, epoch, attempt_id, false)
+}
+
+fn complete_microvm_reset(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    attempt_id: i64,
+    retain: bool,
+) -> Result<bool, MicrovmLaunchError> {
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let changed = client
         .execute(
-            "UPDATE microvm_workers w SET state='idle', attempt_id=NULL,
-            idle_since=clock_timestamp(), completed_jobs=completed_jobs+1
+            "UPDATE microvm_workers w SET state=CASE WHEN $4 THEN 'idle' ELSE 'draining' END, attempt_id=NULL,
+            idle_since=CASE WHEN $4 THEN clock_timestamp() ELSE NULL END, completed_jobs=completed_jobs+1
          FROM microvm_launches l WHERE w.intent_id=$1 AND l.intent_id=w.intent_id
             AND w.state='busy' AND w.assignment_epoch=$2 AND w.attempt_id=$3
             AND l.phase='bound' AND l.reservation_released_at IS NULL
@@ -19,7 +38,7 @@ pub fn reset_microvm_worker(
             AND w.expires_at > clock_timestamp()
             AND EXISTS (SELECT 1 FROM shared_build_attempts a WHERE a.attempt_id=$3
                         AND a.state='succeeded')",
-            &[&intent_id, &epoch, &attempt_id],
+            &[&intent_id, &epoch, &attempt_id, &retain],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(changed == 1)

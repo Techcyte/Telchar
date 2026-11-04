@@ -183,23 +183,13 @@ impl MicrovmCleanupService {
                 )
                 .map_err(io::Error::other)?
                 {
-                    if matches!(
-                        provider.observe_worker_reset(
-                            &owner,
-                            &cleanup.intent_id,
-                            epoch,
-                            attempt,
-                            &cleanup.provider_id
-                        ),
-                        Ok(true)
-                    ) {
-                        crate::persistence::retire_microvm_worker(
-                            owner.database(),
-                            &cleanup.intent_id,
-                            epoch,
-                        )
-                        .map_err(io::Error::other)?;
-                    }
+                    let _reset = provider.observe_worker_reset(
+                        &owner,
+                        &cleanup.intent_id,
+                        epoch,
+                        attempt,
+                        &cleanup.provider_id,
+                    );
                     crate::persistence::cancel_microvm_launch(owner.database(), &cleanup.intent_id)
                         .map_err(io::Error::other)?;
                 }
