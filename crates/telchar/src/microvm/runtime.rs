@@ -139,9 +139,13 @@ impl Provider {
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
-            .timeout(remaining)
-            .build()
-            .map_err(|_| ProviderError)?;
+            .timeout(remaining);
+        #[cfg(test)]
+        let client = match &self.runtime_certificate {
+            Some(certificate) => client.add_root_certificate(certificate.clone()),
+            None => client,
+        };
+        let client = client.build().map_err(|_| ProviderError)?;
         client
             .post(url)
             .header("X-aws-proxy-auth", token)
@@ -182,8 +186,7 @@ impl Provider {
         epoch: i64,
         attempt_id: i64,
         provider_id: &str,
-        retention: std::time::Duration,
-        maximum_jobs: u32,
+        retention: (std::time::Duration, u32),
     ) -> Result<bool, ProviderError> {
         let response = self.worker_request(
             owner,
@@ -202,8 +205,8 @@ impl Provider {
             intent_id,
             epoch,
             attempt_id,
-            retention,
-            maximum_jobs,
+            retention.0,
+            retention.1,
         )
         .map_err(|_| ProviderError)
     }
@@ -212,6 +215,7 @@ impl Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod lifecycle;
     #[test]
     fn https_proxy_status_preserves_authentication_and_rejects_oversized_reports() {
         use std::io::Write;

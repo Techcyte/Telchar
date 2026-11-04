@@ -228,6 +228,8 @@ pub struct Provider {
     account_id: Option<String>,
     authority: Option<std::sync::Arc<ProviderAuthority>>,
     timeout: Duration,
+    #[cfg(test)]
+    runtime_certificate: Option<reqwest::Certificate>,
     prices: std::sync::Arc<std::sync::Mutex<ComputeQuotes>>,
 }
 
@@ -322,6 +324,8 @@ impl Provider {
             account_id: None,
             authority: None,
             timeout,
+            #[cfg(test)]
+            runtime_certificate: None,
             prices: Default::default(),
         })
     }

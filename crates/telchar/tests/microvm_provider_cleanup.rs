@@ -466,7 +466,7 @@ fn maintenance_reset_uncertainty_closes_worker_and_preserves_exact_cleanup() {
         &observation("microvm-exact", "RUNNING"),
         "maintenance-reset-uncertain",
     );
-    assert_eq!(result.unwrap(), true);
+    assert!(result.unwrap());
     assert!(requests.contains("/microvms/microvm-exact"));
 }
 

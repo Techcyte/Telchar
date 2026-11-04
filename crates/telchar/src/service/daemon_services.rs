@@ -203,8 +203,7 @@ impl MicrovmCleanupService {
                         epoch,
                         attempt,
                         &cleanup.provider_id,
-                        duration,
-                        maximum_jobs,
+                        (duration, maximum_jobs),
                     );
                     if matches!(reset, Ok(true))
                         && !crate::persistence::pending_microvm_cleanup_identity(
