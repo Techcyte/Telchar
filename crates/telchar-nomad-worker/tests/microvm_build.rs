@@ -334,6 +334,7 @@ fn run_build() {
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
     );
     let sequential = case.starts_with("retained-");
+    let supervised = case == "supervised";
     let configured = case.starts_with("configured");
     let build_failure = matches!(
         case.as_str(),
@@ -488,7 +489,15 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
     } else {
         script
     };
-    let builder = if runtime.is_some() {
+    let builder = if case == "supervised" {
+        let result = Command::new("bash")
+            .args(["-c", "readlink -f \"$(command -v bash)\""])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        String::from_utf8(result.stdout).unwrap().trim().to_owned()
+    } else if runtime.is_some() {
         std::env::var("MICROVM_TEST_BUILDER").expect("packaged runtime builder")
     } else {
         "/bin/sh".to_owned()
@@ -706,9 +715,17 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
         std::thread::spawn(move || {
             let (provider, response) = provider_response(configured.then_some(binding_sender));
             let limits = Limits {
-                maximum_paths: 10,
-                maximum_nar_bytes: 1024 * 1024,
-                maximum_total_bytes: 2 * 1024 * 1024,
+                maximum_paths: if supervised { 100 } else { 10 },
+                maximum_nar_bytes: if supervised {
+                    64 * 1024 * 1024
+                } else {
+                    1024 * 1024
+                },
+                maximum_total_bytes: if supervised {
+                    128 * 1024 * 1024
+                } else {
+                    2 * 1024 * 1024
+                },
                 metadata_bytes: 8192,
                 chunk_bytes: 256 * 1024,
             };
@@ -927,16 +944,18 @@ chunk_bytes = 262144
             .arg("/bin/sh")
             .args([
                 "-c",
-                "exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$MICROVM_TEST_STORE_URI\"",
+                "if test -n \"$5\"; then exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"; else exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$MICROVM_TEST_STORE_URI\"; fi",
                 "worker",
             ])
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/microvm/job_worker.py"
-            ))
+            .arg(if case == "supervised" {
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/supervised_worker.py")
+            } else {
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/job_worker.py")
+            })
             .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
             .arg(&binding)
             .arg(&trust)
+            .arg(if case == "supervised" { builder.as_str() } else { "" })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
