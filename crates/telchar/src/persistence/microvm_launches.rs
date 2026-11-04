@@ -705,6 +705,7 @@ pub fn microvm_execution_active(
 pub fn microvm_session_backend(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
+    assignment_epoch: i64,
     credential_verifier: &[u8; 32],
 ) -> Result<Option<String>, MicrovmLaunchError> {
     let _database_operation =
@@ -712,11 +713,17 @@ pub fn microvm_session_backend(
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let row = client
         .query_opt(
-            "SELECT backend_name FROM microvm_launches WHERE intent_id = $1
-         AND credential_verifier = $2 AND phase IN ('dispatching', 'bound')
-         AND admission_cutoff > clock_timestamp() AND session_consumed_at IS NULL
-         AND reservation_released_at IS NULL",
-            &[&intent_id, &&credential_verifier[..]],
+            "SELECT l.backend_name FROM microvm_launches l
+         LEFT JOIN microvm_workers w USING(intent_id)
+         LEFT JOIN microvm_assignments s ON s.intent_id=w.intent_id AND s.assignment_epoch=w.assignment_epoch
+         WHERE l.intent_id=$1 AND l.reservation_released_at IS NULL
+           AND (($3::bigint=1 AND l.credential_verifier=$2 AND l.phase IN ('dispatching','bound')
+                 AND l.admission_cutoff > clock_timestamp() AND l.session_consumed_at IS NULL)
+             OR ($3::bigint>1 AND l.phase='bound' AND w.state='busy' AND w.assignment_epoch=$3
+                 AND s.credential_verifier=$2 AND s.admitted_at IS NULL AND s.completed_at IS NULL
+                 AND w.expires_at > clock_timestamp()
+                 AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation',true),'')::bigint,0)))",
+            &[&intent_id, &&credential_verifier[..], &assignment_epoch],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(row.map(|row| row.get(0)))

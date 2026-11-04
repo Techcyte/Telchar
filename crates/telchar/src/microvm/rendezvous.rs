@@ -167,6 +167,7 @@ impl Write for SessionStream {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Bootstrap {
+    assignment_epoch: i64,
     intent_id: String,
     provider_id: String,
     bearer: String,
@@ -442,7 +443,8 @@ fn accept_session_for(
         return Err(ProviderError);
     };
     let bootstrap: Bootstrap = serde_json::from_slice(&message).map_err(|_| ProviderError)?;
-    if bootstrap.intent_id.is_empty()
+    if bootstrap.assignment_epoch <= 0
+        || bootstrap.intent_id.is_empty()
         || bootstrap.intent_id.len() > 128
         || bootstrap.provider_id.is_empty()
         || bootstrap.provider_id.len() > 256
@@ -454,6 +456,7 @@ fn accept_session_for(
     let backend = crate::persistence::microvm_session_backend(
         owner.database(),
         &bootstrap.intent_id,
+        bootstrap.assignment_epoch,
         &verifier,
     )
     .map_err(|_| ProviderError)?
@@ -468,19 +471,35 @@ fn accept_session_for(
             return Err(ProviderError);
         }
         socket.get_ref().verify_waiting_peer()?;
-        if super::admit_session(
-            owner,
-            &bootstrap.intent_id,
-            &bootstrap.provider_id,
-            &bootstrap.bearer,
-        )? {
+        let admitted = if bootstrap.assignment_epoch == 1 {
+            super::admit_session(
+                owner,
+                &bootstrap.intent_id,
+                &bootstrap.provider_id,
+                &bootstrap.bearer,
+            )?
+        } else {
+            owner.verify().map_err(|_| ProviderError)?;
+            crate::persistence::admit_microvm_worker_session(
+                owner.database(),
+                &bootstrap.intent_id,
+                bootstrap.assignment_epoch,
+                &bootstrap.provider_id,
+                &verifier,
+            )
+            .map_err(|_| ProviderError)?
+        };
+        if admitted {
             socket.get_mut().deadline = session_deadline;
             observation.0 = None;
             return Ok(AdmittedConnection {
-                assignment_epoch: 1,
+                assignment_epoch: bootstrap.assignment_epoch,
                 intent_id: bootstrap.intent_id,
                 socket,
             });
+        }
+        if bootstrap.assignment_epoch != 1 {
+            return Err(ProviderError);
         }
         if !crate::persistence::microvm_session_awaits_binding(
             owner.database(),
@@ -500,7 +519,7 @@ fn accept_session_for(
                 socket.get_mut().deadline = session_deadline;
                 observation.0 = None;
                 return Ok(AdmittedConnection {
-                    assignment_epoch: 1,
+                    assignment_epoch: bootstrap.assignment_epoch,
                     intent_id: bootstrap.intent_id,
                     socket,
                 });

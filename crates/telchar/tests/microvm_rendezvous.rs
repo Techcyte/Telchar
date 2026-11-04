@@ -246,7 +246,7 @@ fn socket_capability_exchange(interruption: &str) {
                 response.headers()["sec-websocket-protocol"],
                 "telchar-microvm-v1"
             );
-            socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"intent_id": intent.intent_id, "provider_id": id, "bearer": bearer})).expect("bootstrap").into())).expect("send");
+            socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({"assignment_epoch": 1, "intent_id": intent.intent_id, "provider_id": id, "bearer": bearer})).expect("bootstrap").into())).expect("send");
             if accepted && matches!(interruption, "cancelled" | "expired" | "fenced") {
                 socket
                     .get_mut()
@@ -307,7 +307,7 @@ fn socket_capability_exchange(interruption: &str) {
                 std::thread::sleep(Duration::from_millis(100));
                 assert!(
                     telchar::persistence::bind_microvm_launch(
-                        fixture.url(),
+                        owner.database(),
                         &intent.intent_id,
                         "microvm-exact"
                     )
@@ -339,7 +339,7 @@ fn socket_capability_exchange(interruption: &str) {
                 );
                 assert!(
                     telchar::persistence::bind_microvm_launch(
-                        fixture.url(),
+                        owner.database(),
                         &intent.intent_id,
                         "microvm-exact"
                     )

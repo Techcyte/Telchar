@@ -204,7 +204,7 @@ pub fn connect(
         return Err(failed());
     }
     let bootstrap = serde_json::to_vec(&serde_json::json!({
-        "intent_id": intent_id, "provider_id": provider_id, "bearer": bearer,
+        "assignment_epoch": 1, "intent_id": intent_id, "provider_id": provider_id, "bearer": bearer,
     }))
     .map_err(|_| failed())?;
     if bootstrap.len() > 4096 {

@@ -69,7 +69,7 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
             serde_json::from_slice(&socket.read().unwrap().into_data()).unwrap();
         assert_eq!(
             bootstrap,
-            serde_json::json!({"intent_id":"intent", "provider_id":"microvm-exact", "bearer":bearer})
+            serde_json::json!({"assignment_epoch":1,"intent_id":"intent", "provider_id":"microvm-exact", "bearer":bearer})
         );
         assert!(
             socket.read().is_err(),

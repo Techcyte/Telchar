@@ -56,7 +56,7 @@ fn wss_connector_verifies_trust_hostname_and_separate_bootstrap() {
                 serde_json::from_slice(&message.into_data()).unwrap();
             assert_eq!(
                 bootstrap,
-                serde_json::json!({"intent_id":"intent", "provider_id":"microvm-exact", "bearer":"secret"})
+                serde_json::json!({"assignment_epoch":1,"intent_id":"intent", "provider_id":"microvm-exact", "bearer":"secret"})
             );
             Ok(())
         });

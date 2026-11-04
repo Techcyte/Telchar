@@ -10,8 +10,10 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
-        fixture.url(), Duration::from_secs(30),
-    ).unwrap();
+        fixture.url(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
     let database = owner.database().clone();
     let mut capabilities = Vec::new();
     for (index, hash) in ["a", "b", "c"].iter().enumerate() {
@@ -95,7 +97,7 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
             );
             let (mut socket, _) = tungstenite::client(request, stream).unwrap();
             socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({
-                "intent_id": format!("intent-{index}"), "provider_id": format!("microvm-{index}"),
+                "assignment_epoch": 1, "intent_id": format!("intent-{index}"), "provider_id": format!("microvm-{index}"),
                 "bearer": capabilities[index].bearer(),
             })).unwrap().into())).unwrap();
             assert_eq!(server.join().unwrap(), accepted);
@@ -117,6 +119,82 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
     }
     drop(first);
     drop(second);
+    let initial = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-handoff.drv";
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, initial)
+        .unwrap()
+        .unwrap()
+        .attempt_id;
+    telchar::persistence::collect_shared_build(&database, initial).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        &database,
+        initial,
+        &serde_json::json!({}),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    assert!(telchar::persistence::reset_microvm_worker(&database, "intent-0", 1, attempt).unwrap());
+    let next = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-handoff.drv";
+    telchar::persistence::claim_shared_build(
+        &database,
+        next,
+        &[4; 32],
+        "handoff",
+        telchar::backend::BackendKind::Local,
+        telchar::backend::BackendKind::Local.capabilities(),
+        None,
+        &["/nix/store/ffffffffffffffffffffffffffffffff-handoff"],
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(&database, next).unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(&database, next)
+        .unwrap()
+        .unwrap()
+        .attempt_id;
+    assert!(
+        telchar::persistence::claim_microvm_worker(
+            &database,
+            "intent-0",
+            1,
+            attempt,
+            Duration::from_secs(10)
+        )
+        .unwrap()
+    );
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    assert!(
+        telchar::persistence::authorize_microvm_assignment(
+            &database,
+            "intent-0",
+            2,
+            &capability.verifier()
+        )
+        .unwrap()
+    );
+    let waiting = sessions.register("intent-0", deadline).unwrap();
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            let (stream, _) = listener.accept().unwrap();
+            sessions
+                .accept(stream, &owner, deadline, pending.reserve().unwrap())
+                .unwrap();
+        });
+        let mut request = format!("ws://{address}/microvm")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            "telchar-microvm-v1".parse().unwrap(),
+        );
+        let (mut socket, _) =
+            tungstenite::client(request, TcpStream::connect(address).unwrap()).unwrap();
+        socket.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({
+            "assignment_epoch":2, "intent_id":"intent-0", "provider_id":"microvm-0", "bearer":capability.bearer()
+        })).unwrap().into())).unwrap();
+        server.join().unwrap();
+        let connection = waiting.receive_active(&owner).unwrap();
+        assert_eq!(connection.assignment_epoch(), 2);
+    });
+    drop(waiting);
     assert!(!fixture.connect().query_one("SELECT session_consumed_at IS NOT NULL FROM microvm_launches WHERE intent_id = 'intent-2'", &[]).unwrap().get::<_, bool>(0));
     let cancelled = sessions
         .register("intent-2", Instant::now() + Duration::from_secs(3))
