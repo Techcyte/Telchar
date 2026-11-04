@@ -103,6 +103,8 @@ class RetainedStoreTests(unittest.TestCase):
             daemon_environment["NIX_CONFIG"] += f"store = local?root={lower}\n"
             daemon_environment["TELCHAR_MICROVM_RETAINED_ROOT"] = str(lower)
             daemon_environment["TELCHAR_MICROVM_NIX"] = nix
+            daemon_environment["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"] = str(2**40)
+            daemon_environment["TELCHAR_MICROVM_MINIMUM_FREE_BYTES"] = "0"
             client = root / "worker.py"
             client.write_text(
                 "import os, socket, subprocess\n"
@@ -120,6 +122,14 @@ class RetainedStoreTests(unittest.TestCase):
                     [nix, 'store', 'ping', '--store',
                      'unix://' + str(root / 'prepare-daemon.sock')], 30))
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
+            denied = root / "denied-worker"
+            daemon_environment["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"] = "1"
+            with patch.dict(os.environ, daemon_environment):
+                self.assertFalse(execution.supervise(
+                    [nix, 'daemon'], [sys.executable, '-c', f'open({str(denied)!r}, "w").close()'],
+                    [nix, 'store', 'ping', '--store',
+                     'unix://' + str(root / 'prepare-daemon.sock')], 30))
+            self.assertFalse(denied.exists(), "capacity denial must precede worker launch")
             failed_job = root / "failed-job"
             with self.assertRaisesRegex(RuntimeError, "cancelled job"):
                 with module.job_daemon(lower, failed_job, nix, environment,

@@ -236,7 +236,11 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
         if time.monotonic() >= deadline or daemon.poll() is not None or cancelled.is_set():
             return False
         if os.environ.get("TELCHAR_MICROVM_RETAINED_ROOT"):
-            from retained_store import job_daemon, wait_prepared
+            from retained_store import check_capacity, job_daemon, wait_prepared
+            retained = os.environ["TELCHAR_MICROVM_RETAINED_ROOT"]
+            maximum_bytes = int(os.environ["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"])
+            minimum_free_bytes = int(os.environ["TELCHAR_MICROVM_MINIMUM_FREE_BYTES"])
+            check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
             import shutil
             import tempfile
             directory = tempfile.mkdtemp(prefix="telchar-job-")
@@ -256,7 +260,8 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
                     wait_prepared(channel, deadline)
                     stop(daemon)
                     daemon = None
-                    with job_daemon(os.environ["TELCHAR_MICROVM_RETAINED_ROOT"],
+                    check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
+                    with job_daemon(retained,
                                     os.path.join(directory, "store"),
                                     os.environ["TELCHAR_MICROVM_NIX"], environment, deadline) as store:
                         try:

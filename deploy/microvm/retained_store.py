@@ -10,6 +10,30 @@ import time
 from urllib.parse import quote
 
 
+def check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline):
+    if maximum_bytes <= 0 or minimum_free_bytes < 0:
+        raise ValueError("invalid retained store bounds")
+    if time.monotonic() >= deadline:
+        raise TimeoutError("retained store scan expired")
+    retained = Path(retained)
+    if shutil.disk_usage(retained).free < minimum_free_bytes:
+        raise OSError("retained store capacity exceeded")
+    allocated = 0
+    pending = [retained / "nix/store"]
+    while pending:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("retained store scan expired")
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("retained store scan expired")
+                allocated += entry.stat(follow_symlinks=False).st_blocks * 512
+                if allocated > maximum_bytes:
+                    raise OSError("retained store capacity exceeded")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+
+
 def mount(source, target, flags=0, filesystem=None, options=None):
     libc = ctypes.CDLL(None, use_errno=True)
     operation = libc.mount
