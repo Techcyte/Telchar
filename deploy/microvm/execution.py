@@ -66,8 +66,19 @@ class ExecutionState:
         binding = {key: item for key, item in value.items() if key != "version"}
         binding["provider_id"] = identity
         with self.lock:
+            if self.binding == binding:
+                return True
+            if self.cancelled.is_set() or self.result == "failed":
+                return False
             if self.binding is not None:
-                return self.binding == binding
+                if (self.result != "succeeded"
+                        or any(binding[key] != self.binding[key] for key in
+                               ("provider_id", "intent_id", "endpoint", "address"))
+                        or binding["assignment_epoch"] != self.binding["assignment_epoch"] + 1
+                        or binding["bearer"] == self.binding["bearer"]):
+                    return False
+            elif binding["assignment_epoch"] != 1:
+                return False
             if (not os.path.isfile(self.trust) or not os.access(self.trust, os.R_OK)
                     or not 0 < os.path.getsize(self.trust) <= 1048576):
                 raise ValueError("runtime trust unavailable")
@@ -86,7 +97,11 @@ class ExecutionState:
     def _execute(self, lifetime):
         result = supervise(self.daemon_command, self.worker_command, self.ready_command, lifetime, self.cancelled)
         with self.lock:
-            self.result = "succeeded" if result else "failed"
+            try:
+                os.unlink(self.destination)
+            except OSError:
+                result = False
+            self.result = "succeeded" if result and not self.cancelled.is_set() else "failed"
 
     def join(self):
         if self.thread is not None:

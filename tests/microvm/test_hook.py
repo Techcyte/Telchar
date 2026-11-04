@@ -41,13 +41,19 @@ class HookTests(unittest.TestCase):
             state.join()
             self.assertEqual(state.status(), "succeeded")
             self.assertEqual(marker.read_text(), "run\n")
-            stored = json.loads(binding.read_text())
-            self.assertEqual(stored, {key: value for key, value in payload.items() if key != "version"} | {"provider_id": "microvm-exact"})
-            self.assertEqual(binding.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(binding.exists(), "successful reset clears assignment credential")
+            next_payload = {**payload, "assignment_epoch": 2, "bearer": "b" * 43}
+            next_hook = {**hook, "runHookPayload": json.dumps(next_payload)}
+            self.assertTrue(state.start_hook(next_hook))
+            state.join()
+            self.assertEqual(state.status(), "succeeded")
+            self.assertEqual(marker.read_text(), "run\nrun\n")
+            self.assertFalse(binding.exists())
+            self.assertFalse(state.start_hook(hook), "stale assignment cannot relaunch")
             payload["intent_id"] = "other"
             self.assertFalse(state.start_hook({**hook, "runHookPayload": json.dumps(payload)}))
             self.assertFalse(state.start_hook({**hook, "microvmId": "microvm-other"}))
-            self.assertEqual(marker.read_text(), "run\n")
+            self.assertEqual(marker.read_text(), "run\nrun\n")
 
     def test_termination_cancels_active_execution_without_relaunch(self):
         with tempfile.TemporaryDirectory() as directory:
