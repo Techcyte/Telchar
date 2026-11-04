@@ -42,6 +42,10 @@ class HookTests(unittest.TestCase):
             self.assertEqual(state.status(), "succeeded")
             self.assertEqual(marker.read_text(), "run\n")
             self.assertFalse(binding.exists(), "successful reset clears assignment credential")
+            report = state.report()
+            self.assertTrue(report["reset_complete"])
+            self.assertEqual(report["assignment_epoch"], 1)
+            self.assertNotIn("bearer", report)
             next_payload = {**payload, "assignment_epoch": 2, "bearer": "b" * 43}
             next_hook = {**hook, "runHookPayload": json.dumps(next_payload)}
             self.assertTrue(state.start_hook(next_hook))
@@ -152,7 +156,12 @@ class HookTests(unittest.TestCase):
                 payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                            "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 5}
                 hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
-                self.assertEqual(request("run", json.dumps(hook))[0], 200)
+                code, report = request("run", json.dumps(hook))
+                self.assertEqual(code, 200)
+                self.assertEqual(report["assignment_epoch"], 1)
+                self.assertEqual(report["intent_id"], "intent")
+                self.assertEqual(report["provider_id"], "exact")
+                self.assertFalse(report["reset_complete"])
                 self.assertEqual(request("run", json.dumps(hook))[0], 200)
                 self.assertEqual(request("run", json.dumps({**hook, "microvmId": "foreign"}))[0], 409)
                 while not marker.exists() and time.monotonic() < deadline:

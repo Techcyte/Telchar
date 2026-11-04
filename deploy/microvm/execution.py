@@ -32,6 +32,14 @@ class ExecutionState:
         with self.lock:
             return self.result
 
+    def report(self):
+        with self.lock:
+            report = {"status": self.result, "reset_complete": self.result == "succeeded"}
+            if self.binding is not None:
+                report.update({key: self.binding[key] for key in
+                               ("intent_id", "provider_id", "assignment_epoch")})
+            return report
+
     def start_hook(self, hook):
         if not isinstance(hook, dict):
             raise ValueError("invalid execution hook")
