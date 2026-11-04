@@ -23,6 +23,8 @@ let
     set -eu
     umask 077
     export TELCHAR_MICROVM_RETAINED_ROOT=/
+    export TELCHAR_MICROVM_MAXIMUM_STORE_BYTES=''${TELCHAR_MICROVM_MAXIMUM_STORE_BYTES:-8589934592}
+    export TELCHAR_MICROVM_MINIMUM_FREE_BYTES=''${TELCHAR_MICROVM_MINIMUM_FREE_BYTES:-1073741824}
     export TELCHAR_MICROVM_NIX=${pkgs.nix}/bin/nix
     export SSL_CERT_FILE="''${SSL_CERT_FILE:-${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt}"
     mkdir -p /nix/var/nix/daemon-socket /run/telchar-microvm /tmp
