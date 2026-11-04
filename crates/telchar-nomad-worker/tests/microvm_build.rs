@@ -267,6 +267,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
         }
         for case in [
             "single",
+            "supervised",
             "multiple",
             "cancelled",
             "fenced",

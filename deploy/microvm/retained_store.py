@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sqlite3
 import subprocess
 import time
 from urllib.parse import quote
@@ -59,6 +60,10 @@ def unmount(target):
 @contextlib.contextmanager
 def job_store(retained, directory):
     retained = Path(retained).resolve(strict=True)
+    with contextlib.closing(sqlite3.connect(retained / "nix/var/nix/db/db.sqlite")) as database:
+        busy, _, _ = database.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy:
+            raise RuntimeError("retained metadata checkpoint is busy")
     directory = Path(directory)
     directory.mkdir(mode=0o700)
     mounted = []
