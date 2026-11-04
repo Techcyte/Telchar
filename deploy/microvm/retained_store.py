@@ -1,0 +1,58 @@
+"""Private job store over an immutable retained local input generation."""
+import contextlib
+import ctypes
+import os
+from pathlib import Path
+import shutil
+from urllib.parse import quote
+
+
+def mount(source, target, flags=0, filesystem=None, options=None):
+    libc = ctypes.CDLL(None, use_errno=True)
+    operation = libc.mount
+    operation.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                          ctypes.c_ulong, ctypes.c_void_p]
+    result = operation(os.fsencode(source) if source is not None else None,
+                       os.fsencode(target), os.fsencode(filesystem) if filesystem else None,
+                       flags, os.fsencode(options) if options else None)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
+
+
+def unmount(target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    operation = libc.umount2
+    operation.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    if operation(os.fsencode(target), 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
+
+
+@contextlib.contextmanager
+def job_store(retained, directory):
+    retained = Path(retained).resolve(strict=True)
+    directory = Path(directory)
+    directory.mkdir(mode=0o700)
+    mounted = []
+    try:
+        lower = directory / "lower"
+        lower.mkdir()
+        mount(retained, lower, flags=4096)
+        mounted.append(lower)
+        mount(None, lower, flags=4096 | 32 | 1)
+        upper = directory / "upper"
+        work = directory / "work"
+        merged = directory / "merged"
+        for path in (upper, work, merged / "nix/store"):
+            path.mkdir(parents=True)
+        mount("overlay", merged / "nix/store", filesystem="overlay",
+              options=f"lowerdir={lower}/nix/store,upperdir={upper},workdir={work}")
+        mounted.append(merged / "nix/store")
+        lower_store = quote(f"local?root={lower}&read-only=true", safe="")
+        yield f"local-overlay://?root={merged}&lower-store={lower_store}&upper-layer={upper}"
+    finally:
+        # Preserve failed teardown state rather than deleting through an active mount.
+        for path in reversed(mounted):
+            unmount(path)
+        shutil.rmtree(directory)
