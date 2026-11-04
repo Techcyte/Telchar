@@ -18,6 +18,8 @@ class StoreCapacityTests(unittest.TestCase):
             root = Path(directory)
             inputs = root / "nix/store"
             inputs.mkdir(parents=True)
+            metadata = root / "nix/var/nix/db"
+            metadata.mkdir(parents=True)
             data = inputs / "input"
             data.write_bytes(b"x" * 8192)
             os.symlink("/", inputs / "external")
@@ -27,6 +29,28 @@ class StoreCapacityTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "retained store capacity"):
                 STORE.check_capacity(root, 16384, 2**63, time.monotonic() + 5)
             self.assertEqual(data.read_bytes(), b"x" * 8192)
+
+    def test_retained_metadata_consumes_capacity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "nix/store").mkdir(parents=True)
+            metadata = root / "nix/var/nix/db"
+            metadata.mkdir(parents=True)
+            database = metadata / "db.sqlite"
+            contents = os.urandom(32768)
+            with database.open("wb") as output:
+                output.write(contents)
+                output.flush()
+                os.fsync(output.fileno())
+            deadline = time.monotonic() + 5
+            while database.stat().st_blocks == 0 and time.monotonic() < deadline:
+                time.sleep(.05)
+            allocated = database.stat().st_blocks * 512
+            self.assertGreater(allocated, 0)
+            with self.assertRaisesRegex(OSError, "retained store capacity"):
+                STORE.check_capacity(root, max(1, allocated // 2), 0, time.monotonic() + 5)
+            STORE.check_capacity(root, allocated + 1048576, 0, time.monotonic() + 5)
+            self.assertEqual(database.read_bytes(), contents)
 
     def test_capacity_scan_obeys_deadline_and_rejects_invalid_bounds(self):
         with tempfile.TemporaryDirectory() as directory:

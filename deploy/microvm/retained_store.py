@@ -19,7 +19,7 @@ def check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline):
     if shutil.disk_usage(retained).free < minimum_free_bytes:
         raise OSError("retained store capacity exceeded")
     allocated = 0
-    pending = [retained / "nix/store"]
+    pending = [retained / "nix/store", retained / "nix/var/nix"]
     while pending:
         if time.monotonic() >= deadline:
             raise TimeoutError("retained store scan expired")
