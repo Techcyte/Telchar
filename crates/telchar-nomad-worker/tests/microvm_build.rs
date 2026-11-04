@@ -204,6 +204,10 @@ fn provider_client(
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        if let Ok(case) = std::env::var("MICROVM_TEST_CASE") {
+            run_isolated_build(&case);
+            return;
+        }
         if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
             run_isolated_build("configured-daemon-client-derivation");
             return;
@@ -613,7 +617,7 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
         )
         .unwrap();
         assert!(
-            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+            telchar::persistence::microvm_session_request(owner.database(), "build-intent", 1)
                 .unwrap()
                 .is_none()
         );
@@ -779,7 +783,7 @@ chunk_bytes = 262144
     } else {
         serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
-            "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 30
+            "assignment_epoch":1, "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 30
         })
     };
     if case == "configured-daemon-crash" {
@@ -863,9 +867,13 @@ chunk_bytes = 262144
             .arg("/bin/sh")
             .args([
                 "-c",
-                "exec \"$1\" \"$2\" \"$3\" \"$MICROVM_TEST_STORE_URI\"",
+                "exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$MICROVM_TEST_STORE_URI\"",
                 "worker",
             ])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/microvm/job_worker.py"
+            ))
             .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
             .arg(&binding)
             .arg(&trust)
@@ -999,7 +1007,16 @@ chunk_bytes = 262144
     let mut requested_nar_bytes = 0u64;
     let mut sandbox_build_observed = false;
     loop {
-        let message = socket.read().unwrap();
+        let message = match socket.read() {
+            Ok(message) => message,
+            Err(error) => {
+                let output = worker.wait_with_output().unwrap();
+                panic!(
+                    "worker disconnected: {error}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
         let frame = read_frame(
             &mut message.clone().into_data().as_ref(),
             ProtocolLimits::new(8192, 256 * 1024),
@@ -1223,7 +1240,7 @@ chunk_bytes = 262144
         "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",
         &[&intent_id],
     ).unwrap();
-    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(row.get::<_, String>(0), "bound");
     assert_eq!(row.get::<_, String>(1), "microvm-build");
     assert!(row.get::<_, bool>(2));
     assert!(
