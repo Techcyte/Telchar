@@ -182,6 +182,56 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
                 assert!(incoming.starts_with("POST /aws/lambda-microvms/runtime/v1/run "));
                 let payload: serde_json::Value =
                     serde_json::from_str(incoming.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+                let mut validation = std::process::Command::new("python3")
+                    .env("PYTHONDONTWRITEBYTECODE", "1")
+                    .arg("-c")
+                    .arg(
+                        r#"import json,pathlib,sys,tempfile
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+from execution import ExecutionState
+hook=json.load(sys.stdin)
+value=json.loads(hook['runHookPayload'])
+with tempfile.TemporaryDirectory() as directory:
+    root=pathlib.Path(directory)
+    trust=root/'trust'
+    trust.write_text('fixture')
+    state=ExecutionState([],[],[],root/'binding',trust)
+    prior=dict(value)
+    prior['assignment_epoch']=1
+    prior['bearer']='A'*43
+    with patch('execution.supervise',return_value=True):
+        assert state.start_hook({'microvmId':hook['microvmId'],'runHookPayload':json.dumps(prior)})
+        state.join()
+        assert state.start_hook(hook)
+        state.join()
+    assert state.report()['assignment_epoch']==2
+    assert state.report()['reset_complete']
+"#,
+                    )
+                    .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/microvm"))
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                validation
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(serde_json::to_string(&payload).unwrap().as_bytes())
+                    .unwrap();
+                let checked = validation.wait_with_output().unwrap();
+                assert!(
+                    checked.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&checked.stderr)
+                );
+                assert!(checked.stdout.is_empty());
+                assert!(checked.stderr.is_empty());
+                assert_eq!(payload["microvmId"], "microvm-exact");
+                let payload: serde_json::Value =
+                    serde_json::from_str(payload["runHookPayload"].as_str().unwrap()).unwrap();
                 assert_eq!(payload["assignment_epoch"], 2);
                 assert_eq!(payload["intent_id"], "runtime-intent");
                 reply(&mut stream, 200, "{}");

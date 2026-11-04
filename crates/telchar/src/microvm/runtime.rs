@@ -162,8 +162,7 @@ impl Provider {
         provider_id: &str,
         payload: &str,
     ) -> Result<(), ProviderError> {
-        let payload: serde_json::Value =
-            serde_json::from_str(payload).map_err(|_| ProviderError)?;
+        let payload = serde_json::json!({"microvmId":provider_id,"runHookPayload":payload});
         let response = self.worker_request(
             owner,
             intent_id,

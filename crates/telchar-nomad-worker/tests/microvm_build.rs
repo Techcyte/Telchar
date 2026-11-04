@@ -232,8 +232,27 @@ fn dedicated_worker_builds_and_returns_registered_output() {
                 String::from_utf8_lossy(&result.stderr)
             );
         }
-        assert!(!retained.join("nix/store/ffffffffffffffffffffffffffffffff-dedicated-output").exists());
-        assert!(!retained.join("nix/store/99999999999999999999999999999999-dedicated-output").exists());
+        assert!(
+            !retained
+                .join("nix/store/ffffffffffffffffffffffffffffffff-dedicated-output")
+                .exists()
+        );
+        assert!(
+            !retained
+                .join("nix/store/99999999999999999999999999999999-dedicated-output")
+                .exists()
+        );
+        let writable = Command::new("find")
+            .arg(&retained)
+            .args(["-type", "d", "-exec", "chmod", "u+w", "{}", "+"])
+            .output()
+            .unwrap();
+        assert!(
+            writable.status.success(),
+            "{}",
+            String::from_utf8_lossy(&writable.stderr)
+        );
+        assert!(writable.stderr.is_empty());
         std::fs::remove_dir_all(&retained).unwrap();
         return;
     }
