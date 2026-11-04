@@ -613,7 +613,10 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
     fixture
         .connect()
         .batch_execute(
-            "DROP TABLE microvm_quota_reservations;
+            "DROP TRIGGER microvm_worker_lifecycle ON microvm_launches;
+         DROP FUNCTION track_microvm_worker();
+         DROP TABLE microvm_workers;
+         DROP TABLE microvm_quota_reservations;
          DROP INDEX microvm_launches_account_region_created_idx;
          DROP TABLE microvm_resolutions;
          DROP FUNCTION preserve_microvm_resolution();
@@ -625,7 +628,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        5
+        6
     );
     fixture.restart();
     let row = fixture.connect().query_one(
