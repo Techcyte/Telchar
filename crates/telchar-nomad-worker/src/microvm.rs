@@ -183,6 +183,7 @@ impl Drop for SessionDeadline {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn connect(
     endpoint: &str,
     address: SocketAddr,
@@ -191,10 +192,12 @@ pub fn connect(
     intent_id: &str,
     provider_id: &str,
     bearer: &str,
+    assignment_epoch: i64,
 ) -> io::Result<super::WorkerSocket> {
     let failed = || io::Error::other("MicroVM bootstrap connection failed");
     let url = url::Url::parse(endpoint).map_err(|_| failed())?;
-    if url.scheme() != "wss"
+    if assignment_epoch <= 0
+        || url.scheme() != "wss"
         || !url.username().is_empty()
         || url.password().is_some()
         || url.path() != "/microvm"
@@ -204,7 +207,7 @@ pub fn connect(
         return Err(failed());
     }
     let bootstrap = serde_json::to_vec(&serde_json::json!({
-        "assignment_epoch": 1, "intent_id": intent_id, "provider_id": provider_id, "bearer": bearer,
+        "assignment_epoch": assignment_epoch, "intent_id": intent_id, "provider_id": provider_id, "bearer": bearer,
     }))
     .map_err(|_| failed())?;
     if bootstrap.len() > 4096 {

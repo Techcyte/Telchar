@@ -47,19 +47,19 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
     assert!(
         telchar::persistence::dispatch_microvm_launch(database.url(), &intent.intent_id).unwrap()
     );
-    assert!(
-        telchar::persistence::bind_microvm_launch(
-            database.url(),
-            &intent.intent_id,
-            "microvm-exact"
-        )
-        .unwrap()
-    );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         database.url(),
         Duration::from_secs(30),
     )
     .unwrap();
+    assert!(
+        telchar::persistence::bind_microvm_launch(
+            owner.database(),
+            &intent.intent_id,
+            "microvm-exact"
+        )
+        .unwrap()
+    );
     let pending = telchar::microvm::rendezvous::PendingConnections::new(2, 1).unwrap();
     for (expected_intent, id, accepted) in [
         ("tls-intent", "microvm-wrong", false),
@@ -171,6 +171,7 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
                 &intent.intent_id,
                 id,
                 capability.bearer(),
+                1,
             )
             .unwrap();
             let received = socket.read();

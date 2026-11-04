@@ -44,7 +44,7 @@ class ExecutionState:
             value = json.loads(payload)
         except json.JSONDecodeError as error:
             raise ValueError("invalid execution payload") from error
-        fields = {"version", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds"}
+        fields = {"version", "assignment_epoch", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds"}
         if not isinstance(value, dict) or set(value) != fields or type(value["version"]) is not int or value["version"] != 1:
             raise ValueError("invalid execution schema")
         if any(not isinstance(value[key], str) for key in ("endpoint", "address", "intent_id", "bearer")):
@@ -58,7 +58,8 @@ class ExecutionState:
         ipaddress.ip_address(address.hostname)
         if address.port is None or not 1 <= address.port <= 65535 or address.path or address.query or address.fragment or address.username is not None:
             raise ValueError("invalid execution address")
-        if (not 1 <= len(value["intent_id"]) <= 128 or len(value["bearer"]) != 43
+        if (type(value["assignment_epoch"]) is not int or value["assignment_epoch"] <= 0
+                or not 1 <= len(value["intent_id"]) <= 128 or len(value["bearer"]) != 43
                 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value["bearer"])
                 or type(value["lifetime_seconds"]) is not int or not 1 <= value["lifetime_seconds"] <= 28800):
             raise ValueError("invalid execution limits")

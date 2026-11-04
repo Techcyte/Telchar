@@ -67,6 +67,7 @@ impl Capability {
         }
         let payload = serde_json::to_string(&serde_json::json!({
             "version": 1,
+            "assignment_epoch": 1,
             "endpoint": endpoint,
             "address": address.to_string(),
             "intent_id": intent_id,

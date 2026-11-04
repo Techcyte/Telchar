@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as directory:
         serde_json::json!({
             "endpoint": "wss://gateway.example/microvm", "address": "127.0.0.1:443",
             "intent_id": "intent-exact", "provider_id": "provider-exact",
-            "bearer": capability.bearer(), "lifetime_seconds": 5
+            "assignment_epoch": 1, "bearer": capability.bearer(), "lifetime_seconds": 5
         })
     );
 }

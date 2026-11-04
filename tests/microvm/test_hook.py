@@ -33,7 +33,7 @@ class HookTests(unittest.TestCase):
             state = execution.ExecutionState(daemon, worker, ready, binding, TRUST)
             self.assertFalse(binding.exists())
             self.assertFalse(marker.exists())
-            payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+            payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                        "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
             hook = {"microvmId": "microvm-exact", "runHookPayload": json.dumps(payload)}
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -57,7 +57,7 @@ class HookTests(unittest.TestCase):
                 [sys.executable, "-c", "import time; time.sleep(30)"],
                 [sys.executable, "-c", f"import pathlib,time; pathlib.Path({str(marker)!r}).touch(); time.sleep(30)"],
                 [sys.executable, "-c", "raise SystemExit(0)"], binding, TRUST)
-            payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+            payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                        "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 10}
             hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
             self.assertTrue(state.start_hook(hook))
@@ -143,7 +143,7 @@ class HookTests(unittest.TestCase):
                             self.fail("runtime process did not start HTTP listener")
                         time.sleep(.02)
                 self.assertFalse(marker.exists())
-                payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+                payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                            "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 5}
                 hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
                 self.assertEqual(request("run", json.dumps(hook))[0], 200)
@@ -185,7 +185,7 @@ class HookTests(unittest.TestCase):
             binding = Path(directory) / "execution.json"
             binding.write_text("operator-owned")
             state = execution.ExecutionState([], [], [], binding, TRUST)
-            payload = {"version": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+            payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
                        "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
             with self.assertRaises(FileExistsError):
                 state.start_hook({"microvmId": "exact", "runHookPayload": json.dumps(payload)})

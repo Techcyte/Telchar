@@ -10,6 +10,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Execution {
+    assignment_epoch: i64,
     endpoint: String,
     address: std::net::SocketAddr,
     intent_id: String,
@@ -102,7 +103,8 @@ fn run() -> io::Result<()> {
         return Err(invalid());
     }
     let execution: Execution = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    if !(1..=28800).contains(&execution.lifetime_seconds)
+    if execution.assignment_epoch <= 0
+        || !(1..=28800).contains(&execution.lifetime_seconds)
         || execution.intent_id.is_empty()
         || execution.intent_id.len() > 128
         || execution.provider_id.is_empty()
@@ -133,6 +135,7 @@ fn run() -> io::Result<()> {
             &execution.intent_id,
             &execution.provider_id,
             &execution.bearer,
+            execution.assignment_epoch,
         )
     })?;
     let mut session = phase("manifest", deadline, || {
