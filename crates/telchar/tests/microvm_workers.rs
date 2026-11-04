@@ -5,6 +5,15 @@ use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
+    worker_lifecycle(true);
+}
+
+#[test]
+fn zero_retention_reset_never_publishes_claimable_worker() {
+    worker_lifecycle(false);
+}
+
+fn worker_lifecycle(retain: bool) {
     let fixture = PostgresFixture::start();
     db::migrate(fixture.url()).unwrap();
     let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-worker.drv";
@@ -92,6 +101,32 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         Some((1, attempt))
     );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, attempt).unwrap());
+    if !retain {
+        assert!(
+            db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt)
+                .unwrap()
+        );
+        assert!(
+            !db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt)
+                .unwrap()
+        );
+        assert!(
+            !db::claim_microvm_worker(
+                fixture.url(),
+                &intent.intent_id,
+                1,
+                attempt,
+                Duration::from_secs(10)
+            )
+            .unwrap()
+        );
+        let row = client.query_one("SELECT w.state,w.attempt_id IS NULL,s.completed_at IS NOT NULL,l.reservation_released_at IS NULL FROM microvm_workers w JOIN microvm_assignments s USING(intent_id,assignment_epoch) JOIN microvm_launches l USING(intent_id) WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "draining");
+        assert!(row.get::<_, bool>(1));
+        assert!(row.get::<_, bool>(2));
+        assert!(row.get::<_, bool>(3));
+        return;
+    }
     assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
     let assignment = client.query_one("SELECT attempt_id, admitted_at IS NOT NULL, completed_at IS NOT NULL FROM microvm_assignments WHERE intent_id=$1 AND assignment_epoch=1", &[&intent.intent_id]).unwrap();
