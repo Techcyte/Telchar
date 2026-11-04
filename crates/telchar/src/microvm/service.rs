@@ -97,7 +97,12 @@ impl Service {
         let mut cleanups = std::collections::BTreeMap::new();
         let retention = deployments
             .iter()
-            .map(|(config, _)| (config.fingerprint(), config.idle_retention()))
+            .map(|(config, _)| {
+                (
+                    config.fingerprint(),
+                    (config.idle_retention(), config.maximum_jobs_per_worker()),
+                )
+            })
             .collect::<std::collections::BTreeMap<_, _>>();
         for (config, provider) in deployments {
             let identity = (config.account_id().to_owned(), config.region().to_owned());

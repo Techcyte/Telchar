@@ -20,6 +20,22 @@ fn idle_retention_is_bounded_by_worker_lifetime() {
 }
 
 #[test]
+fn worker_job_limit_rejects_unbounded_configuration() {
+    let raw = include_str!("../../../../tests/fixtures/microvm.toml");
+    assert_eq!(
+        MicrovmBackendConfig::parse(raw)
+            .unwrap()
+            .maximum_jobs_per_worker(),
+        100
+    );
+    for limit in [0, 1_000_001] {
+        let mut deployment: Deployment = toml::from_str(raw).unwrap();
+        deployment.maximum_jobs_per_worker = limit;
+        assert!(MicrovmBackendConfig::validate(deployment).is_err());
+    }
+}
+
+#[test]
 fn launches_resolve_current_transport_without_changing_tls_identity() {
     let config =
         MicrovmBackendConfig::parse(include_str!("../../../../tests/fixtures/microvm.toml"))

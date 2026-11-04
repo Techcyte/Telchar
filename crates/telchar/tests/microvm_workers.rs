@@ -5,15 +5,20 @@ use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
-    worker_lifecycle(true);
+    worker_lifecycle(true, 100);
 }
 
 #[test]
 fn zero_retention_reset_never_publishes_claimable_worker() {
-    worker_lifecycle(false);
+    worker_lifecycle(false, 100);
 }
 
-fn worker_lifecycle(retain: bool) {
+#[test]
+fn job_limit_reset_never_publishes_claimable_worker() {
+    worker_lifecycle(true, 1);
+}
+
+fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
     let fixture = PostgresFixture::start();
     db::migrate(fixture.url()).unwrap();
     let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-worker.drv";
@@ -82,7 +87,17 @@ fn worker_lifecycle(retain: bool) {
         !db::admit_microvm_assignment(fixture.url(), &intent.intent_id, 1, &capability.verifier())
             .unwrap()
     );
-    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
+    assert!(
+        !db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     assert!(
         db::completed_microvm_worker(fixture.url(), &intent.intent_id)
             .unwrap()
@@ -100,15 +115,44 @@ fn worker_lifecycle(retain: bool) {
         db::completed_microvm_worker(fixture.url(), &intent.intent_id).unwrap(),
         Some((1, attempt))
     );
-    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, attempt).unwrap());
-    if !retain {
+    assert!(
+        !db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            2,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
+    if !retain || maximum_jobs == 1 {
+        let retention = if retain {
+            Duration::from_secs(60)
+        } else {
+            Duration::ZERO
+        };
         assert!(
-            db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt)
-                .unwrap()
+            db::reset_microvm_worker_until(
+                fixture.url(),
+                &intent.intent_id,
+                1,
+                attempt,
+                retention,
+                maximum_jobs
+            )
+            .unwrap()
         );
         assert!(
-            !db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt)
-                .unwrap()
+            !db::reset_microvm_worker_until(
+                fixture.url(),
+                &intent.intent_id,
+                1,
+                attempt,
+                retention,
+                maximum_jobs
+            )
+            .unwrap()
         );
         assert!(
             !db::claim_microvm_worker(
@@ -127,8 +171,28 @@ fn worker_lifecycle(retain: bool) {
         assert!(row.get::<_, bool>(3));
         return;
     }
-    assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
-    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
+    assert!(
+        db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
+    assert!(
+        !db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     let assignment = client.query_one("SELECT attempt_id, admitted_at IS NOT NULL, completed_at IS NOT NULL FROM microvm_assignments WHERE intent_id=$1 AND assignment_epoch=1", &[&intent.intent_id]).unwrap();
     assert_eq!(assignment.get::<_, i64>(0), attempt);
     assert!(assignment.get::<_, bool>(1));
@@ -182,7 +246,17 @@ fn worker_lifecycle(retain: bool) {
             .unwrap(),
         "stale cleanup candidate cannot terminate current assignment"
     );
-    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
+    assert!(
+        !db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            next,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     db::collect_shared_build(fixture.url(), second).unwrap();
     db::complete_shared_build_success(
         fixture.url(),
@@ -196,7 +270,17 @@ fn worker_lifecycle(retain: bool) {
             .unwrap(),
         "terminal current assignment remains eligible for maintenance"
     );
-    assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, next).unwrap());
+    assert!(
+        db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            2,
+            next,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     let third = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-worker.drv";
     db::claim_shared_build(
         fixture.url(),
@@ -265,7 +349,15 @@ fn worker_lifecycle(retain: bool) {
         )
         .unwrap();
         assert!(
-            db::reset_and_retire_microvm_worker(fixture.url(), &intent.intent_id, 3, next).unwrap()
+            db::reset_microvm_worker_until(
+                fixture.url(),
+                &intent.intent_id,
+                3,
+                next,
+                Duration::ZERO,
+                100
+            )
+            .unwrap()
         );
         assert!(
             !db::claim_microvm_worker(
@@ -278,9 +370,29 @@ fn worker_lifecycle(retain: bool) {
             .unwrap()
         );
         assert!(!db::retire_microvm_worker(fixture.url(), &intent.intent_id, 1).unwrap());
-        assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
+        assert!(
+            !db::reset_microvm_worker_until(
+                fixture.url(),
+                &intent.intent_id,
+                1,
+                next,
+                Duration::from_secs(60),
+                100
+            )
+            .unwrap()
+        );
     }
-    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
+    assert!(
+        !db::reset_microvm_worker_until(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(60),

@@ -132,7 +132,17 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
         Duration::from_secs(60),
     )
     .unwrap();
-    assert!(telchar::persistence::reset_microvm_worker(&database, "intent-0", 1, attempt).unwrap());
+    assert!(
+        telchar::persistence::reset_microvm_worker_until(
+            &database,
+            "intent-0",
+            1,
+            attempt,
+            Duration::from_secs(60),
+            100
+        )
+        .unwrap()
+    );
     let next = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-handoff.drv";
     telchar::persistence::claim_shared_build(
         &database,

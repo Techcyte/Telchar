@@ -142,7 +142,7 @@ impl MicrovmCleanupService {
         region: String,
         interval: Duration,
         batch_size: usize,
-        retention: std::collections::BTreeMap<[u8; 32], Duration>,
+        retention: std::collections::BTreeMap<[u8; 32], (Duration, u32)>,
     ) -> io::Result<Self> {
         if account_id.is_empty() || region.is_empty() || !(1..=1000).contains(&batch_size) {
             return Err(io::Error::new(
@@ -193,10 +193,10 @@ impl MicrovmCleanupService {
                         )
                         .map_err(io::Error::other)?;
                     let digest: Vec<u8> = row.get(0);
-                    let duration = <[u8; 32]>::try_from(digest.as_slice())
+                    let (duration, maximum_jobs) = <[u8; 32]>::try_from(digest.as_slice())
                         .ok()
                         .and_then(|key| retention.get(&key).copied())
-                        .unwrap_or(Duration::ZERO);
+                        .unwrap_or((Duration::ZERO, 1));
                     let reset = provider.observe_worker_reset(
                         &owner,
                         &cleanup.intent_id,
@@ -204,8 +204,16 @@ impl MicrovmCleanupService {
                         attempt,
                         &cleanup.provider_id,
                         duration,
+                        maximum_jobs,
                     );
-                    if matches!(reset, Ok(true)) && !duration.is_zero() {
+                    if matches!(reset, Ok(true))
+                        && !crate::persistence::pending_microvm_cleanup_identity(
+                            owner.database(),
+                            &cleanup.intent_id,
+                            &cleanup.provider_id,
+                        )
+                        .map_err(io::Error::other)?
+                    {
                         continue;
                     }
                     crate::persistence::cancel_microvm_launch(owner.database(), &cleanup.intent_id)

@@ -1,47 +1,25 @@
 use super::*;
 
 /// Record trusted runtime teardown acknowledgement for the exact assignment.
-pub fn reset_microvm_worker(
-    database: &(impl DatabaseSource + ?Sized),
-    intent_id: &str,
-    epoch: i64,
-    attempt_id: i64,
-) -> Result<bool, MicrovmLaunchError> {
-    reset_microvm_worker_until(
-        database,
-        intent_id,
-        epoch,
-        attempt_id,
-        Duration::from_secs(28800),
-    )
-}
-
-pub fn reset_and_retire_microvm_worker(
-    database: &(impl DatabaseSource + ?Sized),
-    intent_id: &str,
-    epoch: i64,
-    attempt_id: i64,
-) -> Result<bool, MicrovmLaunchError> {
-    reset_microvm_worker_until(database, intent_id, epoch, attempt_id, Duration::ZERO)
-}
-
 pub fn reset_microvm_worker_until(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
     epoch: i64,
     attempt_id: i64,
     retention: Duration,
+    maximum_jobs: u32,
 ) -> Result<bool, MicrovmLaunchError> {
     let seconds = i32::try_from(retention.as_secs()).map_err(|_| MicrovmLaunchError)?;
-    if retention.subsec_nanos() != 0 || seconds > 28800 {
+    if retention.subsec_nanos() != 0 || seconds > 28800 || !(1..=1_000_000).contains(&maximum_jobs)
+    {
         return Err(MicrovmLaunchError);
     }
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let changed = client
         .execute(
-            "UPDATE microvm_workers w SET state=CASE WHEN $4::integer > 0 THEN 'idle' ELSE 'draining' END, attempt_id=NULL,
-            idle_since=CASE WHEN $4::integer > 0 THEN clock_timestamp() ELSE NULL END,
-            idle_until=CASE WHEN $4::integer > 0 THEN LEAST(w.expires_at,clock_timestamp()+make_interval(secs => $4::integer)) ELSE NULL END,
+            "UPDATE microvm_workers w SET state=CASE WHEN $4::integer > 0 AND w.completed_jobs+1 < $5 THEN 'idle' ELSE 'draining' END, attempt_id=NULL,
+            idle_since=CASE WHEN $4::integer > 0 AND w.completed_jobs+1 < $5 THEN clock_timestamp() ELSE NULL END,
+            idle_until=CASE WHEN $4::integer > 0 AND w.completed_jobs+1 < $5 THEN LEAST(w.expires_at,clock_timestamp()+make_interval(secs => $4::integer)) ELSE NULL END,
             completed_jobs=completed_jobs+1
          FROM microvm_launches l WHERE w.intent_id=$1 AND l.intent_id=w.intent_id
             AND w.state='busy' AND w.assignment_epoch=$2 AND w.attempt_id=$3
@@ -50,7 +28,7 @@ pub fn reset_microvm_worker_until(
             AND w.expires_at > clock_timestamp()
             AND EXISTS (SELECT 1 FROM shared_build_attempts a WHERE a.attempt_id=$3
                         AND a.state='succeeded')",
-            &[&intent_id, &epoch, &attempt_id, &seconds],
+            &[&intent_id, &epoch, &attempt_id, &seconds, &i64::from(maximum_jobs)],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(changed == 1)
