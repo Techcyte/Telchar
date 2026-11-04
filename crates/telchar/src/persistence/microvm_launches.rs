@@ -686,11 +686,13 @@ pub fn microvm_execution_active(
     let row = client
         .query_opt(
             "SELECT 1 FROM microvm_launches l
-         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         LEFT JOIN microvm_workers w ON w.intent_id=l.intent_id
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
-         WHERE l.intent_id = $1 AND l.phase IN ('dispatching', 'bound')
-           AND l.reservation_released_at IS NULL
-           AND (l.session_consumed_at IS NOT NULL OR l.admission_cutoff > clock_timestamp())
+         WHERE l.intent_id = $1 AND l.reservation_released_at IS NULL
+           AND ((l.phase='dispatching' AND w.intent_id IS NULL AND l.admission_cutoff > clock_timestamp())
+             OR (l.phase='bound' AND w.state='busy' AND w.expires_at > clock_timestamp()
+               AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)))
            AND b.state = 'running' AND a.state = 'running'
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
             &[&intent_id],

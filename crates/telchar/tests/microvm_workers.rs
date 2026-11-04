@@ -107,15 +107,57 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         .unwrap()
         .unwrap()
         .attempt_id;
+    assert!(
+        db::claim_microvm_worker(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            next,
+            Duration::from_secs(10)
+        )
+        .unwrap()
+    );
+    assert!(
+        db::microvm_execution_active(fixture.url(), &intent.intent_id).unwrap(),
+        "second assignment must not inherit terminal launch-attempt state"
+    );
+    assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
+    db::collect_shared_build(fixture.url(), second).unwrap();
+    db::complete_shared_build_success(
+        fixture.url(),
+        second,
+        &serde_json::json!({}),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, next).unwrap());
+    let third = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-worker.drv";
+    db::claim_shared_build(
+        fixture.url(),
+        third,
+        &[3; 32],
+        "arm",
+        kind,
+        kind.capabilities(),
+        None,
+        &["/nix/store/ffffffffffffffffffffffffffffffff-output"],
+    )
+    .unwrap();
+    db::enqueue_shared_build(fixture.url(), third, "carol", 1).unwrap();
+    db::start_queued_shared_build(fixture.url(), third, 1).unwrap();
+    let next = db::read_shared_build_attempt(fixture.url(), third)
+        .unwrap()
+        .unwrap()
+        .attempt_id;
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let claim_barrier = barrier.clone();
     let url = fixture.url().to_owned();
     let claim = std::thread::spawn(move || {
         claim_barrier.wait();
-        db::claim_microvm_worker(&url, "worker-launch", 1, next, Duration::from_secs(10)).unwrap()
+        db::claim_microvm_worker(&url, "worker-launch", 2, next, Duration::from_secs(10)).unwrap()
     });
     barrier.wait();
-    let retired = db::retire_microvm_worker(fixture.url(), &intent.intent_id, 1).unwrap();
+    let retired = db::retire_microvm_worker(fixture.url(), &intent.intent_id, 2).unwrap();
     let claimed = claim.join().unwrap();
     assert_ne!(
         claimed, retired,
