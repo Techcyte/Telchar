@@ -1,11 +1,44 @@
 //! Outbound MicroVM bootstrap using operator-supplied TLS trust.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Instant;
 
 use tungstenite::client::IntoClientRequest;
+
+pub fn prepare_job_store(
+    channel: &mut std::os::unix::net::UnixStream,
+    deadline: Instant,
+) -> io::Result<String> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::other("MicroVM job preparation expired"))?;
+    channel.set_read_timeout(Some(remaining))?;
+    channel.set_write_timeout(Some(remaining))?;
+    channel.write_all(b"prepared\n")?;
+    let mut response = Vec::new();
+    loop {
+        if Instant::now() >= deadline || response.len() >= 4096 {
+            return Err(io::Error::other(
+                "MicroVM job store response exceeded limits",
+            ));
+        }
+        channel.set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))?;
+        let mut byte = [0];
+        channel.read_exact(&mut byte)?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        response.push(byte[0]);
+    }
+    let endpoint = String::from_utf8(response)
+        .map_err(|_| io::Error::other("MicroVM job store response is invalid"))?;
+    telchar::store::daemon::GatewayStoreEndpoint::parse(&endpoint)
+        .map_err(|_| io::Error::other("MicroVM job store response is invalid"))?;
+    Ok(endpoint)
+}
 
 pub fn receive_session(
     mut socket: super::WorkerSocket,
@@ -243,6 +276,32 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::time::Duration;
+
+    #[test]
+    fn prepared_inputs_require_explicit_job_store_endpoint() {
+        let (mut worker, mut runtime) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut prepared = [0; 9];
+            runtime.read_exact(&mut prepared).unwrap();
+            assert_eq!(&prepared, b"prepared\n");
+            runtime.write_all(b"unix:///tmp/job-nix.sock\n").unwrap();
+        });
+        let endpoint =
+            prepare_job_store(&mut worker, Instant::now() + Duration::from_secs(1)).unwrap();
+        assert_eq!(endpoint, "unix:///tmp/job-nix.sock");
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn job_store_handoff_rejects_silent_and_invalid_runtime() {
+        let (mut worker, _runtime) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert!(
+            prepare_job_store(&mut worker, Instant::now() + Duration::from_millis(30)).is_err()
+        );
+        let (mut worker, mut runtime) = std::os::unix::net::UnixStream::pair().unwrap();
+        runtime.write_all(b"local\n").unwrap();
+        assert!(prepare_job_store(&mut worker, Instant::now() + Duration::from_secs(1)).is_err());
+    }
 
     #[test]
     fn build_deadline_interrupts_store_with_callback_connected() {

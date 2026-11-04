@@ -11,7 +11,7 @@ pkgs.runCommand "microvm-store-etc" { } ''
   done
   echo "nixbld:x:30000:$members" >> "$out/etc/group"
   cat > "$out/etc/nix/nix.conf" <<'EOF'
-  experimental-features = nix-command
+  experimental-features = nix-command local-overlay-store read-only-local-store
   sandbox = true
   sandbox-fallback = false
   build-users-group = nixbld

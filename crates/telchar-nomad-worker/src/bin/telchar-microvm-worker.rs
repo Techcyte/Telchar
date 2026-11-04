@@ -147,7 +147,13 @@ fn run() -> io::Result<()> {
     phase("import-inputs", deadline, || {
         session.import_requested_inputs(store, &requested)
     })?;
-    let result = match phase("build", deadline, || session.build(store)) {
+    let path = std::env::var_os("TELCHAR_MICROVM_JOB_SOCKET").ok_or_else(invalid)?;
+    let mut channel = std::os::unix::net::UnixStream::connect(path)?;
+    let job_store = phase("prepare-job", deadline, || {
+        telchar_nomad_worker::microvm::prepare_job_store(&mut channel, deadline)
+    })?;
+    let execution_store = job_store.as_str();
+    let result = match phase("build", deadline, || session.build(execution_store)) {
         Ok(result) => result,
         Err(error) => {
             let _ = phase("report-failure", deadline, || {
@@ -157,7 +163,7 @@ fn run() -> io::Result<()> {
         }
     };
     phase("return-outputs", deadline, || {
-        session.return_outputs(store, &result)
+        session.return_outputs(execution_store, &result)
     })
 }
 

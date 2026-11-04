@@ -61,6 +61,33 @@ def job_store(retained, directory):
         shutil.rmtree(directory)
 
 
+def wait_prepared(channel, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("job preparation expired")
+    channel.settimeout(remaining)
+    prepared = bytearray()
+    while len(prepared) < 9:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("job preparation expired")
+        channel.settimeout(remaining)
+        chunk = channel.recv(9 - len(prepared))
+        if not chunk:
+            raise RuntimeError("worker disconnected during preparation")
+        prepared.extend(chunk)
+    if prepared != b"prepared\n":
+        raise ValueError("invalid job preparation")
+
+
+@contextlib.contextmanager
+def prepared_job(channel, retained, directory, nix, environment, deadline):
+    wait_prepared(channel, deadline)
+    with job_daemon(retained, directory, nix, environment, deadline) as store:
+        channel.sendall(store.encode() + b"\n")
+        yield store
+
+
 @contextlib.contextmanager
 def job_daemon(retained, directory, nix, environment, deadline):
     directory = Path(directory)

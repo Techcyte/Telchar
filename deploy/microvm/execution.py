@@ -7,6 +7,7 @@ import json
 import os
 import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -210,6 +211,47 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
             return False
         if time.monotonic() >= deadline or daemon.poll() is not None or cancelled.is_set():
             return False
+        if os.environ.get("TELCHAR_MICROVM_RETAINED_ROOT"):
+            from retained_store import job_daemon, wait_prepared
+            import shutil
+            import tempfile
+            directory = tempfile.mkdtemp(prefix="telchar-job-")
+            listener = socket.socket(socket.AF_UNIX)
+            try:
+                path = os.path.join(directory, "prepare.sock")
+                listener.bind(path)
+                listener.listen(1)
+                listener.settimeout(max(.001, deadline - time.monotonic()))
+                environment = os.environ.copy()
+                environment["TELCHAR_MICROVM_JOB_SOCKET"] = path
+                worker = subprocess.Popen(worker_command, env=environment, start_new_session=True,
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+                channel, _ = listener.accept()
+                with channel:
+                    wait_prepared(channel, deadline)
+                    stop(daemon)
+                    daemon = None
+                    with job_daemon(os.environ["TELCHAR_MICROVM_RETAINED_ROOT"],
+                                    os.path.join(directory, "store"),
+                                    os.environ["TELCHAR_MICROVM_NIX"], environment, deadline) as store:
+                        try:
+                            channel.sendall(store.encode() + b"\n")
+                            while time.monotonic() < deadline:
+                                result = worker.poll()
+                                if result is not None:
+                                    return result == 0
+                                time.sleep(.025)
+                            return False
+                        finally:
+                            stop(worker)
+                            worker = None
+            finally:
+                stop(worker)
+                worker = None
+                listener.close()
+                if not os.path.exists(os.path.join(directory, "store")):
+                    shutil.rmtree(directory)
         worker = subprocess.Popen(worker_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)

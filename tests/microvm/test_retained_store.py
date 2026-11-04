@@ -8,10 +8,14 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
+import threading
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,8 +53,26 @@ class RetainedStoreTests(unittest.TestCase):
             outputs = []
             for index in range(2):
                 job = root / f"job-{index}"
-                with module.job_daemon(lower, job, nix, environment,
-                                       time.monotonic() + 30) as uri:
+                worker, runtime = socket.socketpair()
+                self.addCleanup(worker.close)
+                self.addCleanup(runtime.close)
+                handoff = []
+                def prepare():
+                    worker.sendall(b"prepared\n")
+                    response = bytearray()
+                    while not response.endswith(b"\n"):
+                        chunk = worker.recv(1)
+                        if not chunk:
+                            break
+                        response.extend(chunk)
+                    handoff.append(response.decode().strip())
+                thread = threading.Thread(target=prepare)
+                thread.start()
+                with module.prepared_job(runtime, lower, job, nix, environment,
+                                         time.monotonic() + 30) as uri:
+                    thread.join(timeout=3)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(handoff, [uri])
                     self.assertTrue(uri.startswith("unix://"))
                     self.assertTrue((job / "daemon.sock").is_socket())
                     self.assertEqual(run("path-info", "--store", uri, package), str(package))
@@ -72,6 +94,31 @@ class RetainedStoreTests(unittest.TestCase):
                     outputs.append(str(output))
                 self.assertFalse(job.exists(), "private job state survives teardown")
                 self.assertFalse((lower / "nix/store" / output.name).exists())
+            self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
+            sys.path.insert(0, str(ROOT / "deploy/microvm"))
+            self.addCleanup(sys.path.remove, str(ROOT / "deploy/microvm"))
+            import execution
+            daemon_environment = environment.copy()
+            daemon_environment["NIX_DAEMON_SOCKET_PATH"] = str(root / "prepare-daemon.sock")
+            daemon_environment["NIX_CONFIG"] += f"store = local?root={lower}\n"
+            daemon_environment["TELCHAR_MICROVM_RETAINED_ROOT"] = str(lower)
+            daemon_environment["TELCHAR_MICROVM_NIX"] = nix
+            client = root / "worker.py"
+            client.write_text(
+                "import os, socket, subprocess\n"
+                "channel = socket.socket(socket.AF_UNIX)\n"
+                "channel.connect(os.environ['TELCHAR_MICROVM_JOB_SOCKET'])\n"
+                "channel.sendall(b'prepared\\n')\n"
+                "store = channel.makefile('rb').readline().decode().strip()\n"
+                f"result = subprocess.run([{nix!r}, 'build', '--store', store, '--impure', "
+                f"'--expr', {expression!r}, '--no-link'], capture_output=True)\n"
+                "assert result.returncode == 0, result.stderr\n"
+                "assert b'error:' not in result.stderr, result.stderr\n")
+            with patch.dict(os.environ, daemon_environment):
+                self.assertTrue(execution.supervise(
+                    [nix, 'daemon'], [sys.executable, str(client)],
+                    [nix, 'store', 'ping', '--store',
+                     'unix://' + str(root / 'prepare-daemon.sock')], 30))
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
             failed_job = root / "failed-job"
             with self.assertRaisesRegex(RuntimeError, "cancelled job"):
