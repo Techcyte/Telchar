@@ -325,10 +325,15 @@ impl Drop for ExecutionSession<'_> {
 
 pub struct AdmittedConnection {
     intent_id: String,
+    assignment_epoch: i64,
     socket: WebSocket<SessionStream>,
 }
 
 impl AdmittedConnection {
+    pub fn assignment_epoch(&self) -> i64 {
+        self.assignment_epoch
+    }
+
     pub fn intent_id(&self) -> &str {
         &self.intent_id
     }
@@ -472,6 +477,7 @@ fn accept_session_for(
             socket.get_mut().deadline = session_deadline;
             observation.0 = None;
             return Ok(AdmittedConnection {
+                assignment_epoch: 1,
                 intent_id: bootstrap.intent_id,
                 socket,
             });
@@ -494,6 +500,7 @@ fn accept_session_for(
                 socket.get_mut().deadline = session_deadline;
                 observation.0 = None;
                 return Ok(AdmittedConnection {
+                    assignment_epoch: 1,
                     intent_id: bootstrap.intent_id,
                     socket,
                 });

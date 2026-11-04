@@ -9,7 +9,10 @@ use tungstenite::client::IntoClientRequest;
 fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).unwrap();
-    let database = telchar::persistence::Database::connect(fixture.url()).unwrap();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(), Duration::from_secs(30),
+    ).unwrap();
+    let database = owner.database().clone();
     let mut capabilities = Vec::new();
     for (index, hash) in ["a", "b", "c"].iter().enumerate() {
         let derivation = format!("/nix/store/{}-handoff.drv", hash.repeat(32));
@@ -60,11 +63,6 @@ fn shared_listener_delivers_reordered_connections_only_to_live_waiters() {
         );
         capabilities.push(capability);
     }
-    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
-        fixture.url(),
-        Duration::from_secs(30),
-    )
-    .unwrap();
     let sessions = ExecutionSessions::new(3).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let first = sessions.register("intent-0", deadline).unwrap();

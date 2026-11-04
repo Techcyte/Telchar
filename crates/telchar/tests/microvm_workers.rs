@@ -121,6 +121,12 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         db::microvm_execution_active(fixture.url(), &intent.intent_id).unwrap(),
         "second assignment must not inherit terminal launch-attempt state"
     );
+    assert!(
+        db::microvm_session_request(fixture.url(), &intent.intent_id, 1)
+            .unwrap()
+            .is_none(),
+        "previous epoch cannot load later assignment even if request identity matches"
+    );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, next).unwrap());
     db::collect_shared_build(fixture.url(), second).unwrap();
     db::complete_shared_build_success(

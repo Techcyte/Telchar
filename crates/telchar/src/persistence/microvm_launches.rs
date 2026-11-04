@@ -629,6 +629,7 @@ pub fn microvm_attempt_request(
 pub fn microvm_session_request(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
+    assignment_epoch: i64,
 ) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(microvm_session_request));
@@ -642,12 +643,12 @@ pub fn microvm_session_request(
          JOIN shared_build_attempts a ON a.attempt_id = s.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.phase = 'bound'
-           AND s.admitted_at IS NOT NULL AND s.completed_at IS NULL
+           AND s.assignment_epoch=$2 AND s.admitted_at IS NOT NULL AND s.completed_at IS NULL
            AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
            AND w.expires_at > clock_timestamp() AND l.reservation_released_at IS NULL
            AND b.state = 'running' AND a.state = 'running'
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
-            &[&intent_id],
+            &[&intent_id, &assignment_epoch],
         )
         .map_err(|_| MicrovmLaunchError)?;
     let Some(row) = row else {
@@ -784,7 +785,7 @@ pub fn admit_microvm_session(
         let assignment = transaction.execute(
             "UPDATE microvm_assignments s SET credential_verifier=$2, admitted_at=clock_timestamp()
              FROM microvm_workers w WHERE s.intent_id=$1 AND w.intent_id=s.intent_id
-               AND s.assignment_epoch=w.assignment_epoch AND w.state='busy'
+               AND s.assignment_epoch=1 AND s.assignment_epoch=w.assignment_epoch AND w.state='busy'
                AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
                AND w.expires_at > clock_timestamp()
                AND s.admitted_at IS NULL AND s.completed_at IS NULL

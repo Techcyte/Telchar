@@ -29,6 +29,7 @@ pub fn run_admitted(
     limits: Limits,
     log: impl FnMut(&[u8]),
 ) -> io::Result<BuildResultMetadata> {
+    let assignment_epoch = connection.assignment_epoch();
     let (intent_id, socket) = connection.into_parts();
     let load = || loop {
         if !owner.verify_available().map_err(io::Error::other)? {
@@ -36,7 +37,11 @@ pub fn run_admitted(
             continue;
         }
         let uncertainty_sequence = owner.uncertainty_sequence();
-        match crate::persistence::microvm_session_request(owner.database(), &intent_id) {
+        match crate::persistence::microvm_session_request(
+            owner.database(),
+            &intent_id,
+            assignment_epoch,
+        ) {
             Ok(request) => {
                 return request.ok_or_else(|| io::Error::other("MicroVM execution is not active"));
             }

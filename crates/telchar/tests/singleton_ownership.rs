@@ -381,7 +381,7 @@ fn microvm_read_transport_failure_pauses_even_when_verification_can_succeed() {
                     )
                     .map(|_| ())
                 } else {
-                    telchar::persistence::microvm_session_request(owner.database(), "fixture")
+                    telchar::persistence::microvm_session_request(owner.database(), "fixture", 1)
                         .map(|_| ())
                 }
             });
