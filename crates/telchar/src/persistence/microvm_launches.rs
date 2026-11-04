@@ -88,6 +88,9 @@ pub struct MicrovmObligation {
     pub phase: String,
     pub capacity_reserved: bool,
     pub cleanup_pending: bool,
+    pub worker_state: Option<String>,
+    pub assignment_epoch: Option<i64>,
+    pub completed_jobs: Option<i64>,
 }
 
 pub fn read_microvm_obligations(
@@ -100,13 +103,14 @@ pub fn read_microvm_obligations(
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let rows = client
         .query(
-            "SELECT intent_id, backend_name, account_id, region, provider_id, phase,
-                    reservation_released_at IS NULL,
-                    provider_id IS NOT NULL AND termination_observed_at IS NULL
-             FROM microvm_launches
-             WHERE reservation_released_at IS NULL
-                OR (provider_id IS NOT NULL AND termination_observed_at IS NULL)
-             ORDER BY created_at, intent_id LIMIT $1",
+            "SELECT l.intent_id, l.backend_name, l.account_id, l.region, l.provider_id, l.phase,
+                    l.reservation_released_at IS NULL,
+                    l.provider_id IS NOT NULL AND l.termination_observed_at IS NULL,
+                    w.state,w.assignment_epoch,w.completed_jobs
+             FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+             WHERE l.reservation_released_at IS NULL
+                OR (l.provider_id IS NOT NULL AND l.termination_observed_at IS NULL)
+             ORDER BY l.created_at, l.intent_id LIMIT $1",
             &[&(limit as i64)],
         )
         .map_err(|_| MicrovmLaunchError)?;
@@ -121,6 +125,9 @@ pub fn read_microvm_obligations(
             phase: row.get(5),
             capacity_reserved: row.get(6),
             cleanup_pending: row.get(7),
+            worker_state: row.get(8),
+            assignment_epoch: row.get(9),
+            completed_jobs: row.get(10),
         })
         .collect())
 }

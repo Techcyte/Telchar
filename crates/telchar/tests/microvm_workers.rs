@@ -251,6 +251,11 @@ fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
         !db::authorize_microvm_assignment(fixture.url(), &intent.intent_id, 2, &[8; 32]).unwrap(),
         "selected assignment capability issued atomically"
     );
+    let obligations = db::read_microvm_obligations(fixture.url(), 10).unwrap();
+    assert_eq!(obligations.len(), 1);
+    assert_eq!(obligations[0].worker_state.as_deref(), Some("busy"));
+    assert_eq!(obligations[0].assignment_epoch, Some(2));
+    assert_eq!(obligations[0].completed_jobs, Some(1));
     assert!(
         !db::cancel_microvm_attempt(fixture.url(), attempt).unwrap(),
         "completed predecessor cannot cancel current assignment"
