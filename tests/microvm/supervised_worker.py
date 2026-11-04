@@ -45,7 +45,10 @@ def main():
             "TELCHAR_MICROVM_MINIMUM_FREE_BYTES": "0",
         })
         os.environ["NIX_CONFIG"] += f"store = local?root={retained}\n"
-        state = ExecutionState([nix, "daemon"], [binary, binding, trust, "unix://" + socket],
+        worker = Path(temporary) / "worker"
+        worker.write_text(f'#!/bin/sh\nexec {binary} "$@" 2>>{diagnostics}\n')
+        worker.chmod(0o700)
+        state = ExecutionState([nix, "daemon"], [str(worker), binding, trust, "unix://" + socket],
                                [nix, "store", "ping", "--store", "unix://" + socket],
                                destination, Path(trust))
         assert state.start_hook({"microvmId": identity, "runHookPayload": json.dumps(payload)})
