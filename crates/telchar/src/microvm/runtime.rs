@@ -22,6 +22,38 @@ fn reset_matches(bytes: &[u8], intent: &str, provider: &str, epoch: i64) -> bool
     })
 }
 
+fn read_reset_report(
+    mut response: reqwest::blocking::Response,
+    intent: &str,
+    provider: &str,
+    epoch: i64,
+) -> Result<bool, ProviderError> {
+    if response.status().as_u16() != 409 {
+        return Ok(false);
+    }
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take(16385)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProviderError)?;
+    Ok(bytes.len() <= 16384 && reset_matches(&bytes, intent, provider, epoch))
+}
+
+fn post_status(
+    client: &reqwest::blocking::Client,
+    url: url::Url,
+    token: &str,
+) -> Result<reqwest::blocking::Response, ProviderError> {
+    client
+        .post(url)
+        .header("X-aws-proxy-auth", token)
+        .header("X-aws-proxy-port", "8080")
+        .json(&serde_json::json!({}))
+        .send()
+        .map_err(|_| ProviderError)
+}
+
 impl Provider {
     pub fn observe_worker_reset(
         &self,
@@ -109,22 +141,8 @@ impl Provider {
             .timeout(remaining)
             .build()
             .map_err(|_| ProviderError)?;
-        let response = client
-            .post(url)
-            .header("X-aws-proxy-auth", token)
-            .header("X-aws-proxy-port", "8080")
-            .json(&serde_json::json!({}))
-            .send()
-            .map_err(|_| ProviderError)?;
-        if response.status().as_u16() != 409 {
-            return Ok(false);
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(16385)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ProviderError)?;
-        if bytes.len() > 16384 || !reset_matches(&bytes, intent_id, provider_id, epoch) {
+        let response = post_status(&client, url, &token)?;
+        if !read_reset_report(response, intent_id, provider_id, epoch)? {
             return Ok(false);
         }
         owner.verify().map_err(|_| ProviderError)?;
@@ -136,6 +154,85 @@ impl Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn https_proxy_status_preserves_authentication_and_rejects_oversized_reports() {
+        use std::io::Write;
+        use std::sync::Arc;
+        for oversized in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let certificate =
+                include_bytes!("../../../telchar-nomad-worker/tests/fixtures/microvm-cert.der");
+            let key =
+                include_bytes!("../../../telchar-nomad-worker/tests/fixtures/microvm-key.der");
+            let server = std::thread::spawn(move || {
+                let config = rustls::ServerConfig::builder_with_provider(
+                    rustls::crypto::ring::default_provider().into(),
+                )
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![certificate.to_vec().into()],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(key.to_vec().into()),
+                )
+                .unwrap();
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut stream = rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+                    stream,
+                );
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(request.starts_with("post /aws/lambda-microvms/runtime/v1/validate "));
+                assert!(request.contains("x-aws-proxy-auth: fixture-token\r\n"));
+                assert!(request.contains("x-aws-proxy-port: 8080\r\n"));
+                let mut body = [0; 2];
+                stream.read_exact(&mut body).unwrap();
+                assert_eq!(&body, b"{}");
+                let body = if oversized {
+                    vec![b' '; 16385]
+                } else {
+                    serde_json::to_vec(&serde_json::json!({"status":"succeeded","reset_complete":true,"intent_id":"intent","provider_id":"provider","assignment_epoch":2})).unwrap()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+                stream.flush().unwrap();
+            });
+            let client = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(3))
+                .add_root_certificate(reqwest::Certificate::from_der(certificate).unwrap())
+                .build()
+                .unwrap();
+            let url = url::Url::parse(&format!(
+                "https://localhost:{}/aws/lambda-microvms/runtime/v1/validate",
+                address.port()
+            ))
+            .unwrap();
+            let response = post_status(&client, url, "fixture-token").unwrap();
+            assert_eq!(
+                read_reset_report(response, "intent", "provider", 2).unwrap(),
+                !oversized
+            );
+            server.join().unwrap();
+        }
+    }
+
     #[test]
     fn reset_requires_exact_identity_epoch_and_successful_teardown() {
         let report = serde_json::json!({"status":"succeeded","reset_complete":true,
