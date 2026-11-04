@@ -17,7 +17,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix="telchar-worker-job-") as temporary:
         directory = Path(temporary)
         environment = os.environ.copy()
+        environment["NIX_CONFIG"] += "\nexperimental-features = nix-command local-overlay-store read-only-local-store\n"
         environment["TELCHAR_MICROVM_JOB_SOCKET"] = str(directory / "prepare.sock")
+        retained = Path(environment.get("MICROVM_TEST_RETAINED_ROOT", directory / "inputs"))
+        database = retained / "nix/var/nix/db/db.sqlite"
+        if database.exists():
+            registration = subprocess.run(["nix-store", "--store", f"local?root={retained}", "--dump-db"],
+                                          env=environment, capture_output=True)
+            if registration.returncode:
+                raise RuntimeError(registration.stderr.decode())
+            loaded = subprocess.run(["nix-store", "--store", "local", "--load-db"],
+                                    input=registration.stdout, env=environment, capture_output=True)
+            if loaded.returncode:
+                raise RuntimeError(loaded.stderr.decode())
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(environment["TELCHAR_MICROVM_JOB_SOCKET"])
             listener.listen(1)
@@ -38,7 +50,6 @@ def main():
                         continue
                 with channel:
                     wait_prepared(channel, deadline)
-                    retained = directory / "inputs"
                     with sqlite3.connect(str(Path(os.environ["NIX_STATE_DIR"]) / "db/db.sqlite")) as database:
                         paths = [row[0] for row in database.execute("SELECT path FROM ValidPaths")]
                     daemon_environment = environment.copy()

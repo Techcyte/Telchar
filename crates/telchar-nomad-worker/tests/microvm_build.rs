@@ -203,6 +203,40 @@ fn provider_client(
 
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
+    if std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("retained-first")
+        && std::env::var_os("MICROVM_TEST_STORE_URI").is_none()
+    {
+        let retained =
+            std::env::temp_dir().join(format!("telchar-retained-{}", std::process::id()));
+        std::fs::create_dir(&retained).unwrap();
+        for job in ["retained-cold", "retained-warm"] {
+            let database = telchar_test_support::postgres::PostgresFixture::start();
+            let result = Command::new("bash")
+                .env("MICROVM_TEST_CASE", job)
+                .env("MICROVM_TEST_DATABASE", database.url())
+                .env("MICROVM_TEST_RETAINED_ROOT", &retained)
+                .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+                .arg(FIXTURE)
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "dedicated_worker_builds_and_returns_registered_output",
+                    "--test-threads=1",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{job}: {}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert!(!retained.join("nix/store/ffffffffffffffffffffffffffffffff-dedicated-output").exists());
+        assert!(!retained.join("nix/store/99999999999999999999999999999999-dedicated-output").exists());
+        std::fs::remove_dir_all(&retained).unwrap();
+        return;
+    }
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
         if let Ok(case) = std::env::var("MICROVM_TEST_CASE") {
             run_isolated_build(&case);
@@ -280,6 +314,7 @@ fn run_build() {
         case.as_str(),
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
     );
+    let sequential = case.starts_with("retained-");
     let configured = case.starts_with("configured");
     let build_failure = matches!(
         case.as_str(),
@@ -342,7 +377,9 @@ fn run_build() {
             .collect::<String>()
     };
     let fixed_path;
-    let output = if fixed_output {
+    let output = if case == "retained-warm" {
+        "/nix/store/99999999999999999999999999999999-dedicated-output"
+    } else if fixed_output {
         let mut command = Command::new("nix-store");
         command.arg("--print-fixed-path");
         if recursive_output {
@@ -369,7 +406,11 @@ fn run_build() {
     } else {
         vec![output]
     };
-    let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv";
+    let drv = if case == "retained-warm" {
+        "/nix/store/cccccccccccccccccccccccccccccccc-dedicated.drv"
+    } else {
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv"
+    };
     assert!(!store.is_valid_path(output.as_bytes()).unwrap());
     let extra_script = if multiple {
         "; printf '%s' \"$out\" > \"$reference\""
@@ -1146,6 +1187,13 @@ chunk_bytes = 262144
         !building_interrupted,
         "builder execution barrier not observed"
     );
+    if sequential {
+        assert_eq!(
+            input_requested,
+            case == "retained-cold",
+            "retained input request in {case}"
+        );
+    }
     if packaged_runtime {
         assert!(
             input_requested,
