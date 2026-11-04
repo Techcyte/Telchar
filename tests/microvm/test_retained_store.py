@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,7 +49,10 @@ class RetainedStoreTests(unittest.TestCase):
             outputs = []
             for index in range(2):
                 job = root / f"job-{index}"
-                with module.job_store(lower, job) as uri:
+                with module.job_daemon(lower, job, nix, environment,
+                                       time.monotonic() + 30) as uri:
+                    self.assertTrue(uri.startswith("unix://"))
+                    self.assertTrue((job / "daemon.sock").is_socket())
                     self.assertEqual(run("path-info", "--store", uri, package), str(package))
                     script = f'test ! -e {marker}; printf job-{index} > "$out"'
                     expression = (
@@ -71,11 +75,18 @@ class RetainedStoreTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
             failed_job = root / "failed-job"
             with self.assertRaisesRegex(RuntimeError, "cancelled job"):
-                with module.job_store(lower, failed_job) as uri:
+                with module.job_daemon(lower, failed_job, nix, environment,
+                                       time.monotonic() + 30) as uri:
                     self.assertEqual(run("path-info", "--store", uri, package), str(package))
                     raise RuntimeError("cancelled job")
             self.assertFalse(failed_job.exists())
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
+            expired_job = root / "expired-job"
+            with self.assertRaisesRegex(TimeoutError, "readiness expired"):
+                with module.job_daemon(lower, expired_job, nix, environment,
+                                       time.monotonic() - 1):
+                    self.fail("expired job reached execution")
+            self.assertFalse(expired_job.exists())
 
 
 if __name__ == "__main__":

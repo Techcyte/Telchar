@@ -4,6 +4,9 @@ import ctypes
 import os
 from pathlib import Path
 import shutil
+import signal
+import subprocess
+import time
 from urllib.parse import quote
 
 
@@ -56,3 +59,37 @@ def job_store(retained, directory):
         for path in reversed(mounted):
             unmount(path)
         shutil.rmtree(directory)
+
+
+@contextlib.contextmanager
+def job_daemon(retained, directory, nix, environment, deadline):
+    directory = Path(directory)
+    process = None
+    if time.monotonic() >= deadline:
+        raise TimeoutError("job Nix daemon readiness expired")
+    with job_store(retained, directory) as store:
+        socket = directory / "daemon.sock"
+        daemon_environment = environment.copy()
+        daemon_environment["NIX_DAEMON_SOCKET_PATH"] = str(socket)
+        daemon_environment["NIX_CONFIG"] = (
+            environment.get("NIX_CONFIG", "") + "\nstore = " + store + "\n")
+        with (directory / "daemon.log").open("wb") as diagnostics:
+            try:
+                process = subprocess.Popen(
+                    [str(nix), "daemon"], env=daemon_environment,
+                    start_new_session=True, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=diagnostics)
+                while not socket.exists():
+                    if process.poll() is not None:
+                        raise RuntimeError("job Nix daemon exited before readiness")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("job Nix daemon readiness expired")
+                    time.sleep(.01)
+                yield "unix://" + str(socket)
+                if process.poll() is not None:
+                    raise RuntimeError("job Nix daemon exited during execution")
+            finally:
+                if process is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
