@@ -502,6 +502,34 @@ pub fn pending_microvm_cleanup_identity(
     Ok(row.is_some())
 }
 
+/// Close eligible execution authority before provider cleanup can race an assignment.
+pub fn begin_microvm_cleanup(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    transaction
+        .query_opt(
+            "SELECT intent_id FROM microvm_workers WHERE intent_id=$1 FOR UPDATE",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    let changed = transaction.execute(
+        "UPDATE microvm_launches l SET phase='closed'
+         WHERE l.intent_id=$1 AND l.provider_id=$2 AND l.termination_observed_at IS NULL
+           AND (l.phase='closed' OR EXISTS (
+             SELECT 1 FROM shared_build_attempts a JOIN shared_builds b USING(derivation_path)
+             LEFT JOIN microvm_workers w ON w.intent_id=l.intent_id
+             WHERE a.attempt_id=COALESCE(w.attempt_id,l.attempt_id)
+               AND (a.state NOT IN ('running','collecting') OR b.state NOT IN ('running','collecting'))))",
+        &[&intent_id,&provider_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
+}
+
 /// Records an exact successful provider TERMINATED observation, not a terminate acknowledgment.
 pub fn record_microvm_termination(
     database: &(impl DatabaseSource + ?Sized),

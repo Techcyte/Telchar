@@ -223,11 +223,12 @@ fn worker_lifecycle(retain: bool) {
         db::claim_microvm_worker(&url, "worker-launch", 2, next, Duration::from_secs(10)).unwrap()
     });
     barrier.wait();
-    let retired = db::retire_microvm_worker(fixture.url(), &intent.intent_id, 2).unwrap();
+    let retired =
+        db::begin_microvm_cleanup(fixture.url(), &intent.intent_id, "provider-worker").unwrap();
     let claimed = claim.join().unwrap();
     assert_ne!(
         claimed, retired,
-        "claim and retirement must have exactly one winner"
+        "claim and cleanup must have exactly one winner"
     );
     if claimed {
         db::collect_shared_build(fixture.url(), third).unwrap();

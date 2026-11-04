@@ -390,7 +390,7 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        let pending = crate::persistence::pending_microvm_cleanup_identity(
+        let pending = crate::persistence::begin_microvm_cleanup(
             owner.database(),
             &cleanup.intent_id,
             &cleanup.provider_id,
