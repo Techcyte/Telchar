@@ -269,8 +269,8 @@ fn ownership_reuses_its_connection_during_renewal() {
     let initial_backends = backends(&mut observer);
     assert_eq!(
         initial_backends.len(),
-        1,
-        "ownership retains one connection"
+        2,
+        "ownership retains work and renewal connections"
     );
     for _ in 0..3 {
         owner.renew().expect("ownership renews");
