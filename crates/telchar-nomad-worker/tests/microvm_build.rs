@@ -502,7 +502,7 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
     } else {
         "/bin/sh".to_owned()
     };
-    let builder_input = if runtime.is_some() {
+    let builder_input = if runtime.is_some() || supervised {
         let package = std::path::Path::new(&builder)
             .parent()
             .unwrap()
