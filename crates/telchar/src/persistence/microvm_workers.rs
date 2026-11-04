@@ -25,6 +25,65 @@ pub fn reset_microvm_worker(
     Ok(changed == 1)
 }
 
+pub fn authorize_microvm_assignment(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    verifier: &[u8; 32],
+) -> Result<bool, MicrovmLaunchError> {
+    assignment_capability(database, intent_id, epoch, verifier, false)
+}
+
+pub fn admit_microvm_assignment(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    verifier: &[u8; 32],
+) -> Result<bool, MicrovmLaunchError> {
+    assignment_capability(database, intent_id, epoch, verifier, true)
+}
+
+fn assignment_capability(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    verifier: &[u8; 32],
+    admit: bool,
+) -> Result<bool, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    let worker = transaction.query_opt(
+        "SELECT w.intent_id FROM microvm_workers w JOIN microvm_launches l USING(intent_id)
+         JOIN shared_build_attempts b ON b.attempt_id=w.attempt_id
+         WHERE w.intent_id=$1 AND w.assignment_epoch=$2 AND w.state='busy'
+           AND l.phase='bound' AND l.reservation_released_at IS NULL
+           AND w.expires_at > clock_timestamp() AND b.state='running'
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
+         FOR UPDATE OF w,l,b", &[&intent_id, &epoch],
+    ).map_err(|_| MicrovmLaunchError)?;
+    if worker.is_none() {
+        return Ok(false);
+    }
+    let changed = if admit {
+        transaction.execute(
+            "UPDATE microvm_assignments SET admitted_at=clock_timestamp()
+             WHERE intent_id=$1 AND assignment_epoch=$2 AND credential_verifier=$3
+               AND admitted_at IS NULL AND completed_at IS NULL",
+            &[&intent_id, &epoch, &&verifier[..]],
+        )
+    } else {
+        transaction.execute(
+            "UPDATE microvm_assignments SET credential_verifier=$3
+             WHERE intent_id=$1 AND assignment_epoch=$2 AND credential_verifier IS NULL
+               AND admitted_at IS NULL AND completed_at IS NULL",
+            &[&intent_id, &epoch, &&verifier[..]],
+        )
+    }
+    .map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
+}
+
 pub fn claim_microvm_worker(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

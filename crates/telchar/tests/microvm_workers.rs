@@ -54,6 +54,25 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
         .unwrap();
     assert_eq!(row.get::<_, String>(0), "busy");
     assert_eq!(row.get::<_, i64>(1), attempt);
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    assert!(
+        db::authorize_microvm_assignment(
+            fixture.url(),
+            &intent.intent_id,
+            1,
+            &capability.verifier()
+        )
+        .unwrap()
+    );
+    assert!(!db::admit_microvm_assignment(fixture.url(), &intent.intent_id, 1, &[0; 32]).unwrap());
+    assert!(
+        db::admit_microvm_assignment(fixture.url(), &intent.intent_id, 1, &capability.verifier())
+            .unwrap()
+    );
+    assert!(
+        !db::admit_microvm_assignment(fixture.url(), &intent.intent_id, 1, &capability.verifier())
+            .unwrap()
+    );
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
     db::collect_shared_build(fixture.url(), path).unwrap();
     db::complete_shared_build_success(
@@ -66,6 +85,10 @@ fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 2, attempt).unwrap());
     assert!(db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
     assert!(!db::reset_microvm_worker(fixture.url(), &intent.intent_id, 1, attempt).unwrap());
+    let assignment = client.query_one("SELECT attempt_id, admitted_at IS NOT NULL, completed_at IS NOT NULL FROM microvm_assignments WHERE intent_id=$1 AND assignment_epoch=1", &[&intent.intent_id]).unwrap();
+    assert_eq!(assignment.get::<_, i64>(0), attempt);
+    assert!(assignment.get::<_, bool>(1));
+    assert!(assignment.get::<_, bool>(2));
     let second = "/nix/store/cccccccccccccccccccccccccccccccc-worker.drv";
     db::claim_shared_build(
         fixture.url(),
