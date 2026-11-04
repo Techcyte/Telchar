@@ -107,20 +107,46 @@ class RetainedStoreTests(unittest.TestCase):
             daemon_environment["TELCHAR_MICROVM_MINIMUM_FREE_BYTES"] = "0"
             client = root / "worker.py"
             client.write_text(
-                "import os, socket, subprocess\n"
+                "import json, os, socket, subprocess\n"
+                "binding=json.load(open(os.environ['TELCHAR_TEST_BINDING']))\n"
+                "epoch=binding['assignment_epoch']\n"
                 "channel = socket.socket(socket.AF_UNIX)\n"
                 "channel.connect(os.environ['TELCHAR_MICROVM_JOB_SOCKET'])\n"
                 "channel.sendall(b'prepared\\n')\n"
                 "store = channel.makefile('rb').readline().decode().strip()\n"
                 f"result = subprocess.run([{nix!r}, 'build', '--store', store, '--impure', "
-                f"'--expr', {expression!r}, '--no-link'], capture_output=True)\n"
+                f"'--expr', {expression!r}.replace('retained-job-1', 'supervised-job-'+str(epoch)), '--no-link', '--print-out-paths'], capture_output=True)\n"
                 "assert result.returncode == 0, result.stderr\n"
-                "assert b'error:' not in result.stderr, result.stderr\n")
+                "assert b'error:' not in result.stderr, result.stderr\n"
+                "open(os.environ['TELCHAR_TEST_OUTPUTS'],'a').write(result.stdout.decode())\n")
+            binding = root / 'binding.json'
+            received = root / 'outputs'
+            daemon_environment['TELCHAR_TEST_BINDING'] = str(binding)
+            daemon_environment['TELCHAR_TEST_OUTPUTS'] = str(received)
+            trust = root / 'trust'
+            trust.write_text('fixture trust')
+            state = execution.ExecutionState(
+                [nix, 'daemon'], [sys.executable, str(client)],
+                [nix, 'store', 'ping', '--store', 'unix://' + str(root / 'prepare-daemon.sock')],
+                binding, trust)
             with patch.dict(os.environ, daemon_environment):
-                self.assertTrue(execution.supervise(
-                    [nix, 'daemon'], [sys.executable, str(client)],
-                    [nix, 'store', 'ping', '--store',
-                     'unix://' + str(root / 'prepare-daemon.sock')], 30))
+                for epoch in [1, 2]:
+                    payload = {'version': 1, 'assignment_epoch': epoch,
+                               'endpoint': 'wss://gateway.invalid/microvm',
+                               'address': '127.0.0.1:443', 'intent_id': 'retained-worker',
+                               'bearer': ('a' if epoch == 1 else 'b') * 43,
+                               'lifetime_seconds': 30}
+                    self.assertTrue(state.start_hook({'microvmId': 'provider-exact',
+                                                      'runHookPayload': json.dumps(payload)}))
+                    state.join()
+                    self.assertEqual(state.status(), 'succeeded')
+                    self.assertFalse(binding.exists())
+                    self.assertTrue(state.report()['reset_complete'])
+                    self.assertEqual(state.report()['assignment_epoch'], epoch)
+            built = received.read_text().splitlines()
+            self.assertEqual(len(set(built)), 2)
+            for output in built:
+                self.assertFalse((lower / 'nix/store' / Path(output).name).exists())
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
             denied = root / "denied-worker"
             daemon_environment["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"] = "1"
