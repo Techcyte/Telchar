@@ -326,7 +326,11 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     if case != "configured" {
-        assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 

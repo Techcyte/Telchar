@@ -47,12 +47,13 @@ class HookTests(unittest.TestCase):
             marker = root / "worker-count"
             daemon = [sys.executable, "-c", "import time; time.sleep(30)"]
             ready = [sys.executable, "-c", "raise SystemExit(0)"]
-            worker = [sys.executable, "-c", f"import pathlib; pathlib.Path({str(marker)!r}).open('a').write('run\\n')"]
+            contexts = root / "contexts"
+            worker = [sys.executable, "-c", f"import json,pathlib; pathlib.Path({str(marker)!r}).open('a').write('run\\n'); pathlib.Path({str(contexts)!r}).open('a').write(json.dumps(json.load(open({str(binding)!r}))['trace_context'])+'\\n')"]
             state = execution.ExecutionState(daemon, worker, ready, binding, TRUST)
             self.assertFalse(binding.exists())
             self.assertFalse(marker.exists())
             payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
-                       "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 2}
+                       "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "tracestate": "vendor=value"}, "lifetime_seconds": 2}
             hook = {"microvmId": "microvm-exact", "runHookPayload": json.dumps(payload)}
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
                 self.assertTrue(all(pool.map(state.start_hook, [hook] * 4)))
@@ -67,12 +68,15 @@ class HookTests(unittest.TestCase):
             # Trace context is assignment-local, including an explicitly untraced
             # successor; reset reports never carry it.
             self.assertNotIn("trace_context", report)
-            next_payload = {**payload, "assignment_epoch": 2, "bearer": "b" * 43}
+            next_payload = {**payload, "assignment_epoch": 2, "bearer": "b" * 43,
+                            "trace_context": {"traceparent": None, "tracestate": None}}
             next_hook = {**hook, "runHookPayload": json.dumps(next_payload)}
             self.assertTrue(state.start_hook(next_hook))
             state.join()
             self.assertEqual(state.status(), "succeeded")
             self.assertEqual(marker.read_text(), "run\nrun\n")
+            self.assertEqual([json.loads(line) for line in contexts.read_text().splitlines()],
+                             [payload["trace_context"], next_payload["trace_context"]])
             self.assertFalse(binding.exists())
             self.assertFalse(state.start_hook(hook), "stale assignment cannot relaunch")
             payload["intent_id"] = "other"

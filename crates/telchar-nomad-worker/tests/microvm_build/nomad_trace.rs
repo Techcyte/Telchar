@@ -41,6 +41,10 @@ fn rendered_environment_connects_real_worker_and_callback() {
     std::fs::write(&secret, "private-nomad-trace-secret").unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
     let store_uri = std::env::var("MICROVM_TEST_STORE_URI").unwrap();
+    // Stable operator-selected endpoint, resolved to the private worker daemon by
+    // the fake raw_exec launcher; the rendered Env itself is consumed unchanged.
+    let worker_socket = root.join("nomad-worker.sock");
+    let worker_store_uri = format!("unix://{}", worker_socket.display());
     let config_path = root.join("nomad.toml");
     std::fs::write(
         &config_path,
@@ -74,7 +78,7 @@ key_id = "trace-test"
 secret_file = "{}"
 [backends.nomad.trace-test.store]
 mode = "daemon"
-uri = "{store_uri}"
+uri = "{worker_store_uri}"
 "#,
             secret.display()
         ),
@@ -185,10 +189,11 @@ uri = "{store_uri}"
         .arg("/bin/sh")
         .args([
             "-c",
-            "export TELCHAR_NIX_STORE_URI=\"$MICROVM_TEST_STORE_URI\"; exec \"$1\"",
+            "ln -s \"$NIX_DAEMON_SOCKET_PATH\" \"$2\"; exec \"$1\"",
             "nomad-worker",
         ])
         .arg(env!("CARGO_BIN_EXE_telchar-nomad-worker"))
+        .arg(&worker_socket)
         .envs(
             env.iter()
                 .map(|(name, value)| (name, value.as_str().unwrap())),
@@ -244,6 +249,15 @@ uri = "{store_uri}"
     let callbacks = collector.spans("telchar", "nomad.callback.execution");
     assert_eq!(callbacks.len(), 1);
     collector::Collector::assert_child(manifest, &callbacks[0]);
+    let exports = collector.spans("telchar", "nomad.gateway.export_inputs");
+    let builds = collector.spans("telchar", "nomad.gateway.build_and_collect");
+    let collections = collector.spans("telchar", "nomad.gateway.collect_outputs");
+    assert_eq!(exports.len(), 1);
+    assert_eq!(builds.len(), 1);
+    assert_eq!(collections.len(), 1);
+    collector::Collector::assert_child(&callbacks[0], &exports[0]);
+    collector::Collector::assert_child(&callbacks[0], &builds[0]);
+    collector::Collector::assert_child(&builds[0], &collections[0]);
     collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
     collector.assert_metric_attributes_are_bounded();
     if let Some(path) = std::env::var_os("TELCHAR_NOMAD_TRACE_ARTIFACT") {

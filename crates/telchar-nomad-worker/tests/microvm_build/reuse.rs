@@ -329,6 +329,7 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
     let mut worker = SupervisedWorker::start(&root, builder);
     let mut previous_report = None;
     let mut previous_bearer = None;
+    let mut private_bearers = Vec::new();
     let mut previous_verifier = None;
     for index in 0..jobs {
         let job_started = if index == 0 {
@@ -368,6 +369,7 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             assert_ne!(previous, capability.bearer());
         }
         previous_bearer = Some(capability.bearer().to_owned());
+        private_bearers.push(capability.bearer().to_owned());
         let mut payload: serde_json::Value = serde_json::from_str(
             &capability
                 .launch_payload(
@@ -647,6 +649,26 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             .find(|span| span.trace_id == trace_id)
             .unwrap();
         collector::Collector::assert_child(parent, session);
+        let builds = collector.spans("telchar", "microvm.gateway.build_and_collect");
+        let build = builds
+            .iter()
+            .find(|span| span.trace_id == trace_id)
+            .unwrap();
+        collector::Collector::assert_child(session, build);
+        let collections = collector.spans("telchar", "microvm.gateway.collect_outputs");
+        let collection = collections
+            .iter()
+            .find(|span| span.trace_id == trace_id)
+            .unwrap();
+        collector::Collector::assert_child(build, collection);
+        if expected == &expected_parents[0] {
+            let exports = collector.spans("telchar", "microvm.gateway.export_inputs");
+            let export = exports
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            collector::Collector::assert_child(session, export);
+        }
         let summaries = session
             .events
             .iter()
@@ -707,7 +729,13 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
     if jobs > 1 {
         assert_ne!(workers[0].trace_id, workers[jobs - 1].trace_id);
     }
-    collector.assert_no_private_markers(&[previous_bearer.as_deref().unwrap(), "shared-input\n"]);
+    collector.assert_no_private_markers(
+        &private_bearers
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once("shared-input\n"))
+            .collect::<Vec<_>>(),
+    );
     collector.assert_metric_attributes_are_bounded();
     if let Some(path) = std::env::var_os("TELCHAR_TRACE_ARTIFACT") {
         collector.write_trace_artifact(path);

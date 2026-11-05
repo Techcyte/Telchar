@@ -112,7 +112,12 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
         .unwrap()
         .unwrap()
         .attempt_id;
-    crate::persistence::record_microvm_attempt_trace_context(database, attempt, &telchar_telemetry::TraceContext::capture_current()).unwrap();
+    crate::persistence::record_microvm_attempt_trace_context(
+        database,
+        attempt,
+        &telchar_telemetry::TraceContext::capture_current(),
+    )
+    .unwrap();
     let intent = crate::persistence::MicrovmLaunchIntent {
         intent_id: "runtime-intent".into(),
         attempt_id: attempt,
@@ -431,8 +436,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert_eq!(confirmations.len(), 1);
     collector::Collector::assert_child(&parents[0], &confirmations[0]);
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
-    assert!(confirmations[0].attributes.iter().any(|attribute| attribute.key == "confirmed"
-        && attribute.value.as_ref().and_then(|value| value.value.as_ref()) == Some(&Value::BoolValue(true))));
+    assert!(confirmations[0].attributes.iter().any(|attribute| {
+        attribute.key == "confirmed"
+            && attribute
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref())
+                == Some(&Value::BoolValue(true))
+    }));
     collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
-    if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") { collector.write_trace_artifact(path); }
+    if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
+        collector.write_trace_artifact(path);
+    }
 }
