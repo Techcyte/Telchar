@@ -12,14 +12,61 @@ use telchar::persistence as db;
 use telchar::service::singleton_ownership::SingletonOwnership;
 
 const TEST: &str = "microvm_reuse::sequential_jobs_reuse_one_supervised_worker";
-const OUTPUTS: [&str; 2] = [
-    "/nix/store/ffffffffffffffffffffffffffffffff-dedicated-output",
-    "/nix/store/99999999999999999999999999999999-dedicated-output",
-];
-const DRVS: [&str; 2] = [
-    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv",
-    "/nix/store/cccccccccccccccccccccccccccccccc-dedicated.drv",
-];
+const BENCHMARK: &str = "microvm_reuse::cold_warm_connected_benchmark";
+
+fn benchmark_control(name: &str, default: usize, maximum: usize) -> usize {
+    let value = std::env::var(name).map_or(default, |value| value.parse().unwrap());
+    assert!(
+        (1..=maximum).contains(&value),
+        "{name} must be 1..={maximum}"
+    );
+    value
+}
+
+/// Opt-in: every sample executes the connected production path, never a synthetic loop.
+#[test]
+#[ignore = "opt-in real Nix/TLS/PostgreSQL cold/warm benchmark; see tests/microvm/connected-reuse.md"]
+fn cold_warm_connected_benchmark() {
+    let samples = benchmark_control("MICROVM_BENCH_SAMPLES", 3, 10);
+    let mib = benchmark_control("MICROVM_BENCH_INPUT_MIB", 32, 64);
+    if std::env::var_os("MICROVM_TEST_STORE_URI").is_some() {
+        let mode = std::env::var("MICROVM_BENCH_MODE").unwrap();
+        connected_jobs(if mode == "cold" { 1 } else { samples + 1 }, mib, &mode);
+        return;
+    }
+    // Fresh fixture/database/worker for every cold sample. Warm has one unmeasured
+    // seed job then the same number of measured jobs, all in the same helper/root.
+    for mode in std::iter::repeat_n("cold", samples).chain(std::iter::once("warm")) {
+        run_fixture(BENCHMARK, Some(mode));
+    }
+}
+
+fn run_fixture(test: &str, mode: Option<&str>) {
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    let mut command = Command::new("bash");
+    command
+        .env("MICROVM_TEST_DATABASE", database.url())
+        .env("MICROVM_TEST_CASE", "supervised")
+        .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+        .arg(FIXTURE)
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .stdout(Stdio::inherit());
+    if let Some(mode) = mode {
+        command.env("MICROVM_BENCH_MODE", mode).arg("--ignored");
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 struct SupervisedWorker {
     child: Child,
@@ -112,33 +159,23 @@ impl SupervisedWorker {
 #[test]
 fn sequential_jobs_reuse_one_supervised_worker() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        let database = telchar_test_support::postgres::PostgresFixture::start();
-        let output = Command::new("bash")
-            .env("MICROVM_TEST_DATABASE", database.url())
-            .env("MICROVM_TEST_CASE", "supervised")
-            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
-            .arg(FIXTURE)
-            .arg(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
-            .output()
-            .unwrap();
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            output.stderr.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        run_fixture(TEST, None);
         return;
     }
+    connected_jobs(2, 0, "regression");
+}
+
+fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
+    let outputs: Vec<_> = (0..jobs)
+        .map(|index| format!("/nix/store/{index:032}-dedicated-output"))
+        .collect();
+    let drvs: Vec<_> = (0..jobs)
+        .map(|index| format!("/nix/store/{index:032}-dedicated.drv"))
+        .collect();
     let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
     let database = std::env::var("MICROVM_TEST_DATABASE").unwrap();
     db::migrate(&database).unwrap();
-    let owner = Arc::new(SingletonOwnership::acquire(&database, Duration::from_secs(120)).unwrap());
+    let owner = Arc::new(SingletonOwnership::acquire(&database, Duration::from_secs(600)).unwrap());
     let sessions = Arc::new(ExecutionSessions::new(1).unwrap());
     let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gateway_address = gateway.local_addr().unwrap();
@@ -157,7 +194,18 @@ fn sequential_jobs_reuse_one_supervised_worker() {
         GatewayStoreEndpoint::parse(&std::env::var("MICROVM_TEST_STORE_URI").unwrap()).unwrap();
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     let source = root.join("shared-input");
-    std::fs::write(&source, b"shared-input\n").unwrap();
+    if input_mib == 0 {
+        std::fs::write(&source, b"shared-input\n").unwrap();
+    } else {
+        // Kernel random bytes: large shared closure with no compressibility shortcut.
+        let mut random = std::fs::File::open("/dev/urandom").unwrap();
+        let mut file = std::fs::File::create(&source).unwrap();
+        std::io::copy(
+            &mut std::io::Read::take(&mut random, (input_mib * 1024 * 1024) as u64),
+            &mut file,
+        )
+        .unwrap();
+    }
     let added = Command::new("nix-store")
         .args(["--store", "local", "--add"])
         .arg(&source)
@@ -184,42 +232,80 @@ fn sequential_jobs_reuse_one_supervised_worker() {
         .parent()
         .unwrap();
     let kind = telchar::backend::BackendKind::Microvm;
-    let requests: Vec<_> = (0..2).map(|index| {
-        let output = OUTPUTS[index];
-        let script = format!("test ! -e {}; read -r value < {input}; printf '%s-job-{index}\\n' \"$value\" > \"$out\"", OUTPUTS[1-index]);
+    let hasher = Command::new("bash")
+        .args(["-c", "command -v sha256sum"])
+        .output()
+        .unwrap();
+    // Keep the sha256sum basename: coreutils may use argv[0] for multicall dispatch.
+    let hasher = std::path::PathBuf::from(String::from_utf8(hasher.stdout).unwrap().trim());
+    let hash_package = hasher.parent().unwrap().parent().unwrap();
+    let hash = Command::new(&hasher).arg(&source).output().unwrap();
+    assert!(
+        hash.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hash.stderr)
+    );
+    let hash = String::from_utf8(hash.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let expected_input = if input_mib == 0 {
+        "shared-input".to_owned()
+    } else {
+        format!("{hash}  -")
+    };
+    let requests: Vec<_> = (0..jobs).map(|index| {
+        let output = &outputs[index];
+        let isolation = outputs.iter().filter(|path| *path != output)
+            .map(|path| format!("test ! -e {path}; ")).collect::<String>();
+        let read = if input_mib == 0 {
+            format!("read -r value < {input}")
+        } else {
+            format!("value=$({} < {input})", hasher.display())
+        };
+        let script = format!("{isolation}{read}; printf '%s-job-{index}\\n' \"$value\" > \"$out\"");
         let script = serde_json::to_string(&script).unwrap();
         let system = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
-        let derivation = format!(r#"Derive([("out","{output}","","")],[],["{input}","{}"],"{system}","{builder}",["-e","-c",{script}],[("out","{output}"),("system","{system}"),("builder","{builder}"),("name","dedicated")])"#, package.display());
-        telchar::build::BuildRequest::from_stored_derivation(DRVS[index].as_bytes(), derivation.as_bytes(), &[telchar::backend::BackendTarget::new("build", kind, &system, [] as [&str;0]).unwrap()]).unwrap()
+        let hash_input = if input_mib == 0 { String::new() } else { format!(",\"{}\"", hash_package.display()) };
+        let derivation = format!(r#"Derive([("out","{output}","","")],[],["{input}","{}"{hash_input}],"{system}","{builder}",["-e","-c",{script}],[("out","{output}"),("system","{system}"),("builder","{builder}"),("name","dedicated")])"#, package.display());
+        telchar::build::BuildRequest::from_stored_derivation(drvs[index].as_bytes(), derivation.as_bytes(), &[telchar::backend::BackendTarget::new("build", kind, &system, [] as [&str;0]).unwrap()]).unwrap()
     }).collect();
     let limits = Limits {
-        maximum_paths: 100,
-        maximum_nar_bytes: 64 * 1024 * 1024,
-        maximum_total_bytes: 128 * 1024 * 1024,
+        maximum_paths: 500,
+        maximum_nar_bytes: 320 * 1024 * 1024,
+        maximum_total_bytes: 512 * 1024 * 1024,
         metadata_bytes: 8192,
         chunk_bytes: 256 * 1024,
     };
+    let cold_started = Instant::now();
     let mut worker = SupervisedWorker::start(&root, builder);
     let mut previous_report = None;
     let mut previous_bearer = None;
     let mut previous_verifier = None;
-    for index in 0..2 {
+    for index in 0..jobs {
+        let job_started = if index == 0 {
+            cold_started
+        } else {
+            Instant::now()
+        };
         let epoch = index as i64 + 1;
         let request = &requests[index];
         db::claim_shared_build_with_request(
             owner.database(),
-            DRVS[index],
+            &drvs[index],
             &request.shared_build_digest(),
             "build",
             kind,
             kind.capabilities(),
             None,
-            &[OUTPUTS[index]],
+            &[outputs[index].as_str()],
             request,
         )
         .unwrap();
-        db::start_shared_build(owner.database(), DRVS[index]).unwrap();
-        let attempt = db::read_shared_build_attempt(owner.database(), DRVS[index])
+        db::start_shared_build(owner.database(), &drvs[index]).unwrap();
+        let attempt = db::read_shared_build_attempt(owner.database(), &drvs[index])
             .unwrap()
             .unwrap()
             .attempt_id;
@@ -302,13 +388,13 @@ fn sequential_jobs_reuse_one_supervised_worker() {
                     &capability.verifier()
                 )
                 .unwrap(),
-                Some(("build-intent".into(), "microvm-build".into(), 2, 60))
+                Some(("build-intent".into(), "microvm-build".into(), epoch, 60))
             );
             assert!(
                 !db::admit_microvm_worker_session(
                     owner.database(),
                     "build-intent",
-                    1,
+                    epoch - 1,
                     "microvm-build",
                     &previous_verifier.unwrap()
                 )
@@ -337,17 +423,20 @@ fn sequential_jobs_reuse_one_supervised_worker() {
             thread
         };
         previous_verifier = Some(capability.verifier());
+        let hook_started = Instant::now();
         let started = worker.command(serde_json::json!({"command":"start","hook":{"microvmId":"microvm-build","runHookPayload":payload}}));
         assert_eq!(started["assignment_epoch"], epoch);
         assert_eq!(started["status"], "running");
-        let receipts = relay(&tls, gateway_address, &input, index == 0, &mut store);
-        assert_eq!(receipts, vec![OUTPUTS[index].to_owned()]);
+        let hook_ms = hook_started.elapsed().as_secs_f64() * 1000.0;
+        let transfer = relay(&tls, gateway_address, &input, index == 0, &mut store);
+        let reset_started = Instant::now();
+        assert_eq!(transfer.receipts, vec![outputs[index].clone()]);
         let result = gateway_thread.join().unwrap().unwrap();
         assert_eq!(result.outcome, BuildOutcome::Built);
-        assert!(store.is_valid_path(OUTPUTS[index].as_bytes()).unwrap());
+        assert!(store.is_valid_path(outputs[index].as_bytes()).unwrap());
         assert_eq!(
-            std::fs::read_to_string(OUTPUTS[index]).unwrap(),
-            format!("shared-input-job-{index}\n")
+            std::fs::read_to_string(&outputs[index]).unwrap(),
+            format!("{expected_input}-job-{index}\n")
         );
         assert!(
             !db::reset_microvm_worker_until(
@@ -361,10 +450,10 @@ fn sequential_jobs_reuse_one_supervised_worker() {
             .unwrap(),
             "runtime completion alone cannot reset an unfinished gateway attempt"
         );
-        db::collect_shared_build(owner.database(), DRVS[index]).unwrap();
+        db::collect_shared_build(owner.database(), &drvs[index]).unwrap();
         db::complete_shared_build_success(
             owner.database(),
-            DRVS[index],
+            &drvs[index],
             &serde_json::to_value(&result).unwrap(),
             Duration::from_secs(60),
         )
@@ -399,6 +488,22 @@ fn sequential_jobs_reuse_one_supervised_worker() {
             )
             .unwrap()
         );
+        if input_mib > 0 {
+            println!(
+                "MICROVM_BENCH {}",
+                serde_json::json!({
+                    "mode": if mode == "warm" && index == 0 { "seed" } else { mode },
+                    "epoch": epoch, "input_mib": input_mib,
+                    "job_reset_ms": job_started.elapsed().as_secs_f64() * 1000.0,
+                    "hook_start_ms": hook_ms,
+                    "connect_auth_ms": transfer.connect_auth_ms,
+                    "input_transfer_ms": transfer.input_transfer_ms,
+                    "after_input_through_result_ms": transfer.after_input_through_result_ms,
+                    "reset_ms": reset_started.elapsed().as_secs_f64() * 1000.0,
+                    "input_nar_bytes": transfer.input_bytes, "output_nar_bytes": transfer.output_bytes
+                })
+            );
+        }
         println!(
             "epoch {epoch}: registered distinct output, receipt accepted, shared input requested={}, clean production reset",
             index == 0
@@ -416,16 +521,18 @@ fn sequential_jobs_reuse_one_supervised_worker() {
     );
     assert!(row.get::<_, bool>(1));
     let rows = control.query("SELECT assignment_epoch,admitted_at IS NOT NULL,completed_at IS NOT NULL,credential_verifier FROM microvm_assignments ORDER BY assignment_epoch", &[]).unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), jobs);
     for (index, row) in rows.iter().enumerate() {
         assert_eq!(row.get::<_, i64>(0), index as i64 + 1);
         assert!(row.get::<_, bool>(1));
         assert!(row.get::<_, bool>(2));
     }
-    assert_ne!(rows[0].get::<_, Vec<u8>>(3), rows[1].get::<_, Vec<u8>>(3));
+    for pair in rows.windows(2) {
+        assert_ne!(pair[0].get::<_, Vec<u8>>(3), pair[1].get::<_, Vec<u8>>(3));
+    }
     let row = control.query_one("SELECT state,completed_jobs,owner_generation FROM microvm_workers WHERE intent_id='build-intent'", &[]).unwrap();
     assert_eq!(row.get::<_, String>(0), "idle");
-    assert_eq!(row.get::<_, i64>(1), 2);
+    assert_eq!(row.get::<_, i64>(1), jobs as i64);
     let generation = control
         .query_one(
             "SELECT generation FROM singleton_ownership WHERE owner_kind='daemon'",
@@ -436,13 +543,25 @@ fn sequential_jobs_reuse_one_supervised_worker() {
     assert_eq!(row.get::<_, i64>(2), generation);
 }
 
+#[derive(Default)]
+struct TransferMeasurement {
+    receipts: Vec<String>,
+    input_bytes: u64,
+    output_bytes: u64,
+    connect_auth_ms: f64,
+    input_transfer_ms: f64,
+    after_input_through_result_ms: f64,
+}
+
 fn relay(
     listener: &std::net::TcpListener,
     gateway: std::net::SocketAddr,
     input: &str,
     cold: bool,
     store: &mut GatewayStoreConnection,
-) -> Vec<String> {
+) -> TransferMeasurement {
+    let started = Instant::now();
+    let mut measurement = TransferMeasurement::default();
     listener.set_nonblocking(true).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let stream = loop {
@@ -475,7 +594,8 @@ fn relay(
     upstream.send(socket.read().unwrap()).unwrap();
     socket.send(upstream.read().unwrap()).unwrap();
     let mut requested_input = false;
-    let mut receipts = Vec::new();
+    measurement.connect_auth_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let mut inputs_finished = Instant::now();
     loop {
         let message = socket.read().unwrap();
         let frame = read_frame(
@@ -486,6 +606,7 @@ fn relay(
         upstream.send(message).unwrap();
         match frame.kind() {
             FrameKind::InputRequest => {
+                let inputs_started = Instant::now();
                 let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
                 requested_input = requested.paths.iter().any(|path| path == input);
                 for _ in requested.paths {
@@ -497,14 +618,18 @@ fn relay(
                         )
                         .unwrap();
                         let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                        measurement.input_bytes += frame.payload().len() as u64;
                         socket.send(message).unwrap();
                         if chunk.final_chunk {
                             break;
                         }
                     }
                 }
+                measurement.input_transfer_ms = inputs_started.elapsed().as_secs_f64() * 1000.0;
+                inputs_finished = Instant::now();
             }
             FrameKind::OutputNar => {
+                measurement.output_bytes += frame.payload().len() as u64;
                 let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
                 if chunk.final_chunk {
                     let message = upstream.read().unwrap();
@@ -523,7 +648,7 @@ fn relay(
                             .is_some(),
                         "receipt follows authoritative gateway registration"
                     );
-                    receipts.push(receipt.path);
+                    measurement.receipts.push(receipt.path);
                     socket.send(message).unwrap();
                 }
             }
@@ -532,5 +657,6 @@ fn relay(
         }
     }
     assert_eq!(requested_input, cold, "only cold job requests shared input");
-    receipts
+    measurement.after_input_through_result_ms = inputs_finished.elapsed().as_secs_f64() * 1000.0;
+    measurement
 }

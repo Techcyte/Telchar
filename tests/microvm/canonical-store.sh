@@ -24,7 +24,12 @@ trap cleanup EXIT
 mkdir "$root/upper" "$root/work" "$root/store" "$root/state" "$root/log" "$root/conf" "$root/tmp"
 if [[ ${MICROVM_TEST_CASE:-} == supervised ]]; then
     builder=$(realpath "$(command -v bash)")
-    nix-store --query --requisites "$(dirname "$(dirname "$builder")")" > "$root/builder-paths"
+    packages=("$(dirname "$(dirname "$builder")")")
+    if [[ -n ${MICROVM_BENCH_MODE:-} ]]; then
+        # Benchmark builders hash the full shared input with the real Nix coreutils.
+        packages+=("$(dirname "$(dirname "$(command -v sha256sum)")")")
+    fi
+    nix-store --query --requisites "${packages[@]}" > "$root/builder-paths"
     mapfile -t builder_paths < "$root/builder-paths"
     nix-store --dump-db "${builder_paths[@]}" > "$root/builder-registration"
     export MICROVM_TEST_REGISTRATION="$root/builder-registration"
