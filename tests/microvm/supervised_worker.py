@@ -1,23 +1,29 @@
 """Real Rust worker driven by production execution supervision."""
+import importlib
 import json
 import os
-from pathlib import Path
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "deploy/microvm"))
-from execution import ExecutionState
+ExecutionState = importlib.import_module("execution").ExecutionState
 
 
 def main():
-    binary, binding, trust, builder = sys.argv[1:]
+    binary, binding, trust, builder = sys.argv[1:5]
+    persistent = sys.argv[5:] == ["--persistent"]
     destination = Path(binding)
-    payload = json.loads(destination.read_text())
-    identity = payload.pop("provider_id")
-    payload["version"] = 1
-    destination.unlink()
+    initial_hook = None
+    if not persistent:
+        payload = json.loads(destination.read_text())
+        identity = payload.pop("provider_id")
+        payload["version"] = 1
+        initial_hook = {"microvmId": identity, "runHookPayload": json.dumps(payload)}
+        destination.unlink()
     with tempfile.TemporaryDirectory(prefix="telchar-supervised-worker-") as temporary:
         retained = Path(temporary) / "inputs"
         for name in ("NIX_STATE_DIR", "NIX_STORE_DIR", "NIX_LOG_DIR", "NIX_DAEMON_SOCKET_PATH"):
@@ -27,6 +33,7 @@ def main():
             "sandbox = true\nbuild-users-group =\nsubstituters =\n"
             "require-drop-supplementary-groups = false\n")
         nix = shutil.which("nix")
+        assert nix is not None
         copied = subprocess.run([nix, "copy", "--to", f"local?root={retained}",
                                  "--no-check-sigs", str(Path(builder).parent.parent)],
                                 capture_output=True)
@@ -51,12 +58,42 @@ def main():
         state = ExecutionState([nix, "daemon"], [str(worker), binding, trust, "unix://" + socket],
                                [nix, "store", "ping", "--store", "unix://" + socket],
                                destination, Path(trust))
-        assert state.start_hook({"microvmId": identity, "runHookPayload": json.dumps(payload)})
-        state.join()
-        if not state.report()["reset_complete"]:
-            raise RuntimeError(f'{state.report()}: {diagnostics.read_text()}')
-        assert not destination.exists()
-        assert not list((retained / "nix/store").glob("*-dedicated-output"))
+        def completed():
+            state.join()
+            report = state.report()
+            if not report["reset_complete"]:
+                raise RuntimeError(f'{report}: {diagnostics.read_text()}')
+            assert not destination.exists()
+            private = list((retained / "nix/store").glob("*-dedicated-output"))
+            assert not private
+            report.update(helper_pid=os.getpid(), retained_root=str(retained),
+                          binding_absent=True, private_outputs_absent=True)
+            return report
+
+        if persistent:
+            # Fixture-only bounded provider hook channel; never a production listener.
+            while True:
+                if not select.select([sys.stdin], [], [], 60)[0]:
+                    raise TimeoutError("supervised control deadline")
+                line = sys.stdin.buffer.readline(32769)
+                if not line or len(line) > 32768:
+                    raise ValueError("invalid supervised control message")
+                command = json.loads(line)
+                if command["command"] == "start":
+                    assert state.start_hook(command["hook"])
+                    report = state.report()
+                elif command["command"] == "join":
+                    report = completed()
+                elif command["command"] == "stop":
+                    assert state.report()["reset_complete"]
+                    break
+                else:
+                    raise ValueError("invalid supervised command")
+                print(json.dumps(report), flush=True)
+        else:
+            assert initial_hook is not None
+            assert state.start_hook(initial_hook)
+            completed()
         for directory, _, _ in os.walk(retained):
             os.chmod(directory, 0o700)
     return 0

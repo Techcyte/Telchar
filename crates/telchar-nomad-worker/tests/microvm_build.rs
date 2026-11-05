@@ -7,6 +7,8 @@ use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 mod microvm_daemon;
+#[path = "microvm_build/reuse.rs"]
+mod microvm_reuse;
 
 #[allow(dead_code)]
 #[path = "../../../tests/telemetry/collector.rs"]
@@ -980,39 +982,7 @@ chunk_bytes = 262144
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    let config = rustls::ServerConfig::builder_with_provider(
-        rustls::crypto::ring::default_provider().into(),
-    )
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
-        rustls::pki_types::PrivateKeyDer::Pkcs8(
-            include_bytes!("fixtures/microvm-key.der").to_vec().into(),
-        ),
-    )
-    .unwrap();
-    let tls = rustls::StreamOwned::new(
-        rustls::ServerConnection::new(Arc::new(config)).unwrap(),
-        stream,
-    );
-    #[allow(clippy::result_large_err)]
-    let upgrade = |_: &tungstenite::handshake::server::Request,
-                   mut response: tungstenite::handshake::server::Response| {
-        response.headers_mut().insert(
-            "sec-websocket-protocol",
-            "telchar-microvm-v1".parse().unwrap(),
-        );
-        Ok(response)
-    };
-    let mut socket = tungstenite::accept_hdr(tls, upgrade).unwrap();
+    let mut socket = tls_worker_socket(stream);
     use telchar::nomad::protocol::{
         FrameKind, NarMetadata, PathSet, ProtocolLimits, decode_metadata, read_frame,
     };
@@ -1370,4 +1340,42 @@ chunk_bytes = 262144
         std::fs::read(output).unwrap(),
         b"dedicated-worker-success\n"
     );
+}
+
+fn tls_worker_socket(
+    stream: std::net::TcpStream,
+) -> tungstenite::WebSocket<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(
+            include_bytes!("fixtures/microvm-key.der").to_vec().into(),
+        ),
+    )
+    .unwrap();
+    let tls = rustls::StreamOwned::new(
+        rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+        stream,
+    );
+    #[allow(clippy::result_large_err)]
+    let upgrade = |_: &tungstenite::handshake::server::Request,
+                   mut response: tungstenite::handshake::server::Response| {
+        response.headers_mut().insert(
+            "sec-websocket-protocol",
+            "telchar-microvm-v1".parse().unwrap(),
+        );
+        Ok(response)
+    };
+    tungstenite::accept_hdr(tls, upgrade).unwrap()
 }
