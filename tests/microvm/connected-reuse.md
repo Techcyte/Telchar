@@ -62,6 +62,23 @@ Each `MICROVM_BENCH` JSON record contains milliseconds and NAR payload bytes:
   authentication metadata. Cold includes missing dependency closures, warm should
   be zero for this unchanged shared closure.
 
+Benchmark runs also emit one `MICROVM_RELAY_PROFILE` JSON record per requested
+path, in transfer order (`path_index`). `timing` contains payload `bytes`, `frames`,
+`maximum_payload_bytes`, and `read`, `decode`, `tls_send` operation summaries
+(`total_us`, `maximum_us`, `over_20ms`). Read is the upstream WebSocket read wait;
+decode includes copying/parsing the transfer frame and NAR metadata; TLS send is
+the downstream WebSocket send/flush call, **not** peer receipt or import completion.
+The 20 ms counter is a diagnostic threshold, not proof of delayed ACKs.
+These synchronous relay intervals partition only the relay loop; gateway export,
+authority checks, network transfer and worker import are pipelined and overlap.
+
+`MICROVM_BENCH_RELAY_NODELAY=1` enables TCP_NODELAY only on the fixture relay's
+accepted worker-side socket and gateway-side socket. The default is off. It does
+not change either production peer, TLS trust, NAR validation, or import behavior;
+it is a bounded diagnostic control, not a recommended deployment tuning.
+See [cold-transfer profiling](cold-transfer-profile.md) for measured evidence and
+limitations, including temporary instrumentation that is not kept in production.
+
 These phase intervals are coarse and not a complete additive partition.
 The summary reports median and observed maximum, not a statistically meaningful
 p95/p99 from a tiny sample. Cold runs precede warm runs; host filesystem/page caches

@@ -562,6 +562,10 @@ fn relay(
 ) -> TransferMeasurement {
     let started = Instant::now();
     let mut measurement = TransferMeasurement::default();
+    let profile = std::env::var_os("MICROVM_BENCH_MODE").is_some();
+    // Control only the fixture relay's two TCP sockets, never the production peers.
+    let relay_nodelay =
+        profile && std::env::var("MICROVM_BENCH_RELAY_NODELAY").as_deref() == Ok("1");
     listener.set_nonblocking(true).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let stream = loop {
@@ -574,6 +578,7 @@ fn relay(
             Err(error) => panic!("TLS accept: {error}"),
         }
     };
+    stream.set_nodelay(relay_nodelay).unwrap();
     let mut socket = super::tls_worker_socket(stream);
     use tungstenite::client::IntoClientRequest;
     let mut request = format!("ws://{gateway}/microvm")
@@ -584,6 +589,7 @@ fn relay(
         "telchar-microvm-v1".parse().unwrap(),
     );
     let stream = std::net::TcpStream::connect(gateway).unwrap();
+    stream.set_nodelay(relay_nodelay).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
@@ -609,20 +615,41 @@ fn relay(
                 let inputs_started = Instant::now();
                 let requested: PathSet = decode_metadata(frame.metadata(), 8192).unwrap();
                 requested_input = requested.paths.iter().any(|path| path == input);
-                for _ in requested.paths {
+                for (path_index, _) in requested.paths.iter().enumerate() {
+                    let path_started = Instant::now();
+                    let mut timing = RelayInputProfile::default();
                     loop {
+                        let started = Instant::now();
                         let message = upstream.read().unwrap();
+                        timing.read.observe(started.elapsed());
+                        let started = Instant::now();
                         let frame = read_frame(
                             &mut message.clone().into_data().as_ref(),
                             ProtocolLimits::new(8192, 256 * 1024),
                         )
                         .unwrap();
                         let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                        timing.frames += 1;
+                        timing.bytes += frame.payload().len() as u64;
+                        timing.maximum_payload_bytes =
+                            timing.maximum_payload_bytes.max(frame.payload().len());
+                        timing.decode.observe(started.elapsed());
                         measurement.input_bytes += frame.payload().len() as u64;
+                        let started = Instant::now();
                         socket.send(message).unwrap();
+                        timing.tls_send.observe(started.elapsed());
                         if chunk.final_chunk {
                             break;
                         }
+                    }
+                    if profile {
+                        println!(
+                            "MICROVM_RELAY_PROFILE {}",
+                            serde_json::json!({
+                                "path_index": path_index, "elapsed_ms": path_started.elapsed().as_secs_f64() * 1000.0,
+                                "cold": cold, "relay_nodelay": relay_nodelay, "timing": timing
+                            })
+                        );
                     }
                 }
                 measurement.input_transfer_ms = inputs_started.elapsed().as_secs_f64() * 1000.0;
@@ -659,4 +686,32 @@ fn relay(
     assert_eq!(requested_input, cold, "only cold job requests shared input");
     measurement.after_input_through_result_ms = inputs_finished.elapsed().as_secs_f64() * 1000.0;
     measurement
+}
+
+/// Durations in this synchronous relay partition its own loop, not the pipelined
+/// gateway/worker work: upstream read wait can include export, fencing and import.
+#[derive(Default, serde::Serialize)]
+struct RelayInputProfile {
+    bytes: u64,
+    frames: u64,
+    maximum_payload_bytes: usize,
+    read: RelayOperationProfile,
+    decode: RelayOperationProfile,
+    tls_send: RelayOperationProfile,
+}
+
+#[derive(Default, serde::Serialize)]
+struct RelayOperationProfile {
+    total_us: u64,
+    maximum_us: u64,
+    over_20ms: u64,
+}
+
+impl RelayOperationProfile {
+    fn observe(&mut self, elapsed: Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap();
+        self.total_us += micros;
+        self.maximum_us = self.maximum_us.max(micros);
+        self.over_20ms += u64::from(elapsed >= Duration::from_millis(20));
+    }
 }
