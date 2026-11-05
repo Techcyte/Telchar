@@ -56,9 +56,13 @@ impl Execution<'_> {
         std::thread::scope(|scope| {
             let stopped = &stopped;
             let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
+            // tracing's current span is thread-local; keep the routed backend parent
+            // through the cancellation-monitor/worker boundary on cold and warm jobs.
+            let execution_span = tracing::Span::current();
             let worker = std::thread::Builder::new()
                 .name("microvm-execution".into())
                 .spawn_scoped(scope, move || {
+                    let _entered = execution_span.enter();
                     self.run_build_until(config, build, stopped, |bytes| {
                         for chunk in bytes.chunks(64 * 1024) {
                             let _ = sender.try_send(chunk.to_vec());
@@ -214,6 +218,15 @@ impl Execution<'_> {
         }
         if Instant::now() >= deadline {
             return Err(io::Error::other("MicroVM execution deadline expired"));
+        }
+        if crate::persistence::record_microvm_attempt_trace_context(
+            self.owner.database(),
+            attempt_id,
+            &telchar_telemetry::TraceContext::capture_current(),
+        )
+        .is_err()
+        {
+            tracing::warn!(event = "microvm.trace_context.retention_failed");
         }
         let (intent, payload) = loop {
             self.owner.verify().map_err(io::Error::other)?;

@@ -75,7 +75,14 @@ impl SupervisedWorker {
         let trust = root.join("reuse-trust.der");
         std::fs::write(&trust, include_bytes!("../fixtures/microvm-cert.der")).unwrap();
         let mut child = Command::new("bash")
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                if std::env::var("MICROVM_TRACE_TEST_MODE").as_deref() == Ok("disabled") {
+                    "off"
+                } else {
+                    "info"
+                },
+            )
             .arg(FIXTURE)
             .arg("/bin/sh")
             .args(["-c", "exec python3 \"$@\"", "supervised-worker"])
@@ -153,6 +160,24 @@ impl SupervisedWorker {
 }
 
 #[test]
+fn unavailable_or_disabled_telemetry_preserves_connected_execution() {
+    for mode in ["unavailable", "disabled"] {
+        let database = telchar_test_support::postgres::PostgresFixture::start();
+        let status = Command::new("bash")
+            .env("MICROVM_TRACE_TEST_MODE", mode)
+            .env("MICROVM_TEST_DATABASE", database.url())
+            .env("MICROVM_TEST_CASE", "supervised")
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+            .arg(FIXTURE)
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "telemetry mode {mode}");
+    }
+}
+
+#[test]
 fn sequential_jobs_reuse_one_supervised_worker() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
         run_fixture(TEST, None);
@@ -163,10 +188,26 @@ fn sequential_jobs_reuse_one_supervised_worker() {
 
 fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
     let collector = collector::start_collector();
+    let trace_mode = std::env::var("MICROVM_TRACE_TEST_MODE").unwrap_or_default();
     // This fixture runs in its own test subprocess. Propagate the collector to the
     // real worker through both namespace/supervision subprocess boundaries.
     unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            if trace_mode == "unavailable" {
+                "http://127.0.0.1:1".to_owned()
+            } else {
+                collector.endpoint()
+            },
+        );
+        std::env::set_var(
+            "RUST_LOG",
+            if trace_mode == "disabled" {
+                "off"
+            } else {
+                "info"
+            },
+        );
         std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
@@ -317,8 +358,11 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
         let execution_span = tracing::info_span!(parent: None, "backend.execution");
         let entered = execution_span.enter();
         let context = telchar_telemetry::TraceContext::capture_current();
-        assert!(context.traceparent().is_some());
-        expected_parents.push(context.traceparent().unwrap().to_owned());
+        if trace_mode == "disabled" {
+            assert!(context.traceparent().is_none());
+        } else {
+            expected_parents.push(context.traceparent().unwrap().to_owned());
+        }
         let capability = Capability::generate().unwrap();
         if let Some(previous) = &previous_bearer {
             assert_ne!(previous, capability.bearer());
@@ -557,6 +601,9 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
         .get::<_, i64>(0);
     assert_eq!(row.get::<_, i64>(2), generation);
     telemetry.shutdown();
+    if !trace_mode.is_empty() {
+        return;
+    }
     let parents = collector.spans("telchar", "backend.execution");
     let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
     assert_eq!(parents.len(), jobs);
@@ -600,6 +647,62 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             .find(|span| span.trace_id == trace_id)
             .unwrap();
         collector::Collector::assert_child(parent, session);
+        let summaries = session
+            .events
+            .iter()
+            .filter(|event| {
+                collector::Collector::has_attribute(
+                    &event.attributes,
+                    "event",
+                    "microvm.authority.summary",
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summaries.len(),
+            10,
+            "bounded stage/source summaries per assignment"
+        );
+        for stage in [
+            "load",
+            "ownership",
+            "request_connection",
+            "request_query",
+            "request_decode_validate",
+        ] {
+            let summary = summaries
+                .iter()
+                .find(|event| {
+                    collector::Collector::has_attribute(&event.attributes, "stage", stage)
+                        && collector::Collector::has_attribute(
+                            &event.attributes,
+                            "source",
+                            "transfer",
+                        )
+                })
+                .unwrap();
+            let number = |name: &str| {
+                summary
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == name)
+                    .unwrap()
+                    .value
+                    .as_ref()
+                    .unwrap()
+                    .value
+                    .as_ref()
+                    .unwrap()
+            };
+            use opentelemetry_proto::tonic::common::v1::any_value::Value;
+            assert!(matches!(number("count"), Value::IntValue(value) if *value > 0));
+            assert!(
+                matches!(number("total_ms"), Value::DoubleValue(value) if value.is_finite() && *value > 0.0)
+            );
+            assert!(
+                matches!(number("maximum_ms"), Value::DoubleValue(value) if value.is_finite() && *value > 0.0)
+            );
+        }
     }
     if jobs > 1 {
         assert_ne!(workers[0].trace_id, workers[jobs - 1].trace_id);

@@ -666,6 +666,36 @@ pub fn microvm_attempt_request(
     row.map(|row| decode_microvm_request(&row)).transpose()
 }
 
+/// Retains diagnostic continuity for the exact active MicroVM attempt, not authority.
+pub(crate) fn record_microvm_attempt_trace_context(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+    context: &telchar_telemetry::TraceContext,
+) -> Result<(), MicrovmLaunchError> {
+    context.validate().map_err(|_| MicrovmLaunchError)?;
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let updated = client.execute(
+        "UPDATE shared_build_attempts SET traceparent=$2,tracestate=$3 WHERE attempt_id=$1 AND backend_kind='microvm' AND state='running'",
+        &[&attempt_id, &context.traceparent(), &context.tracestate()],
+    ).map_err(|_| MicrovmLaunchError)?;
+    if updated != 1 {
+        return Err(MicrovmLaunchError);
+    }
+    Ok(())
+}
+
+pub(crate) fn microvm_attempt_trace_context(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+) -> Result<telchar_telemetry::TraceContext, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client.query_opt(
+        "SELECT traceparent,tracestate FROM shared_build_attempts WHERE attempt_id=$1 AND backend_kind='microvm'",
+        &[&attempt_id],
+    ).map_err(|_| MicrovmLaunchError)?.ok_or(MicrovmLaunchError)?;
+    telchar_telemetry::TraceContext::new(row.get(0), row.get(1)).map_err(|_| MicrovmLaunchError)
+}
+
 pub fn microvm_session_request(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

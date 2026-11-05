@@ -192,6 +192,11 @@ impl Provider {
             "microvm.gateway.reset_confirmation",
             confirmed = tracing::field::Empty
         );
+        if let Ok(context) =
+            crate::persistence::microvm_attempt_trace_context(owner.database(), attempt_id)
+        {
+            context.set_parent(&span);
+        }
         let _entered = span.enter();
         let response = self.worker_request(
             owner,

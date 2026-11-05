@@ -622,8 +622,11 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     shared_builds: &crate::shared_build::SharedBuildRegistry,
     shared_build_key: &str,
 ) -> io::Result<BuildCollectionOutcome> {
+    let span = tracing::info_span!("nomad.gateway.build_and_collect");
+    let _entered = span.enter();
     let mut current: Option<OutputImport> = None;
     let mut collecting = false;
+    let mut _collection = None;
     let mut deadline =
         OutputCollectionDeadline::new(connection_deadline, limits.output_collection_timeout());
     loop {
@@ -664,6 +667,8 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     ));
                 }
                 if !collecting {
+                    _collection =
+                        Some(tracing::info_span!("nomad.gateway.collect_outputs").entered());
                     crate::persistence::collect_shared_build(database, derivation_path).map_err(
                         |_| io::Error::other("Nomad output collection transition failed"),
                     )?;
@@ -806,6 +811,8 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     limits: crate::service::config::NomadTransferLimits,
     connection_deadline: Instant,
 ) -> io::Result<()> {
+    let span = tracing::info_span!("nomad.gateway.export_inputs");
+    let _entered = span.enter();
     let summary = summarize_requested_inputs(&manifest.paths, requested)?;
     let started = Instant::now();
     tracing::info!(

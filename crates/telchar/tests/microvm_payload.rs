@@ -124,3 +124,38 @@ fn gateway_payload_rejects_unusable_execution_coordinates() {
             .is_err()
     );
 }
+
+#[test]
+fn assignment_trace_carrier_requires_exact_nullable_fields_and_valid_context() {
+    use telchar::microvm::AssignmentTraceContext;
+    for invalid in [
+        serde_json::json!({}),
+        serde_json::json!({"traceparent": null}),
+        serde_json::json!({"traceparent": null, "tracestate": null, "baggage": "private"}),
+    ] {
+        assert!(serde_json::from_value::<AssignmentTraceContext>(invalid).is_err());
+    }
+    for (parent, state) in [
+        (Some("bad".to_owned()), None),
+        (None, Some("vendor=value".to_owned())),
+        (Some("x".repeat(56)), None),
+        (
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned()),
+            Some("x".repeat(513)),
+        ),
+    ] {
+        let carrier = serde_json::from_value::<AssignmentTraceContext>(
+            serde_json::json!({"traceparent": parent, "tracestate": state}),
+        )
+        .unwrap();
+        assert!(carrier.context().is_err());
+    }
+    let carrier = serde_json::from_value::<AssignmentTraceContext>(
+        serde_json::json!({"traceparent": null, "tracestate": null}),
+    )
+    .unwrap();
+    assert_eq!(
+        carrier.context().unwrap(),
+        telchar_telemetry::TraceContext::default()
+    );
+}

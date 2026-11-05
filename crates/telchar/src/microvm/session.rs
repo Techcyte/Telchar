@@ -266,6 +266,7 @@ impl Session {
         }
         let span = tracing::info_span!("microvm.gateway.build_and_collect");
         let _entered = span.enter();
+        let mut collection = None;
         loop {
             verify()?;
             let frame = receive(&mut socket, self.limits)?;
@@ -276,6 +277,10 @@ impl Session {
                 FrameKind::BuildStarted => {}
                 FrameKind::LogChunk => log(frame.payload()),
                 FrameKind::OutputMetadata => {
+                    if collection.is_none() {
+                        collection =
+                            Some(tracing::info_span!("microvm.gateway.collect_outputs").entered());
+                    }
                     let metadata: PathManifestEntry =
                         decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
                     if metadata.references.iter().any(|reference| {

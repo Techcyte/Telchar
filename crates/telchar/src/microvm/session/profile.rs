@@ -56,7 +56,7 @@ impl Drop for AuthorityProfile {
                     stage,
                     source = if lane == 0 { "transfer" } else { "monitor" },
                     overlapping_intervals = true,
-                    count = timing.count,
+                    count = i64::try_from(timing.count).unwrap_or(i64::MAX),
                     total_ms = timing.total.as_secs_f64() * 1000.0,
                     maximum_ms = timing.maximum.as_secs_f64() * 1000.0,
                 );

@@ -236,3 +236,44 @@ Useful service-level views include:
 - fixed-output versus input-addressed validation outcomes.
 
 Counters and histograms are monotonic within a process lifetime. Gauges generally report current process state. Shared-build queue depth, running builds, and collecting builds are initialized from PostgreSQL after startup recovery and follow committed durable state transitions. Backend limits and session limits are established during composition; active session, permit, Nomad, and callback gauges change as the running process performs those operations.
+
+## Connected build traces
+
+The gateway's `backend.execution` context parents the real Nomad
+`worker.execution` or `microvm.worker.execution`. Each worker exports real child
+phase spans (`worker.phase` / `microvm.worker.phase`, bounded `phase` and
+`outcome` attributes) as well as the duration histograms above. Configuration
+before the Nomad carrier is parsed remains a local startup trace. Nomad's
+manifest phase parents the authenticated gateway `nomad.callback.execution`
+round trip; gateway input export, build-and-collect and output collection have
+separate spans. Do not infer cross-host ordering from wall-clock timestamps.
+
+MicroVM cold launches and warm assignments carry a fresh bounded W3C context in
+the strict hook/protected binding. `trace_context`, including its nullable
+`traceparent` and `tracestate` members, is required even when tracing is off.
+Gateway, hook and worker must be upgraded together; the old payload schema is
+not accepted. Trace metadata never replaces capability, epoch, exact provider
+identity, request digest or singleton-ownership checks.
+
+`microvm.gateway.session`, `microvm.gateway.export_inputs`,
+`microvm.gateway.build_and_collect` and `microvm.gateway.collect_outputs` expose
+transfer and registration cost. A fixed ten `microvm.authority.summary` events
+per session report numeric `count`, `total_ms`, and `maximum_ms` for `load`,
+`ownership`, `request_connection`, `request_query`, and
+`request_decode_validate`, separately for `transfer` and `monitor`. These are
+per-assignment aggregates, not per-chunk spans. Ownership includes its database
+checkout and fencing query; request connection includes pool wait and connection
+validation (not individually partitioned). Decode includes JSON, execution
+validation and digest checking. Load includes retries/ownership uncertainty.
+Stages nest, and monitor and transfer run concurrently: `overlapping_intervals`
+is true, and summed totals are **not** build wall time.
+
+`microvm.gateway.reset_confirmation` measures the gateway's validate request
+through the exact runtime reset report and durable idle transition, including
+provider/network time. Its parent is the completed attempt's retained context
+when available; `confirmed` means the exact report was observed, not that the
+idle transition necessarily succeeded. It is not Python-local reset duration or
+the entire build-result-to-reset latency. Telemetry retention/export failure does
+not grant authority or change build success. Trace and assignment IDs are never
+metric labels. New timing fields contain no credentials, request bodies or store
+paths; existing product log events retain their existing diagnostics policy.

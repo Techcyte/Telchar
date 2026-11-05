@@ -9,6 +9,8 @@ use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 mod microvm_daemon;
 #[path = "microvm_build/reuse.rs"]
 mod microvm_reuse;
+#[path = "microvm_build/nomad_trace.rs"]
+mod nomad_trace;
 
 #[allow(dead_code)]
 #[path = "../../../tests/telemetry/collector.rs"]
@@ -323,15 +325,23 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        output.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if case != "configured" {
+        assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
 }
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    // Exercise the real routing -> cancellation thread -> launch carrier, not just
+    // the lower-level session fixture's manually entered backend span.
+    let connected_collector = (case == "configured").then(collector::start_collector);
+    let connected_telemetry = connected_collector.as_ref().map(|collector| {
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+            std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+        }
+        telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap()
+    });
     let multiple = matches!(
         case.as_str(),
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
@@ -924,6 +934,9 @@ chunk_bytes = 262144
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
     let collector = (case == "single").then(collector::start_collector);
     let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
+    let connected_endpoint = connected_collector
+        .as_ref()
+        .map(|collector| collector.endpoint());
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
@@ -935,11 +948,12 @@ chunk_bytes = 262144
             .unwrap()
     } else {
         Command::new("bash")
-            .env("RUST_LOG", "off")
+            .env("RUST_LOG", if connected_collector.is_some() { "info" } else { "off" })
             .env(
                 "OTEL_EXPORTER_OTLP_ENDPOINT",
                 telemetry_endpoint
                     .as_deref()
+                    .or(connected_endpoint.as_deref())
                     .unwrap_or("http://127.0.0.1:4317"),
             )
             .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
@@ -1256,12 +1270,26 @@ chunk_bytes = 262144
         String::from_utf8_lossy(&worker.stderr)
     );
     assert!(worker.stdout.is_empty());
-    assert!(
-        worker.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&worker.stderr)
-    );
+    if connected_collector.is_none() {
+        assert!(
+            worker.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&worker.stderr)
+        );
+    }
     assert_eq!(result.unwrap(), BuildOutcome::Built);
+    if let Some(telemetry) = connected_telemetry {
+        telemetry.shutdown();
+        let collector = connected_collector.as_ref().unwrap();
+        let parents = collector.spans("telchar", "backend.execution");
+        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(workers.len(), 1);
+        collector::Collector::assert_child(&parents[0], &workers[0]);
+        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
+    }
     if let Some(collector) = collector {
         for phase in [
             "connect",

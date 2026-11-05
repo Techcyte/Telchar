@@ -64,6 +64,9 @@ class HookTests(unittest.TestCase):
             self.assertTrue(report["reset_complete"])
             self.assertEqual(report["assignment_epoch"], 1)
             self.assertNotIn("bearer", report)
+            # Trace context is assignment-local, including an explicitly untraced
+            # successor; reset reports never carry it.
+            self.assertNotIn("trace_context", report)
             next_payload = {**payload, "assignment_epoch": 2, "bearer": "b" * 43}
             next_hook = {**hook, "runHookPayload": json.dumps(next_payload)}
             self.assertTrue(state.start_hook(next_hook))

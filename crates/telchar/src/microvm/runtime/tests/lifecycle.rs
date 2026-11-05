@@ -52,8 +52,29 @@ fn reply(stream: &mut impl Write, status: u16, body: &str) {
     stream.flush().unwrap();
 }
 
+#[allow(dead_code)]
+#[path = "../../../../../../tests/telemetry/collector.rs"]
+mod collector;
+
 #[test]
 fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
+    // Isolate the global exporter/subscriber and its environment from other tests.
+    if std::env::var_os("TELCHAR_RESET_TRACE_TEST").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .env("TELCHAR_RESET_TRACE_TEST", "1")
+            .args(["--exact", "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment", "--nocapture", "--test-threads=1"])
+            .status().unwrap();
+        assert!(status.success());
+        return;
+    }
+    let collector = collector::start_collector();
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
+    let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+    let parent = tracing::info_span!(parent: None, "backend.execution");
+    let entered = parent.enter();
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     crate::persistence::migrate(fixture.url()).unwrap();
     let owner = std::sync::Arc::new(
@@ -91,6 +112,7 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
         .unwrap()
         .unwrap()
         .attempt_id;
+    crate::persistence::record_microvm_attempt_trace_context(database, attempt, &telchar_telemetry::TraceContext::capture_current()).unwrap();
     let intent = crate::persistence::MicrovmLaunchIntent {
         intent_id: "runtime-intent".into(),
         attempt_id: attempt,
@@ -400,4 +422,17 @@ with tempfile.TemporaryDirectory() as directory:
     assert_eq!(row.get::<_, String>(0), "closed");
     assert!(row.get::<_, bool>(1));
     assert_eq!(row.get::<_, String>(2), "draining");
+    drop(entered);
+    drop(parent);
+    telemetry.shutdown();
+    let parents = collector.spans("telchar", "backend.execution");
+    let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
+    assert_eq!(parents.len(), 1);
+    assert_eq!(confirmations.len(), 1);
+    collector::Collector::assert_child(&parents[0], &confirmations[0]);
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+    assert!(confirmations[0].attributes.iter().any(|attribute| attribute.key == "confirmed"
+        && attribute.value.as_ref().and_then(|value| value.value.as_ref()) == Some(&Value::BoolValue(true))));
+    collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
+    if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") { collector.write_trace_artifact(path); }
 }
