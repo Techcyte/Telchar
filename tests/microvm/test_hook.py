@@ -22,6 +22,24 @@ spec.loader.exec_module(execution)
 
 
 class HookTests(unittest.TestCase):
+    def test_trace_context_is_required_bounded_and_never_authority(self):
+        payload = {"version": 1, "assignment_epoch": 1,
+                   "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
+                   "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
+        with tempfile.TemporaryDirectory() as directory:
+            state = execution.ExecutionState([], [], [], Path(directory) / "binding", TRUST)
+            invalid_contexts = [None, {}, {"traceparent": "bad", "tracestate": None},
+                                {"traceparent": None, "tracestate": "vendor=value"},
+                                {"traceparent": "x" * 56, "tracestate": None},
+                                {"traceparent": "00-" + "1" * 32 + "-" + "2" * 16 + "-01", "tracestate": "v" * 513}]
+            for context in invalid_contexts:
+                candidate = dict(payload)
+                if context is not None:
+                    candidate["trace_context"] = context
+                with self.subTest(context=context), self.assertRaises(ValueError):
+                    state.start_hook({"microvmId": "exact", "runHookPayload": json.dumps(candidate)})
+            self.assertFalse((Path(directory) / "binding").exists())
+
     def test_exact_hook_runs_once_and_conflicting_payload_rejects(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -34,7 +52,7 @@ class HookTests(unittest.TestCase):
             self.assertFalse(binding.exists())
             self.assertFalse(marker.exists())
             payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
-                       "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
+                       "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 2}
             hook = {"microvmId": "microvm-exact", "runHookPayload": json.dumps(payload)}
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
                 self.assertTrue(all(pool.map(state.start_hook, [hook] * 4)))
@@ -68,7 +86,7 @@ class HookTests(unittest.TestCase):
                 [sys.executable, "-c", f"import pathlib,time; pathlib.Path({str(marker)!r}).touch(); time.sleep(30)"],
                 [sys.executable, "-c", "raise SystemExit(0)"], binding, TRUST)
             payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
-                       "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 10}
+                       "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 10}
             hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
             self.assertTrue(state.start_hook(hook))
             deadline = time.monotonic() + 2
@@ -154,7 +172,7 @@ class HookTests(unittest.TestCase):
                         time.sleep(.02)
                 self.assertFalse(marker.exists())
                 payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
-                           "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 5}
+                           "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 5}
                 hook = {"microvmId": "exact", "runHookPayload": json.dumps(payload)}
                 code, report = request("run", json.dumps(hook))
                 self.assertEqual(code, 200)
@@ -201,7 +219,7 @@ class HookTests(unittest.TestCase):
             binding.write_text("operator-owned")
             state = execution.ExecutionState([], [], [], binding, TRUST)
             payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm", "address": "127.0.0.1:443",
-                       "intent_id": "intent", "bearer": "a" * 43, "lifetime_seconds": 2}
+                       "intent_id": "intent", "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 2}
             with self.assertRaises(FileExistsError):
                 state.start_hook({"microvmId": "exact", "runHookPayload": json.dumps(payload)})
             self.assertEqual(binding.read_text(), "operator-owned")

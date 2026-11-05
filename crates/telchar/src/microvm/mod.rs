@@ -15,6 +15,36 @@ use aws_sdk_lambdamicrovms::{Client, Config};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
+/// Assignment-local diagnostics only; never used to authorize a worker or a build.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignmentTraceContext {
+    #[serde(deserialize_with = "required_nullable")]
+    traceparent: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    tracestate: Option<String>,
+}
+
+fn required_nullable<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(deserializer)
+}
+
+impl AssignmentTraceContext {
+    fn capture_current() -> Self {
+        let context = telchar_telemetry::TraceContext::capture_current();
+        Self {
+            traceparent: context.traceparent().map(str::to_owned),
+            tracestate: context.tracestate().map(str::to_owned),
+        }
+    }
+
+    pub fn context(&self) -> std::io::Result<telchar_telemetry::TraceContext> {
+        telchar_telemetry::TraceContext::new(self.traceparent.clone(), self.tracestate.clone())
+    }
+}
+
 pub struct Capability {
     bearer: String,
     verifier: [u8; 32],
@@ -68,6 +98,7 @@ impl Capability {
         }
         let payload = serde_json::to_string(&serde_json::json!({
             "version": 1,
+            "trace_context": AssignmentTraceContext::capture_current(),
             "assignment_epoch": 1,
             "endpoint": endpoint,
             "address": address.to_string(),
@@ -86,6 +117,7 @@ impl Capability {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LaunchPayload {
+    trace_context: AssignmentTraceContext,
     version: u8,
     assignment_epoch: i64,
     endpoint: String,
@@ -103,6 +135,7 @@ fn validate_launch_payload(
         return Err(ProviderError);
     }
     let hook: LaunchPayload = serde_json::from_str(payload).map_err(|_| ProviderError)?;
+    hook.trace_context.context().map_err(|_| ProviderError)?;
     let verifier = bearer_verifier(&hook.bearer).ok_or(ProviderError)?;
     if hook.version != 1
         || hook.assignment_epoch != 1

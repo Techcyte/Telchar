@@ -863,7 +863,7 @@ chunk_bytes = 262144
     } else {
         serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
-            "assignment_epoch":1, "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 30
+            "assignment_epoch":1, "intent_id": "build-intent", "bearer": capability.bearer(), "trace_context": {"traceparent": null, "tracestate": null}, "lifetime_seconds": 30
         })
     };
     if case == "configured-daemon-crash" {

@@ -5,6 +5,7 @@ import ctypes
 import ipaddress
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -52,7 +53,7 @@ class ExecutionState:
             value = json.loads(payload)
         except json.JSONDecodeError as error:
             raise ValueError("invalid execution payload") from error
-        fields = {"version", "assignment_epoch", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds"}
+        fields = {"version", "assignment_epoch", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds", "trace_context"}
         if not isinstance(value, dict) or set(value) != fields or type(value["version"]) is not int or value["version"] != 1:
             raise ValueError("invalid execution schema")
         if any(not isinstance(value[key], str) for key in ("endpoint", "address", "intent_id", "bearer")):
@@ -71,6 +72,18 @@ class ExecutionState:
                 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value["bearer"])
                 or type(value["lifetime_seconds"]) is not int or not 1 <= value["lifetime_seconds"] <= 28800):
             raise ValueError("invalid execution limits")
+        context = value["trace_context"]
+        if not isinstance(context, dict) or set(context) != {"traceparent", "tracestate"}:
+            raise ValueError("invalid trace context")
+        parent, state = context["traceparent"], context["tracestate"]
+        if parent is not None:
+            if (not isinstance(parent, str)
+                    or re.fullmatch(r"00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}", parent) is None
+                    or parent[3:35] == "0" * 32 or parent[36:52] == "0" * 16):
+                raise ValueError("invalid trace context")
+        if state is not None and (parent is None or not isinstance(state, str)
+                                  or not 1 <= len(state.encode()) <= 512 or "\0" in state):
+            raise ValueError("invalid trace context")
         binding = {key: item for key, item in value.items() if key != "version"}
         binding["provider_id"] = identity
         with self.lock:

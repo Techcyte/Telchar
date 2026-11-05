@@ -50,6 +50,64 @@ impl Collector {
             .any(|record| Self::has_attribute(&record.attributes, "event", event))
     }
 
+    pub fn spans(
+        &self,
+        service: &str,
+        name: &str,
+    ) -> Vec<opentelemetry_proto::tonic::trace::v1::Span> {
+        self.trace_requests
+            .lock()
+            .expect("trace requests")
+            .iter()
+            .flat_map(|request| &request.resource_spans)
+            .filter(|resource| Self::has_service_name(resource.resource.as_ref(), service))
+            .flat_map(|resource| &resource.scope_spans)
+            .flat_map(|scope| &scope.spans)
+            .filter(|span| span.name == name)
+            .cloned()
+            .collect()
+    }
+
+    pub fn assert_child(
+        parent: &opentelemetry_proto::tonic::trace::v1::Span,
+        child: &opentelemetry_proto::tonic::trace::v1::Span,
+    ) {
+        assert!(parent.trace_id.iter().any(|byte| *byte != 0));
+        assert!(parent.span_id.iter().any(|byte| *byte != 0));
+        assert_eq!(child.trace_id, parent.trace_id, "{} trace", child.name);
+        assert_eq!(
+            child.parent_span_id, parent.span_id,
+            "{} parent",
+            child.name
+        );
+        assert!(
+            child.end_time_unix_nano > child.start_time_unix_nano,
+            "{} duration",
+            child.name
+        );
+    }
+
+    pub fn write_trace_artifact(&self, path: impl AsRef<std::path::Path>) {
+        // Protobuf debug representation retains service, IDs, timing and attributes.
+        std::fs::write(
+            path,
+            format!("{:#?}", self.trace_requests.lock().expect("traces")),
+        )
+        .unwrap();
+    }
+
+    pub fn assert_no_private_markers(&self, markers: &[&str]) {
+        let exported = format!(
+            "{:?}{:?}{:?}",
+            self.trace_requests.lock().unwrap(),
+            self.log_requests.lock().unwrap(),
+            self.metric_requests.lock().unwrap()
+        );
+        for marker in markers {
+            assert!(!exported.contains(marker), "private marker exported");
+        }
+    }
+
     pub fn assert_span_parent(&self, parent_name: &str, child_name: &str) {
         let trace_requests = self.trace_requests.lock().expect("trace requests");
         let spans = trace_requests

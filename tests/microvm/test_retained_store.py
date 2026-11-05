@@ -135,7 +135,7 @@ class RetainedStoreTests(unittest.TestCase):
                                'endpoint': 'wss://gateway.invalid/microvm',
                                'address': '127.0.0.1:443', 'intent_id': 'retained-worker',
                                'bearer': ('a' if epoch == 1 else 'b') * 43,
-                               'lifetime_seconds': 30}
+                               "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 30}
                     self.assertTrue(state.start_hook({'microvmId': 'provider-exact',
                                                       'runHookPayload': json.dumps(payload)}))
                     state.join()

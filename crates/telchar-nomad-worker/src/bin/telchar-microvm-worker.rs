@@ -10,6 +10,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Execution {
+    trace_context: telchar::microvm::AssignmentTraceContext,
     assignment_epoch: i64,
     endpoint: String,
     address: std::net::SocketAddr,
@@ -28,8 +29,18 @@ fn phase<T>(
     deadline: Instant,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    let span = tracing::info_span!(
+        "microvm.worker.phase",
+        phase = name,
+        outcome = tracing::field::Empty
+    );
+    let _entered = span.enter();
     let started = Instant::now();
     let result = operation();
+    span.record(
+        "outcome",
+        if result.is_ok() { "success" } else { "failure" },
+    );
     if result.is_err() && Instant::now() >= deadline && name != "report-failure" {
         opentelemetry::global::meter("telchar-microvm-worker")
             .u64_counter("telchar.microvm.worker.deadline")
@@ -113,6 +124,10 @@ fn run() -> io::Result<()> {
     {
         return Err(invalid());
     }
+    let context = execution.trace_context.context()?;
+    let span = tracing::info_span!("microvm.worker.execution");
+    context.set_parent(&span);
+    let _entered = span.enter();
     let deadline = started
         .checked_add(Duration::from_secs(execution.lifetime_seconds))
         .ok_or_else(invalid)?;
@@ -183,10 +198,10 @@ fn main() -> std::process::ExitCode {
     };
     let started = Instant::now();
     let result = {
-        let execution = tracing::info_span!("microvm.worker.execution");
-        let _entered = execution.enter();
         let result = run();
         if let Err(error) = &result {
+            let span = tracing::info_span!("microvm.worker.failure");
+            let _entered = span.enter();
             tracing::error!(event = "microvm.worker.failed", error_kind = ?error.kind());
         }
         opentelemetry::global::meter("telchar-microvm-worker")

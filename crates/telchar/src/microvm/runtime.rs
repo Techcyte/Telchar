@@ -187,6 +187,12 @@ impl Provider {
         provider_id: &str,
         retention: (std::time::Duration, u32),
     ) -> Result<bool, ProviderError> {
+        // Gateway-observed validation round trip, not Python-local reset duration.
+        let span = tracing::info_span!(
+            "microvm.gateway.reset_confirmation",
+            confirmed = tracing::field::Empty
+        );
+        let _entered = span.enter();
         let response = self.worker_request(
             owner,
             intent_id,
@@ -198,6 +204,7 @@ impl Provider {
         if !read_reset_report(response, intent_id, provider_id, epoch)? {
             return Ok(false);
         }
+        span.record("confirmed", true);
         owner.verify().map_err(|_| ProviderError)?;
         crate::persistence::reset_microvm_worker_until(
             database,

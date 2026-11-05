@@ -4,6 +4,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use tungstenite::{Message, WebSocket};
 
+mod profile;
+
 use super::outputs::Outputs;
 use crate::nomad::protocol::{
     BuildResultMetadata, Direction, Frame, FrameKind, InputManifest, NarMetadata,
@@ -29,54 +31,71 @@ pub fn run_admitted(
     limits: Limits,
     log: impl FnMut(&[u8]),
 ) -> io::Result<BuildResultMetadata> {
+    let span = tracing::info_span!("microvm.gateway.session");
+    let _entered = span.enter();
+    let profile = profile::AuthorityProfile::default();
     let assignment_epoch = connection.assignment_epoch();
     let (intent_id, socket) = connection.into_parts();
-    let load = || loop {
-        if !owner.verify_available().map_err(io::Error::other)? {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
-        }
-        let uncertainty_sequence = owner.uncertainty_sequence();
-        match crate::persistence::microvm_session_request(
-            owner.database(),
-            &intent_id,
-            assignment_epoch,
-        ) {
-            Ok(request) => {
-                return request.ok_or_else(|| io::Error::other("MicroVM execution is not active"));
-            }
-            Err(error) => {
-                // The application connection reports transport uncertainty before flattening errors.
-                // Only retry this read after a subsequent confirmed renewal, never a mutation.
-                owner.admission_available().map_err(io::Error::other)?;
-                if owner.uncertainty_sequence() == uncertainty_sequence {
-                    return Err(io::Error::other(error));
+    let load = |monitor| {
+        profile.measure(monitor, "load", || {
+            loop {
+                if !profile
+                    .measure(monitor, "ownership", || owner.verify_available())
+                    .map_err(io::Error::other)?
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let uncertainty_sequence = owner.uncertainty_sequence();
+                match crate::persistence::microvm_session_request_timed(
+                    owner.database(),
+                    &intent_id,
+                    assignment_epoch,
+                    |stage, elapsed| profile.observe(monitor, stage, elapsed),
+                ) {
+                    Ok(request) => {
+                        return request
+                            .ok_or_else(|| io::Error::other("MicroVM execution is not active"));
+                    }
+                    Err(error) => {
+                        // The application connection reports transport uncertainty before flattening errors.
+                        // Only retry this read after a subsequent confirmed renewal, never a mutation.
+                        owner.admission_available().map_err(io::Error::other)?;
+                        if owner.uncertainty_sequence() == uncertainty_sequence {
+                            return Err(io::Error::other(error));
+                        }
+                    }
                 }
             }
-        }
+        })
     };
-    let request = load()?;
+    let request = load(false)?;
     let session = Session::new(&request, store, staging, limits)?;
     let interrupt = socket.get_ref().interrupt_handle()?;
     std::thread::scope(|scope| {
         let (stop, stopped) = std::sync::mpsc::channel();
         let active_request = &request;
         let load_request = &load;
+        let monitor_span = tracing::Span::current();
+        let monitor_profile = &profile;
         let monitor = std::thread::Builder::new()
             .name("microvm-authority".into())
             .spawn_scoped(scope, move || {
+                let _entered = monitor_span.enter();
                 loop {
                     match stopped.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    let available = match owner.verify_available() {
+                    let available = match monitor_profile
+                        .measure(true, "ownership", || owner.verify_available())
+                    {
                         Ok(false) => continue,
                         Ok(true) => true,
                         Err(_) => false,
                     };
                     let changed = !available
-                        || match load_request() {
+                        || match load_request(true) {
                             Ok(active) => &active != active_request,
                             Err(_) if matches!(owner.admission_available(), Ok(false)) => continue,
                             Err(_) => true,
@@ -90,7 +109,7 @@ pub fn run_admitted(
         let result = session.run(
             socket,
             || {
-                if load()? != request {
+                if load(false)? != request {
                     return Err(io::Error::other("MicroVM execution authority changed"));
                 }
                 Ok(())
@@ -218,6 +237,8 @@ impl Session {
                 let requested: PathSet =
                     decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
                 if !requested.paths.is_empty() {
+                    let span = tracing::info_span!("microvm.gateway.export_inputs");
+                    let _entered = span.enter();
                     let mut store = GatewayStoreConnection::connect(&self.store)?;
                     for path in requested.paths {
                         verify()?;
@@ -243,6 +264,8 @@ impl Session {
                 }
             }
         }
+        let span = tracing::info_span!("microvm.gateway.build_and_collect");
+        let _entered = span.enter();
         loop {
             verify()?;
             let frame = receive(&mut socket, self.limits)?;
@@ -288,7 +311,8 @@ impl Session {
                 FrameKind::OutputNar => {
                     let chunk: NarMetadata =
                         decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
-                    if let Some(receipt) = self.outputs.receive(&chunk, frame.payload())? {
+                    let receipt = self.outputs.receive(&chunk, frame.payload())?;
+                    if let Some(receipt) = receipt {
                         verify()?;
                         let receipt = Frame::new(
                             FrameKind::OutputReceipt,

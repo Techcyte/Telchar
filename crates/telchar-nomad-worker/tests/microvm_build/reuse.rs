@@ -51,18 +51,14 @@ fn run_fixture(test: &str, mode: Option<&str>) {
         .arg(FIXTURE)
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
-        .stdout(Stdio::inherit());
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
     if let Some(mode) = mode {
         command.env("MICROVM_BENCH_MODE", mode).arg("--ignored");
     }
     let output = command.output().unwrap();
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -79,7 +75,7 @@ impl SupervisedWorker {
         let trust = root.join("reuse-trust.der");
         std::fs::write(&trust, include_bytes!("../fixtures/microvm-cert.der")).unwrap();
         let mut child = Command::new("bash")
-            .env("RUST_LOG", "off")
+            .env("RUST_LOG", "info")
             .arg(FIXTURE)
             .arg("/bin/sh")
             .args(["-c", "exec python3 \"$@\"", "supervised-worker"])
@@ -166,6 +162,15 @@ fn sequential_jobs_reuse_one_supervised_worker() {
 }
 
 fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
+    let collector = collector::start_collector();
+    // This fixture runs in its own test subprocess. Propagate the collector to the
+    // real worker through both namespace/supervision subprocess boundaries.
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
+    let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
+    let mut expected_parents = Vec::new();
     let outputs: Vec<_> = (0..jobs)
         .map(|index| format!("/nix/store/{index:032}-dedicated-output"))
         .collect();
@@ -309,6 +314,11 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             .unwrap()
             .unwrap()
             .attempt_id;
+        let execution_span = tracing::info_span!(parent: None, "backend.execution");
+        let entered = execution_span.enter();
+        let context = telchar_telemetry::TraceContext::capture_current();
+        assert!(context.traceparent().is_some());
+        expected_parents.push(context.traceparent().unwrap().to_owned());
         let capability = Capability::generate().unwrap();
         if let Some(previous) = &previous_bearer {
             assert_ne!(previous, capability.bearer());
@@ -331,6 +341,7 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
         let execution_sessions = sessions.clone();
         let execution_store = endpoint.clone();
         let staging = root.clone();
+        let gateway_span = execution_span.clone();
         // Simulated provider control plane, not an AWS reuse acceptance claim.
         let gateway_thread = if index == 0 {
             let intent = db::MicrovmLaunchIntent {
@@ -360,6 +371,7 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             assert!(db::reserve_microvm_launch(owner.database(), &intent, 1).unwrap());
             let payload = payload.clone();
             std::thread::spawn(move || {
+                let _entered = gateway_span.enter();
                 let (provider, response) = provider_response(None);
                 let result = telchar::microvm::execution::Execution {
                     provider: &provider,
@@ -405,6 +417,7 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             // hook delivery, receive authenticated assignment, run the production session.
             let (ready, registered) = std::sync::mpsc::sync_channel(1);
             let thread = std::thread::spawn(move || {
+                let _entered = gateway_span.enter();
                 let waiting = execution_sessions
                     .register("build-intent", Instant::now() + Duration::from_secs(30))
                     .unwrap();
@@ -472,6 +485,8 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
             assert_eq!(report["helper_pid"], previous["helper_pid"]);
             assert_eq!(report["retained_root"], previous["retained_root"]);
         }
+        drop(entered);
+        drop(execution_span);
         previous_report = Some(report);
         assert_eq!(
             db::completed_microvm_worker(owner.database(), "build-intent").unwrap(),
@@ -541,6 +556,59 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
         .unwrap()
         .get::<_, i64>(0);
     assert_eq!(row.get::<_, i64>(2), generation);
+    telemetry.shutdown();
+    let parents = collector.spans("telchar", "backend.execution");
+    let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+    assert_eq!(parents.len(), jobs);
+    assert_eq!(workers.len(), jobs);
+    for expected in &expected_parents {
+        let trace_id = (3..35)
+            .step_by(2)
+            .map(|offset| u8::from_str_radix(&expected[offset..offset + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        let parent = parents
+            .iter()
+            .find(|span| span.trace_id == trace_id)
+            .unwrap();
+        let worker = workers
+            .iter()
+            .find(|span| span.trace_id == trace_id)
+            .unwrap();
+        collector::Collector::assert_child(parent, worker);
+        for phase in [
+            "connect",
+            "manifest",
+            "resolve-inputs",
+            "import-inputs",
+            "prepare-job",
+            "build",
+            "return-outputs",
+        ] {
+            let spans = collector.spans("telchar-microvm-worker", "microvm.worker.phase");
+            let child = spans
+                .iter()
+                .find(|span| {
+                    span.trace_id == trace_id
+                        && collector::Collector::has_attribute(&span.attributes, "phase", phase)
+                })
+                .unwrap();
+            collector::Collector::assert_child(worker, child);
+        }
+        let sessions = collector.spans("telchar", "microvm.gateway.session");
+        let session = sessions
+            .iter()
+            .find(|span| span.trace_id == trace_id)
+            .unwrap();
+        collector::Collector::assert_child(parent, session);
+    }
+    if jobs > 1 {
+        assert_ne!(workers[0].trace_id, workers[jobs - 1].trace_id);
+    }
+    collector.assert_no_private_markers(&[previous_bearer.as_deref().unwrap(), "shared-input\n"]);
+    collector.assert_metric_attributes_are_bounded();
+    if let Some(path) = std::env::var_os("TELCHAR_TRACE_ARTIFACT") {
+        collector.write_trace_artifact(path);
+    }
 }
 
 #[derive(Default)]

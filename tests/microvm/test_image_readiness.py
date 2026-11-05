@@ -72,7 +72,7 @@ class ImageReadinessTests(unittest.TestCase):
                         time.sleep(.02)
                 payload = {"version": 1, "assignment_epoch": 1, "endpoint": "wss://gateway.invalid/microvm",
                            "address": "127.0.0.1:443", "intent_id": "intent",
-                           "bearer": "a" * 43, "lifetime_seconds": 1}
+                           "bearer": "a" * 43, "trace_context": {"traceparent": None, "tracestate": None}, "lifetime_seconds": 1}
                 hook = json.dumps({"microvmId": "exact", "runHookPayload": json.dumps(payload)})
                 self.assertEqual(request("run", hook), 400)
                 self.assertFalse(binding.exists())

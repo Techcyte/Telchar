@@ -671,9 +671,22 @@ pub fn microvm_session_request(
     intent_id: &str,
     assignment_epoch: i64,
 ) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
+    microvm_session_request_timed(database, intent_id, assignment_epoch, |_, _| {})
+}
+
+pub(crate) fn microvm_session_request_timed(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    assignment_epoch: i64,
+    mut observe: impl FnMut(&'static str, std::time::Duration),
+) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(microvm_session_request));
-    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let started = std::time::Instant::now();
+    let client = connect(database).map_err(|_| MicrovmLaunchError);
+    observe("request_connection", started.elapsed());
+    let mut client = client?;
+    let started = std::time::Instant::now();
     let row = client
         .query_opt(
             "SELECT b.build_request::text, b.request_digest, b.derivation_path
@@ -690,11 +703,15 @@ pub fn microvm_session_request(
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
             &[&intent_id, &assignment_epoch],
         )
-        .map_err(|_| MicrovmLaunchError)?;
-    let Some(row) = row else {
+        .map_err(|_| MicrovmLaunchError);
+    observe("request_query", started.elapsed());
+    let Some(row) = row? else {
         return Ok(None);
     };
-    decode_microvm_request(&row).map(Some)
+    let started = std::time::Instant::now();
+    let request = decode_microvm_request(&row).map(Some);
+    observe("request_decode_validate", started.elapsed());
+    request
 }
 
 fn decode_microvm_request(
