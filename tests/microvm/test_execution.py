@@ -50,12 +50,48 @@ class ExecutionTests(unittest.TestCase):
         return self.command("ready", "import pathlib, sys\n"
                             f"sys.exit(0 if pathlib.Path({str(self.root / 'daemon.pid')!r}).exists() else 1)\n")
 
-    def assert_stopped(self, marker):
+    def process_stopped(self, marker):
         pid = int(marker.read_text())
         # A killed grandchild may remain a zombie until the host reaps it.
-        status = Path(f"/proc/{pid}/stat")
-        if status.exists():
-            self.assertIn(status.read_text().split()[2], {"Z", "X"}, f"process {pid} still running")
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().split()[2] in {"Z", "X"}
+        except FileNotFoundError:
+            return True
+
+    def assert_stopped(self, marker):
+        self.assertTrue(self.process_stopped(marker), f"process {marker.read_text()} still running")
+
+    def assert_execution_stopped(self, markers, deadline):
+        # Namespace teardown stops every member, but has no member completion order.
+        while not all(self.process_stopped(marker) for marker in markers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(.01, remaining))
+        for marker in markers:
+            self.assert_stopped(marker)
+
+    def test_cleanup_waits_for_daemon_after_child_stops(self):
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as child, \
+                subprocess.Popen([sys.executable, "-c", "import time; time.sleep(.15)"]) as daemon:
+            child.wait(timeout=1)
+            markers = [self.root / "child.pid", self.root / "daemon.pid"]
+            for marker, process in zip(markers, (child, daemon)):
+                marker.write_text(str(process.pid))
+            self.assert_execution_stopped(markers, time.monotonic() + 1)
+
+    def test_cleanup_rejects_surviving_daemon_at_original_deadline(self):
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as child, \
+                subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as daemon:
+            try:
+                child.wait(timeout=1)
+                markers = [self.root / "child.pid", self.root / "daemon.pid"]
+                for marker, process in zip(markers, (child, daemon)):
+                    marker.write_text(str(process.pid))
+                with self.assertRaisesRegex(AssertionError, f"process {daemon.pid} still running"):
+                    self.assert_execution_stopped(markers, time.monotonic() + .05)
+            finally:
+                daemon.kill()
 
     def test_deadline_kills_worker_descendant_and_daemon(self):
         child = self.command("child", "import os, pathlib, time\n"
@@ -145,14 +181,8 @@ class ExecutionTests(unittest.TestCase):
                 stdout, stderr = process.communicate(timeout=2)
                 self.assertEqual(stdout, b"")
                 self.assertEqual(stderr, b"")
-                deadline = time.monotonic() + 1
-                status = Path(f"/proc/{int(marker.read_text())}/stat")
-                while status.exists() and time.monotonic() < deadline:
-                    if status.read_text().split()[2] in {"Z", "X"}:
-                        break
-                    time.sleep(.01)
-                self.assert_stopped(marker)
-                self.assert_stopped(self.root / "daemon.pid")
+                self.assert_execution_stopped(
+                    [marker, self.root / "daemon.pid"], time.monotonic() + 1)
             finally:
                 if process.poll() is None:
                     process.kill()
