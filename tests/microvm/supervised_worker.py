@@ -4,6 +4,7 @@ import json
 import os
 import select
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,8 @@ def main():
         state = ExecutionState([nix, "daemon"], [str(worker), binding, trust, "unix://" + socket],
                                [nix, "store", "ping", "--store", "unix://" + socket],
                                destination, Path(trust))
+        private_jobs = set(Path(tempfile.gettempdir()).glob("telchar-job-*"))
+
         def completed():
             state.join()
             report = state.report()
@@ -66,8 +69,13 @@ def main():
             assert not destination.exists()
             private = list((retained / "nix/store").glob("*-dedicated-output"))
             assert not private
+            with sqlite3.connect(retained / "nix/var/nix/db/db.sqlite") as database:
+                assert not database.execute(
+                    "SELECT path FROM ValidPaths WHERE path LIKE '%-dedicated-output'").fetchall()
+            assert set(Path(tempfile.gettempdir()).glob("telchar-job-*")) == private_jobs
             report.update(helper_pid=os.getpid(), retained_root=str(retained),
-                          binding_absent=True, private_outputs_absent=True)
+                          binding_absent=True, private_outputs_absent=True,
+                          private_jobs_absent=True)
             return report
 
         if persistent:

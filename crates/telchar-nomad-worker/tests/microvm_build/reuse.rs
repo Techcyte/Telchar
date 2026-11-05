@@ -202,7 +202,7 @@ fn sequential_jobs_reuse_one_supervised_worker() {
     let mut worker = SupervisedWorker::start(&root, builder);
     let mut previous_report = None;
     let mut previous_bearer = None;
-    let mut initial_intent = None;
+    let mut previous_verifier = None;
     for index in 0..2 {
         let epoch = index as i64 + 1;
         let request = &requests[index];
@@ -272,7 +272,6 @@ fn sequential_jobs_reuse_one_supervised_worker() {
                 maximum_duration_seconds: 60,
             };
             assert!(db::reserve_microvm_launch(owner.database(), &intent, 1).unwrap());
-            initial_intent = Some(intent.clone());
             let payload = payload.clone();
             std::thread::spawn(move || {
                 let (provider, response) = provider_response(None);
@@ -311,7 +310,7 @@ fn sequential_jobs_reuse_one_supervised_worker() {
                     "build-intent",
                     1,
                     "microvm-build",
-                    &initial_intent.as_ref().unwrap().credential_verifier
+                    &previous_verifier.unwrap()
                 )
                 .unwrap(),
                 "old epoch cannot be admitted"
@@ -337,6 +336,7 @@ fn sequential_jobs_reuse_one_supervised_worker() {
             registered.recv_timeout(Duration::from_secs(5)).unwrap();
             thread
         };
+        previous_verifier = Some(capability.verifier());
         let started = worker.command(serde_json::json!({"command":"start","hook":{"microvmId":"microvm-build","runHookPayload":payload}}));
         assert_eq!(started["assignment_epoch"], epoch);
         assert_eq!(started["status"], "running");
@@ -348,6 +348,18 @@ fn sequential_jobs_reuse_one_supervised_worker() {
         assert_eq!(
             std::fs::read_to_string(OUTPUTS[index]).unwrap(),
             format!("shared-input-job-{index}\n")
+        );
+        assert!(
+            !db::reset_microvm_worker_until(
+                owner.database(),
+                "build-intent",
+                epoch,
+                attempt,
+                Duration::from_secs(30),
+                100
+            )
+            .unwrap(),
+            "runtime completion alone cannot reset an unfinished gateway attempt"
         );
         db::collect_shared_build(owner.database(), DRVS[index]).unwrap();
         db::complete_shared_build_success(
@@ -362,6 +374,7 @@ fn sequential_jobs_reuse_one_supervised_worker() {
         assert_eq!(report["reset_complete"], true);
         assert_eq!(report["binding_absent"], true);
         assert_eq!(report["private_outputs_absent"], true);
+        assert_eq!(report["private_jobs_absent"], true);
         assert_eq!(report["assignment_epoch"], epoch);
         assert_eq!(report["intent_id"], "build-intent");
         assert_eq!(report["provider_id"], "microvm-build");
