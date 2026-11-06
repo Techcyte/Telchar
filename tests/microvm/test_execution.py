@@ -213,6 +213,33 @@ class ExecutionTests(unittest.TestCase):
                         "execution procfs does not describe its PID namespace")
         self.assert_stopped(self.root / "daemon.pid")
 
+    def test_startup_diagnostics_are_bounded_and_exclude_command_output(self):
+        import json
+        for outcome in ("success", "daemon-exit", "readiness-deadline"):
+            with self.subTest(outcome=outcome):
+                daemon = self.command("diagnostic-daemon", "import time\ntime.sleep(30)\n")
+                if outcome == "daemon-exit":
+                    daemon = self.command("diagnostic-daemon", "raise SystemExit(17)\n")
+                ready = self.command("diagnostic-ready", "raise SystemExit(" +
+                                     ("1" if outcome == "readiness-deadline" else "0") + ")\n")
+                worker = self.command("diagnostic-worker", "import sys\nprint('PRIVATE_MARKER', file=sys.stderr)\n")
+                command = self.command("diagnostic-supervisor", "import runpy\n"
+                                       f"execution = runpy.run_path({str(ROOT / 'deploy/microvm/execution.py')!r})\n"
+                                       f"raise SystemExit(0 if execution['supervise']({daemon!r}, {worker!r}, {ready!r}, .5) else 1)\n")
+                environment = os.environ.copy()
+                environment["TELCHAR_MICROVM_DIAGNOSTICS"] = "1"
+                result = subprocess.run(command, env=environment, capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 0 if outcome == "success" else 1)
+                self.assertEqual(result.stderr, b"")
+                events = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertGreater(len(events), 0)
+                self.assertLessEqual(len(events), 12)
+                self.assertTrue(all(set(event) == {"event", "stage", "outcome"} for event in events))
+                self.assertTrue(all(event["event"] == "microvm.execution.stage" for event in events))
+                self.assertIn({"event": "microvm.execution.stage", "stage": "namespace", "outcome": "ready"}, events)
+                self.assertIn({"event": "microvm.execution.stage", "stage": "execution", "outcome": outcome}, events)
+                self.assertNotIn(b"PRIVATE_MARKER", result.stdout)
+
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
         self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2))

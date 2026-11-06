@@ -129,6 +129,12 @@ class ExecutionState:
             self.thread.join()
 
 
+def diagnostic(stage, outcome):
+    if os.environ.get("TELCHAR_MICROVM_DIAGNOSTICS") == "1":
+        print(json.dumps({"event": "microvm.execution.stage", "stage": stage,
+                          "outcome": outcome}), flush=True)
+
+
 def stop(process):
     if process is not None:
         with contextlib.suppress(ProcessLookupError):
@@ -147,7 +153,8 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         process = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--execution-init", specification],
             start_new_session=True, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=None if os.environ.get("TELCHAR_MICROVM_DIAGNOSTICS") == "1" else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
         while time.monotonic() < deadline and not cancelled.is_set():
             result = process.poll()
             if result is not None:
@@ -194,6 +201,7 @@ def enter_execution(specification):
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+        diagnostic("namespace", "ready")
         return run_execution(*specification)
 
     os.close(read_end)
@@ -223,13 +231,17 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
         return False
     cancelled = threading.Event()
     daemon = worker = readiness = None
+    stage = "daemon"
     try:
         daemon = subprocess.Popen(daemon_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
+        diagnostic("daemon", "started")
+        stage = "readiness"
         while daemon.poll() is None and not cancelled.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                diagnostic("execution", "readiness-deadline")
                 return False
             readiness = subprocess.Popen(ready_command, start_new_session=True,
                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -242,13 +254,18 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
                 stop(readiness)
                 readiness = None
             if ready:
+                diagnostic("readiness", "ready")
                 break
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
         else:
+            diagnostic("execution", "daemon-exit")
             return False
         if time.monotonic() >= deadline or daemon.poll() is not None or cancelled.is_set():
+            diagnostic("execution", "daemon-exit" if daemon.poll() is not None else "readiness-deadline")
             return False
         if os.environ.get("TELCHAR_MICROVM_RETAINED_ROOT"):
+            stage = "capacity"
+            diagnostic(stage, "started")
             from retained_store import check_capacity, job_daemon, wait_prepared
             retained = os.environ["TELCHAR_MICROVM_RETAINED_ROOT"]
             maximum_bytes = int(os.environ["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"])
@@ -268,20 +285,27 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
                 worker = subprocess.Popen(worker_command, env=environment, start_new_session=True,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL)
+                diagnostic("worker", "started")
+                stage = "prepare"
+                diagnostic(stage, "waiting")
                 channel, _ = listener.accept()
                 with channel:
                     wait_prepared(channel, deadline)
+                    diagnostic("prepare", "ready")
                     stop(daemon)
                     daemon = None
                     check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
+                    stage = "job-store"
                     with job_daemon(retained,
                                     os.path.join(directory, "store"),
                                     os.environ["TELCHAR_MICROVM_NIX"], environment, deadline) as store:
                         try:
+                            diagnostic("job-store", "ready")
                             channel.sendall(store.encode() + b"\n")
                             while time.monotonic() < deadline:
                                 result = worker.poll()
                                 if result is not None:
+                                    diagnostic("execution", "success" if result == 0 else "worker-exit")
                                     return result == 0
                                 time.sleep(.025)
                             return False
@@ -297,13 +321,18 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
         worker = subprocess.Popen(worker_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
+        diagnostic("worker", "started")
+        stage = "worker"
         while time.monotonic() < deadline and daemon.poll() is None and not cancelled.is_set():
             result = worker.poll()
             if result is not None:
+                diagnostic("execution", "success" if result == 0 else "worker-exit")
                 return result == 0
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
+        diagnostic("execution", "deadline" if time.monotonic() >= deadline else "daemon-exit")
         return False
     except OSError:
+        diagnostic(stage, "os-error")
         return False
     finally:
         stop(readiness)
