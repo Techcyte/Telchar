@@ -25,7 +25,7 @@ def main():
         payload["version"] = 1
         initial_hook = {"microvmId": identity, "runHookPayload": json.dumps(payload)}
         destination.unlink()
-    with tempfile.TemporaryDirectory(prefix="telchar-supervised-worker-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="worker-") as temporary:
         retained = Path(temporary) / "inputs"
         for name in ("NIX_STATE_DIR", "NIX_STORE_DIR", "NIX_LOG_DIR", "NIX_DAEMON_SOCKET_PATH"):
             os.environ.pop(name, None)
@@ -59,7 +59,7 @@ def main():
         state = ExecutionState([nix, "daemon"], [str(worker), binding, trust, "unix://" + socket],
                                [nix, "store", "ping", "--store", "unix://" + socket],
                                destination, Path(trust))
-        private_jobs = set(Path(tempfile.gettempdir()).glob("telchar-job-*"))
+        private_jobs = set(retained.glob("telchar-job-*"))
 
         def completed():
             state.join()
@@ -72,7 +72,7 @@ def main():
             with sqlite3.connect(retained / "nix/var/nix/db/db.sqlite") as database:
                 assert not database.execute(
                     "SELECT path FROM ValidPaths WHERE path LIKE '%-dedicated-output'").fetchall()
-            assert set(Path(tempfile.gettempdir()).glob("telchar-job-*")) == private_jobs
+            assert set(retained.glob("telchar-job-*")) == private_jobs
             report.update(helper_pid=os.getpid(), retained_root=str(retained),
                           binding_absent=True, private_outputs_absent=True,
                           private_jobs_absent=True)
