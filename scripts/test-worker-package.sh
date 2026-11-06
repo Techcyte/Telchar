@@ -13,7 +13,7 @@ printf 'root:x:0:\nrunner:x:1000:\nnobody:x:65534:\n' > "$root/group"
 mounts=()
 for path in /*; do
     case "$path" in
-        /var|/noshell) continue ;;
+        /var|/nix|/bin|/noshell) continue ;;
     esac
     if [[ -L $path ]]; then
         mounts+=(--symlink "$(readlink "$path")" "$path")
@@ -27,7 +27,14 @@ bwrap --unshare-user --uid 1000 --gid 1000 --die-with-parent \
     --tmpfs / "${mounts[@]}" --tmpfs /tmp --dir /var/empty \
     --dir /nix/var/nix/profiles \
     --symlink "$(command -v bash)" /noshell \
+    --symlink "$(command -v bash)" /bin/sh \
     --ro-bind "$root/passwd" /etc/passwd \
     --ro-bind "$root/group" /etc/group \
     --bind "$store" /nix/store \
-    --chdir "$PWD" -- "$@"
+    --ro-bind "$workerTestRegistration" /worker-registration \
+    --chdir "$PWD" -- bash -c '
+        set -euo pipefail
+        nix-store --store local --init
+        nix-store --store local --load-db < /worker-registration
+        exec "$@"
+    ' bash "$@"

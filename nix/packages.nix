@@ -42,7 +42,10 @@ let
       inherit cargoArtifacts;
       cargoExtraArgs = "--locked -p telchar";
       cargoTestExtraArgs = "--lib";
-      nativeCheckInputs = [ pkgs.cacert ];
+      nativeCheckInputs = [
+        pkgs.cacert
+        pkgs.python3
+      ];
     }
   );
 
@@ -81,6 +84,7 @@ let
         ''
         + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           export -f cargo cargoWithProfile
+          export workerTestRegistration="$workerTestInputs/registration"
           export workerTestStore="$TMPDIR/worker-test-store"
           mkdir "$workerTestStore"
           ${pkgs.python3}/bin/python3 scripts/test-worker-store.py
