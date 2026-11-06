@@ -55,6 +55,17 @@ fn post_status(
         .map_err(|_| ProviderError)
 }
 
+fn runtime_endpoint(endpoint: &str) -> Result<url::Url, ProviderError> {
+    if endpoint.is_empty() || endpoint.contains(['/', '?', '#', '@']) {
+        return Err(ProviderError);
+    }
+    let url = url::Url::parse(&format!("https://{endpoint}")).map_err(|_| ProviderError)?;
+    if url.host_str().is_none() {
+        return Err(ProviderError);
+    }
+    Ok(url)
+}
+
 impl Provider {
     fn worker_request(
         &self,
@@ -124,7 +135,7 @@ impl Provider {
             .checked_sub(started.elapsed())
             .filter(|duration| !duration.is_zero())
             .ok_or(ProviderError)?;
-        let mut url = url::Url::parse(&endpoint).map_err(|_| ProviderError)?;
+        let mut url = runtime_endpoint(&endpoint)?;
         if url.scheme() != "https"
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -303,6 +314,26 @@ mod tests {
                 !oversized
             );
             server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_endpoint_uses_https_for_provider_hostname() {
+        let url = runtime_endpoint("guest.lambda-microvms.us-west-2.on.aws").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://guest.lambda-microvms.us-west-2.on.aws/"
+        );
+        for endpoint in [
+            "",
+            "http://guest.example",
+            "https://guest.example",
+            "user@guest.example",
+            "guest.example/path",
+            "guest.example?query",
+            "guest.example#fragment",
+        ] {
+            assert!(runtime_endpoint(endpoint).is_err(), "{endpoint}");
         }
     }
 

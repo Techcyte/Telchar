@@ -150,7 +150,7 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
     .unwrap();
 
     let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let runtime_endpoint = format!("https://localhost:{}", tls.local_addr().unwrap().port());
+    let runtime_endpoint = format!("localhost:{}", tls.local_addr().unwrap().port());
     let certificate =
         include_bytes!("../../../../../telchar-nomad-worker/tests/fixtures/microvm-cert.der");
     let key = include_bytes!("../../../../../telchar-nomad-worker/tests/fixtures/microvm-key.der");
