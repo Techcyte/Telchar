@@ -24,7 +24,7 @@ for path in /*; do
     fi
 done
 bwrap --unshare-user --uid 1000 --gid 1000 --die-with-parent \
-    --tmpfs / "${mounts[@]}" --dir /var/empty \
+    --tmpfs / "${mounts[@]}" --tmpfs /tmp --dir /var/empty \
     --symlink "$(command -v bash)" /noshell \
     --ro-bind "$root/passwd" /etc/passwd \
     --ro-bind "$root/group" /etc/group \
