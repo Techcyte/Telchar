@@ -237,7 +237,8 @@ class ExecutionTests(unittest.TestCase):
                 self.assertTrue(all(set(event) == {"event", "stage", "outcome"} for event in events))
                 self.assertTrue(all(event["event"] == "microvm.execution.stage" for event in events))
                 self.assertIn({"event": "microvm.execution.stage", "stage": "namespace", "outcome": "ready"}, events)
-                self.assertIn({"event": "microvm.execution.stage", "stage": "execution", "outcome": outcome}, events)
+                outcomes = {outcome, "deadline"} if outcome == "readiness-deadline" else {outcome}
+                self.assertTrue(any(event['stage'] == 'execution' and event['outcome'] in outcomes for event in events), events)
                 self.assertNotIn(b"PRIVATE_MARKER", result.stdout)
 
     def test_success_stops_daemon(self):
@@ -263,6 +264,22 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.5)
         self.assert_stopped(self.root / "ready.pid")
         self.assert_stopped(self.root / "daemon.pid")
+
+    def test_worker_exit_before_prepare_stops_execution_promptly(self):
+        from unittest.mock import patch
+        retained = self.root / 'retained'
+        (retained / 'nix/store').mkdir(parents=True)
+        (retained / 'nix/var/nix').mkdir(parents=True)
+        worker = self.command('worker', 'raise SystemExit(1)\n')
+        environment = {'TELCHAR_MICROVM_RETAINED_ROOT': str(retained),
+                       'TELCHAR_MICROVM_MAXIMUM_STORE_BYTES': '1048576',
+                       'TELCHAR_MICROVM_MINIMUM_FREE_BYTES': '0',
+                       'PYTHONPATH': str(ROOT / 'deploy/microvm')}
+        with patch.dict(os.environ, environment):
+            started = time.monotonic()
+            self.assertFalse(execution.supervise(self.daemon(), worker, self.ready(), 3))
+            self.assertLess(time.monotonic() - started, 1.5)
+        self.assert_stopped(self.root / 'daemon.pid')
 
     def test_worker_failure_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(1)\n")

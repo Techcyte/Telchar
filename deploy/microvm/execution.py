@@ -160,8 +160,10 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
             if result is not None:
                 return result == 0
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
+        diagnostic("execution", "deadline" if time.monotonic() >= deadline else "cancelled")
         return False
     except OSError:
+        diagnostic("supervisor", "os-error")
         return False
     finally:
         if process is not None:
@@ -288,7 +290,20 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
                 diagnostic("worker", "started")
                 stage = "prepare"
                 diagnostic(stage, "waiting")
-                channel, _ = listener.accept()
+                while True:
+                    if worker.poll() is not None:
+                        diagnostic("execution", "worker-exit")
+                        return False
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or daemon.poll() is not None:
+                        diagnostic("prepare", "deadline" if remaining <= 0 else "daemon-exit")
+                        return False
+                    listener.settimeout(min(.025, remaining))
+                    try:
+                        channel, _ = listener.accept()
+                        break
+                    except socket.timeout:
+                        pass
                 with channel:
                     wait_prepared(channel, deadline)
                     diagnostic("prepare", "ready")
