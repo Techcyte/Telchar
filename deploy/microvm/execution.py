@@ -275,7 +275,7 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
             check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
             import shutil
             import tempfile
-            directory = tempfile.mkdtemp(prefix="telchar-job-")
+            directory = tempfile.mkdtemp(prefix="telchar-job-", dir=retained)
             listener = socket.socket(socket.AF_UNIX)
             try:
                 path = os.path.join(directory, "prepare.sock")
