@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Supply worker test prerequisites in a private root without changing the build sandbox.
 set -euo pipefail
+workerTestRegistration=${workerTestRegistration:?private closure registration is required}
 store=$(realpath "$1")
 shift
 root=$(mktemp -d)
