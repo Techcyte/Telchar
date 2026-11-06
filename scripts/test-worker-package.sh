@@ -24,7 +24,9 @@ for path in /*; do
         mounts+=(--bind "$path" "$path")
     fi
 done
-bwrap --unshare-user --uid 1000 --gid 1000 --die-with-parent \
+# Supervised MicroVM fixtures need mount authority in this private namespace;
+# individual unprivileged-client fixtures create their own nonroot namespaces.
+bwrap --unshare-user --uid 0 --gid 0 --die-with-parent \
     --tmpfs / "${mounts[@]}" --tmpfs /tmp --dir /var/empty \
     --dir /nix/var/nix/profiles \
     --symlink "$(command -v bash)" /noshell \

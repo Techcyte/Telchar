@@ -75,7 +75,10 @@ def job_store(retained, directory):
             target.mkdir(parents=True)
             mount(retained / name, target, flags=4096)
             mounted.append(target)
-            mount(None, target, flags=4096 | 32 | 1)
+            # Nested user namespaces cannot clear inherited mount restrictions.
+            # Preserve nosuid/nodev/noexec while making the bind readonly.
+            restrictions = os.statvfs(target).f_flag & (os.ST_NOSUID | os.ST_NODEV | os.ST_NOEXEC)
+            mount(None, target, flags=4096 | 32 | 1 | restrictions)
         upper = directory / "upper"
         work = directory / "work"
         merged = directory / "merged"
