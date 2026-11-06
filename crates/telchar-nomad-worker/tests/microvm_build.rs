@@ -1378,10 +1378,10 @@ fn tls_worker_socket(
     stream: std::net::TcpStream,
 ) -> tungstenite::WebSocket<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
     stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     stream
-        .set_write_timeout(Some(Duration::from_secs(15)))
+        .set_write_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let config = rustls::ServerConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
