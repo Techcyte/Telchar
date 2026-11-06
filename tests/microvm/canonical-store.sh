@@ -42,7 +42,9 @@ export NIX_CONFIG=$'sandbox = false\nbuild-users-group =\nsubstituters =\ntruste
 export NIX_CONFIG+=$'extra-platforms = aarch64-linux x86_64-linux\n'
 export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STORE_URI="unix://$root/socket"
 mapping=()
-if [[ ${MICROVM_TEST_CASE:-} == supervised && $(id -u) != 0 ]]; then
+# The package wrapper already provides private passwd/group entries. Its
+# single-ID namespace cannot delegate additional subordinate IDs.
+if [[ ${MICROVM_TEST_CASE:-} == supervised && $(id -u) != 0 && ${TELCHAR_WORKER_PACKAGE_TEST:-} != 1 ]]; then
     mapping+=(--user --map-auto --map-root-user)
 else
     mapping+=(--user --map-root-user)
