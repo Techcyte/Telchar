@@ -10,7 +10,7 @@ case "$system" in
     packages=(telchar-oci telchar-nix-daemon-oci telchar-ssh-ingress-oci telchar-nomad-worker-oci)
     ;;
   aarch64-linux)
-    packages=(telchar-microvm-execution-oci)
+    packages=(telchar-microvm-execution-oci telchar-nomad-worker-oci)
     ;;
   *)
     echo "unsupported image system: $system" >&2

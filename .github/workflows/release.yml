@@ -96,7 +96,7 @@ jobs:
         run: scripts/publish-oci-images.sh
 
   microvm:
-    name: Publish ARM64 MicroVM image
+    name: Publish ARM64 MicroVM and Nomad worker images
     permissions:
       contents: read
       packages: write
@@ -136,7 +136,7 @@ jobs:
       - name: Build MicroVM image contract
         run: nix build -L --no-link .#checks.aarch64-linux.oci-images
 
-      - name: Scan MicroVM image
+      - name: Scan ARM64 images
         env:
           IMAGE_SYSTEM: aarch64-linux
         run: scripts/check-oci-images.sh

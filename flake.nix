@@ -73,6 +73,7 @@
             inherit source;
           })
           telchar-nomad-worker
+          telchar-nomad-worker-oci
           ;
         telchar-microvm-execution-oci = import ./nix/microvm-execution.nix {
           pkgs = armPkgs;

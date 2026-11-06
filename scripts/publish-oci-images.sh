@@ -29,7 +29,10 @@ case "$system" in
     )
     ;;
   aarch64-linux)
-    specifications=('telchar-microvm-execution-oci:telchar-microvm-execution')
+    specifications=(
+      'telchar-microvm-execution-oci:telchar-microvm-execution'
+      'telchar-nomad-worker-oci:telchar-nomad-worker'
+    )
     ;;
   *)
     echo "unsupported image system: $system" >&2
@@ -45,8 +48,13 @@ registry=ghcr.io/techcyte
 for specification in "${specifications[@]}"; do
   package=${specification%%:*}
   image=${specification#*:}
+  destination_tag=$IMAGE_TAG
+  # Keep existing x86 tags intact; no last-writer-wins architecture overwrite.
+  if [[ $system == aarch64-linux && $image == telchar-nomad-worker ]]; then
+    destination_tag+=-arm64
+  fi
   archive=$(nix build --no-link --print-out-paths ".#packages.$system.$package")
   nix develop --command skopeo copy \
     "docker-archive:$archive" \
-    "docker://$registry/$image:$IMAGE_TAG"
+    "docker://$registry/$image:$destination_tag"
 done
