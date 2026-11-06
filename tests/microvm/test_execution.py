@@ -270,7 +270,10 @@ class ExecutionTests(unittest.TestCase):
         retained = self.root / 'retained'
         (retained / 'nix/store').mkdir(parents=True)
         (retained / 'nix/var/nix').mkdir(parents=True)
-        worker = self.command('worker', 'raise SystemExit(1)\n')
+        marker = self.root / 'job-location'
+        worker = self.command('worker', 'import os, pathlib\n'
+                              f'pathlib.Path({str(marker)!r}).write_text(os.environ["TELCHAR_MICROVM_JOB_SOCKET"])\n'
+                              'raise SystemExit(1)\n')
         environment = {'TELCHAR_MICROVM_RETAINED_ROOT': str(retained),
                        'TELCHAR_MICROVM_MAXIMUM_STORE_BYTES': '1048576',
                        'TELCHAR_MICROVM_MINIMUM_FREE_BYTES': '0',
@@ -279,6 +282,8 @@ class ExecutionTests(unittest.TestCase):
             started = time.monotonic()
             self.assertFalse(execution.supervise(self.daemon(), worker, self.ready(), 3))
             self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(Path(marker.read_text()).parent.parent, retained)
+        self.assertFalse(list(retained.glob('telchar-job-*')))
         self.assert_stopped(self.root / 'daemon.pid')
 
     def test_worker_failure_stops_daemon(self):
