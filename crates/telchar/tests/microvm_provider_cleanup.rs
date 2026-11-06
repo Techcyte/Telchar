@@ -111,7 +111,10 @@ fn exchange(
             3
         } else if operation == "maintenance-uncertain" {
             5
-        } else if matches!(operation, "lifecycle-cleanup" | "maintenance") {
+        } else if matches!(
+            operation,
+            "lifecycle-cleanup" | "maintenance" | "maintenance-reset-uncertain"
+        ) {
             3
         } else {
             1
@@ -166,13 +169,19 @@ fn exchange(
                 )
             } else if matches!(
                 operation,
-                "lifecycle-cleanup" | "maintenance" | "maintenance-uncertain"
+                "lifecycle-cleanup"
+                    | "maintenance"
+                    | "maintenance-uncertain"
+                    | "maintenance-reset-uncertain"
             ) && response_index == 1
             {
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
             } else if matches!(
                 operation,
-                "lifecycle-cleanup" | "maintenance" | "maintenance-uncertain"
+                "lifecycle-cleanup"
+                    | "maintenance"
+                    | "maintenance-uncertain"
+                    | "maintenance-reset-uncertain"
             ) && response_index == 2
             {
                 let body = observation("microvm-exact", "TERMINATED");
@@ -255,6 +264,29 @@ fn exchange(
         Duration::from_secs(20),
     )
     .expect("owner acquires");
+    if operation == "maintenance-reset-uncertain" {
+        fixture
+            .connect()
+            .execute(
+                "UPDATE microvm_launches SET phase='bound' WHERE intent_id='cleanup-intent'",
+                &[],
+            )
+            .unwrap();
+        fixture.connect().execute("INSERT INTO microvm_workers (intent_id,state,attempt_id,expires_at,owner_generation) VALUES ('cleanup-intent','busy',$1,clock_timestamp()+interval '60 seconds',$2)", &[&attempt.attempt_id,&owner.generation()]).unwrap();
+        telchar::persistence::collect_shared_build(owner.database(), derivation).unwrap();
+        telchar::persistence::complete_shared_build_success(
+            owner.database(),
+            derivation,
+            &serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            telchar::persistence::completed_microvm_worker(owner.database(), "cleanup-intent")
+                .unwrap()
+                .is_some()
+        );
+    }
     if operation == "expired-cleanup" {
         fixture.expire_singleton_ownership("daemon");
     }
@@ -314,6 +346,7 @@ fn exchange(
             "us-west-2".to_owned(),
             Duration::from_millis(25),
             1,
+            std::collections::BTreeMap::new(),
         )
         .expect("cleanup service starts");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -354,6 +387,13 @@ fn exchange(
                 "independent cleanup releases observed termination"
             );
             std::thread::sleep(Duration::from_millis(10));
+        }
+        if operation == "maintenance-reset-uncertain" {
+            let row = fixture.connect().query_one("SELECT w.state,l.phase,l.termination_observed_at IS NOT NULL,l.reservation_released_at IS NOT NULL FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id='cleanup-intent'", &[]).unwrap();
+            assert_eq!(row.get::<_, String>(0), "draining");
+            assert_eq!(row.get::<_, String>(1), "closed");
+            assert!(row.get::<_, bool>(2));
+            assert!(row.get::<_, bool>(3));
         }
         service.shutdown().expect("cleanup service joins");
         service.shutdown().expect("shutdown is idempotent");
@@ -417,6 +457,17 @@ fn exchange(
         })
     };
     (result, server.join().expect("server joins"))
+}
+
+#[test]
+fn maintenance_reset_uncertainty_closes_worker_and_preserves_exact_cleanup() {
+    let (result, requests) = exchange(
+        "200 OK",
+        &observation("microvm-exact", "RUNNING"),
+        "maintenance-reset-uncertain",
+    );
+    assert!(result.unwrap());
+    assert!(requests.contains("/microvms/microvm-exact"));
 }
 
 fn observation(id: &str, state: &str) -> String {

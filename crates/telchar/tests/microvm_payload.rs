@@ -35,14 +35,16 @@ payload = sys.stdin.read()
 trust = pathlib.Path(sys.argv[2])
 with tempfile.TemporaryDirectory() as directory:
     destination = pathlib.Path(directory) / 'binding'
+    captured = pathlib.Path(directory) / 'captured'
+    worker = "import pathlib,sys; p=pathlib.Path(sys.argv[1]); assert p.stat().st_mode & 0o777 == 0o600; pathlib.Path(sys.argv[2]).write_text(p.read_text())"
     state = ExecutionState([sys.executable, '-c', 'import time; time.sleep(30)'],
-                           [sys.executable, '-c', 'raise SystemExit(0)'],
+                           [sys.executable, '-c', worker, str(destination), str(captured)],
                            [sys.executable, '-c', 'raise SystemExit(0)'], destination, trust)
     assert state.start_hook({'microvmId': 'provider-exact', 'runHookPayload': payload})
     state.join()
     assert state.status() == 'succeeded'
-    assert destination.stat().st_mode & 0o777 == 0o600
-    print(destination.read_text())
+    assert not destination.exists()
+    print(captured.read_text())
 "#,
         )
         .arg(root.join("deploy/microvm"))
@@ -71,7 +73,7 @@ with tempfile.TemporaryDirectory() as directory:
         serde_json::json!({
             "endpoint": "wss://gateway.example/microvm", "address": "127.0.0.1:443",
             "intent_id": "intent-exact", "provider_id": "provider-exact",
-            "bearer": capability.bearer(), "lifetime_seconds": 5
+            "assignment_epoch": 1, "bearer": capability.bearer(), "trace_context": {"traceparent": null, "tracestate": null}, "lifetime_seconds": 5
         })
     );
 }
@@ -120,5 +122,40 @@ fn gateway_payload_rejects_unusable_execution_coordinates() {
                 1
             )
             .is_err()
+    );
+}
+
+#[test]
+fn assignment_trace_carrier_requires_exact_nullable_fields_and_valid_context() {
+    use telchar::microvm::AssignmentTraceContext;
+    for invalid in [
+        serde_json::json!({}),
+        serde_json::json!({"traceparent": null}),
+        serde_json::json!({"traceparent": null, "tracestate": null, "baggage": "private"}),
+    ] {
+        assert!(serde_json::from_value::<AssignmentTraceContext>(invalid).is_err());
+    }
+    for (parent, state) in [
+        (Some("bad".to_owned()), None),
+        (None, Some("vendor=value".to_owned())),
+        (Some("x".repeat(56)), None),
+        (
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned()),
+            Some("x".repeat(513)),
+        ),
+    ] {
+        let carrier = serde_json::from_value::<AssignmentTraceContext>(
+            serde_json::json!({"traceparent": parent, "tracestate": state}),
+        )
+        .unwrap();
+        assert!(carrier.context().is_err());
+    }
+    let carrier = serde_json::from_value::<AssignmentTraceContext>(
+        serde_json::json!({"traceparent": null, "tracestate": null}),
+    )
+    .unwrap();
+    assert_eq!(
+        carrier.context().unwrap(),
+        telchar_telemetry::TraceContext::default()
     );
 }

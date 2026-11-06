@@ -5,8 +5,10 @@ import ctypes
 import ipaddress
 import json
 import os
+import re
 import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -31,6 +33,14 @@ class ExecutionState:
         with self.lock:
             return self.result
 
+    def report(self):
+        with self.lock:
+            report = {"status": self.result, "reset_complete": self.result == "succeeded"}
+            if self.binding is not None:
+                report.update({key: self.binding[key] for key in
+                               ("intent_id", "provider_id", "assignment_epoch")})
+            return report
+
     def start_hook(self, hook):
         if not isinstance(hook, dict):
             raise ValueError("invalid execution hook")
@@ -43,7 +53,7 @@ class ExecutionState:
             value = json.loads(payload)
         except json.JSONDecodeError as error:
             raise ValueError("invalid execution payload") from error
-        fields = {"version", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds"}
+        fields = {"version", "assignment_epoch", "endpoint", "address", "intent_id", "bearer", "lifetime_seconds", "trace_context"}
         if not isinstance(value, dict) or set(value) != fields or type(value["version"]) is not int or value["version"] != 1:
             raise ValueError("invalid execution schema")
         if any(not isinstance(value[key], str) for key in ("endpoint", "address", "intent_id", "bearer")):
@@ -57,15 +67,39 @@ class ExecutionState:
         ipaddress.ip_address(address.hostname)
         if address.port is None or not 1 <= address.port <= 65535 or address.path or address.query or address.fragment or address.username is not None:
             raise ValueError("invalid execution address")
-        if (not 1 <= len(value["intent_id"]) <= 128 or len(value["bearer"]) != 43
+        if (type(value["assignment_epoch"]) is not int or value["assignment_epoch"] <= 0
+                or not 1 <= len(value["intent_id"]) <= 128 or len(value["bearer"]) != 43
                 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value["bearer"])
                 or type(value["lifetime_seconds"]) is not int or not 1 <= value["lifetime_seconds"] <= 28800):
             raise ValueError("invalid execution limits")
+        context = value["trace_context"]
+        if not isinstance(context, dict) or set(context) != {"traceparent", "tracestate"}:
+            raise ValueError("invalid trace context")
+        parent, state = context["traceparent"], context["tracestate"]
+        if parent is not None:
+            if (not isinstance(parent, str)
+                    or re.fullmatch(r"00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}", parent) is None
+                    or parent[3:35] == "0" * 32 or parent[36:52] == "0" * 16):
+                raise ValueError("invalid trace context")
+        if state is not None and (parent is None or not isinstance(state, str)
+                                  or not 1 <= len(state.encode()) <= 512 or "\0" in state):
+            raise ValueError("invalid trace context")
         binding = {key: item for key, item in value.items() if key != "version"}
         binding["provider_id"] = identity
         with self.lock:
+            if self.binding == binding:
+                return True
+            if self.cancelled.is_set() or self.result == "failed":
+                return False
             if self.binding is not None:
-                return self.binding == binding
+                if (self.result != "succeeded"
+                        or any(binding[key] != self.binding[key] for key in
+                               ("provider_id", "intent_id", "endpoint", "address"))
+                        or binding["assignment_epoch"] != self.binding["assignment_epoch"] + 1
+                        or binding["bearer"] == self.binding["bearer"]):
+                    return False
+            elif binding["assignment_epoch"] != 1:
+                return False
             if (not os.path.isfile(self.trust) or not os.access(self.trust, os.R_OK)
                     or not 0 < os.path.getsize(self.trust) <= 1048576):
                 raise ValueError("runtime trust unavailable")
@@ -84,11 +118,21 @@ class ExecutionState:
     def _execute(self, lifetime):
         result = supervise(self.daemon_command, self.worker_command, self.ready_command, lifetime, self.cancelled)
         with self.lock:
-            self.result = "succeeded" if result else "failed"
+            try:
+                os.unlink(self.destination)
+            except OSError:
+                result = False
+            self.result = "succeeded" if result and not self.cancelled.is_set() else "failed"
 
     def join(self):
         if self.thread is not None:
             self.thread.join()
+
+
+def diagnostic(stage, outcome):
+    if os.environ.get("TELCHAR_MICROVM_DIAGNOSTICS") == "1":
+        print(json.dumps({"event": "microvm.execution.stage", "stage": stage,
+                          "outcome": outcome}), flush=True)
 
 
 def stop(process):
@@ -109,14 +153,17 @@ def supervise(daemon_command, worker_command, ready_command, lifetime, cancelled
         process = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--execution-init", specification],
             start_new_session=True, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=None if os.environ.get("TELCHAR_MICROVM_DIAGNOSTICS") == "1" else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
         while time.monotonic() < deadline and not cancelled.is_set():
             result = process.poll()
             if result is not None:
                 return result == 0
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
+        diagnostic("execution", "deadline" if time.monotonic() >= deadline else "cancelled")
         return False
     except OSError:
+        diagnostic("supervisor", "os-error")
         return False
     finally:
         if process is not None:
@@ -156,6 +203,7 @@ def enter_execution(specification):
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+        diagnostic("namespace", "ready")
         return run_execution(*specification)
 
     os.close(read_end)
@@ -185,13 +233,17 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
         return False
     cancelled = threading.Event()
     daemon = worker = readiness = None
+    stage = "daemon"
     try:
         daemon = subprocess.Popen(daemon_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
+        diagnostic("daemon", "started")
+        stage = "readiness"
         while daemon.poll() is None and not cancelled.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                diagnostic("execution", "readiness-deadline")
                 return False
             readiness = subprocess.Popen(ready_command, start_new_session=True,
                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -204,22 +256,98 @@ def run_execution(daemon_command, worker_command, ready_command, deadline):
                 stop(readiness)
                 readiness = None
             if ready:
+                diagnostic("readiness", "ready")
                 break
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
         else:
+            diagnostic("execution", "daemon-exit")
             return False
         if time.monotonic() >= deadline or daemon.poll() is not None or cancelled.is_set():
+            diagnostic("execution", "daemon-exit" if daemon.poll() is not None else "readiness-deadline")
             return False
+        if os.environ.get("TELCHAR_MICROVM_RETAINED_ROOT"):
+            stage = "capacity"
+            diagnostic(stage, "started")
+            from retained_store import check_capacity, job_daemon, wait_prepared
+            retained = os.environ["TELCHAR_MICROVM_RETAINED_ROOT"]
+            maximum_bytes = int(os.environ["TELCHAR_MICROVM_MAXIMUM_STORE_BYTES"])
+            minimum_free_bytes = int(os.environ["TELCHAR_MICROVM_MINIMUM_FREE_BYTES"])
+            check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
+            import shutil
+            import tempfile
+            directory = tempfile.mkdtemp(prefix="telchar-job-", dir=retained)
+            listener = socket.socket(socket.AF_UNIX)
+            try:
+                path = os.path.join(directory, "prepare.sock")
+                listener.bind(path)
+                listener.listen(1)
+                listener.settimeout(max(.001, deadline - time.monotonic()))
+                environment = os.environ.copy()
+                environment["TELCHAR_MICROVM_JOB_SOCKET"] = path
+                worker = subprocess.Popen(worker_command, env=environment, start_new_session=True,
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+                diagnostic("worker", "started")
+                stage = "prepare"
+                diagnostic(stage, "waiting")
+                while True:
+                    if worker.poll() is not None:
+                        diagnostic("execution", "worker-exit")
+                        return False
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or daemon.poll() is not None:
+                        diagnostic("prepare", "deadline" if remaining <= 0 else "daemon-exit")
+                        return False
+                    listener.settimeout(min(.025, remaining))
+                    try:
+                        channel, _ = listener.accept()
+                        break
+                    except socket.timeout:
+                        pass
+                with channel:
+                    wait_prepared(channel, deadline)
+                    diagnostic("prepare", "ready")
+                    stop(daemon)
+                    daemon = None
+                    check_capacity(retained, maximum_bytes, minimum_free_bytes, deadline)
+                    stage = "job-store"
+                    with job_daemon(retained,
+                                    os.path.join(directory, "store"),
+                                    os.environ["TELCHAR_MICROVM_NIX"], environment, deadline) as store:
+                        try:
+                            diagnostic("job-store", "ready")
+                            channel.sendall(store.encode() + b"\n")
+                            while time.monotonic() < deadline:
+                                result = worker.poll()
+                                if result is not None:
+                                    diagnostic("execution", "success" if result == 0 else "worker-exit")
+                                    return result == 0
+                                time.sleep(.025)
+                            return False
+                        finally:
+                            stop(worker)
+                            worker = None
+            finally:
+                stop(worker)
+                worker = None
+                listener.close()
+                if not os.path.exists(os.path.join(directory, "store")):
+                    shutil.rmtree(directory)
         worker = subprocess.Popen(worker_command, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
+        diagnostic("worker", "started")
+        stage = "worker"
         while time.monotonic() < deadline and daemon.poll() is None and not cancelled.is_set():
             result = worker.poll()
             if result is not None:
+                diagnostic("execution", "success" if result == 0 else "worker-exit")
                 return result == 0
             time.sleep(min(.025, max(0, deadline - time.monotonic())))
+        diagnostic("execution", "deadline" if time.monotonic() >= deadline else "daemon-exit")
         return False
     except OSError:
+        diagnostic(stage, "os-error")
         return False
     finally:
         stop(readiness)

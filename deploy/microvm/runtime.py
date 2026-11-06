@@ -28,6 +28,9 @@ class ProbeState:
         with self.lock:
             return self.result
 
+    def report(self):
+        return {"status": self.status()}
+
     def start_hook(self, payload):
         identity = payload.get("microvmId")
         if not isinstance(identity, str) or not identity or len(identity) > 256 or payload.get("runHookPayload", "") != "":
@@ -85,7 +88,7 @@ def make_server(address, state, daemon_ready):
             pass
 
         def reply(self, code):
-            data = json.dumps({"status": state.status()}).encode()
+            data = json.dumps(state.report()).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))

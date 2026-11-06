@@ -56,9 +56,13 @@ impl Execution<'_> {
         std::thread::scope(|scope| {
             let stopped = &stopped;
             let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
+            // tracing's current span is thread-local; keep the routed backend parent
+            // through the cancellation-monitor/worker boundary on cold and warm jobs.
+            let execution_span = tracing::Span::current();
             let worker = std::thread::Builder::new()
                 .name("microvm-execution".into())
                 .spawn_scoped(scope, move || {
+                    let _entered = execution_span.enter();
                     self.run_build_until(config, build, stopped, |bytes| {
                         for chunk in bytes.chunks(64 * 1024) {
                             let _ = sender.try_send(chunk.to_vec());
@@ -215,6 +219,15 @@ impl Execution<'_> {
         if Instant::now() >= deadline {
             return Err(io::Error::other("MicroVM execution deadline expired"));
         }
+        if crate::persistence::record_microvm_attempt_trace_context(
+            self.owner.database(),
+            attempt_id,
+            &telchar_telemetry::TraceContext::capture_current(),
+        )
+        .is_err()
+        {
+            tracing::warn!(event = "microvm.trace_context.retention_failed");
+        }
         let (intent, payload) = loop {
             self.owner.verify().map_err(io::Error::other)?;
             if stopped.load(std::sync::atomic::Ordering::Acquire) {
@@ -239,11 +252,60 @@ impl Execution<'_> {
             {
                 return Err(io::Error::other("MicroVM attempt is not active"));
             }
+            let (candidate, payload) = config.launch(attempt_id, deadline)?;
+            if let Some((intent_id, provider_id, epoch, lifetime)) =
+                crate::persistence::select_microvm_worker(
+                    self.owner.database(),
+                    attempt_id,
+                    &config.fingerprint(),
+                    config.execution_timeout(),
+                    &candidate.credential_verifier,
+                )
+                .map_err(io::Error::other)?
+            {
+                let result = (|| {
+                    let mut payload: serde_json::Value =
+                        serde_json::from_str(&payload).map_err(io::Error::other)?;
+                    payload["intent_id"] = serde_json::json!(intent_id);
+                    payload["assignment_epoch"] = serde_json::json!(epoch);
+                    payload["lifetime_seconds"] = serde_json::json!(lifetime);
+                    let waiting = self
+                        .sessions
+                        .register(&intent_id, deadline)
+                        .map_err(io::Error::other)?;
+                    self.provider
+                        .deliver_worker_assignment(
+                            self.owner,
+                            &intent_id,
+                            &provider_id,
+                            &payload.to_string(),
+                        )
+                        .map_err(io::Error::other)?;
+                    let connection = waiting
+                        .receive_active(self.owner)
+                        .map_err(io::Error::other)?;
+                    run_admitted(
+                        connection,
+                        self.owner,
+                        self.store.clone(),
+                        config.staging_directory().to_owned(),
+                        config.transfer_limits(),
+                        log,
+                    )
+                })();
+                self.owner.verify().map_err(io::Error::other)?;
+                if !matches!(&result, Ok(result) if result.outcome == crate::nomad::protocol::BuildOutcome::Built)
+                {
+                    crate::persistence::cancel_microvm_launch(self.owner.database(), &intent_id)
+                        .map_err(io::Error::other)?;
+                }
+                return result;
+            }
             let quota = self
                 .provider
                 .quota_reservation(config)
                 .map_err(|_| io::Error::other("MicroVM quota pricing unavailable"))?;
-            let (intent, payload) = config.launch(attempt_id, deadline)?;
+            let intent = candidate;
             if crate::persistence::reserve_microvm_launch_with_quota(
                 self.owner.database(),
                 &intent,
@@ -280,8 +342,11 @@ impl Execution<'_> {
         };
         let result = execution.run_reserved(&intent, &payload, deadline, log);
         self.owner.verify().map_err(io::Error::other)?;
-        crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
-            .map_err(io::Error::other)?;
+        if !matches!(&result, Ok(result) if result.outcome == crate::nomad::protocol::BuildOutcome::Built)
+        {
+            crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
+                .map_err(io::Error::other)?;
+        }
         result
     }
 
@@ -321,8 +386,11 @@ impl Execution<'_> {
         })();
         drop(waiting);
         self.owner.verify().map_err(io::Error::other)?;
-        crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
-            .map_err(io::Error::other)?;
+        if !matches!(&result, Ok(result) if result.outcome == crate::nomad::protocol::BuildOutcome::Built)
+        {
+            crate::persistence::cancel_microvm_launch(self.owner.database(), &intent.intent_id)
+                .map_err(io::Error::other)?;
+        }
         result
     }
 }

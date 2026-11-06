@@ -21,6 +21,10 @@ pub(super) struct Deployment {
     admission_timeout_seconds: u64,
     provider_timeout_seconds: u64,
     cleanup_interval_seconds: u64,
+    #[serde(default)]
+    idle_retention_seconds: u64,
+    #[serde(default = "maximum_worker_jobs")]
+    maximum_jobs_per_worker: u32,
     callback_url: String,
     callback_host: String,
     staging_directory: PathBuf,
@@ -61,6 +65,10 @@ impl MicrovmQuota {
 /// Validated deployment policy; parsing does not attest AWS credentials or image contents.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MicrovmBackendConfig(Deployment, BackendTarget);
+
+fn maximum_worker_jobs() -> u32 {
+    100
+}
 
 impl MicrovmBackendConfig {
     pub fn parse(raw: &str) -> io::Result<Self> {
@@ -105,6 +113,8 @@ impl MicrovmBackendConfig {
             || !(1..=60).contains(&d.provider_timeout_seconds)
             || d.provider_timeout_seconds >= d.admission_timeout_seconds
             || !(1..=300).contains(&d.cleanup_interval_seconds)
+            || d.idle_retention_seconds > d.maximum_duration_seconds
+            || !(1..=1_000_000).contains(&d.maximum_jobs_per_worker)
             || !d.staging_directory.is_absolute()
             || d.staging_directory
                 .components()
@@ -221,6 +231,12 @@ impl MicrovmBackendConfig {
     }
     pub fn admission_timeout(&self) -> Duration {
         Duration::from_secs(self.0.admission_timeout_seconds)
+    }
+    pub fn maximum_jobs_per_worker(&self) -> u32 {
+        self.0.maximum_jobs_per_worker
+    }
+    pub fn idle_retention(&self) -> Duration {
+        Duration::from_secs(self.0.idle_retention_seconds)
     }
     pub fn cleanup_interval(&self) -> Duration {
         Duration::from_secs(self.0.cleanup_interval_seconds)

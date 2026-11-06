@@ -62,6 +62,7 @@ fn slow_upgrade_cannot_extend_setup_deadline() {
         "intent",
         "microvm-exact",
         "secret",
+        1,
     );
     let elapsed = started.elapsed();
     assert!(result.is_err());

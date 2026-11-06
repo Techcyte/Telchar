@@ -36,7 +36,11 @@
           || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar-nomad-worker/tests/fixtures/" pathString
           || pathString == "${toString ./.}/tests/canonical-store.sh"
           || pathString == "${toString ./.}/tests/workspace.sh"
-          || pathString == "${toString ./.}/tests/microvm/canonical-store.sh"
+          || pathString == "${toString ./.}/tests/microvm"
+          || (
+            pkgs.lib.hasPrefix "${toString ./.}/tests/microvm/" pathString
+            && (pkgs.lib.hasSuffix ".py" pathString || pkgs.lib.hasSuffix ".sh" pathString)
+          )
           || pathString == "${toString ./.}/deploy"
           || pathString == "${toString ./.}/deploy/microvm"
           || pkgs.lib.hasPrefix "${toString ./.}/deploy/microvm/" pathString

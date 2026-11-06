@@ -142,6 +142,7 @@ impl MicrovmCleanupService {
         region: String,
         interval: Duration,
         batch_size: usize,
+        retention: std::collections::BTreeMap<[u8; 32], (Duration, u32)>,
     ) -> io::Result<Self> {
         if account_id.is_empty() || region.is_empty() || !(1..=1000).contains(&batch_size) {
             return Err(io::Error::new(
@@ -176,6 +177,46 @@ impl MicrovmCleanupService {
                 after_intent = Some(cleanup.intent_id.clone());
                 if !owner.verify_available().map_err(io::Error::other)? {
                     return Ok(true);
+                }
+                if let Some((epoch, attempt)) = crate::persistence::completed_microvm_worker(
+                    owner.database(),
+                    &cleanup.intent_id,
+                )
+                .map_err(io::Error::other)?
+                {
+                    let mut connection =
+                        crate::persistence::connect(owner.database()).map_err(io::Error::other)?;
+                    let row = connection
+                        .query_one(
+                            "SELECT configuration_digest FROM microvm_launches WHERE intent_id=$1",
+                            &[&cleanup.intent_id],
+                        )
+                        .map_err(io::Error::other)?;
+                    let digest: Vec<u8> = row.get(0);
+                    let (duration, maximum_jobs) = <[u8; 32]>::try_from(digest.as_slice())
+                        .ok()
+                        .and_then(|key| retention.get(&key).copied())
+                        .unwrap_or((Duration::ZERO, 1));
+                    let reset = provider.observe_worker_reset(
+                        &owner,
+                        &cleanup.intent_id,
+                        epoch,
+                        attempt,
+                        &cleanup.provider_id,
+                        (duration, maximum_jobs),
+                    );
+                    if matches!(reset, Ok(true))
+                        && !crate::persistence::pending_microvm_cleanup_identity(
+                            owner.database(),
+                            &cleanup.intent_id,
+                            &cleanup.provider_id,
+                        )
+                        .map_err(io::Error::other)?
+                    {
+                        continue;
+                    }
+                    crate::persistence::cancel_microvm_launch(owner.database(), &cleanup.intent_id)
+                        .map_err(io::Error::other)?;
                 }
                 if provider.cleanup(&owner, &cleanup).is_err() {
                     // Provider uncertainty retains the durable obligation for a later pass.

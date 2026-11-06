@@ -109,7 +109,7 @@ fn rejected_bootstrap_exports_bounded_admission_metrics() {
     let mut authentication = connect();
     let capability = telchar::microvm::Capability::generate().unwrap();
     let message = serde_json::to_vec(&serde_json::json!({
-        "intent_id": "unregistered-intent",
+        "assignment_epoch": 1, "intent_id": "unregistered-intent",
         "provider_id": "unregistered-provider",
         "bearer": capability.bearer(),
     }))

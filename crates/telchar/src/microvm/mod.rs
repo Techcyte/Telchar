@@ -5,6 +5,7 @@ pub mod execution;
 pub mod outputs;
 pub mod pricing;
 pub mod rendezvous;
+mod runtime;
 pub mod service;
 pub mod session;
 
@@ -13,6 +14,36 @@ use std::time::Duration;
 use aws_sdk_lambdamicrovms::{Client, Config};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
+
+/// Assignment-local diagnostics only; never used to authorize a worker or a build.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignmentTraceContext {
+    #[serde(deserialize_with = "required_nullable")]
+    traceparent: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    tracestate: Option<String>,
+}
+
+fn required_nullable<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(deserializer)
+}
+
+impl AssignmentTraceContext {
+    fn capture_current() -> Self {
+        let context = telchar_telemetry::TraceContext::capture_current();
+        Self {
+            traceparent: context.traceparent().map(str::to_owned),
+            tracestate: context.tracestate().map(str::to_owned),
+        }
+    }
+
+    pub fn context(&self) -> std::io::Result<telchar_telemetry::TraceContext> {
+        telchar_telemetry::TraceContext::new(self.traceparent.clone(), self.tracestate.clone())
+    }
+}
 
 pub struct Capability {
     bearer: String,
@@ -67,6 +98,8 @@ impl Capability {
         }
         let payload = serde_json::to_string(&serde_json::json!({
             "version": 1,
+            "trace_context": AssignmentTraceContext::capture_current(),
+            "assignment_epoch": 1,
             "endpoint": endpoint,
             "address": address.to_string(),
             "intent_id": intent_id,
@@ -84,7 +117,9 @@ impl Capability {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LaunchPayload {
+    trace_context: AssignmentTraceContext,
     version: u8,
+    assignment_epoch: i64,
     endpoint: String,
     address: std::net::SocketAddr,
     intent_id: String,
@@ -100,8 +135,10 @@ fn validate_launch_payload(
         return Err(ProviderError);
     }
     let hook: LaunchPayload = serde_json::from_str(payload).map_err(|_| ProviderError)?;
+    hook.trace_context.context().map_err(|_| ProviderError)?;
     let verifier = bearer_verifier(&hook.bearer).ok_or(ProviderError)?;
     if hook.version != 1
+        || hook.assignment_epoch != 1
         || hook.intent_id != intent.intent_id
         || hook.lifetime_seconds != intent.maximum_duration_seconds
         || verifier != intent.credential_verifier
@@ -224,6 +261,8 @@ pub struct Provider {
     account_id: Option<String>,
     authority: Option<std::sync::Arc<ProviderAuthority>>,
     timeout: Duration,
+    #[cfg(test)]
+    runtime_certificate: Option<reqwest::Certificate>,
     prices: std::sync::Arc<std::sync::Mutex<ComputeQuotes>>,
 }
 
@@ -318,6 +357,8 @@ impl Provider {
             account_id: None,
             authority: None,
             timeout,
+            #[cfg(test)]
+            runtime_certificate: None,
             prices: Default::default(),
         })
     }
@@ -388,7 +429,7 @@ impl Provider {
         {
             return Err(ProviderError);
         }
-        let pending = crate::persistence::pending_microvm_cleanup_identity(
+        let pending = crate::persistence::begin_microvm_cleanup(
             owner.database(),
             &cleanup.intent_id,
             &cleanup.provider_id,

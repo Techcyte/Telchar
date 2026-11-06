@@ -22,14 +22,35 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir "$root/upper" "$root/work" "$root/store" "$root/state" "$root/log" "$root/conf" "$root/tmp"
+if [[ ${MICROVM_TEST_CASE:-} == supervised ]]; then
+    builder=$(realpath "$(command -v bash)")
+    packages=("$(dirname "$(dirname "$builder")")")
+    if [[ -n ${MICROVM_BENCH_MODE:-} ]]; then
+        # Benchmark builders hash the full shared input with the real Nix coreutils.
+        packages+=("$(dirname "$(dirname "$(command -v sha256sum)")")")
+    fi
+    nix-store --query --requisites "${packages[@]}" > "$root/builder-paths"
+    mapfile -t builder_paths < "$root/builder-paths"
+    nix-store --dump-db "${builder_paths[@]}" > "$root/builder-registration"
+    export MICROVM_TEST_REGISTRATION="$root/builder-registration"
+fi
 export NIX_STATE_DIR="$root/state" NIX_LOG_DIR="$root/log" NIX_CONF_DIR="$root/conf" TMPDIR="$root/tmp"
 export NIX_USER_CONF_FILES=/dev/null NIX_STORE_DIR=/nix/store NIX_DAEMON_SOCKET_PATH="$root/socket"
 export NIX_CONFIG=$'sandbox = false\nbuild-users-group =\nsubstituters =\ntrusted-users = root\n'
-if [[ ${MICROVM_TEST_CASE:-} == configured* ]]; then
-    export NIX_CONFIG+=$'extra-platforms = aarch64-linux\n'
-fi
+# Connected fixtures use synthetic x86 and ARM derivations with shell-only
+# builders. Permit both on native ARM CI as well as native x86 CI.
+export NIX_CONFIG+=$'extra-platforms = aarch64-linux x86_64-linux\n'
 export MICROVM_STORE_ROOT="$root" MICROVM_OUTPUT_TEST="$binary" MICROVM_TEST_STORE_URI="unix://$root/socket"
-unshare --user --map-root-user --mount --fork bash -c '
+mapping=()
+if [[ ${MICROVM_TEST_CASE:-} == supervised && $(id -u) != 0 ]]; then
+    mapping+=(--user --map-auto --map-root-user)
+else
+    mapping+=(--user --map-root-user)
+fi
+if [[ ${MICROVM_TEST_CASE:-} == supervised && $(id -u) == 0 ]]; then
+    mapping=()
+fi
+unshare "${mapping[@]}" --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
 mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"

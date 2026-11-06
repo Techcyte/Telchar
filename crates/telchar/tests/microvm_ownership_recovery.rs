@@ -203,7 +203,7 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
                 .unwrap();
             let (mut client, _) = tungstenite::client(upgrade, stream).unwrap();
             client.send(tungstenite::Message::Binary(serde_json::to_vec(&serde_json::json!({
-                "intent_id": intent.intent_id, "provider_id": "microvm-fixture", "bearer": capability.bearer(),
+                "assignment_epoch": 1, "intent_id": intent.intent_id, "provider_id": "microvm-fixture", "bearer": capability.bearer(),
             })).unwrap().into())).unwrap();
             accept.join().unwrap();
             let connection = waiting.receive_active(&owner).unwrap();

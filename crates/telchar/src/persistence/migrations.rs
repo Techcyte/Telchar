@@ -140,6 +140,26 @@ const MIGRATIONS: &[Migration] = &[
         name: "microvm_quotas",
         sql: include_str!("../../migrations/0025_microvm_quotas.sql"),
     },
+    Migration {
+        version: 26,
+        name: "microvm_workers",
+        sql: include_str!("../../migrations/0026_microvm_workers.sql"),
+    },
+    Migration {
+        version: 27,
+        name: "microvm_worker_ownership",
+        sql: include_str!("../../migrations/0027_microvm_worker_ownership.sql"),
+    },
+    Migration {
+        version: 28,
+        name: "microvm_assignments",
+        sql: include_str!("../../migrations/0028_microvm_assignments.sql"),
+    },
+    Migration {
+        version: 29,
+        name: "microvm_idle_deadline",
+        sql: include_str!("../../migrations/0029_microvm_idle_deadline.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

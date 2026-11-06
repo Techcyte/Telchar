@@ -145,6 +145,13 @@ using the host Nix daemon or changing its store registration.
 Gateway outputs target `x86_64-linux`. The microVM worker and execution image
 also have native `aarch64-linux` packages and image checks.
 
+> **Lambda MicroVM performance warning:** experimental and opt-in, not recommended
+> as the default for sustained Nix builds. An isolated AWS 32 MiB input pair took
+> 12.693 s cold versus 2.110 s warm (one sample each). Prefer persistent host-local
+> workers, such as Nomad on EC2/Spot, for sustained workloads; MicroVMs may suit
+> bursty demand or stronger VM isolation requirements. No automatic builder/worker
+> enrollment is enabled by this work. See [performance, use cases, and limitations](docs/microvm.md#performance-warning-and-recommended-use).
+
 Useful packages:
 
 ```bash

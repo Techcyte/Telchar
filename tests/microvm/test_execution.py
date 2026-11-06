@@ -50,12 +50,48 @@ class ExecutionTests(unittest.TestCase):
         return self.command("ready", "import pathlib, sys\n"
                             f"sys.exit(0 if pathlib.Path({str(self.root / 'daemon.pid')!r}).exists() else 1)\n")
 
-    def assert_stopped(self, marker):
+    def process_stopped(self, marker):
         pid = int(marker.read_text())
         # A killed grandchild may remain a zombie until the host reaps it.
-        status = Path(f"/proc/{pid}/stat")
-        if status.exists():
-            self.assertIn(status.read_text().split()[2], {"Z", "X"}, f"process {pid} still running")
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().split()[2] in {"Z", "X"}
+        except FileNotFoundError:
+            return True
+
+    def assert_stopped(self, marker):
+        self.assertTrue(self.process_stopped(marker), f"process {marker.read_text()} still running")
+
+    def assert_execution_stopped(self, markers, deadline):
+        # Namespace teardown stops every member, but has no member completion order.
+        while not all(self.process_stopped(marker) for marker in markers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(.01, remaining))
+        for marker in markers:
+            self.assert_stopped(marker)
+
+    def test_cleanup_waits_for_daemon_after_child_stops(self):
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as child, \
+                subprocess.Popen([sys.executable, "-c", "import time; time.sleep(.15)"]) as daemon:
+            child.wait(timeout=1)
+            markers = [self.root / "child.pid", self.root / "daemon.pid"]
+            for marker, process in zip(markers, (child, daemon)):
+                marker.write_text(str(process.pid))
+            self.assert_execution_stopped(markers, time.monotonic() + 1)
+
+    def test_cleanup_rejects_surviving_daemon_at_original_deadline(self):
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as child, \
+                subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as daemon:
+            try:
+                child.wait(timeout=1)
+                markers = [self.root / "child.pid", self.root / "daemon.pid"]
+                for marker, process in zip(markers, (child, daemon)):
+                    marker.write_text(str(process.pid))
+                with self.assertRaisesRegex(AssertionError, f"process {daemon.pid} still running"):
+                    self.assert_execution_stopped(markers, time.monotonic() + .05)
+            finally:
+                daemon.kill()
 
     def test_deadline_kills_worker_descendant_and_daemon(self):
         child = self.command("child", "import os, pathlib, time\n"
@@ -145,14 +181,8 @@ class ExecutionTests(unittest.TestCase):
                 stdout, stderr = process.communicate(timeout=2)
                 self.assertEqual(stdout, b"")
                 self.assertEqual(stderr, b"")
-                deadline = time.monotonic() + 1
-                status = Path(f"/proc/{int(marker.read_text())}/stat")
-                while status.exists() and time.monotonic() < deadline:
-                    if status.read_text().split()[2] in {"Z", "X"}:
-                        break
-                    time.sleep(.01)
-                self.assert_stopped(marker)
-                self.assert_stopped(self.root / "daemon.pid")
+                self.assert_execution_stopped(
+                    [marker, self.root / "daemon.pid"], time.monotonic() + 1)
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -183,6 +213,34 @@ class ExecutionTests(unittest.TestCase):
                         "execution procfs does not describe its PID namespace")
         self.assert_stopped(self.root / "daemon.pid")
 
+    def test_startup_diagnostics_are_bounded_and_exclude_command_output(self):
+        import json
+        for outcome in ("success", "daemon-exit", "readiness-deadline"):
+            with self.subTest(outcome=outcome):
+                daemon = self.command("diagnostic-daemon", "import time\ntime.sleep(30)\n")
+                if outcome == "daemon-exit":
+                    daemon = self.command("diagnostic-daemon", "raise SystemExit(17)\n")
+                ready = self.command("diagnostic-ready", "raise SystemExit(" +
+                                     ("1" if outcome == "readiness-deadline" else "0") + ")\n")
+                worker = self.command("diagnostic-worker", "import sys\nprint('PRIVATE_MARKER', file=sys.stderr)\n")
+                command = self.command("diagnostic-supervisor", "import runpy\n"
+                                       f"execution = runpy.run_path({str(ROOT / 'deploy/microvm/execution.py')!r})\n"
+                                       f"raise SystemExit(0 if execution['supervise']({daemon!r}, {worker!r}, {ready!r}, .5) else 1)\n")
+                environment = os.environ.copy()
+                environment["TELCHAR_MICROVM_DIAGNOSTICS"] = "1"
+                result = subprocess.run(command, env=environment, capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 0 if outcome == "success" else 1)
+                self.assertEqual(result.stderr, b"")
+                events = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertGreater(len(events), 0)
+                self.assertLessEqual(len(events), 12)
+                self.assertTrue(all(set(event) == {"event", "stage", "outcome"} for event in events))
+                self.assertTrue(all(event["event"] == "microvm.execution.stage" for event in events))
+                self.assertIn({"event": "microvm.execution.stage", "stage": "namespace", "outcome": "ready"}, events)
+                outcomes = {outcome, "deadline"} if outcome == "readiness-deadline" else {outcome}
+                self.assertTrue(any(event['stage'] == 'execution' and event['outcome'] in outcomes for event in events), events)
+                self.assertNotIn(b"PRIVATE_MARKER", result.stdout)
+
     def test_success_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(0)\n")
         self.assertTrue(execution.supervise(self.daemon(), worker, self.ready(), 2))
@@ -206,6 +264,27 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.5)
         self.assert_stopped(self.root / "ready.pid")
         self.assert_stopped(self.root / "daemon.pid")
+
+    def test_worker_exit_before_prepare_stops_execution_promptly(self):
+        from unittest.mock import patch
+        retained = self.root / 'retained'
+        (retained / 'nix/store').mkdir(parents=True)
+        (retained / 'nix/var/nix').mkdir(parents=True)
+        marker = self.root / 'job-location'
+        worker = self.command('worker', 'import os, pathlib\n'
+                              f'pathlib.Path({str(marker)!r}).write_text(os.environ["TELCHAR_MICROVM_JOB_SOCKET"])\n'
+                              'raise SystemExit(1)\n')
+        environment = {'TELCHAR_MICROVM_RETAINED_ROOT': str(retained),
+                       'TELCHAR_MICROVM_MAXIMUM_STORE_BYTES': '1048576',
+                       'TELCHAR_MICROVM_MINIMUM_FREE_BYTES': '0',
+                       'PYTHONPATH': str(ROOT / 'deploy/microvm')}
+        with patch.dict(os.environ, environment):
+            started = time.monotonic()
+            self.assertFalse(execution.supervise(self.daemon(), worker, self.ready(), 3))
+            self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(Path(marker.read_text()).parent.parent, retained)
+        self.assertFalse(list(retained.glob('telchar-job-*')))
+        self.assert_stopped(self.root / 'daemon.pid')
 
     def test_worker_failure_stops_daemon(self):
         worker = self.command("worker", "raise SystemExit(1)\n")

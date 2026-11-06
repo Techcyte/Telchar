@@ -95,6 +95,15 @@ impl Service {
         let stopped = Arc::new(AtomicBool::new(false));
         let mut services = Vec::with_capacity(deployments.len());
         let mut cleanups = std::collections::BTreeMap::new();
+        let retention = deployments
+            .iter()
+            .map(|(config, _)| {
+                (
+                    config.fingerprint(),
+                    (config.idle_retention(), config.maximum_jobs_per_worker()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         for (config, provider) in deployments {
             let identity = (config.account_id().to_owned(), config.region().to_owned());
             let cleanup = match cleanups.entry(identity.clone()) {
@@ -107,6 +116,7 @@ impl Service {
                         identity.1.clone(),
                         cleanup_intervals[&identity],
                         maximum.min(1000),
+                        retention.clone(),
                     )?));
                     entry.insert(Arc::clone(&cleanup));
                     cleanup

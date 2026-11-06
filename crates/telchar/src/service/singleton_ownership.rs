@@ -194,6 +194,10 @@ impl SingletonOwnership {
             renewal: Mutex::new(()),
         };
         ownership.verify()?;
+        if owner_kind == "daemon" {
+            crate::persistence::drain_previous_microvm_workers(ownership.database())
+                .map_err(|_| SingletonOwnershipError(SingletonOwnershipFailure::Query))?;
+        }
         Ok(ownership)
     }
 

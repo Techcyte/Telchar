@@ -23,7 +23,7 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
         serde_json::to_vec(&serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()),
             "address": address.to_string(), "intent_id": "intent", "provider_id": "microvm-exact",
-            "bearer": bearer, "lifetime_seconds": 1
+            "assignment_epoch": 1, "bearer": bearer, "trace_context": {"traceparent": null, "tracestate": null}, "lifetime_seconds": 1
         }))
         .unwrap(),
     )
@@ -69,7 +69,7 @@ fn microvm_worker_bounds_manifest_wait_on_verified_wss() {
             serde_json::from_slice(&socket.read().unwrap().into_data()).unwrap();
         assert_eq!(
             bootstrap,
-            serde_json::json!({"intent_id":"intent", "provider_id":"microvm-exact", "bearer":bearer})
+            serde_json::json!({"assignment_epoch":1,"intent_id":"intent", "provider_id":"microvm-exact", "bearer":bearer})
         );
         assert!(
             socket.read().is_err(),

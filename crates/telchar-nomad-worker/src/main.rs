@@ -6,6 +6,12 @@ fn phase<T>(
     name: &'static str,
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
+    let span = tracing::info_span!(
+        "worker.phase",
+        phase = name,
+        outcome = tracing::field::Empty
+    );
+    let _entered = span.enter();
     let started = std::time::Instant::now();
     tracing::info!(event = "worker.phase.started", phase = name);
     let progress = Progress::start(move |elapsed_ms| {
@@ -14,6 +20,10 @@ fn phase<T>(
         tracing::warn!(event = "worker.progress.unavailable", phase = name, error_kind = ?error.kind());
     }).ok();
     let result = operation();
+    span.record(
+        "outcome",
+        if result.is_ok() { "success" } else { "failure" },
+    );
     drop(progress);
     let elapsed_ms = started.elapsed().as_millis();
     opentelemetry::global::meter("telchar-nomad-worker")

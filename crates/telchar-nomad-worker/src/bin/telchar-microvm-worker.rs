@@ -10,6 +10,8 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Execution {
+    trace_context: telchar::microvm::AssignmentTraceContext,
+    assignment_epoch: i64,
     endpoint: String,
     address: std::net::SocketAddr,
     intent_id: String,
@@ -27,8 +29,18 @@ fn phase<T>(
     deadline: Instant,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    let span = tracing::info_span!(
+        "microvm.worker.phase",
+        phase = name,
+        outcome = tracing::field::Empty
+    );
+    let _entered = span.enter();
     let started = Instant::now();
     let result = operation();
+    span.record(
+        "outcome",
+        if result.is_ok() { "success" } else { "failure" },
+    );
     if result.is_err() && Instant::now() >= deadline && name != "report-failure" {
         opentelemetry::global::meter("telchar-microvm-worker")
             .u64_counter("telchar.microvm.worker.deadline")
@@ -102,7 +114,8 @@ fn run() -> io::Result<()> {
         return Err(invalid());
     }
     let execution: Execution = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    if !(1..=28800).contains(&execution.lifetime_seconds)
+    if execution.assignment_epoch <= 0
+        || !(1..=28800).contains(&execution.lifetime_seconds)
         || execution.intent_id.is_empty()
         || execution.intent_id.len() > 128
         || execution.provider_id.is_empty()
@@ -111,6 +124,10 @@ fn run() -> io::Result<()> {
     {
         return Err(invalid());
     }
+    let context = execution.trace_context.context()?;
+    let span = tracing::info_span!("microvm.worker.execution");
+    context.set_parent(&span);
+    let _entered = span.enter();
     let deadline = started
         .checked_add(Duration::from_secs(execution.lifetime_seconds))
         .ok_or_else(invalid)?;
@@ -133,6 +150,7 @@ fn run() -> io::Result<()> {
             &execution.intent_id,
             &execution.provider_id,
             &execution.bearer,
+            execution.assignment_epoch,
         )
     })?;
     let mut session = phase("manifest", deadline, || {
@@ -147,7 +165,13 @@ fn run() -> io::Result<()> {
     phase("import-inputs", deadline, || {
         session.import_requested_inputs(store, &requested)
     })?;
-    let result = match phase("build", deadline, || session.build(store)) {
+    let path = std::env::var_os("TELCHAR_MICROVM_JOB_SOCKET").ok_or_else(invalid)?;
+    let mut channel = std::os::unix::net::UnixStream::connect(path)?;
+    let job_store = phase("prepare-job", deadline, || {
+        telchar_nomad_worker::microvm::prepare_job_store(&mut channel, deadline)
+    })?;
+    let execution_store = job_store.as_str();
+    let result = match phase("build", deadline, || session.build(execution_store)) {
         Ok(result) => result,
         Err(error) => {
             let _ = phase("report-failure", deadline, || {
@@ -157,7 +181,7 @@ fn run() -> io::Result<()> {
         }
     };
     phase("return-outputs", deadline, || {
-        session.return_outputs(store, &result)
+        session.return_outputs(execution_store, &result)
     })
 }
 
@@ -174,10 +198,10 @@ fn main() -> std::process::ExitCode {
     };
     let started = Instant::now();
     let result = {
-        let execution = tracing::info_span!("microvm.worker.execution");
-        let _entered = execution.enter();
         let result = run();
         if let Err(error) = &result {
+            let span = tracing::info_span!("microvm.worker.failure");
+            let _entered = span.enter();
             tracing::error!(event = "microvm.worker.failed", error_kind = ?error.kind());
         }
         opentelemetry::global::meter("telchar-microvm-worker")

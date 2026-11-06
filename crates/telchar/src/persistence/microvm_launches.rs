@@ -88,6 +88,9 @@ pub struct MicrovmObligation {
     pub phase: String,
     pub capacity_reserved: bool,
     pub cleanup_pending: bool,
+    pub worker_state: Option<String>,
+    pub assignment_epoch: Option<i64>,
+    pub completed_jobs: Option<i64>,
 }
 
 pub fn read_microvm_obligations(
@@ -100,13 +103,14 @@ pub fn read_microvm_obligations(
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let rows = client
         .query(
-            "SELECT intent_id, backend_name, account_id, region, provider_id, phase,
-                    reservation_released_at IS NULL,
-                    provider_id IS NOT NULL AND termination_observed_at IS NULL
-             FROM microvm_launches
-             WHERE reservation_released_at IS NULL
-                OR (provider_id IS NOT NULL AND termination_observed_at IS NULL)
-             ORDER BY created_at, intent_id LIMIT $1",
+            "SELECT l.intent_id, l.backend_name, l.account_id, l.region, l.provider_id, l.phase,
+                    l.reservation_released_at IS NULL,
+                    l.provider_id IS NOT NULL AND l.termination_observed_at IS NULL,
+                    w.state,w.assignment_epoch,w.completed_jobs
+             FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+             WHERE l.reservation_released_at IS NULL
+                OR (l.provider_id IS NOT NULL AND l.termination_observed_at IS NULL)
+             ORDER BY l.created_at, l.intent_id LIMIT $1",
             &[&(limit as i64)],
         )
         .map_err(|_| MicrovmLaunchError)?;
@@ -121,6 +125,9 @@ pub fn read_microvm_obligations(
             phase: row.get(5),
             capacity_reserved: row.get(6),
             cleanup_pending: row.get(7),
+            worker_state: row.get(8),
+            assignment_epoch: row.get(9),
+            completed_jobs: row.get(10),
         })
         .collect())
 }
@@ -433,12 +440,13 @@ pub fn pending_microvm_cleanup(
     let rows = client
         .query(
             "SELECT l.intent_id, l.provider_id, l.account_id, l.region
-         FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.account_id = $1 AND l.region = $4 AND l.provider_id IS NOT NULL
            AND l.termination_observed_at IS NULL
-           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
-                OR b.state NOT IN ('running', 'collecting'))
+           AND (l.phase = 'closed' OR ((w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
+                AND (a.state NOT IN ('running', 'collecting') OR b.state NOT IN ('running', 'collecting'))))
          ORDER BY CASE WHEN $3::text IS NULL THEN false ELSE l.intent_id <= $3 END,
                   l.intent_id LIMIT $2",
             &[&account_id, &(limit as i64), &after_intent, &region],
@@ -487,15 +495,47 @@ pub fn pending_microvm_cleanup_identity(
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(pending_microvm_cleanup_identity));
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
-    let row = client.query_opt(
-        "SELECT 1 FROM microvm_launches l JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+    let row = client
+        .query_opt(
+            "SELECT 1 FROM microvm_launches l LEFT JOIN microvm_workers w USING(intent_id)
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.provider_id = $2 AND l.termination_observed_at IS NULL
-           AND (l.phase = 'closed' OR a.state NOT IN ('running', 'collecting')
-                OR b.state NOT IN ('running', 'collecting'))",
-        &[&intent_id, &provider_id],
-    ).map_err(|_| MicrovmLaunchError)?;
+           AND (l.phase = 'closed' OR ((w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
+                AND (a.state NOT IN ('running', 'collecting') OR b.state NOT IN ('running', 'collecting'))))",
+            &[&intent_id, &provider_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
     Ok(row.is_some())
+}
+
+/// Close eligible execution authority before provider cleanup can race an assignment.
+pub fn begin_microvm_cleanup(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    provider_id: &str,
+) -> Result<bool, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    transaction
+        .query_opt(
+            "SELECT intent_id FROM microvm_workers WHERE intent_id=$1 FOR UPDATE",
+            &[&intent_id],
+        )
+        .map_err(|_| MicrovmLaunchError)?;
+    let changed = transaction.execute(
+        "UPDATE microvm_launches l SET phase='closed'
+         WHERE l.intent_id=$1 AND l.provider_id=$2 AND l.termination_observed_at IS NULL
+           AND (l.phase='closed' OR EXISTS (
+             SELECT 1 FROM shared_build_attempts a JOIN shared_builds b USING(derivation_path)
+             LEFT JOIN microvm_workers w ON w.intent_id=l.intent_id
+             WHERE a.attempt_id=COALESCE(w.attempt_id,l.attempt_id)
+               AND (w.state IS DISTINCT FROM 'idle' OR w.idle_until IS NULL OR w.idle_until <= clock_timestamp())
+               AND (a.state NOT IN ('running','collecting') OR b.state NOT IN ('running','collecting'))))",
+        &[&intent_id,&provider_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
 }
 
 /// Records an exact successful provider TERMINATED observation, not a terminate acknowledgment.
@@ -626,30 +666,82 @@ pub fn microvm_attempt_request(
     row.map(|row| decode_microvm_request(&row)).transpose()
 }
 
+/// Retains diagnostic continuity for the exact active MicroVM attempt, not authority.
+pub(crate) fn record_microvm_attempt_trace_context(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+    context: &telchar_telemetry::TraceContext,
+) -> Result<(), MicrovmLaunchError> {
+    context.validate().map_err(|_| MicrovmLaunchError)?;
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let updated = client.execute(
+        "UPDATE shared_build_attempts SET traceparent=$2,tracestate=$3 WHERE attempt_id=$1 AND backend_kind='microvm' AND state='running'",
+        &[&attempt_id, &context.traceparent(), &context.tracestate()],
+    ).map_err(|_| MicrovmLaunchError)?;
+    if updated != 1 {
+        return Err(MicrovmLaunchError);
+    }
+    Ok(())
+}
+
+pub(crate) fn microvm_attempt_trace_context(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+) -> Result<telchar_telemetry::TraceContext, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client.query_opt(
+        "SELECT traceparent,tracestate FROM shared_build_attempts WHERE attempt_id=$1 AND backend_kind='microvm'",
+        &[&attempt_id],
+    ).map_err(|_| MicrovmLaunchError)?.ok_or(MicrovmLaunchError)?;
+    telchar_telemetry::TraceContext::new(row.get(0), row.get(1)).map_err(|_| MicrovmLaunchError)
+}
+
 pub fn microvm_session_request(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
+    assignment_epoch: i64,
+) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
+    microvm_session_request_timed(database, intent_id, assignment_epoch, |_, _| {})
+}
+
+pub(crate) fn microvm_session_request_timed(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    assignment_epoch: i64,
+    mut observe: impl FnMut(&'static str, std::time::Duration),
 ) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(microvm_session_request));
-    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let started = std::time::Instant::now();
+    let client = connect(database).map_err(|_| MicrovmLaunchError);
+    observe("request_connection", started.elapsed());
+    let mut client = client?;
+    let started = std::time::Instant::now();
     let row = client
         .query_opt(
             "SELECT b.build_request::text, b.request_digest, b.derivation_path
          FROM microvm_launches l
-         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         JOIN microvm_workers w ON w.intent_id=l.intent_id AND w.state='busy'
+         JOIN microvm_assignments s ON s.intent_id=w.intent_id AND s.assignment_epoch=w.assignment_epoch
+         JOIN shared_build_attempts a ON a.attempt_id = s.attempt_id
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
          WHERE l.intent_id = $1 AND l.phase = 'bound'
-           AND l.session_consumed_at IS NOT NULL AND l.reservation_released_at IS NULL
+           AND s.assignment_epoch=$2 AND s.admitted_at IS NOT NULL AND s.completed_at IS NULL
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
+           AND w.expires_at > clock_timestamp() AND l.reservation_released_at IS NULL
            AND b.state = 'running' AND a.state = 'running'
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
-            &[&intent_id],
+            &[&intent_id, &assignment_epoch],
         )
-        .map_err(|_| MicrovmLaunchError)?;
-    let Some(row) = row else {
+        .map_err(|_| MicrovmLaunchError);
+    observe("request_query", started.elapsed());
+    let Some(row) = row? else {
         return Ok(None);
     };
-    decode_microvm_request(&row).map(Some)
+    let started = std::time::Instant::now();
+    let request = decode_microvm_request(&row).map(Some);
+    observe("request_decode_validate", started.elapsed());
+    request
 }
 
 fn decode_microvm_request(
@@ -682,11 +774,13 @@ pub fn microvm_execution_active(
     let row = client
         .query_opt(
             "SELECT 1 FROM microvm_launches l
-         JOIN shared_build_attempts a ON a.attempt_id = l.attempt_id
+         LEFT JOIN microvm_workers w ON w.intent_id=l.intent_id
+         JOIN shared_build_attempts a ON a.attempt_id = COALESCE(w.attempt_id, l.attempt_id)
          JOIN shared_builds b ON b.derivation_path = a.derivation_path
-         WHERE l.intent_id = $1 AND l.phase IN ('dispatching', 'bound')
-           AND l.reservation_released_at IS NULL
-           AND (l.session_consumed_at IS NOT NULL OR l.admission_cutoff > clock_timestamp())
+         WHERE l.intent_id = $1 AND l.reservation_released_at IS NULL
+           AND ((l.phase='dispatching' AND w.intent_id IS NULL AND l.admission_cutoff > clock_timestamp())
+             OR (l.phase='bound' AND w.state='busy' AND w.expires_at > clock_timestamp()
+               AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)))
            AND b.state = 'running' AND a.state = 'running'
            AND b.backend_name = l.backend_name AND a.backend_name = l.backend_name",
             &[&intent_id],
@@ -698,6 +792,7 @@ pub fn microvm_execution_active(
 pub fn microvm_session_backend(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
+    assignment_epoch: i64,
     credential_verifier: &[u8; 32],
 ) -> Result<Option<String>, MicrovmLaunchError> {
     let _database_operation =
@@ -705,11 +800,17 @@ pub fn microvm_session_backend(
     let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
     let row = client
         .query_opt(
-            "SELECT backend_name FROM microvm_launches WHERE intent_id = $1
-         AND credential_verifier = $2 AND phase IN ('dispatching', 'bound')
-         AND admission_cutoff > clock_timestamp() AND session_consumed_at IS NULL
-         AND reservation_released_at IS NULL",
-            &[&intent_id, &&credential_verifier[..]],
+            "SELECT l.backend_name FROM microvm_launches l
+         LEFT JOIN microvm_workers w USING(intent_id)
+         LEFT JOIN microvm_assignments s ON s.intent_id=w.intent_id AND s.assignment_epoch=w.assignment_epoch
+         WHERE l.intent_id=$1 AND l.reservation_released_at IS NULL
+           AND (($3::bigint=1 AND l.credential_verifier=$2 AND l.phase IN ('dispatching','bound')
+                 AND l.admission_cutoff > clock_timestamp() AND l.session_consumed_at IS NULL)
+             OR ($3::bigint>1 AND l.phase='bound' AND w.state='busy' AND w.assignment_epoch=$3
+                 AND s.credential_verifier=$2 AND s.admitted_at IS NULL AND s.completed_at IS NULL
+                 AND w.expires_at > clock_timestamp()
+                 AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation',true),'')::bigint,0)))",
+            &[&intent_id, &&credential_verifier[..], &assignment_epoch],
         )
         .map_err(|_| MicrovmLaunchError)?;
     Ok(row.map(|row| row.get(0)))
@@ -774,6 +875,21 @@ pub fn admit_microvm_session(
             &[&intent_id, &provider_id, &&credential_verifier[..]],
         )
         .map_err(|_| MicrovmLaunchError)?;
+    if consumed == 1 {
+        let assignment = transaction.execute(
+            "UPDATE microvm_assignments s SET credential_verifier=$2, admitted_at=clock_timestamp()
+             FROM microvm_workers w WHERE s.intent_id=$1 AND w.intent_id=s.intent_id
+               AND s.assignment_epoch=1 AND s.assignment_epoch=w.assignment_epoch AND w.state='busy'
+               AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation', true), '')::bigint, 0)
+               AND w.expires_at > clock_timestamp()
+               AND s.admitted_at IS NULL AND s.completed_at IS NULL
+               AND (s.credential_verifier IS NULL OR s.credential_verifier=$2)",
+            &[&intent_id, &&credential_verifier[..]],
+        ).map_err(|_| MicrovmLaunchError)?;
+        if assignment != 1 {
+            return Ok(false);
+        }
+    }
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(consumed == 1)
 }
@@ -829,17 +945,25 @@ pub fn cancel_microvm_attempt(
     database: &(impl DatabaseSource + ?Sized),
     attempt_id: i64,
 ) -> Result<bool, MicrovmLaunchError> {
-    let row = connect(database)
-        .map_err(|_| MicrovmLaunchError)?
-        .query_opt(
-            "SELECT intent_id FROM microvm_launches WHERE attempt_id = $1",
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let mut transaction = client.transaction().map_err(|_| MicrovmLaunchError)?;
+    transaction
+        .query(
+            "SELECT intent_id FROM microvm_workers WHERE attempt_id=$1 FOR UPDATE",
             &[&attempt_id],
         )
         .map_err(|_| MicrovmLaunchError)?;
-    match row {
-        Some(row) => cancel_microvm_launch(database, &row.get::<_, String>(0)),
-        None => Ok(false),
-    }
+    let changed=transaction.execute(
+        "UPDATE microvm_launches l
+         SET phase=CASE WHEN l.phase='prepared' THEN 'closed' WHEN l.provider_id IS NULL THEN 'ambiguous' ELSE 'closed' END,
+             reservation_released_at=CASE WHEN l.phase='prepared' THEN clock_timestamp() ELSE l.reservation_released_at END
+         WHERE l.phase IN ('prepared','dispatching','bound')
+           AND (EXISTS (SELECT 1 FROM microvm_workers w WHERE w.intent_id=l.intent_id AND w.attempt_id=$1 AND w.state='busy')
+                OR (l.attempt_id=$1 AND NOT EXISTS (SELECT 1 FROM microvm_workers w WHERE w.intent_id=l.intent_id)))",
+        &[&attempt_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    transaction.commit().map_err(|_| MicrovmLaunchError)?;
+    Ok(changed == 1)
 }
 
 pub fn cancel_microvm_launch(

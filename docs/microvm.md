@@ -1,10 +1,79 @@
 # Lambda MicroVM backend
 
 **MicroVM integration is experimental, not production-ready.** The gateway
-launches one ARM64 execution per admitted build, validates outputs in its own
+assigns one ARM64 derivation at a time to a worker, validates outputs in its own
 store, and retains durable cleanup obligations. Output-only recovery never adopts
 or relaunches interrupted MicroVM executions. AWS Lambda MicroVMs are distinct
 from ordinary Lambda functions.
+
+## Performance warning and recommended use
+
+**Do not select Lambda MicroVMs as the default backend for sustained Nix builds.**
+Warm reuse works, but cold startup and input population remain substantial overhead.
+Prefer host-local reusable stores with isolated per-build overlays on Nomad workers
+backed by EC2 capacity, potentially Spot, for sustained workloads. That recommendation
+is architectural judgment, not a measured cost or throughput win over MicroVMs.
+A Spot scaler and interruption policy are separate work; this backend does not provide them.
+Do not automatically advertise or enroll MicroVM capacity through builder/worker discovery.
+
+MicroVMs can be useful for bursty demand, independently bounded execution environments,
+and workloads needing a VM isolation boundary without operating a worker host fleet.
+Keep validated inputs within a guest's lifetime; this is not shared storage and does
+not require EBS. The documented Lambda MicroVM APIs expose no customer-managed EBS
+attachment interface. Termination loses the guest-local cache.
+
+An isolated ARM64 AWS qualification in `us-west-2` completed two sequential jobs on
+one guest with fresh credentials, increasing assignment epochs, distinct verified
+outputs, and validated reset after both jobs. A 32 MiB incompressible shared-input
+pair measured **12.693 s cold and 2.110 s warm** through client submission/copy,
+execution, output retrieval and reset (about 6.02×). These are **one sample each,
+not medians, a production SLO, or a platform economics comparison**. Cold requested
+7 of 14 input paths; warm requested none. Worker input-phase time fell from
+5.721 s to 1.141 ms; build time was approximately 155 ms for both jobs. Distributed
+traces connected gateway parents to actual guest worker phases.
+
+Qualification used a benchmark-only pinned-CA bootstrap and diagnostic instrumentation,
+not a completely unmodified deployment image. No `eu-north-1` qualification was run.
+Storage scans remain admission safeguards, not hard disk quotas. Keep this backend
+opt-in and assess representative workloads before choosing it over persistent workers.
+
+## Demand-driven retention
+
+`idle_retention_seconds` defaults to `0`: successful reset drains the worker
+immediately. Positive retention keeps clean workers available until their persisted
+idle deadline, capped by provider expiry. No workers are launched without demand;
+there is no nonzero warm floor. `maximum_concurrent_builds` bounds reserved worker
+capacity, including idle and ambiguous workers, not just actively executing builds.
+`maximum_duration_seconds` bounds the entire VM lifetime, including idle time;
+quota reservation covers that lifetime once. `maximum_jobs_per_worker` defaults to
+`100` (range 1–1,000,000); completing the final job drains atomically.
+
+Reuse requires the same deployment fingerprint, current daemon ownership, an
+unexpired idle deadline and enough remaining lifetime for execution. Each assignment
+has a fresh capability and increasing epoch. Clean reset requires succeeded gateway
+collection plus authenticated runtime teardown acknowledgement. Failures drain;
+execution and assignment delivery are not retried. Restart drains predecessor
+workers rather than adopting them. Provider capacity remains reserved until exact
+termination observation.
+
+Both image entrypoints accept `TELCHAR_MICROVM_MAXIMUM_STORE_BYTES` (default
+8 GiB) and `TELCHAR_MICROVM_MINIMUM_FREE_BYTES` (default 1 GiB). Runtime scans
+allocated retained-store files and retained Nix metadata bytes before import and
+before freezing the lower store,
+and rejects work outside these bounds. These are admission checks, not filesystem
+quotas: one import may overshoot before rejection, and private upper/metadata usage
+is not capped by this scan. No garbage collection runs against an active lower.
+
+Local connected Rust fixtures exercise two builds through one supervised runtime,
+with shared retained inputs and omitted warm transfer. Control-plane fixtures cover
+maintenance, authenticated delivery and later-epoch admission with simulated provider
+boundaries. The isolated AWS qualification described above additionally establishes
+two successful assignments on one actual provider VM; it does not establish hard
+storage quotas, deployment readiness, or performance across workload classes.
+
+A low-water ramp followed by a 15-second reuse-preference window before expansion
+is a proposed scheduling policy, not implemented behavior. Current retention and
+capacity settings must not be mistaken for that policy.
 
 ## Read-only obligation inspection
 
@@ -15,7 +84,12 @@ is 1–256. Rows are ordered by creation time and intent ID, oldest first; this 
 a bounded snapshot, not a complete inventory when more rows exist.
 
 Each row exposes intent/backend/account/region/provider identity, phase,
-`capacity_reserved` and `cleanup_pending`. A risk-released known instance remains
+`capacity_reserved` and `cleanup_pending`. When a worker exists, `worker_state`,
+`assignment_epoch` and `completed_jobs` describe its current durable assignment
+lifecycle; these fields are null for intents without a worker. Completed-job counts
+advance only after validated reset, not merely receipt of a build result. The
+launch intent can outlive its initial attempt, so use the worker epoch rather than
+launch phase alone when inspecting retained workers. A risk-released known instance remains
 visible until termination is observed. Unknown-identity risk-released intents
 are not included in this obligation view. Client tokens, credential verifiers,
 request/configuration digests and operator-supplied evidence are excluded.

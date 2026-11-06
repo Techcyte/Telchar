@@ -6,6 +6,7 @@ let
     mkdir -p "$out"
     cp ${../deploy/microvm/execution.py} "$out/execution.py"
     cp ${../deploy/microvm/runtime.py} "$out/runtime.py"
+    cp ${../deploy/microvm/retained_store.py} "$out/retained_store.py"
   '';
   daemon = pkgs.writeShellScript "microvm-execution-daemon" ''
     exec ${pkgs.nix}/bin/nix --offline daemon
@@ -36,6 +37,10 @@ let
       ]
     }
     umask 077
+    export TELCHAR_MICROVM_RETAINED_ROOT=/
+    export TELCHAR_MICROVM_MAXIMUM_STORE_BYTES=''${TELCHAR_MICROVM_MAXIMUM_STORE_BYTES:-8589934592}
+    export TELCHAR_MICROVM_MINIMUM_FREE_BYTES=''${TELCHAR_MICROVM_MINIMUM_FREE_BYTES:-1073741824}
+    export TELCHAR_MICROVM_NIX=${pkgs.nix}/bin/nix
     mkdir -p /nix/var/nix/daemon-socket /run/telchar-microvm /tmp
     chmod 0700 /run/telchar-microvm
     chmod 1777 /tmp

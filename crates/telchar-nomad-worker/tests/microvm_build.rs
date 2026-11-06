@@ -7,6 +7,10 @@ use telchar::nomad::protocol::BuildOutcome;
 use telchar::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
 mod microvm_daemon;
+#[path = "microvm_build/reuse.rs"]
+mod microvm_reuse;
+#[path = "microvm_build/nomad_trace.rs"]
+mod nomad_trace;
 
 #[allow(dead_code)]
 #[path = "../../../tests/telemetry/collector.rs"]
@@ -203,13 +207,71 @@ fn provider_client(
 
 #[test]
 fn dedicated_worker_builds_and_returns_registered_output() {
+    if std::env::var("MICROVM_TEST_CASE").as_deref() == Ok("retained-first")
+        && std::env::var_os("MICROVM_TEST_STORE_URI").is_none()
+    {
+        let retained =
+            std::env::temp_dir().join(format!("telchar-retained-{}", std::process::id()));
+        std::fs::create_dir(&retained).unwrap();
+        for job in ["retained-cold", "retained-warm"] {
+            let database = telchar_test_support::postgres::PostgresFixture::start();
+            let result = Command::new("bash")
+                .env("MICROVM_TEST_CASE", job)
+                .env("MICROVM_TEST_DATABASE", database.url())
+                .env("MICROVM_TEST_RETAINED_ROOT", &retained)
+                .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+                .arg(FIXTURE)
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "dedicated_worker_builds_and_returns_registered_output",
+                    "--test-threads=1",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{job}: {}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert!(
+            !retained
+                .join("nix/store/ffffffffffffffffffffffffffffffff-dedicated-output")
+                .exists()
+        );
+        assert!(
+            !retained
+                .join("nix/store/99999999999999999999999999999999-dedicated-output")
+                .exists()
+        );
+        let writable = Command::new("find")
+            .arg(&retained)
+            .args(["-type", "d", "-exec", "chmod", "u+w", "{}", "+"])
+            .output()
+            .unwrap();
+        assert!(
+            writable.status.success(),
+            "{}",
+            String::from_utf8_lossy(&writable.stderr)
+        );
+        assert!(writable.stderr.is_empty());
+        std::fs::remove_dir_all(&retained).unwrap();
+        return;
+    }
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
+        if let Ok(case) = std::env::var("MICROVM_TEST_CASE") {
+            run_isolated_build(&case);
+            return;
+        }
         if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
             run_isolated_build("configured-daemon-client-derivation");
             return;
         }
         for case in [
             "single",
+            "supervised",
             "multiple",
             "cancelled",
             "fenced",
@@ -263,19 +325,33 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        output.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if case != "configured" {
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
+    // Exercise the real routing -> cancellation thread -> launch carrier, not just
+    // the lower-level session fixture's manually entered backend span.
+    let connected_collector = (case == "configured").then(collector::start_collector);
+    let connected_telemetry = connected_collector.as_ref().map(|collector| {
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+            std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+        }
+        telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap()
+    });
     let multiple = matches!(
         case.as_str(),
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
     );
+    let sequential = case.starts_with("retained-");
+    let supervised = case == "supervised";
     let configured = case.starts_with("configured");
     let build_failure = matches!(
         case.as_str(),
@@ -338,7 +414,9 @@ fn run_build() {
             .collect::<String>()
     };
     let fixed_path;
-    let output = if fixed_output {
+    let output = if case == "retained-warm" {
+        "/nix/store/99999999999999999999999999999999-dedicated-output"
+    } else if fixed_output {
         let mut command = Command::new("nix-store");
         command.arg("--print-fixed-path");
         if recursive_output {
@@ -365,7 +443,11 @@ fn run_build() {
     } else {
         vec![output]
     };
-    let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv";
+    let drv = if case == "retained-warm" {
+        "/nix/store/cccccccccccccccccccccccccccccccc-dedicated.drv"
+    } else {
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dedicated.drv"
+    };
     assert!(!store.is_valid_path(output.as_bytes()).unwrap());
     let extra_script = if multiple {
         "; printf '%s' \"$out\" > \"$reference\""
@@ -424,12 +506,20 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
     } else {
         script
     };
-    let builder = if runtime.is_some() {
+    let builder = if case == "supervised" {
+        let result = Command::new("bash")
+            .args(["-c", "readlink -f \"$(command -v bash)\""])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        String::from_utf8(result.stdout).unwrap().trim().to_owned()
+    } else if runtime.is_some() {
         std::env::var("MICROVM_TEST_BUILDER").expect("packaged runtime builder")
     } else {
         "/bin/sh".to_owned()
     };
-    let builder_input = if runtime.is_some() {
+    let builder_input = if runtime.is_some() || supervised {
         let package = std::path::Path::new(&builder)
             .parent()
             .unwrap()
@@ -613,7 +703,7 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
         )
         .unwrap();
         assert!(
-            telchar::persistence::microvm_session_request(owner.database(), "build-intent")
+            telchar::persistence::microvm_session_request(owner.database(), "build-intent", 1)
                 .unwrap()
                 .is_none()
         );
@@ -642,9 +732,17 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
         std::thread::spawn(move || {
             let (provider, response) = provider_response(configured.then_some(binding_sender));
             let limits = Limits {
-                maximum_paths: 10,
-                maximum_nar_bytes: 1024 * 1024,
-                maximum_total_bytes: 2 * 1024 * 1024,
+                maximum_paths: if supervised { 100 } else { 10 },
+                maximum_nar_bytes: if supervised {
+                    64 * 1024 * 1024
+                } else {
+                    1024 * 1024
+                },
+                maximum_total_bytes: if supervised {
+                    128 * 1024 * 1024
+                } else {
+                    2 * 1024 * 1024
+                },
                 metadata_bytes: 8192,
                 chunk_bytes: 256 * 1024,
             };
@@ -779,7 +877,7 @@ chunk_bytes = 262144
     } else {
         serde_json::json!({
             "endpoint": format!("wss://localhost:{}/microvm", address.port()), "address": address.to_string(),
-            "intent_id": "build-intent", "bearer": capability.bearer(), "lifetime_seconds": 30
+            "assignment_epoch":1, "intent_id": "build-intent", "bearer": capability.bearer(), "trace_context": {"traceparent": null, "tracestate": null}, "lifetime_seconds": 30
         })
     };
     if case == "configured-daemon-crash" {
@@ -840,6 +938,9 @@ chunk_bytes = 262144
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
     let collector = (case == "single").then(collector::start_collector);
     let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
+    let connected_endpoint = connected_collector
+        .as_ref()
+        .map(|collector| collector.endpoint());
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
@@ -851,11 +952,12 @@ chunk_bytes = 262144
             .unwrap()
     } else {
         Command::new("bash")
-            .env("RUST_LOG", "off")
+            .env("RUST_LOG", if connected_collector.is_some() { "info" } else { "off" })
             .env(
                 "OTEL_EXPORTER_OTLP_ENDPOINT",
                 telemetry_endpoint
                     .as_deref()
+                    .or(connected_endpoint.as_deref())
                     .unwrap_or("http://127.0.0.1:4317"),
             )
             .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
@@ -863,12 +965,18 @@ chunk_bytes = 262144
             .arg("/bin/sh")
             .args([
                 "-c",
-                "exec \"$1\" \"$2\" \"$3\" \"$MICROVM_TEST_STORE_URI\"",
+                "if test -n \"$5\"; then exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"; else exec python3 \"$1\" \"$2\" \"$3\" \"$4\" \"$MICROVM_TEST_STORE_URI\"; fi",
                 "worker",
             ])
+            .arg(if case == "supervised" {
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/supervised_worker.py")
+            } else {
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/microvm/job_worker.py")
+            })
             .arg(env!("CARGO_BIN_EXE_telchar-microvm-worker"))
             .arg(&binding)
             .arg(&trust)
+            .arg(if case == "supervised" { builder.as_str() } else { "" })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -892,39 +1000,7 @@ chunk_bytes = 262144
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    let config = rustls::ServerConfig::builder_with_provider(
-        rustls::crypto::ring::default_provider().into(),
-    )
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
-        rustls::pki_types::PrivateKeyDer::Pkcs8(
-            include_bytes!("fixtures/microvm-key.der").to_vec().into(),
-        ),
-    )
-    .unwrap();
-    let tls = rustls::StreamOwned::new(
-        rustls::ServerConnection::new(Arc::new(config)).unwrap(),
-        stream,
-    );
-    #[allow(clippy::result_large_err)]
-    let upgrade = |_: &tungstenite::handshake::server::Request,
-                   mut response: tungstenite::handshake::server::Response| {
-        response.headers_mut().insert(
-            "sec-websocket-protocol",
-            "telchar-microvm-v1".parse().unwrap(),
-        );
-        Ok(response)
-    };
-    let mut socket = tungstenite::accept_hdr(tls, upgrade).unwrap();
+    let mut socket = tls_worker_socket(stream);
     use telchar::nomad::protocol::{
         FrameKind, NarMetadata, PathSet, ProtocolLimits, decode_metadata, read_frame,
     };
@@ -999,7 +1075,16 @@ chunk_bytes = 262144
     let mut requested_nar_bytes = 0u64;
     let mut sandbox_build_observed = false;
     loop {
-        let message = socket.read().unwrap();
+        let message = match socket.read() {
+            Ok(message) => message,
+            Err(error) => {
+                let output = worker.wait_with_output().unwrap();
+                panic!(
+                    "worker disconnected: {error}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
         let frame = read_frame(
             &mut message.clone().into_data().as_ref(),
             ProtocolLimits::new(8192, 256 * 1024),
@@ -1129,6 +1214,13 @@ chunk_bytes = 262144
         !building_interrupted,
         "builder execution barrier not observed"
     );
+    if sequential {
+        assert_eq!(
+            input_requested,
+            case == "retained-cold",
+            "retained input request in {case}"
+        );
+    }
     if packaged_runtime {
         assert!(
             input_requested,
@@ -1182,12 +1274,26 @@ chunk_bytes = 262144
         String::from_utf8_lossy(&worker.stderr)
     );
     assert!(worker.stdout.is_empty());
-    assert!(
-        worker.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&worker.stderr)
-    );
+    if connected_collector.is_none() {
+        assert!(
+            worker.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&worker.stderr)
+        );
+    }
     assert_eq!(result.unwrap(), BuildOutcome::Built);
+    if let Some(telemetry) = connected_telemetry {
+        telemetry.shutdown();
+        let collector = connected_collector.as_ref().unwrap();
+        let parents = collector.spans("telchar", "backend.execution");
+        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(workers.len(), 1);
+        collector::Collector::assert_child(&parents[0], &workers[0]);
+        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
+    }
     if let Some(collector) = collector {
         for phase in [
             "connect",
@@ -1223,7 +1329,18 @@ chunk_bytes = 262144
         "SELECT phase, provider_id, session_consumed_at IS NOT NULL, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1",
         &[&intent_id],
     ).unwrap();
-    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(
+        row.get::<_, String>(0),
+        if matches!(
+            case.as_str(),
+            "configured-daemon-restart" | "configured-daemon-output-recovery"
+        ) {
+            "closed"
+        } else {
+            "bound"
+        },
+        "launch lifecycle in {case}"
+    );
     assert_eq!(row.get::<_, String>(1), "microvm-build");
     assert!(row.get::<_, bool>(2));
     assert!(
@@ -1255,4 +1372,42 @@ chunk_bytes = 262144
         std::fs::read(output).unwrap(),
         b"dedicated-worker-success\n"
     );
+}
+
+fn tls_worker_socket(
+    stream: std::net::TcpStream,
+) -> tungstenite::WebSocket<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![include_bytes!("fixtures/microvm-cert.der").to_vec().into()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(
+            include_bytes!("fixtures/microvm-key.der").to_vec().into(),
+        ),
+    )
+    .unwrap();
+    let tls = rustls::StreamOwned::new(
+        rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+        stream,
+    );
+    #[allow(clippy::result_large_err)]
+    let upgrade = |_: &tungstenite::handshake::server::Request,
+                   mut response: tungstenite::handshake::server::Response| {
+        response.headers_mut().insert(
+            "sec-websocket-protocol",
+            "telchar-microvm-v1".parse().unwrap(),
+        );
+        Ok(response)
+    };
+    tungstenite::accept_hdr(tls, upgrade).unwrap()
 }
