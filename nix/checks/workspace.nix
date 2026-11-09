@@ -54,7 +54,7 @@ pkgs.testers.nixosTest {
       cores = 4;
       memorySize = 8192;
       diskSize = 131072;
-      writableStore = true;
+      writableStore = false;
       additionalPaths = [
         artifacts
         run
@@ -71,6 +71,8 @@ pkgs.testers.nixosTest {
   testScript = ''
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    # Nested private fixture stores need a bootstrap filesystem without overlays.
+    machine.succeed("mkdir -p /var/bootstrap-store && cp -a /nix/store/. /var/bootstrap-store/ && mount --bind /var/bootstrap-store /nix/store", timeout=1200)
     machine.succeed("mkdir -p /var/workspace /build /nix/var/nix/daemon-socket && mount --bind /var/workspace /build && mkdir -p /build/source")
     machine.succeed("cp -a ${artifacts}/source/. /build/source/")
     machine.succeed("df -h /build && cp -a ${artifacts}/target /build/source/target", timeout=1200)
