@@ -370,27 +370,29 @@ fn accepts_store_relative_realisation_output_paths() {
 }
 
 #[test]
-fn untrusted_connection_rejects_input_addressed_build_before_operation_bytes() {
-    let mut input = Vec::new();
-    handshake(&mut input, 2);
-    let outputs = [BuildDerivationOutputRequest {
-        name: b"out",
-        path: OUTPUT,
-        hash_algorithm: b"",
-        hash: b"",
-    }];
-    let client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
-    let handshake_bytes = client.into_inner().output;
+fn connection_without_trust_rejects_input_addressed_build_before_operation_bytes() {
+    for trust in [0, 2] {
+        let mut input = Vec::new();
+        handshake(&mut input, trust);
+        let outputs = [BuildDerivationOutputRequest {
+            name: b"out",
+            path: OUTPUT,
+            hash_algorithm: b"",
+            hash: b"",
+        }];
+        let client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+        let handshake_bytes = client.into_inner().output;
 
-    let mut input = Vec::new();
-    handshake(&mut input, 2);
-    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
-    let error = client
-        .build_derivation(&request(&outputs), &mut |_| Ok(()))
-        .unwrap_err();
+        let mut input = Vec::new();
+        handshake(&mut input, trust);
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+        let error = client
+            .build_derivation(&request(&outputs), &mut |_| Ok(()))
+            .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
-    assert_eq!(client.into_inner().output, handshake_bytes);
+        assert_eq!(error.to_string(), "Nix daemon operation failed");
+        assert_eq!(client.into_inner().output, handshake_bytes);
+    }
 }
 
 #[test]
