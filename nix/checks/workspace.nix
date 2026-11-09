@@ -64,6 +64,7 @@ pkgs.testers.nixosTest {
       isNormalUser = true;
       uid = 1000;
     };
+    systemd.services.register-nix-paths.wantedBy = pkgs.lib.mkForce [ ];
     # The registered VM closure is a read-only bootstrap source for private
     # fixture stores. Tests do not use the VM daemon for execution.
     nix.settings.substituters = pkgs.lib.mkForce [ ];
@@ -72,7 +73,9 @@ pkgs.testers.nixosTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     # Nested private fixture stores need a bootstrap filesystem without overlays.
-    machine.succeed("mkdir -p /var/bootstrap-store && cp -a /nix/store/. /var/bootstrap-store/ && mount --bind /var/bootstrap-store /nix/store", timeout=1200)
+    machine.succeed("mkdir -p /var/bootstrap-store && reg=$(grep -o 'regInfo=[^ ]*' /proc/cmdline) && grep '^/nix/store/' \"''${reg#regInfo=}\" | sort -u | while read -r path; do cp -a \"$path\" /var/bootstrap-store/ || exit; done; cp -a \"$(dirname \"''${reg#regInfo=}\")\" /var/bootstrap-store/", timeout=1200)
+    machine.succeed("mount --bind /var/bootstrap-store /nix/store")
+    machine.succeed("systemctl start register-nix-paths.service")
     machine.succeed("mkdir -p /var/workspace /build /nix/var/nix/daemon-socket && mount --bind /var/workspace /build && mkdir -p /build/source")
     machine.succeed("cp -a ${artifacts}/source/. /build/source/")
     machine.succeed("df -h /build && cp -a ${artifacts}/target /build/source/target", timeout=1200)
