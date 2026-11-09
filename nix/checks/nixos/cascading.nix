@@ -11,8 +11,8 @@ let
         args = [ "-c" script ];
       };
     in {
-      success = make "telchar-cascading-success" "printf cascading-build-log\\n >&2; ${pkgs.coreutils}/bin/cat /etc/telchar-test-role > $out";
-      failure = make "telchar-cascading-failure" "printf cascading-failure-log\\n >&2; exit 1";
+      success = make "telchar-cascading-success" "echo cascading-build-log >&2; read -r role < /run/telchar-build-role; echo $role > $out";
+      failure = make "telchar-cascading-failure" "echo cascading-failure-log >&2; exit 1";
     }
   '';
 in

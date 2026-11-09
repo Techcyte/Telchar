@@ -92,7 +92,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     audit_subject,
                     quota_subject,
                 )? {
-                    $write_success(&mut output, negotiated.version, true)?;
+                    $write_success(&mut output, negotiated.version, true, &admitted)?;
                     crate::service::metrics::build_request_finished(
                         request_started.elapsed(), "succeeded", None,
                     );
@@ -1202,6 +1202,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         &mut output,
                         negotiated.version,
                         result.status() == BuildStatus::AlreadyValid,
+                        &admitted,
                     )?;
                 }
                 crate::service::metrics::build_request_finished(
@@ -1310,7 +1311,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     request.platform(),
-                    nix_worker_protocol::write_build_derivation_success_response,
+                    |output, version, already_valid, build: &BuildRequest| {
+                        nix_worker_protocol::write_build_derivation_success_response(
+                            output,
+                            version,
+                            already_valid,
+                            &build.output_realizations()?,
+                        )
+                    },
                 );
             }
             Ok(WorkerOperation::BuildPathsWithResults) => {
@@ -1440,7 +1448,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     requested_system.as_slice(),
-                    |output, version, already_valid| {
+                    |output, version, already_valid, _build: &BuildRequest| {
                         nix_worker_protocol::write_build_paths_with_results_success_response(
                             output,
                             version,

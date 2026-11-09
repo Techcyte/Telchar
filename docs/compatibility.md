@@ -37,7 +37,7 @@ Compatibility claims come from code and tests, not a separate support manifest.
 | Stock Nix OCI gateway | gateway store, transfer, authentication, and session tests | `nixos-oci-gateway`; `nixos-oci-runtime` |
 | OCI archive metadata and loadability | package and entrypoint contracts | `oci-images`; `nixos-oci-runtime` |
 | Stock Nix static SSH | static SSH backend and worker-protocol tests | `nixos-static-ssh-gateway` |
-| Two independent Telchar gateways (qualification pending; not supported yet) | typed executor requests, static SSH backend, ingress and output promotion | `nixos-cascading` (currently fails at downstream trust negotiation) |
+| Two independent Telchar gateways (qualification pending; not supported yet) | typed executor requests, static SSH backend, ingress and output promotion | `nixos-cascading` (currently fails on empty downstream result outputs) |
 | Stock Nix Nomad | Nomad callback, persistence, transfer, and worker tests | `nixos-nomad-gateway` |
 
 `scripts/check-release.sh` names the end-to-end checks required for release. Reasons for tests marked `#[ignore]` remain beside the tests.
@@ -79,10 +79,11 @@ coverage, not live Nomad, native MicroVM isolation, or AWS qualification.
 
 ## Cascading gateways
 
-**Qualification pending:** `nixos-cascading` currently fails because Telchar
-advertises unknown trust while the executor client requires trusted status.
-The topology and support statement below are a draft, contingent on resolving
-that contract and passing the VM test; cascading is not currently qualified.
+**Qualification pending:** authenticated ingress reports trusted status, and the
+downstream build completes. `nixos-cascading` currently fails because the downstream
+success response omits output realizations required by the upstream executor.
+The topology below is a draft, contingent on resolving that contract and passing
+the VM test; cascading is not currently qualified.
 
 A Telchar static SSH backend may target another Telchar instance's restricted
 `serve-stdio` SSH ingress instead of a stock `nix-daemon --stdio` endpoint:

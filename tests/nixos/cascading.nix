@@ -11,8 +11,8 @@
           { lib, ... }:
           {
             imports = [ ingress.restrictedIngressGatewayModule ];
-            nix.settings.extra-sandbox-paths = [ "/etc/telchar-test-role" ];
-            environment.etc.telchar-test-role.text = lib.mkForce "upstream";
+            nix.settings.extra-sandbox-paths = [ "/run/telchar-build-role" ];
+            systemd.tmpfiles.rules = [ "f /run/telchar-build-role 0444 root root - upstream" ];
             systemd.services.telchar-daemon.wantedBy = lib.mkForce [ ];
             environment.etc."telchar/telchar.toml".text = lib.mkForce ''
               [[backends.ssh]]
@@ -30,11 +30,11 @@
             '';
           };
         downstream =
-          { lib, ... }:
+          { ... }:
           {
             imports = [ ingress.restrictedIngressGatewayModule ];
-            nix.settings.extra-sandbox-paths = [ "/etc/telchar-test-role" ];
-            environment.etc.telchar-test-role.text = lib.mkForce "downstream";
+            nix.settings.extra-sandbox-paths = [ "/run/telchar-build-role" ];
+            systemd.tmpfiles.rules = [ "f /run/telchar-build-role 0444 root root - downstream" ];
           };
       };
       testScript = ''

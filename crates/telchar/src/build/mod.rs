@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::backend::BackendTarget;
 
 mod derivation;
+mod outputs;
 
 const MAXIMUM_REQUIRED_SYSTEM_FEATURES: usize = 64;
 const MAXIMUM_REQUIRED_SYSTEM_FEATURE_BYTES: usize = 64;
@@ -462,6 +463,10 @@ impl BuildRequest {
 
     pub fn derivation_path(&self) -> &[u8] {
         &self.derivation_path
+    }
+
+    pub fn output_realizations(&self) -> io::Result<Vec<nix_worker_protocol::BuildOutput>> {
+        outputs::realizations(self)
     }
 
     pub fn expected_outputs(&self) -> &[(Vec<u8>, Vec<u8>)] {

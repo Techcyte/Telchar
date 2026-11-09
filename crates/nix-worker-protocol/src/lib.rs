@@ -1203,7 +1203,7 @@ pub fn write_build_paths_with_results_success_response<'a>(
     for (target, already_valid) in results {
         validate_derived_path(target)?;
         write_worker_byte_string_to(output, target)?;
-        write_build_result_success(output, version, already_valid)?;
+        write_build_result_success(output, version, already_valid, &[])?;
     }
     output.flush()
 }
@@ -1212,9 +1212,19 @@ pub fn write_build_derivation_success_response(
     output: &mut impl Write,
     version: WorkerVersion,
     already_valid: bool,
+    outputs: &[BuildOutput],
 ) -> io::Result<()> {
+    if outputs.len() > MAXIMUM_BUILD_DERIVATION_OUTPUTS {
+        return Err(protocol_output_error());
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for result in outputs {
+        if !ids.insert(&result.id) {
+            return Err(protocol_output_error());
+        }
+    }
     output.write_all(&STDERR_LAST.to_le_bytes())?;
-    write_build_result_success(output, version, already_valid)?;
+    write_build_result_success(output, version, already_valid, outputs)?;
     output.flush()
 }
 
@@ -1222,6 +1232,7 @@ fn write_build_result_success(
     output: &mut impl Write,
     version: WorkerVersion,
     already_valid: bool,
+    outputs: &[BuildOutput],
 ) -> io::Result<()> {
     write_worker_integer_to(output, if already_valid { 2 } else { 0 })?;
     write_worker_byte_string_to(output, b"")?;
@@ -1235,9 +1246,52 @@ fn write_build_result_success(
         write_worker_integer_to(output, 0)?;
     }
     if version >= WorkerVersion::new(1, 28) {
-        write_worker_integer_to(output, 0)?;
+        write_worker_integer_to(output, outputs.len() as u64)?;
+        for result in outputs {
+            write_worker_byte_string_to(output, result.id.as_bytes())?;
+            let value = serde_json::json!({
+                "id": result.id,
+                "outPath": result.path.strip_prefix("/nix/store/").ok_or_else(protocol_output_error)?,
+                "signatures": [],
+                "dependentRealisations": {},
+            });
+            write_worker_byte_string_to(output, value.to_string().as_bytes())?;
+        }
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildOutput {
+    id: String,
+    path: String,
+}
+
+impl BuildOutput {
+    pub fn new(id: String, path: String) -> io::Result<Self> {
+        let (hash, name) = id.split_once('!').ok_or_else(protocol_output_error)?;
+        let hash = hash
+            .strip_prefix("sha256:")
+            .ok_or_else(protocol_output_error)?;
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || name.is_empty()
+            || name.len() > MAXIMUM_BUILD_DERIVATION_OUTPUT_NAME_BYTES
+        {
+            return Err(protocol_output_error());
+        }
+        validate_store_path(path.as_bytes())?;
+        Ok(Self { id, path })
+    }
+}
+
+fn protocol_output_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid build output realization",
+    )
 }
 
 pub struct PathInfoResponse<'a> {

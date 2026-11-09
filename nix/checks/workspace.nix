@@ -38,6 +38,7 @@ let
     set -euo pipefail
     source ${artifacts}/environment
     export HOME=/home/runner USER=runner LOGNAME=runner TMPDIR=/tmp
+    export PATH="/run/wrappers/bin:$PATH"
     export TELCHAR_TEST_DAEMON_BIN=/build/source/target/debug/telchar
     export CARGO_NET_OFFLINE=true
     cd /build/source
@@ -53,7 +54,7 @@ pkgs.testers.nixosTest {
       cores = 4;
       memorySize = 8192;
       diskSize = 131072;
-      writableStore = false;
+      writableStore = true;
       additionalPaths = [
         artifacts
         run
@@ -63,9 +64,8 @@ pkgs.testers.nixosTest {
       isNormalUser = true;
       uid = 1000;
     };
-    # Individual fixtures own disposable stores and daemons. No host trust or
-    # daemon state participates in this check.
-    systemd.services.register-nix-paths.enable = false;
+    # The registered VM closure is a read-only bootstrap source for private
+    # fixture stores. Tests do not use the VM daemon for execution.
     nix.settings.substituters = pkgs.lib.mkForce [ ];
   };
   testScript = ''
