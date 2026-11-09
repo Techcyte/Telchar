@@ -21,7 +21,10 @@ fn execution_output_realizations_match_real_nix() {
             "telchar-realization-structured",
             "",
             "",
-            vec![("__json", "{ \"z\": [1, true], \"a\": \"quote\\\"\" }")],
+            vec![(
+                "__json",
+                "{ \"z\": [1, true, 1e-7, 1e-5, 1e15, 1e20, 1e23, -0.0], \"a\": \"quote\\\"\" }",
+            )],
         ),
         (
             "telchar-realization-fixed",

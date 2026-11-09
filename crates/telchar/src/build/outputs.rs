@@ -107,12 +107,9 @@ fn masked_derivation(build: &BuildRequest) -> io::Result<Vec<u8>> {
         } else if *key == b"__json" {
             let value: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_slice(value).map_err(io::Error::other)?;
-            string(
-                &mut bytes,
-                serde_json::to_string(&value)
-                    .map_err(io::Error::other)?
-                    .as_bytes(),
-            );
+            let mut encoded = String::new();
+            json(&mut encoded, &serde_json::Value::Object(value))?;
+            string(&mut bytes, encoded.as_bytes());
         } else {
             string(&mut bytes, value);
         }
@@ -120,6 +117,83 @@ fn masked_derivation(build: &BuildRequest) -> io::Result<Vec<u8>> {
     }
     bytes.extend_from_slice(b"])");
     Ok(bytes)
+}
+
+fn json(output: &mut String, value: &serde_json::Value) -> io::Result<()> {
+    match value {
+        serde_json::Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                json(output, value)?;
+            }
+            output.push(']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push('{');
+            for (index, (key, value)) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(&serde_json::to_string(key).map_err(io::Error::other)?);
+                output.push(':');
+                json(output, value)?;
+            }
+            output.push('}');
+        }
+        serde_json::Value::Number(number) if number.is_f64() => {
+            let mut buffer = dtoa::Buffer::new();
+            let number = buffer.format(
+                number
+                    .as_f64()
+                    .ok_or_else(|| io::Error::other("invalid JSON number"))?,
+            );
+            let (sign, unsigned) = number
+                .strip_prefix('-')
+                .map(|value| ("-", value))
+                .unwrap_or(("", number));
+            let (mantissa, exponent) = unsigned.split_once('e').unwrap_or((unsigned, "0"));
+            let exponent: i32 = exponent.parse().map_err(io::Error::other)?;
+            let point = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+            let digits = mantissa.replace('.', "");
+            let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
+            let position = point + exponent - leading as i32;
+            let digits = digits[leading..].trim_end_matches('0');
+            output.push_str(sign);
+            if digits.is_empty() {
+                output.push_str("0.0");
+            } else if position > 0 && position <= 15 {
+                let position = position as usize;
+                if position >= digits.len() {
+                    output.push_str(digits);
+                    output.extend(std::iter::repeat_n('0', position - digits.len()));
+                    output.push_str(".0");
+                } else {
+                    output.push_str(&digits[..position]);
+                    output.push('.');
+                    output.push_str(&digits[position..]);
+                }
+            } else if position > -4 && position <= 0 {
+                output.push_str("0.");
+                output.extend(std::iter::repeat_n('0', -position as usize));
+                output.push_str(digits);
+            } else {
+                output.push_str(&digits[..1]);
+                if digits.len() > 1 {
+                    output.push('.');
+                    output.push_str(&digits[1..]);
+                }
+                output.push('e');
+                let exponent = position - 1;
+                output.push(if exponent < 0 { '-' } else { '+' });
+                output.push_str(&format!("{:02}", exponent.abs()));
+            }
+        }
+        _ => output.push_str(&serde_json::to_string(value).map_err(io::Error::other)?),
+    }
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {
