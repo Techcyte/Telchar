@@ -37,12 +37,14 @@ let
   run = pkgs.writeShellScript "telchar-workspace-tests" ''
     set -euo pipefail
     source ${artifacts}/environment
+    export PATH="/run/wrappers/bin:$PATH"
     export HOME=/home/runner USER=runner LOGNAME=runner TMPDIR=/tmp
     export TELCHAR_TEST_DAEMON_BIN=/build/source/target/debug/telchar
     export CARGO_NET_OFFLINE=true
     cd /build/source
     bash tests/canonical-store.sh true
     bash scripts/test-execution-store.sh ${pkgs.bash}/bin/bash -c true
+    export TELCHAR_TEST_SOURCE_STORE='local?read-only=true'
     bash tests/workspace.sh --locked --offline
   '';
 in
@@ -65,8 +67,10 @@ pkgs.testers.nixosTest {
     };
     # Individual fixtures own disposable stores and daemons. No host trust or
     # daemon state participates in this check.
-    systemd.services.register-nix-paths.enable = false;
+    systemd.services.nix-daemon.enable = false;
+    systemd.sockets.nix-daemon.enable = false;
     nix.settings.substituters = pkgs.lib.mkForce [ ];
+    nix.settings.build-users-group = pkgs.lib.mkForce "";
   };
   testScript = ''
     machine.start()

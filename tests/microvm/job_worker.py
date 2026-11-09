@@ -1,6 +1,6 @@
 """Real WSS worker handoff fixture; canonical-store sandboxing stays disabled."""
+import importlib
 import os
-from pathlib import Path
 import shutil
 import socket
 import sqlite3
@@ -8,9 +8,14 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "deploy/microvm"))
-from retained_store import job_daemon, mount, unmount, wait_prepared
+retained_store = importlib.import_module("retained_store")
+job_daemon = retained_store.job_daemon
+mount = retained_store.mount
+unmount = retained_store.unmount
+wait_prepared = retained_store.wait_prepared
 
 
 def main():
@@ -58,8 +63,9 @@ def main():
                     daemon_environment["NIX_CONFIG"] += (
                         "\nexperimental-features = nix-command local-overlay-store read-only-local-store\nrequire-drop-supplementary-groups = false\n")
                     shell = Path('/bin/sh').resolve().parent.parent
+                    source = environment.get("TELCHAR_TEST_SOURCE_STORE", "auto")
                     copied_shell = subprocess.run(
-                        ['nix', 'copy', '--to', f'local?root={retained}', '--no-check-sigs', str(shell)],
+                        ['nix', 'copy', '--from', source, '--to', f'local?root={retained}', '--no-check-sigs', str(shell)],
                         env=daemon_environment, capture_output=True)
                     if copied_shell.returncode:
                         raise RuntimeError(copied_shell.stderr.decode())
@@ -69,7 +75,9 @@ def main():
                     if copied.returncode:
                         raise RuntimeError(copied.stderr.decode())
                     daemon = directory / 'nix'
-                    daemon.write_text('#!/bin/sh\nexec ' + shutil.which('nix') + ' -vvvvv "$@"\n')
+                    nix = shutil.which('nix')
+                    assert nix is not None
+                    daemon.write_text('#!/bin/sh\nexec ' + nix + ' -vvvvv "$@"\n')
                     daemon.chmod(0o700)
                     with job_daemon(retained, directory / "job", daemon,
                                     daemon_environment, deadline) as endpoint:
