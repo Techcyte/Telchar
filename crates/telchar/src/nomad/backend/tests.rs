@@ -40,6 +40,41 @@ impl Visit for EventFields {
 }
 
 #[test]
+fn invalid_nomad_response_logs_cause_at_warn() {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        stream.read(&mut request).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{")
+            .unwrap();
+    });
+    let response = reqwest::blocking::get(format!("http://{address}")).unwrap();
+    let captured = EventCapture::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+    let error = tracing::dispatcher::with_default(&dispatch, || {
+        super::bounded_json::<serde_json::Value>(response, "Nomad job submission failed")
+            .unwrap_err()
+    });
+    server.join().unwrap();
+    assert!(error.to_string().contains("EOF"), "{error}");
+    let events = captured.0.lock().unwrap();
+    let (_, fields) = events
+        .iter()
+        .find(|(level, fields)| {
+            *level == tracing::Level::WARN && fields.contains("nomad.operation.failed")
+        })
+        .expect("operator warning records parsing failure");
+    assert!(fields.contains("Nomad job submission failed"), "{fields}");
+    assert!(fields.contains("EOF"), "{fields}");
+    assert!(fields.contains("error_chain="), "{fields}");
+}
+
+#[test]
 fn exposes_only_bounded_nomad_callback_diagnostics() {
     for diagnostic in [
         "Nomad transfer setup timed out",

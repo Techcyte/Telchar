@@ -137,20 +137,34 @@ impl PostgresCallbackExecutionResolver {
 
 impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
     fn resolve(&self, authentication: &Authentication) -> io::Result<Option<CallbackExecution>> {
+        let reject = |reason: &'static str| {
+            tracing::warn!(
+                event = "nomad.callback.rejected",
+                backend = authentication.backend,
+                namespace = authentication.namespace,
+                job_id = authentication.job_id,
+                allocation_id = authentication.allocation_id,
+                reason,
+                "Nomad callback execution rejected"
+            );
+            Ok(None)
+        };
         let Some(namespace) = self.namespaces.get(&authentication.backend) else {
-            return Ok(None);
+            return reject("backend is not configured");
         };
         if namespace != &authentication.namespace {
-            return Ok(None);
+            return reject("namespace does not match backend");
         }
         let build = crate::persistence::read_shared_build_by_execution(
             &self.database,
             &authentication.backend,
             &authentication.job_id,
         )
-        .map_err(|_| io::Error::other("Nomad callback execution lookup failed"))?;
+        .map_err(|error| {
+            super::diagnostics::failure("Nomad callback execution lookup failed", error)
+        })?;
         let Some(build) = build else {
-            return Ok(None);
+            return reject("no shared build matches execution identity");
         };
         if build.backend_kind != crate::backend::BackendKind::Nomad
             || !matches!(
@@ -159,7 +173,15 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
                     | crate::persistence::SharedBuildState::Collecting
             )
         {
-            return Ok(None);
+            tracing::warn!(
+                event = "nomad.callback.execution_inactive",
+                job_id = authentication.job_id,
+                derivation_path = build.derivation_path,
+                state = ?build.state,
+                backend_kind = ?build.backend_kind,
+                "Nomad callback shared build is not active"
+            );
+            return reject("shared build is not an active Nomad execution");
         }
         let request_digest = build
             .request_digest
@@ -171,7 +193,7 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
             build.derivation_path
         )));
         if authentication.shared_build_digest != shared_build_digest {
-            return Ok(None);
+            return reject("shared build digest does not match");
         }
         let mut execution = CallbackExecution::new(
             build.backend_name,
@@ -182,10 +204,18 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
         )?;
         let attempt =
             crate::persistence::read_shared_build_attempt(&self.database, &build.derivation_path)
-                .map_err(|_| io::Error::other("Nomad callback attempt lookup failed"))?
+                .map_err(|error| {
+                    super::diagnostics::failure("Nomad callback attempt lookup failed", error)
+                })?
                 .ok_or_else(|| io::Error::other("Nomad callback attempt is unavailable"))?;
         if attempt.backend_execution_id.as_deref() != Some(authentication.job_id.as_str()) {
-            return Ok(None);
+            tracing::warn!(
+                event = "nomad.callback.attempt_mismatch",
+                job_id = authentication.job_id,
+                expected_job_id = ?attempt.backend_execution_id,
+                "Nomad callback does not match current attempt"
+            );
+            return reject("job does not match current attempt");
         }
         execution.trace_context = attempt.trace_context;
         execution.derivation_path = Some(build.derivation_path);

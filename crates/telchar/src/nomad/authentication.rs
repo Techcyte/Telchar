@@ -59,10 +59,12 @@ impl WorkloadIdentityVerifier {
         }
         let mut builder = reqwest::blocking::Client::builder().timeout(policy.request_timeout);
         if let Some(path) = &policy.ca_certificate_file {
-            let pem = std::fs::read(path)
-                .map_err(|_| invalid("Nomad workload identity CA could not be read"))?;
-            let certificates = Certificate::from_pem_bundle(&pem)
-                .map_err(|_| invalid("Nomad workload identity CA is invalid"))?;
+            let pem = std::fs::read(path).map_err(|error| {
+                super::diagnostics::failure("Nomad workload identity CA could not be read", error)
+            })?;
+            let certificates = Certificate::from_pem_bundle(&pem).map_err(|error| {
+                super::diagnostics::failure("Nomad workload identity CA is invalid", error)
+            })?;
             if certificates.is_empty() {
                 return Err(invalid("Nomad workload identity CA is invalid"));
             }
@@ -70,9 +72,12 @@ impl WorkloadIdentityVerifier {
                 builder = builder.add_root_certificate(certificate);
             }
         }
-        let client = builder
-            .build()
-            .map_err(|_| invalid("Nomad workload identity client could not be created"))?;
+        let client = builder.build().map_err(|error| {
+            super::diagnostics::failure(
+                "Nomad workload identity client could not be created",
+                error,
+            )
+        })?;
         Ok(Self { policy, client })
     }
 
@@ -84,8 +89,9 @@ impl WorkloadIdentityVerifier {
         if token.is_empty() || token.len() > 16 * 1024 {
             return Err(invalid("Nomad workload identity token is invalid"));
         }
-        let header = decode_header(token)
-            .map_err(|_| invalid("Nomad workload identity token is invalid"))?;
+        let header = decode_header(token).map_err(|error| {
+            super::diagnostics::failure("Nomad workload identity token is invalid", error)
+        })?;
         if header.alg != Algorithm::RS256 {
             return Err(invalid("Nomad workload identity algorithm is unsupported"));
         }
@@ -101,11 +107,14 @@ impl WorkloadIdentityVerifier {
                 key.kid == kid && key.kty == "RSA" && key.use_ == "sig" && key.alg == "RS256"
             })
             .ok_or_else(|| invalid("Nomad workload identity key is unknown"))?;
-        let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e)
-            .map_err(|_| invalid("Nomad workload identity key is invalid"))?;
+        let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e).map_err(|error| {
+            super::diagnostics::failure("Nomad workload identity key is invalid", error)
+        })?;
         let now = now
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| invalid("Nomad workload identity clock is invalid"))?
+            .map_err(|error| {
+                super::diagnostics::failure("Nomad workload identity clock is invalid", error)
+            })?
             .as_secs();
         let mut validation = Validation::new(Algorithm::RS256);
         if self.policy.verify_issuer {
@@ -124,8 +133,10 @@ impl WorkloadIdentityVerifier {
             .chain(self.policy.verify_issuer.then_some("iss"))
             .map(str::to_owned)
             .collect();
-        let token = decode::<WorkloadClaims>(token, &decoding_key, &validation)
-            .map_err(|_| invalid("Nomad workload identity token is invalid"))?;
+        let token =
+            decode::<WorkloadClaims>(token, &decoding_key, &validation).map_err(|error| {
+                super::diagnostics::failure("Nomad workload identity token is invalid", error)
+            })?;
         let claims = token.claims;
         let latest_expiry = claims
             .exp
@@ -152,21 +163,24 @@ impl WorkloadIdentityVerifier {
             .get(&self.policy.jwks_url)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| invalid("Nomad workload identity JWKS request failed"))?;
+            .map_err(|error| {
+                super::diagnostics::failure("Nomad workload identity JWKS request failed", error)
+            })?;
         if response
             .content_length()
             .is_some_and(|length| length > self.policy.maximum_jwks_bytes as u64)
         {
             return Err(invalid("Nomad workload identity JWKS exceeds limit"));
         }
-        let bytes = response
-            .bytes()
-            .map_err(|_| invalid("Nomad workload identity JWKS request failed"))?;
+        let bytes = response.bytes().map_err(|error| {
+            super::diagnostics::failure("Nomad workload identity JWKS request failed", error)
+        })?;
         if bytes.len() > self.policy.maximum_jwks_bytes {
             return Err(invalid("Nomad workload identity JWKS exceeds limit"));
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|_| invalid("Nomad workload identity JWKS is invalid"))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            super::diagnostics::failure("Nomad workload identity JWKS is invalid", error)
+        })
     }
 }
 

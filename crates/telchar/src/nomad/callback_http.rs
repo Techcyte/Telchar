@@ -98,16 +98,23 @@ pub fn accept_connection<S: Read + Write>(
                 error,
                 tungstenite::HandshakeError::Failure(tungstenite::Error::Protocol(_))
             );
+            let error = match error {
+                tungstenite::HandshakeError::Failure(error) => io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    super::diagnostics::failure("Nomad WebSocket handshake failed", error),
+                ),
+                tungstenite::HandshakeError::Interrupted(_) => io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Nomad WebSocket handshake interrupted before completion",
+                ),
+            };
             if protocol_failure && stream.header_complete {
                 stream.write_all(
                     b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
                 )?;
                 stream.flush()?;
             }
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Nomad WebSocket handshake failed",
-            ));
+            return Err(error);
         }
     }
     let inner =
@@ -161,10 +168,10 @@ impl<S: Read + Write> CallbackSocket<S> {
                     self.send_keepalive_ping()?;
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "Nomad WebSocket read failed",
+                        super::diagnostics::failure("Nomad WebSocket read failed", error),
                     ));
                 }
             };
@@ -172,10 +179,11 @@ impl<S: Read + Write> CallbackSocket<S> {
                 Message::Binary(bytes) if bytes.len() <= self.maximum_message_bytes => {
                     return Ok(bytes.to_vec());
                 }
-                Message::Ping(payload) => self
-                    .inner
-                    .send(Message::Pong(payload))
-                    .map_err(|_| io::Error::other("Nomad WebSocket write failed"))?,
+                Message::Ping(payload) => {
+                    self.inner.send(Message::Pong(payload)).map_err(|error| {
+                        super::diagnostics::failure("Nomad WebSocket write failed", error)
+                    })?
+                }
                 Message::Pong(payload) => {
                     let keepalive = self.keepalive.as_mut().ok_or_else(|| {
                         io::Error::new(
@@ -242,7 +250,9 @@ impl<S: Read + Write> CallbackSocket<S> {
         let payload = keepalive.issued_sequence.to_be_bytes().to_vec();
         self.inner
             .send(Message::Ping(payload.clone().into()))
-            .map_err(|_| io::Error::other("Nomad WebSocket keepalive failed"))?;
+            .map_err(|error| {
+                super::diagnostics::failure("Nomad WebSocket keepalive failed", error)
+            })?;
         Ok(())
     }
 
@@ -255,7 +265,7 @@ impl<S: Read + Write> CallbackSocket<S> {
         }
         self.inner
             .send(Message::Binary(message.into()))
-            .map_err(|_| io::Error::other("Nomad WebSocket write failed"))
+            .map_err(|error| super::diagnostics::failure("Nomad WebSocket write failed", error))
     }
 }
 
