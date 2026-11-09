@@ -55,6 +55,8 @@ def main():
                         continue
                 with channel:
                     wait_prepared(channel, deadline)
+                    prepared_at = time.monotonic()
+                    print("job fixture: worker prepared; initializing private store", file=sys.stderr, flush=True)
                     with sqlite3.connect(str(Path(os.environ["NIX_STATE_DIR"]) / "db/db.sqlite")) as database:
                         paths = [row[0] for row in database.execute("SELECT path FROM ValidPaths")]
                     daemon_environment = environment.copy()
@@ -94,6 +96,7 @@ def main():
                                                      env=daemon_environment, capture_output=True)
                             if checked.returncode:
                                 raise RuntimeError(checked.stderr.decode())
+                            print(f"job fixture: private store ready after {time.monotonic() - prepared_at:.3f}s; worker_status={worker.poll()}", file=sys.stderr, flush=True)
                             channel.sendall(endpoint.encode() + b"\n")
                             status = worker.wait(timeout=max(.001, deadline - time.monotonic()))
                             return status

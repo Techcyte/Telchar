@@ -36,7 +36,18 @@ fn phase<T>(
     );
     let _entered = span.enter();
     let started = Instant::now();
+    tracing::info!(event = "microvm.worker.phase.started", phase = name);
     let result = operation();
+    match &result {
+        Ok(_) => tracing::info!(
+            event = "microvm.worker.phase.completed",
+            phase = name,
+            elapsed_ms = started.elapsed().as_millis() as u64
+        ),
+        Err(error) => {
+            tracing::warn!(event = "microvm.worker.phase.failed", phase = name, elapsed_ms = started.elapsed().as_millis() as u64, error_kind = ?error.kind(), deadline_expired = Instant::now() >= deadline)
+        }
+    }
     span.record(
         "outcome",
         if result.is_ok() { "success" } else { "failure" },
