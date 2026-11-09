@@ -119,6 +119,7 @@ impl<R: WorkerInput> WorkerReader<R> {
         output: &mut W,
         version: WorkerVersion,
         daemon_version: &str,
+        trust: WorkerTrust,
     ) -> io::Result<()> {
         if version >= WorkerVersion::new(1, 14) && self.read_integer()? != 0 {
             self.read_integer()?;
@@ -130,7 +131,12 @@ impl<R: WorkerInput> WorkerReader<R> {
             write_worker_byte_string_to(output, daemon_version.as_bytes())?;
         }
         if version >= WorkerVersion::new(1, 35) {
-            write_worker_integer_to(output, 0)?;
+            let trust = match trust {
+                WorkerTrust::Unknown => 0,
+                WorkerTrust::Trusted => 1,
+                WorkerTrust::Untrusted => 2,
+            };
+            write_worker_integer_to(output, trust)?;
         }
         write_worker_integer_to(output, STDERR_LAST)?;
         output.flush()?;

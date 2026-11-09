@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
-    ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader,
+    ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader, WorkerTrust,
     write_query_valid_paths_response,
 };
 
@@ -68,7 +68,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     let mut reader = WorkerReader::new(input, limits);
     let handshake = tracing::trace_span!("worker.handshake").entered();
     let negotiated = reader.perform_server_handshake(&mut output, &[])?;
-    reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")?;
+    reader.complete_server_post_handshake(
+        &mut output,
+        negotiated.version,
+        "telchar",
+        WorkerTrust::Trusted,
+    )?;
     drop(handshake);
 
     macro_rules! execute_admitted_build {

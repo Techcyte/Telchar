@@ -37,6 +37,7 @@ Compatibility claims come from code and tests, not a separate support manifest.
 | Stock Nix OCI gateway | gateway store, transfer, authentication, and session tests | `nixos-oci-gateway`; `nixos-oci-runtime` |
 | OCI archive metadata and loadability | package and entrypoint contracts | `oci-images`; `nixos-oci-runtime` |
 | Stock Nix static SSH | static SSH backend and worker-protocol tests | `nixos-static-ssh-gateway` |
+| Two independent Telchar gateways (qualification pending; not supported yet) | typed executor requests, static SSH backend, ingress and output promotion | `nixos-cascading` (currently fails at downstream trust negotiation) |
 | Stock Nix Nomad | Nomad callback, persistence, transfer, and worker tests | `nixos-nomad-gateway` |
 
 `scripts/check-release.sh` names the end-to-end checks required for release. Reasons for tests marked `#[ignore]` remain beside the tests.
@@ -75,6 +76,57 @@ after retain their configured builders. The dedicated MicroVM worker suite also
 exercises configured daemon dispatch and output return through isolated stores
 and a simulated provider. This is execution-policy and fixture integration
 coverage, not live Nomad, native MicroVM isolation, or AWS qualification.
+
+## Cascading gateways
+
+**Qualification pending:** `nixos-cascading` currently fails because Telchar
+advertises unknown trust while the executor client requires trusted status.
+The topology and support statement below are a draft, contingent on resolving
+that contract and passing the VM test; cascading is not currently qualified.
+
+A Telchar static SSH backend may target another Telchar instance's restricted
+`serve-stdio` SSH ingress instead of a stock `nix-daemon --stdio` endpoint:
+
+```text
+stock Nix client/store → Telchar A/store A → Telchar B/store B → local execution
+```
+
+The proposed two-gateway support scope is the pinned stock Nix on
+`x86_64-linux`, classic input-addressed derivations, and completely independent
+mutable Nix stores. Configure A's static SSH target, user, identity file and
+pinned known-hosts file for B's ingress; configure B with a local backend. Each
+gateway needs its own daemon, PostgreSQL database, ownership lease, GC roots and
+spool. B authenticates A's configured SSH credential, not the original client's
+identity; admission, quotas and auditing remain independent at each gateway.
+
+`nixos-cascading` boots separate client, upstream and downstream VMs. It checks
+cold output absence, pre-registers derivations at both gateways, proves execution
+on the downstream host, verifies output contents and store validity at all three
+stores, and checks one durable attempt and terminal success at each gateway. A
+failing downstream derivation must return its diagnostic and fail at both
+gateways without registering an output. This is not evidence for Lix cascading,
+fixed-output cascading, longer chains, recovery across a broken inter-gateway
+connection, or cascades through Nomad/MicroVM workers.
+
+Operators must keep the complete routing graph acyclic:
+
+- Never route B back to A, directly or through other gateways or workers.
+- Never execute back in the originating client's store, or alias two stores to
+  the same mutable store/database/socket through mounts, containers or SSH.
+  Different hostnames alone do not establish independent stores; outstanding
+  Nix requests can retain locks needed by the routed execution.
+- Do not implement a cascade by enabling distributed builders on A's local
+  execution daemon. Assigned execution deliberately clears Nix's `builders`
+  setting. Select B explicitly as A's Telchar static SSH backend instead.
+- Do not share Telchar databases between independently active gateways: the
+  singleton lease is not a federation or multi-gateway scheduler.
+
+Telchar has no cross-gateway loop detection or hop limit. Connection-scoped
+execution locality prevents Nix build-hook redispatch, not cycles in explicit
+Telchar backend configuration. Keep each hop within the same trusted
+organizational store domain and compatible system/features; SSH credentials,
+capacity and timeouts are operator policy. Independent stores do not provide
+hostile multi-tenant isolation.
 
 ## Expanding support
 
