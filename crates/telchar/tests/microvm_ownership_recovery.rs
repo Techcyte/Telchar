@@ -313,7 +313,11 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
             } else {
                 let until = Instant::now() + Duration::from_secs(4);
                 while !transfer.is_finished() {
-                    assert!(Instant::now() < until);
+                    assert!(
+                        Instant::now() < until,
+                        "expired transfer remains active; ownership availability: {:?}",
+                        owner.admission_available()
+                    );
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }

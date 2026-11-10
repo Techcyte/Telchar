@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix_worker_protocol::{
-    ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader,
+    ProtocolSessionLimits, WorkerInput, WorkerOperation, WorkerReader, WorkerTrust,
     write_query_valid_paths_response,
 };
 
@@ -68,7 +68,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     let mut reader = WorkerReader::new(input, limits);
     let handshake = tracing::trace_span!("worker.handshake").entered();
     let negotiated = reader.perform_server_handshake(&mut output, &[])?;
-    reader.complete_server_post_handshake(&mut output, negotiated.version, "telchar")?;
+    reader.complete_server_post_handshake(
+        &mut output,
+        negotiated.version,
+        "telchar",
+        WorkerTrust::Trusted,
+    )?;
     drop(handshake);
 
     macro_rules! execute_admitted_build {
@@ -87,7 +92,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     audit_subject,
                     quota_subject,
                 )? {
-                    $write_success(&mut output, negotiated.version, true)?;
+                    $write_success(&mut output, negotiated.version, true, &admitted)?;
                     crate::service::metrics::build_request_finished(
                         request_started.elapsed(), "succeeded", None,
                     );
@@ -1197,6 +1202,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         &mut output,
                         negotiated.version,
                         result.status() == BuildStatus::AlreadyValid,
+                        &admitted,
                     )?;
                 }
                 crate::service::metrics::build_request_finished(
@@ -1305,7 +1311,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     request.platform(),
-                    nix_worker_protocol::write_build_derivation_success_response,
+                    |output, version, already_valid, build: &BuildRequest| {
+                        nix_worker_protocol::write_build_derivation_success_response(
+                            output,
+                            version,
+                            already_valid,
+                            &build.output_realizations()?,
+                        )
+                    },
                 );
             }
             Ok(WorkerOperation::BuildPathsWithResults) => {
@@ -1435,7 +1448,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     requested_system.as_slice(),
-                    |output, version, already_valid| {
+                    |output, version, already_valid, _build: &BuildRequest| {
                         nix_worker_protocol::write_build_paths_with_results_success_response(
                             output,
                             version,

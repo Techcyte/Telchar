@@ -124,23 +124,25 @@ fn writes_exact_add_to_store_nar_metadata_and_framed_body() {
 }
 
 #[test]
-fn untrusted_connection_cannot_disable_signature_checking_before_write() {
-    let client = WorkerClient::connect(ScriptedStream::new(handshake(2))).unwrap();
-    let initial = client.into_inner().output;
-    let mut client = WorkerClient::connect(ScriptedStream::new(handshake(2))).unwrap();
-    let references = [REFERENCE.to_vec()];
+fn connection_without_trust_cannot_disable_signature_checking_before_write() {
+    for trust in [0, 2] {
+        let client = WorkerClient::connect(ScriptedStream::new(handshake(trust))).unwrap();
+        let initial = client.into_inner().output;
+        let mut client = WorkerClient::connect(ScriptedStream::new(handshake(trust))).unwrap();
+        let references = [REFERENCE.to_vec()];
 
-    let error = client
-        .add_to_store_nar(
-            &info(&references),
-            &mut b"streamed-nar".as_slice(),
-            false,
-            true,
-        )
-        .unwrap_err();
+        let error = client
+            .add_to_store_nar(
+                &info(&references),
+                &mut b"streamed-nar".as_slice(),
+                false,
+                true,
+            )
+            .unwrap_err();
 
-    assert_eq!(error.to_string(), "Nix daemon operation failed");
-    assert_eq!(client.into_inner().output, initial);
+        assert_eq!(error.to_string(), "Nix daemon operation failed");
+        assert_eq!(client.into_inner().output, initial);
+    }
 }
 
 #[test]

@@ -44,9 +44,18 @@ fn equivalent_build_requests_keep_distinct_request_ids_and_reuse_durable_success
         assert_eq!(read_integer(&mut output), STDERR_LAST);
         assert_eq!(read_integer(&mut output), expected_status, "build status");
         assert_eq!(read_string(&mut output), "", "empty build error message");
-        for _ in 0..7 {
+        for _ in 0..6 {
             read_integer(&mut output);
         }
+        assert_eq!(read_integer(&mut output), 1, "one output realization");
+        let output_id = read_string(&mut output);
+        let realization: serde_json::Value =
+            serde_json::from_str(&read_string(&mut output)).unwrap();
+        assert_eq!(realization["id"], output_id);
+        assert_eq!(
+            realization["outPath"],
+            "11111111111111111111111111111111-telchar-build-derivation-contract"
+        );
     }
     drop(input);
     drop(output);

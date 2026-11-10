@@ -31,7 +31,11 @@ fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
     write_word(&mut input, 0);
     input.flush().expect("post-handshake flushes");
     assert_eq!(read_string(&mut output), b"telchar");
-    assert_eq!(read_word(&mut output), 0);
+    assert_eq!(
+        read_word(&mut output),
+        1,
+        "authenticated ingress is trusted"
+    );
     assert_eq!(read_word(&mut output), nix_worker_protocol::STDERR_LAST);
 
     drop(input);

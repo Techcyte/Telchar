@@ -617,7 +617,7 @@ fn complete_handshake(input: &mut impl Write, output: &mut impl Read) {
     input.flush().expect("post-handshake flushes");
 
     assert_eq!(read_string(output), "telchar");
-    assert_eq!(read_integer(output), 0);
+    assert_eq!(read_integer(output), 1);
     assert_eq!(read_integer(output), STDERR_LAST);
 }
 

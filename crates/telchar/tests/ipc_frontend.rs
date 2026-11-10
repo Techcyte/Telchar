@@ -206,7 +206,7 @@ fn complete_post_handshake_stream(stream: &mut UnixStream) {
     write_word(stream, 0);
     stream.flush().expect("post-handshake flushes");
     assert_eq!(read_string(stream), b"telchar");
-    assert_eq!(read_word(stream), 0);
+    assert_eq!(read_word(stream), 1);
     assert_eq!(read_word(stream), nix_worker_protocol::STDERR_LAST);
 }
 
@@ -222,7 +222,7 @@ fn complete_worker_handshake(input: &mut impl Write, output: &mut impl Read) {
     write_word(input, 0);
     input.flush().expect("post-handshake flushes");
     assert_eq!(read_string(output), b"telchar");
-    assert_eq!(read_word(output), 0);
+    assert_eq!(read_word(output), 1);
     assert_eq!(read_word(output), nix_worker_protocol::STDERR_LAST);
 }
 
