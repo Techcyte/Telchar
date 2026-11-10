@@ -47,8 +47,19 @@ fn invalid_nomad_response_logs_cause_at_warn() {
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0; 4096];
-        stream.read(&mut request).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            assert!(
+                request.len() < 4096,
+                "HTTP request headers exceed fixture limit"
+            );
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{")
             .unwrap();
