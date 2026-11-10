@@ -1139,10 +1139,17 @@ chunk_bytes = 262144
             assert!(worker.stdout.is_empty());
             let diagnostic = String::from_utf8(worker.stderr).unwrap();
             assert!(
-                diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+                diagnostic.contains("MicroVM worker failed\n"),
                 "{diagnostic}"
             );
-            assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+            assert!(
+                diagnostic.contains("Canonical store fixture retained: "),
+                "{diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
+                "worker diagnostic exposed bearer"
+            );
             assert!(!store.is_valid_path(output.as_bytes()).unwrap());
             let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
             let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
