@@ -128,10 +128,6 @@ Manual, Consul, and EC2 inventories coexist. EC2 targets use the existing SSH/Ni
 
 ## Cascading Telchar instances
 
-Qualification is pending; the downstream build completes, but its result omits
-output realizations required by the upstream executor. The following describes
-the proposed topology, not a supported deployment recipe until that contract passes.
-
 For a two-gateway chain, configure the upstream static SSH backend to connect to
 the downstream gateway's restricted Telchar SSH ingress. The downstream uses a
 local backend and an independent Nix store and PostgreSQL database. Pin its SSH
