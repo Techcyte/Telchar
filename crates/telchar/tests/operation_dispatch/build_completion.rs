@@ -14,6 +14,16 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let request_path = root.join("request-id");
     let started = root.join("helper-started");
     let complete = root.join("complete-helper");
+    let published = root.join("published");
+    let publisher = root.join("publish");
+    fs::write(
+        &publisher,
+        format!("#!/bin/sh\ncat >> '{}'\n", published.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&publisher, fs::Permissions::from_mode(0o700)).unwrap();
+    let config = root.join("config.toml");
+    fs::write(&config, format!("[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n[cache_publication]\nexecutable = \"{}\"\ntimeout_seconds = 5\nmaximum_input_bytes = 1024\n", publisher.display())).unwrap();
     fs::write(
         &helper,
         format!(
@@ -25,10 +35,12 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     )
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
-    let mut fixture = FrontendFixture::spawn_with_store(
-        None,
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        [
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ("TELCHAR_CONFIG", config.display().to_string()),
+        ],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -77,16 +89,96 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     );
     assert_active_derivation_lease(&fixture.database, request_id);
 
+    let mut reused = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_IPC_SOCKET", fixture.root.join("daemon.sock"))
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reused_input = reused.stdin.take().unwrap();
+    let mut reused_output = reused.stdout.take().unwrap();
+    complete_handshake(&mut reused_input, &mut reused_output);
+    write_build_derivation_request(&mut reused_input, "x86_64-linux", 0);
+    reused_input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .database
+        .connect()
+        .query_one("SELECT count(*) FROM request_attachments", &[])
+        .unwrap()
+        .get::<_, i64>(0)
+        < 2
+    {
+        assert!(Instant::now() < deadline, "follower did not attach");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let derivation_path =
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
+    telchar::persistence::collect_shared_build(fixture.database.url(), derivation_path).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.database.url(), derivation_path,
+        &serde_json::json!({"status":"built","outputs":[{"name":"out","path":"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"}]}),
+        Duration::from_secs(60),
+    ).unwrap();
     fs::write(&complete, b"complete").expect("helper completion releases");
     assert_eq!(read_integer(&mut output), STDERR_LAST);
     assert_eq!(read_integer(&mut output), 0, "Built status");
     assert_eq!(read_string(&mut output), "", "empty build error message");
-    for _ in 0..7 {
+    for _ in 0..6 {
         read_integer(&mut output);
+    }
+    let count = read_integer(&mut output);
+    for _ in 0..count {
+        read_string(&mut output);
+        read_string(&mut output);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !published.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "callback-completed build was not published"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
     drop(input);
     drop(output);
-    assert!(child.wait().expect("Telchar exits").success());
+    assert!(child.wait().unwrap().success());
+    let input = reused_input;
+    let mut output = reused_output;
+    assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
+    assert_eq!(
+        read_string(&mut output),
+        "identical build already in progress\n"
+    );
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_string(&mut output), "");
+    for _ in 0..6 {
+        read_integer(&mut output);
+    }
+    let count = read_integer(&mut output);
+    for _ in 0..count {
+        read_string(&mut output);
+        read_string(&mut output);
+    }
+    drop(input);
+    drop(output);
+    let status = reused.wait().expect("Telchar exits");
+    let mut stderr = String::new();
+    reused
+        .stderr
+        .as_mut()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(
+        status.success(),
+        "frontend: {stderr}; daemon: {}",
+        fs::read_to_string(fixture.root.join("daemon.stderr")).unwrap()
+    );
     assert_eq!(
         telchar::persistence::read_request_attachment(
             fixture.database.url(),
@@ -111,6 +203,15 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
         1,
         "successful build has one output lease"
     );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !published.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "callback-completed build was not published"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fs::read_to_string(&published).unwrap().lines().count(), 1);
     let output_lease_id = output_leases[0].get::<_, String>(0);
     assert_eq!(
         output_leases[0].get::<_, String>(1),

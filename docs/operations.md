@@ -225,7 +225,7 @@ timeout_seconds = 300
 maximum_input_bytes = 65536
 ```
 
-Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded; subprocess output is suppressed. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
+Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded. Up to 4096 bytes from each subprocess output stream are logged at DEBUG under `cache_publication.output` when the command finishes or times out, with `stream` and `truncated` fields. Enable `telchar::service::cache_publication=debug` in the server logging filter to inspect these diagnostics. Command output is operator-controlled and may contain sensitive data; publication scripts must not print credentials. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
 
 ## Read-only operator CLI
 

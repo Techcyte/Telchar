@@ -683,8 +683,13 @@ fn read_build_success(mut output: impl Read) -> Result<(), String> {
     if !error_message.is_empty() {
         return Err(format!("unexpected build error {error_message:?}"));
     }
-    for _ in 0..7 {
+    for _ in 0..6 {
         try_read_integer(&mut output)?;
+    }
+    let output_count = try_read_integer(&mut output)?;
+    for _ in 0..output_count {
+        try_read_string(&mut output)?;
+        try_read_string(&mut output)?;
     }
     Ok(())
 }

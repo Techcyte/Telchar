@@ -1165,7 +1165,6 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                 }
                 if durable_execution_owned.get()
-                    && !build_already_succeeded
                     && let Some(publisher) = cache_publisher.cloned()
                 {
                     let publication_outputs = output_paths.clone();
