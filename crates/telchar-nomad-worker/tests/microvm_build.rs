@@ -1156,6 +1156,17 @@ chunk_bytes = 262144
                 !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
                 "worker diagnostic exposed bearer"
             );
+            if case == "configured-building-deadline" {
+                assert!(
+                    diagnostic.lines().any(|line| {
+                        line.contains("microvm.worker.phase.failed")
+                            && (line.contains("phase=\"build\"")
+                                || line.contains("phase=\"return-outputs\""))
+                            && line.contains("deadline_expired=true")
+                    }),
+                    "worker must expire after execution starts, not during setup: {diagnostic}"
+                );
+            }
             assert!(!store.is_valid_path(output.as_bytes()).unwrap());
             let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
             let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
