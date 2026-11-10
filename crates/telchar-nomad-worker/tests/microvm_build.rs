@@ -472,7 +472,7 @@ fn run_build() {
                 .find(|path| path.is_file())
                 .expect("sleep available in development shell");
             format!(
-                "printf 'builder-executing\\n' >&2; {} 10; printf 'unexpected completion' > \"$out\"",
+                "printf 'builder-executing\\n' >&2; {} 60; printf 'unexpected completion' > \"$out\"",
                 sleep.display()
             )
         }
@@ -925,7 +925,10 @@ chunk_bytes = 262144
     worker_binding.as_object_mut().unwrap().remove("version");
     worker_binding["provider_id"] = "microvm-build".into();
     if case == "configured-building-deadline" {
-        worker_binding["lifetime_seconds"] = 3.into();
+        // The lifetime includes TLS, input import, and private-store preparation.
+        // Leave setup headroom on contended CI hosts while keeping the builder
+        // alive well beyond the deadline, so this tests interruption in build.
+        worker_binding["lifetime_seconds"] = 15.into();
     }
     let intent_id = worker_binding["intent_id"].as_str().unwrap().to_owned();
     use sha2::Digest;
@@ -1118,7 +1121,7 @@ chunk_bytes = 262144
             let worker = if case == "configured-building-deadline" {
                 let worker = worker.wait_with_output().unwrap();
                 assert!(
-                    started.elapsed() < Duration::from_secs(5),
+                    started.elapsed() < Duration::from_secs(20),
                     "worker deadline waited for build completion"
                 );
                 drop(upstream);
@@ -1158,8 +1161,13 @@ chunk_bytes = 262144
             let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
             assert_eq!(row.get::<_, String>(0), "closed");
             assert!(row.get::<_, bool>(1));
+            let completion_bound = if case == "configured-building-deadline" {
+                Duration::from_secs(20)
+            } else {
+                Duration::from_secs(5)
+            };
             assert!(
-                started.elapsed() < Duration::from_secs(5),
+                started.elapsed() < completion_bound,
                 "executing worker cancellation took {:?}",
                 started.elapsed()
             );
