@@ -42,7 +42,7 @@ fn live_set_options_request_returns_terminal_frame() {
     write_integer(&mut expected_stdout, LATEST_WORKER_VERSION.to_wire());
     write_integer(&mut expected_stdout, 0);
     write_string(&mut expected_stdout, b"telchar");
-    write_integer(&mut expected_stdout, 0);
+    write_integer(&mut expected_stdout, 1);
     write_integer(&mut expected_stdout, STDERR_LAST);
     write_integer(&mut expected_stdout, STDERR_LAST);
     assert_eq!(
@@ -97,7 +97,7 @@ fn partial_set_options_times_out_after_operation_and_cleans_up() {
     write_integer(&mut input, 0);
     input.flush().expect("post-handshake flushes");
     assert_eq!(read_string(&mut output), "telchar");
-    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 1);
     assert_eq!(read_integer(&mut output), STDERR_LAST);
     write_integer(&mut input, 19);
     input.flush().expect("operation flushes");
@@ -127,7 +127,7 @@ fn complete_message_boundary_remains_idle_until_next_input_starts() {
     write_integer(&mut input, 0);
     input.flush().expect("post-handshake flushes");
     assert_eq!(read_string(&mut output), "telchar");
-    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 1);
     assert_eq!(read_integer(&mut output), STDERR_LAST);
 
     thread::sleep(Duration::from_millis(80));
@@ -162,7 +162,7 @@ fn partial_set_options_progress_resets_deadline() {
     write_integer(&mut input, 0);
     input.flush().expect("post-handshake flushes");
     assert_eq!(read_string(&mut output), "telchar");
-    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 1);
     assert_eq!(read_integer(&mut output), STDERR_LAST);
     write_integer(&mut input, 19);
     write_integer(&mut input, 0);

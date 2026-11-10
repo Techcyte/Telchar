@@ -3,6 +3,7 @@
   pkgs,
   craneLib,
   source,
+  runtimeSource,
 }:
 let
   common = {
@@ -44,6 +45,7 @@ in
       craneLib
       common
       cargoArtifacts
+      runtimeSource
       ;
   };
 
@@ -69,6 +71,7 @@ in
     common
     // {
       inherit cargoArtifacts;
+      src = runtimeSource;
       cargoTestExtraArgs = "--workspace --lib";
     }
   );

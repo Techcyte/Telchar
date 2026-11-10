@@ -4,6 +4,7 @@
   craneLib,
   common,
   cargoArtifacts,
+  runtimeSource,
 }:
 let
   artifacts = craneLib.mkCargoDerivation (
@@ -37,12 +38,14 @@ let
   run = pkgs.writeShellScript "telchar-workspace-tests" ''
     set -euo pipefail
     source ${artifacts}/environment
+    export PATH="/run/wrappers/bin:$PATH"
     export HOME=/home/runner USER=runner LOGNAME=runner TMPDIR=/tmp
     export TELCHAR_TEST_DAEMON_BIN=/build/source/target/debug/telchar
     export CARGO_NET_OFFLINE=true
     cd /build/source
     bash tests/canonical-store.sh true
     bash scripts/test-execution-store.sh ${pkgs.bash}/bin/bash -c true
+    export TELCHAR_TEST_SOURCE_STORE='local?read-only=true'
     bash tests/workspace.sh --locked --offline
   '';
 in
@@ -57,22 +60,30 @@ pkgs.testers.nixosTest {
       additionalPaths = [
         artifacts
         run
+        runtimeSource
       ];
     };
     users.users.runner = {
       isNormalUser = true;
       uid = 1000;
     };
-    # Individual fixtures own disposable stores and daemons. No host trust or
-    # daemon state participates in this check.
-    systemd.services.register-nix-paths.enable = false;
+    systemd.services.register-nix-paths.wantedBy = pkgs.lib.mkForce [ ];
+    # The registered VM closure is a read-only bootstrap source for private
+    # fixture stores. Tests do not use the VM daemon for execution.
+    systemd.services.nix-daemon.enable = false;
+    systemd.sockets.nix-daemon.enable = false;
     nix.settings.substituters = pkgs.lib.mkForce [ ];
+    nix.settings.build-users-group = pkgs.lib.mkForce "";
   };
   testScript = ''
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    # Nested private fixture stores need a bootstrap filesystem without overlays.
+    machine.succeed("mkdir -p /var/bootstrap-store && reg=$(grep -o 'regInfo=[^ ]*' /proc/cmdline) && grep '^/nix/store/' \"''${reg#regInfo=}\" | sort -u | while read -r path; do cp -a \"$path\" /var/bootstrap-store/ || exit; done; cp -a \"$(dirname \"''${reg#regInfo=}\")\" /var/bootstrap-store/", timeout=1200)
+    machine.succeed("mount --bind /var/bootstrap-store /nix/store")
+    machine.succeed("systemctl start register-nix-paths.service")
     machine.succeed("mkdir -p /var/workspace /build /nix/var/nix/daemon-socket && mount --bind /var/workspace /build && mkdir -p /build/source")
-    machine.succeed("cp -a ${artifacts}/source/. /build/source/")
+    machine.succeed("cp -a ${runtimeSource}/. /build/source/")
     machine.succeed("df -h /build && cp -a ${artifacts}/target /build/source/target", timeout=1200)
     machine.succeed("cp -a ${artifacts}/cargo-home /build/cargo-home")
     machine.succeed("chown -R runner:users /build && chmod -R u+w /build")

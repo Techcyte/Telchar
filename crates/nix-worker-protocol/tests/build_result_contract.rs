@@ -54,7 +54,7 @@ fn writes_keyed_build_paths_success_result() {
 fn writes_latest_empty_success_result_matching_pinned_field_order() {
     let mut output = Vec::new();
 
-    write_build_derivation_success_response(&mut output, WorkerVersion::new(1, 38), false)
+    write_build_derivation_success_response(&mut output, WorkerVersion::new(1, 38), false, &[])
         .expect("success response writes");
 
     let mut input = output.as_slice();
@@ -75,7 +75,7 @@ fn writes_latest_empty_success_result_matching_pinned_field_order() {
 fn writes_already_valid_status_and_respects_version_gates() {
     let mut output = Vec::new();
 
-    write_build_derivation_success_response(&mut output, WorkerVersion::new(1, 27), true)
+    write_build_derivation_success_response(&mut output, WorkerVersion::new(1, 27), true, &[])
         .expect("success response writes");
 
     let mut input = output.as_slice();
@@ -83,6 +83,41 @@ fn writes_already_valid_status_and_respects_version_gates() {
     assert_eq!(read_integer(&mut input), 2, "AlreadyValid status");
     assert_eq!(read_string(&mut input), b"");
     assert!(input.is_empty());
+}
+
+#[test]
+fn writes_output_realizations_in_build_derivation_success() {
+    let id = format!("sha256:{}!out", "1".repeat(64));
+    let path = "/nix/store/00000000000000000000000000000000-contract";
+    let result = nix_worker_protocol::BuildOutput::new(id.clone(), path.to_owned()).unwrap();
+    for already_valid in [false, true] {
+        let mut output = Vec::new();
+        write_build_derivation_success_response(
+            &mut output,
+            WorkerVersion::new(1, 38),
+            already_valid,
+            std::slice::from_ref(&result),
+        )
+        .unwrap();
+        let mut input = output.as_slice();
+        assert_eq!(read_integer(&mut input), nix_worker_protocol::STDERR_LAST);
+        assert_eq!(read_integer(&mut input), if already_valid { 2 } else { 0 });
+        assert_eq!(read_string(&mut input), b"");
+        for _ in 0..6 {
+            assert_eq!(read_integer(&mut input), 0);
+        }
+        assert_eq!(read_integer(&mut input), 1);
+        assert_eq!(read_string(&mut input), id.as_bytes());
+        let value: serde_json::Value = serde_json::from_slice(read_string(&mut input)).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": id, "outPath": "00000000000000000000000000000000-contract",
+                "signatures": [], "dependentRealisations": {},
+            })
+        );
+        assert!(input.is_empty());
+    }
 }
 
 fn read_integer(input: &mut &[u8]) -> u64 {

@@ -212,26 +212,30 @@ impl NomadClient {
     pub fn new(config: NomadBackendConfig) -> io::Result<Self> {
         let mut headers = HeaderMap::new();
         if let Some(path) = config.token_file() {
-            let token = fs::read_to_string(path)
-                .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
+            let token = fs::read_to_string(path).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?;
             let token = token.trim();
             if token.is_empty() {
                 return Err(io::Error::other("Nomad client configuration failed"));
             }
             headers.insert(
                 "X-Nomad-Token",
-                HeaderValue::from_str(token)
-                    .map_err(|_| io::Error::other("Nomad client configuration failed"))?,
+                HeaderValue::from_str(token).map_err(|error| {
+                    super::diagnostics::failure("Nomad client configuration failed", error)
+                })?,
             );
         }
         let mut builder = Client::builder()
             .default_headers(headers)
             .timeout(config.runtime_limit());
         if let Some(path) = config.ca_certificate_file() {
-            let pem = fs::read(path)
-                .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
-            let certificates = Certificate::from_pem_bundle(&pem)
-                .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
+            let pem = fs::read(path).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?;
+            let certificates = Certificate::from_pem_bundle(&pem).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?;
             if certificates.is_empty() {
                 return Err(io::Error::other("Nomad client configuration failed"));
             }
@@ -242,20 +246,19 @@ impl NomadClient {
         if let (Some(certificate_path), Some(key_path)) =
             (config.client_certificate_file(), config.client_key_file())
         {
-            let mut pem = fs::read(certificate_path)
-                .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
-            pem.extend_from_slice(
-                &fs::read(key_path)
-                    .map_err(|_| io::Error::other("Nomad client configuration failed"))?,
-            );
-            builder = builder.identity(
-                Identity::from_pem(&pem)
-                    .map_err(|_| io::Error::other("Nomad client configuration failed"))?,
-            );
+            let mut pem = fs::read(certificate_path).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?;
+            pem.extend_from_slice(&fs::read(key_path).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?);
+            builder = builder.identity(Identity::from_pem(&pem).map_err(|error| {
+                super::diagnostics::failure("Nomad client configuration failed", error)
+            })?);
         }
-        let client = builder
-            .build()
-            .map_err(|_| io::Error::other("Nomad client configuration failed"))?;
+        let client = builder.build().map_err(|error| {
+            super::diagnostics::failure("Nomad client configuration failed", error)
+        })?;
         Ok(Self { config, client })
     }
 
@@ -290,12 +293,12 @@ impl NomadClient {
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|error| {
-                io::Error::other(format!("Nomad allocation verification failed: {error}"))
+                super::diagnostics::failure("Nomad allocation verification failed", error)
             })?;
         let bytes = bounded_response(response, "Nomad allocation verification failed")?;
         let allocation: ExactAllocationResponse =
             serde_json::from_slice(&bytes).map_err(|error| {
-                io::Error::other(format!("Nomad allocation verification failed: {error}"))
+                super::diagnostics::failure("Nomad allocation response decoding failed", error)
             })?;
         if allocation.id != allocation_id {
             return Err(io::Error::other("Nomad allocation ID verification failed"));
@@ -339,6 +342,14 @@ impl NomadClient {
 
     fn execution_status(&self, job_id: &str) -> io::Result<NomadExecutionStatus> {
         let started = Instant::now();
+        let span = tracing::info_span!(
+            "nomad.api.request",
+            operation = "status",
+            job_id,
+            backend = self.config.target().name(),
+            namespace = self.config.namespace()
+        );
+        let _entered = span.enter();
         tracing::trace!(
             event = "nomad.api.request.started",
             operation = "status",
@@ -353,7 +364,7 @@ impl NomadClient {
             .get(format!("{}/v1/job/{job_id}", self.config.endpoint()))
             .query(&[("namespace", self.config.namespace())])
             .send()
-            .map_err(|_| io::Error::other("Nomad job monitoring failed"))?;
+            .map_err(|error| super::diagnostics::failure("Nomad job monitoring failed", error))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             tracing::trace!(
                 event = "nomad.api.request.completed",
@@ -369,9 +380,9 @@ impl NomadClient {
             });
         }
         let job: JobResponse = bounded_json(
-            response
-                .error_for_status()
-                .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
+            response.error_for_status().map_err(|error| {
+                super::diagnostics::failure("Nomad job monitoring failed", error)
+            })?,
             "Nomad job monitoring failed",
         )?;
         if job.id != job_id
@@ -382,7 +393,17 @@ impl NomadClient {
             || job.meta.get("telchar_system").map(String::as_str)
                 != Some(self.config.target().system())
         {
-            return Err(io::Error::other("Nomad job monitoring failed"));
+            return Err(io::Error::other(format!(
+                "Nomad job identity mismatch: expected id={job_id:?} namespace={:?} type=batch backend={:?} system={:?}; received id={:?} namespace={:?} type={:?} backend={:?} system={:?}",
+                self.config.namespace(),
+                self.config.target().name(),
+                self.config.target().system(),
+                job.id,
+                job.namespace,
+                job.job_type,
+                job.meta.get("telchar_backend"),
+                job.meta.get("telchar_system")
+            )));
         }
         let allocations: Vec<AllocationResponse> = bounded_json(
             self.client
@@ -393,7 +414,9 @@ impl NomadClient {
                 .query(&[("namespace", self.config.namespace())])
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
-                .map_err(|_| io::Error::other("Nomad job monitoring failed"))?,
+                .map_err(|error| {
+                    super::diagnostics::failure("Nomad job monitoring failed", error)
+                })?,
             "Nomad job monitoring failed",
         )?;
         let current_allocations = allocations
@@ -422,9 +445,11 @@ impl NomadClient {
                 node_name: (!allocation.node_name.is_empty()).then(|| allocation.node_name.clone()),
             })
             .collect::<Vec<_>>();
-        tracing::trace!(
+        tracing::debug!(
             event = "nomad.api.request.completed",
             operation = "status",
+            job_id,
+            namespace = self.config.namespace(),
             backend_name = self.config.target().name(),
             result = ?state,
             allocation_count = allocations.len(),
@@ -478,6 +503,21 @@ impl NomadClient {
                 &mut live_logs,
                 cancelled,
             );
+            if let Err(
+                NomadAttemptFailure::Retryable(error) | NomadAttemptFailure::Terminal(error),
+            ) = &result
+            {
+                tracing::warn!(
+                    event = "nomad.attempt.failed",
+                    derivation_path,
+                    backend = self.config.target().name(),
+                    namespace = self.config.namespace(),
+                    attempt_ordinal,
+                    error = %error,
+                    error_chain = ?error,
+                    "Nomad execution attempt failed"
+                );
+            }
             match result {
                 Ok(result) => break Ok(result),
                 Err(NomadAttemptFailure::Terminal(error)) => break Err(error),
@@ -503,8 +543,25 @@ impl NomadClient {
                         "nomad-infrastructure-lost",
                         &serde_json::json!({"reason": error.to_string()}),
                     )
-                    .map_err(|_| io::Error::other("Nomad shared build retry failed"))?;
-                    wait_for_retry(retry_delay(attempt_ordinal), deadline, cancelled)?;
+                    .map_err(|error| {
+                        super::diagnostics::failure("Nomad shared build retry failed", error)
+                    })?;
+                    let delay = retry_delay(attempt_ordinal);
+                    tracing::warn!(
+                        event = "nomad.execution.retrying",
+                        derivation_path,
+                        backend = self.config.target().name(),
+                        namespace = self.config.namespace(),
+                        job_id = current_execution_id,
+                        next_job_id = next_execution_id,
+                        attempt_ordinal,
+                        next_attempt_ordinal = next_ordinal,
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        error_chain = ?error,
+                        "Retrying Nomad execution after control-plane failure"
+                    );
+                    wait_for_retry(delay, deadline, cancelled)?;
                     attempt_ordinal = next_ordinal;
                 }
                 Err(NomadAttemptFailure::Retryable(error)) => break Err(error),
@@ -512,6 +569,18 @@ impl NomadClient {
         };
         for chunk in live_logs.drain() {
             logs(&chunk)?;
+        }
+        if let Err(error) = &result {
+            tracing::error!(
+                event = "nomad.execution.failed",
+                derivation_path,
+                backend = self.config.target().name(),
+                namespace = self.config.namespace(),
+                attempt_count = attempt_ordinal,
+                error = %error,
+                error_chain = ?error,
+                "Nomad execution failed"
+            );
         }
         let result_name = if result.is_ok() {
             "succeeded"
@@ -570,9 +639,10 @@ impl NomadClient {
                 &execution_id,
                 execution.trace_context(),
             )
-            .map_err(|_| {
-                NomadAttemptFailure::Terminal(io::Error::other(
+            .map_err(|error| {
+                NomadAttemptFailure::Terminal(super::diagnostics::failure(
                     "Nomad shared build trace context could not be recorded",
+                    error,
                 ))
             })?;
         }
@@ -644,9 +714,10 @@ impl NomadClient {
                         ))
                     })?,
                 )
-                .map_err(|_| {
-                    NomadAttemptFailure::Terminal(io::Error::other(
+                .map_err(|error| {
+                    NomadAttemptFailure::Terminal(super::diagnostics::failure(
                         "Nomad shared build state is unavailable",
+                        error,
                     ))
                 })?
                 .ok_or_else(|| {
@@ -703,6 +774,14 @@ impl NomadClient {
                             }
                         }
                         NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                            tracing::warn!(
+                                event = "nomad.job.unavailable",
+                                job_id = submission.job_id(),
+                                evaluation_id = submission.evaluation_id(),
+                                state = ?status.state,
+                                allocation_ids = ?status.allocations.iter().map(|allocation| &allocation.id).collect::<Vec<_>>(),
+                                "Nomad job cannot continue execution"
+                            );
                             return Err(NomadAttemptFailure::Retryable(io::Error::other(
                                 "Nomad job execution failed",
                             )));
@@ -737,7 +816,9 @@ impl NomadClient {
                 .query(&[("namespace", self.config.namespace()), ("purge", "true")])
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
-                .map_err(|_| io::Error::other("Nomad job cancellation failed"))?,
+                .map_err(|error| {
+                    super::diagnostics::failure("Nomad job cancellation failed", error)
+                })?,
             "Nomad job cancellation failed",
         )?;
         tracing::trace!(
@@ -793,14 +874,24 @@ impl NomadClient {
         trace_context: &telchar_telemetry::TraceContext,
     ) -> io::Result<NomadSubmission> {
         let started = Instant::now();
+        let job_id =
+            deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)?;
+        let span = tracing::info_span!(
+            "nomad.api.request",
+            operation = "submit",
+            job_id,
+            attempt_ordinal,
+            backend = self.config.target().name(),
+            namespace = self.config.namespace()
+        );
+        trace_context.set_parent(&span);
+        let _entered = span.enter();
         tracing::trace!(
             event = "nomad.api.request.started",
             operation = "submit",
             backend_name = self.config.target().name(),
             "Nomad API request started"
         );
-        let job_id =
-            deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)?;
         let response = self
             .client
             .post(format!("{}/v1/jobs", self.config.endpoint()))
@@ -814,14 +905,20 @@ impl NomadClient {
             )?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| io::Error::other("Nomad job submission failed"))?;
+            .map_err(|error| super::diagnostics::failure("Nomad job submission failed", error))?;
         let parsed: SubmissionResponse = bounded_json(response, "Nomad job submission failed")?;
         if parsed.eval_id.is_empty() || parsed.eval_id.len() > 256 {
-            return Err(io::Error::other("Nomad job submission failed"));
+            return Err(io::Error::other(format!(
+                "Nomad job submission returned invalid evaluation ID: {:?}",
+                parsed.eval_id
+            )));
         }
-        tracing::trace!(
+        tracing::debug!(
             event = "nomad.api.request.completed",
             operation = "submit",
+            job_id,
+            evaluation_id = parsed.eval_id,
+            namespace = self.config.namespace(),
             backend_name = self.config.target().name(),
             result = "succeeded",
             duration_ms = started.elapsed().as_millis(),
@@ -899,15 +996,19 @@ fn bounded_response(
         .content_length()
         .is_some_and(|length| length > MAXIMUM_NOMAD_RESPONSE_BYTES)
     {
-        return Err(io::Error::other(failure));
+        return Err(io::Error::other(format!(
+            "{failure}: response Content-Length exceeds {MAXIMUM_NOMAD_RESPONSE_BYTES} bytes"
+        )));
     }
     let mut bytes = Vec::new();
     response
         .take(MAXIMUM_NOMAD_RESPONSE_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| io::Error::other(failure))?;
+        .map_err(|error| super::diagnostics::failure(failure, error))?;
     if bytes.len() as u64 > MAXIMUM_NOMAD_RESPONSE_BYTES {
-        return Err(io::Error::other(failure));
+        return Err(io::Error::other(format!(
+            "{failure}: response body exceeds {MAXIMUM_NOMAD_RESPONSE_BYTES} bytes"
+        )));
     }
     Ok(bytes)
 }
@@ -917,7 +1018,7 @@ fn bounded_json<T: serde::de::DeserializeOwned>(
     failure: &'static str,
 ) -> io::Result<T> {
     let bytes = bounded_response(response, failure)?;
-    serde_json::from_slice(&bytes).map_err(|_| io::Error::other(failure))
+    serde_json::from_slice(&bytes).map_err(|error| super::diagnostics::failure(failure, error))
 }
 
 pub fn deterministic_job_name(config: &NomadBackendConfig, shared_build_key: &[u8]) -> String {

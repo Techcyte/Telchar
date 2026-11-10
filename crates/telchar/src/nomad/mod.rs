@@ -5,4 +5,5 @@ pub mod backend;
 pub mod callback;
 pub mod callback_http;
 pub mod callback_service;
+mod diagnostics;
 pub mod protocol;

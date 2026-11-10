@@ -24,10 +24,13 @@ class RetainedStoreTests(unittest.TestCase):
     def test_sequential_jobs_reuse_inputs_without_retaining_private_outputs(self):
         spec = importlib.util.spec_from_file_location(
             "retained_store", ROOT / "deploy/microvm/retained_store.py")
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         nix = shutil.which("nix")
-        shell = Path(shutil.which("bash")).resolve()
+        shell_executable = shutil.which("bash")
+        assert nix is not None and shell_executable is not None
+        shell = Path(shell_executable).resolve()
         package = shell.parent.parent
         environment = os.environ.copy()
         environment.pop("NIX_REMOTE", None)
@@ -45,12 +48,15 @@ class RetainedStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="telchar-retained-store-") as directory:
             root = Path(directory)
             lower = root / "inputs"
-            run("copy", "--to", f"local?root={lower}", "--no-check-sigs", package)
+            source = environment.get("TELCHAR_TEST_SOURCE_STORE", "local?read-only=true")
+            run("copy", "--from", source,
+                "--to", f"local?root={lower}", "--no-check-sigs", package)
             database = lower / "nix/var/nix/db/db.sqlite"
             before = hashlib.sha256(database.read_bytes()).digest()
             marker = root / "host-only"
             marker.touch()
             outputs = []
+            expression = ""
             for index in range(2):
                 job = root / f"job-{index}"
                 worker, runtime = socket.socketpair()
@@ -97,7 +103,11 @@ class RetainedStoreTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(database.read_bytes()).digest(), before)
             sys.path.insert(0, str(ROOT / "deploy/microvm"))
             self.addCleanup(sys.path.remove, str(ROOT / "deploy/microvm"))
-            import execution
+            execution_spec = importlib.util.spec_from_file_location(
+                "execution", ROOT / "deploy/microvm/execution.py")
+            assert execution_spec is not None and execution_spec.loader is not None
+            execution = importlib.util.module_from_spec(execution_spec)
+            execution_spec.loader.exec_module(execution)
             daemon_environment = environment.copy()
             daemon_environment["NIX_DAEMON_SOCKET_PATH"] = str(root / "prepare-daemon.sock")
             daemon_environment["NIX_CONFIG"] += f"store = local?root={lower}\n"

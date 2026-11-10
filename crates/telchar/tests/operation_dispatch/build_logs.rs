@@ -65,7 +65,15 @@ fn check_build_logs(level: &str) {
     assert_eq!(read_integer(&mut output), 0, "stop time");
     assert_eq!(read_integer(&mut output), 0, "no user CPU duration");
     assert_eq!(read_integer(&mut output), 0, "no system CPU duration");
-    assert_eq!(read_integer(&mut output), 0, "no CA realisations");
+    assert_eq!(read_integer(&mut output), 1, "one output realization");
+    let output_id = read_string(&mut output);
+    assert!(output_id.starts_with("sha256:") && output_id.ends_with("!out"));
+    let realization: serde_json::Value = serde_json::from_str(&read_string(&mut output)).unwrap();
+    assert_eq!(realization["id"], output_id);
+    assert_eq!(
+        realization["outPath"],
+        "11111111111111111111111111111111-telchar-build-derivation-contract"
+    );
     drop(input);
     drop(output);
 

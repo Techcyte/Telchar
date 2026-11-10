@@ -29,4 +29,5 @@ nix build --no-link .#checks.x86_64-linux.nixos-lix-local
 nix build --no-link .#checks.x86_64-linux.nixos-fixed-output-local
 nix build --no-link .#checks.x86_64-linux.nixos-oci-gateway
 nix build --no-link .#checks.x86_64-linux.nixos-static-ssh-gateway
+nix build --no-link .#checks.x86_64-linux.nixos-cascading
 nix build --impure --no-link .#checks.x86_64-linux.nixos-nomad-gateway

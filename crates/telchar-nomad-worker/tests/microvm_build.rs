@@ -225,6 +225,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
                 .args([
                     "--exact",
                     "dedicated_worker_builds_and_returns_registered_output",
+                    "--nocapture",
                     "--test-threads=1",
                 ])
                 .output()
@@ -305,6 +306,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
 }
 
 fn run_isolated_build(case: &str) {
+    eprintln!("MicroVM build fixture case: {case}");
     let database = telchar_test_support::postgres::PostgresFixture::start();
     let output = Command::new("bash")
         .env("MICROVM_TEST_DATABASE", database.url())
@@ -315,6 +317,7 @@ fn run_isolated_build(case: &str) {
         .args([
             "--exact",
             "dedicated_worker_builds_and_returns_registered_output",
+            "--nocapture",
             "--test-threads=1",
         ])
         .output()
@@ -325,13 +328,7 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    if case != "configured" {
-        assert!(
-            output.stderr.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
 }
 
 fn run_build() {
@@ -475,7 +472,7 @@ fn run_build() {
                 .find(|path| path.is_file())
                 .expect("sleep available in development shell");
             format!(
-                "printf 'builder-executing\\n' >&2; {} 10; printf 'unexpected completion' > \"$out\"",
+                "printf 'builder-executing\\n' >&2; {} 60; printf 'unexpected completion' > \"$out\"",
                 sleep.display()
             )
         }
@@ -928,7 +925,10 @@ chunk_bytes = 262144
     worker_binding.as_object_mut().unwrap().remove("version");
     worker_binding["provider_id"] = "microvm-build".into();
     if case == "configured-building-deadline" {
-        worker_binding["lifetime_seconds"] = 3.into();
+        // The lifetime includes TLS, input import, and private-store preparation.
+        // Leave setup headroom on contended CI hosts while keeping the builder
+        // alive well beyond the deadline, so this tests interruption in build.
+        worker_binding["lifetime_seconds"] = 15.into();
     }
     let intent_id = worker_binding["intent_id"].as_str().unwrap().to_owned();
     use sha2::Digest;
@@ -944,7 +944,7 @@ chunk_bytes = 262144
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
-            .env("RUST_LOG", "off")
+            .env("RUST_LOG", "info")
             .arg(&binding)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -952,7 +952,7 @@ chunk_bytes = 262144
             .unwrap()
     } else {
         Command::new("bash")
-            .env("RUST_LOG", if connected_collector.is_some() { "info" } else { "off" })
+            .env("RUST_LOG", "info")
             .env(
                 "OTEL_EXPORTER_OTLP_ENDPOINT",
                 telemetry_endpoint
@@ -1121,7 +1121,7 @@ chunk_bytes = 262144
             let worker = if case == "configured-building-deadline" {
                 let worker = worker.wait_with_output().unwrap();
                 assert!(
-                    started.elapsed() < Duration::from_secs(5),
+                    started.elapsed() < Duration::from_secs(20),
                     "worker deadline waited for build completion"
                 );
                 drop(upstream);
@@ -1145,17 +1145,40 @@ chunk_bytes = 262144
             assert!(worker.stdout.is_empty());
             let diagnostic = String::from_utf8(worker.stderr).unwrap();
             assert!(
-                diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+                diagnostic.contains("MicroVM worker failed\n"),
                 "{diagnostic}"
             );
-            assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+            assert!(
+                diagnostic.contains("Canonical store fixture retained: "),
+                "{diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
+                "worker diagnostic exposed bearer"
+            );
+            if case == "configured-building-deadline" {
+                assert!(
+                    diagnostic.lines().any(|line| {
+                        line.contains("microvm.worker.phase.failed")
+                            && (line.contains("phase=\"build\"")
+                                || line.contains("phase=\"return-outputs\""))
+                            && line.contains("deadline_expired=true")
+                    }),
+                    "worker must expire after execution starts, not during setup: {diagnostic}"
+                );
+            }
             assert!(!store.is_valid_path(output.as_bytes()).unwrap());
             let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
             let row = control.query_one("SELECT phase, reservation_released_at IS NULL FROM microvm_launches WHERE intent_id = $1", &[&intent_id]).unwrap();
             assert_eq!(row.get::<_, String>(0), "closed");
             assert!(row.get::<_, bool>(1));
+            let completion_bound = if case == "configured-building-deadline" {
+                Duration::from_secs(20)
+            } else {
+                Duration::from_secs(5)
+            };
             assert!(
-                started.elapsed() < Duration::from_secs(5),
+                started.elapsed() < completion_bound,
                 "executing worker cancellation took {:?}",
                 started.elapsed()
             );
@@ -1251,10 +1274,17 @@ chunk_bytes = 262144
         assert!(worker.stdout.is_empty());
         let diagnostic = String::from_utf8(worker.stderr).unwrap();
         assert!(
-            diagnostic.starts_with("MicroVM worker failed\nCanonical store fixture retained: "),
+            diagnostic.contains("MicroVM worker failed\n"),
             "{diagnostic}"
         );
-        assert_eq!(diagnostic.lines().count(), 2, "{diagnostic}");
+        assert!(
+            diagnostic.contains("Canonical store fixture retained: "),
+            "{diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
+            "worker diagnostic exposed bearer"
+        );
         let error = result.unwrap_err();
         if case.starts_with("configured-daemon") {
             assert_eq!(error.to_string(), "BuildDerivation execution failed");
@@ -1274,13 +1304,12 @@ chunk_bytes = 262144
         String::from_utf8_lossy(&worker.stderr)
     );
     assert!(worker.stdout.is_empty());
-    if connected_collector.is_none() {
-        assert!(
-            worker.stderr.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&worker.stderr)
-        );
-    }
+    let diagnostic = String::from_utf8_lossy(&worker.stderr);
+    assert!(
+        !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
+        "worker diagnostic exposed bearer"
+    );
+    eprintln!("{diagnostic}");
     assert_eq!(result.unwrap(), BuildOutcome::Built);
     if let Some(telemetry) = connected_telemetry {
         telemetry.shutdown();

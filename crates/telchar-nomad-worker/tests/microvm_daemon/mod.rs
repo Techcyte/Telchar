@@ -248,6 +248,7 @@ chunk_bytes = 262144
                 &mut expected,
                 client.profile().version,
                 false,
+                &request.output_realizations()?,
             )?;
         }
         let follower = if coalesced {

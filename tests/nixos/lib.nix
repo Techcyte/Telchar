@@ -4,6 +4,7 @@ let
   common = import ./common.nix { inherit pkgs telchar; };
   ingress = import ./ingress.nix { inherit pkgs telchar common; };
   staticSsh = import ./static-ssh.nix { inherit pkgs common ingress; };
+  cascading = import ./cascading.nix { inherit pkgs ingress; };
   nomad = import ./nomad.nix { inherit pkgs ingress; };
   recovery = import ./recovery.nix { inherit pkgs telchar common; };
 in
@@ -21,6 +22,7 @@ in
 
   inherit (ingress) mkTest mkRestrictedIngressTest mkLixRestrictedIngressTest;
   inherit (staticSsh) mkStaticSshFixtureTest mkStaticSshBuildTest mkStaticSshGatewayTest;
+  inherit (cascading) mkCascadingTest;
   inherit (nomad) mkNomadFixtureTest mkNomadGatewayTest;
   inherit (recovery) mkRestartRecoveryTest;
 }

@@ -35,7 +35,8 @@ def main():
             "require-drop-supplementary-groups = false\n")
         nix = shutil.which("nix")
         assert nix is not None
-        copied = subprocess.run([nix, "copy", "--to", f"local?root={retained}",
+        source = os.environ.get("TELCHAR_TEST_SOURCE_STORE", "auto")
+        copied = subprocess.run([nix, "copy", "--from", source, "--to", f"local?root={retained}",
                                  "--no-check-sigs", str(Path(builder).parent.parent)],
                                 capture_output=True)
         if copied.returncode:

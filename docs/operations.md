@@ -126,6 +126,22 @@ Refresh publishes only complete paginated inventory. Failed requests, invalid me
 
 Manual, Consul, and EC2 inventories coexist. EC2 targets use the existing SSH/Nix readiness and execution machinery. Target identities include the pool, instance ID, and selected address; discovery does not migrate active executions. Discovery configuration changes require daemon restart. As with other SSH execution, terminating a busy instance can fail its build; Telchar neither drains EC2 instances nor automatically retries builds. AMIs need the gateway's authorized public key and a verifiable SSH host identity, preferably an operator-signed host certificate. Do not bake a shared host private key into the fleet.
 
+## Cascading Telchar instances
+
+For a two-gateway chain, configure the upstream static SSH backend to connect to
+the downstream gateway's restricted Telchar SSH ingress. The downstream uses a
+local backend and an independent Nix store and PostgreSQL database. Pin its SSH
+host key and grant the upstream identity normal downstream ingress admission.
+Do not point the upstream local Nix daemon's distributed builders at the second
+gateway: assigned local execution clears that setting.
+
+See [cascading gateway compatibility](compatibility.md#cascading-gateways) for
+executable evidence and limits. Audit the entire route, including workers and
+ordinary Nix builder configuration: no return edge, shared mutable store, or
+execution into the originating client's store. Telchar does not detect
+cross-gateway cycles. The downstream sees the upstream SSH identity; client
+identity and quota accounting are not federated.
+
 ## Static SSH readiness
 
 Telchar immediately checks every configured static SSH backend during startup by opening its pinned, noninteractive SSH connection and completing the Nix worker-protocol handshake with `nix-daemon --stdio`. An unavailable host does not prevent daemon startup. It remains excluded from new backend selection until a later check succeeds.

@@ -3,6 +3,46 @@
 use super::*;
 
 #[test]
+fn preserves_nomad_request_failure_causes() {
+    use std::error::Error;
+
+    let _guard = CONFIGURATION_TESTS
+        .lock()
+        .expect("configuration lock holds");
+    for (status, body, operation, expected) in [
+        (503, "{}", "submit", "503"),
+        (200, "{", "submit", "EOF"),
+        (503, "{}", "status", "503"),
+        (200, "{", "status", "EOF"),
+    ] {
+        let root = fixture_root();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let config = load_nomad_config(&root, &endpoint, None);
+        let job_id = deterministic_job_name(&config, b"shared-build-key");
+        let server = thread::spawn(move || {
+            let (mut request, _) = listener.accept().unwrap();
+            if operation == "submit" {
+                let _ = read_http_request_with_body(&mut request);
+            } else {
+                let _ = read_http_request(&mut request);
+            }
+            write_json_response(&mut request, status, body);
+        });
+        let client = NomadClient::new(config).unwrap();
+        let error = if operation == "submit" {
+            client.submit(b"shared-build-key").unwrap_err()
+        } else {
+            client.status(&job_id).unwrap_err()
+        };
+        server.join().unwrap();
+        assert!(error.to_string().contains(expected), "{operation}: {error}");
+        assert!(error.source().is_some(), "missing source: {error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn submits_one_deterministic_job_with_operator_authentication() {
     let _guard = CONFIGURATION_TESTS
         .lock()
@@ -367,7 +407,8 @@ fn rejects_foreign_job_at_deterministic_identity() {
     });
     let client = NomadClient::new(config).expect("Nomad client constructs");
     let error = client.status(&job_id).expect_err("foreign job rejects");
-    assert_eq!(error.to_string(), "Nomad job monitoring failed");
+    assert!(error.to_string().contains("identity mismatch"), "{error}");
+    assert!(error.to_string().contains("other"), "{error}");
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
 }

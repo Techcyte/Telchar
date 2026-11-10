@@ -15,6 +15,37 @@ use super::{
 };
 
 #[test]
+fn server_post_handshake_serializes_explicit_trust() {
+    for version in [
+        WorkerVersion::new(1, 34),
+        WorkerVersion::new(1, 35),
+        LATEST_WORKER_VERSION,
+    ] {
+        for (trust, wire) in [
+            (super::WorkerTrust::Unknown, 0),
+            (super::WorkerTrust::Trusted, 1),
+            (super::WorkerTrust::Untrusted, 2),
+        ] {
+            let mut input = Vec::new();
+            write_worker_integer(&mut input, 0);
+            write_worker_integer(&mut input, 0);
+            let mut reader = WorkerReader::new(input.as_slice(), ProtocolSessionLimits::DEFAULT);
+            let mut output = Vec::new();
+            reader
+                .complete_server_post_handshake(&mut output, version, "telchar", trust)
+                .expect("post-handshake completes");
+            let mut expected = Vec::new();
+            write_worker_byte_string(&mut expected, b"telchar");
+            if version >= WorkerVersion::new(1, 35) {
+                write_worker_integer(&mut expected, wire);
+            }
+            write_worker_integer(&mut expected, STDERR_LAST);
+            assert_eq!(output, expected, "version {version:?}, trust {trust:?}");
+        }
+    }
+}
+
+#[test]
 fn reports_protocol_name() {
     assert_eq!(protocol_name(), "Nix worker protocol");
 }

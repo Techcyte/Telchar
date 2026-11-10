@@ -29,9 +29,10 @@ if [[ ${MICROVM_TEST_CASE:-} == supervised ]]; then
         # Benchmark builders hash the full shared input with the real Nix coreutils.
         packages+=("$(dirname "$(dirname "$(command -v sha256sum)")")")
     fi
-    nix-store --query --requisites "${packages[@]}" > "$root/builder-paths"
+    source_store=${TELCHAR_TEST_SOURCE_STORE:-auto}
+    nix-store --extra-experimental-features read-only-local-store --store "$source_store" --query --requisites "${packages[@]}" > "$root/builder-paths"
     mapfile -t builder_paths < "$root/builder-paths"
-    nix-store --dump-db "${builder_paths[@]}" > "$root/builder-registration"
+    nix-store --extra-experimental-features read-only-local-store --store "$source_store" --dump-db "${builder_paths[@]}" > "$root/builder-registration"
     export MICROVM_TEST_REGISTRATION="$root/builder-registration"
 fi
 export NIX_STATE_DIR="$root/state" NIX_LOG_DIR="$root/log" NIX_CONF_DIR="$root/conf" TMPDIR="$root/tmp"

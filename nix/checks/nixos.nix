@@ -44,7 +44,12 @@ import ./nixos/oci.nix {
     inherit pkgs nixosSystem telcharModule;
   };
   nixos-microvm-service = import ./nixos/microvm.nix {
-    inherit pkgs telchar nomadWorker telcharModule;
+    inherit
+      pkgs
+      telchar
+      nomadWorker
+      telcharModule
+      ;
   };
   nixos-cached-output = import ./nixos/cached-output.nix checkArgs;
   nixos-export-connections = import ./nixos/export-connections.nix checkArgs;
@@ -75,4 +80,7 @@ import ./nixos/oci.nix {
   };
 }
 // removeAttrs (import ./nixos/static-ssh.nix checkArgs) [ "nixos-static-ssh-fixture" ]
+// {
+  nixos-cascading = import ./nixos/cascading.nix checkArgs;
+}
 // import ./nixos/recovery.nix checkArgs

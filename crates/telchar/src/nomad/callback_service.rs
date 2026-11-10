@@ -103,7 +103,10 @@ impl NomadCallbackService {
                             crate::service::metrics::nomad_callback_finished("failed");
                             tracing::warn!(
                                 event = "nomad.callback.connection_failed",
-                                reason = error.to_string(),
+                                reason = %error,
+                                error_chain = ?error,
+                                connection_id = identity,
+                                peer = ?connection.peer_addr(),
                                 "Nomad callback connection failed"
                             );
                         }
@@ -262,8 +265,9 @@ pub fn serve_connection(
             key_id,
             secret_file,
         } => {
-            let secret = std::fs::read(secret_file)
-                .map_err(|_| io::Error::other("Nomad callback secret could not be read"))?;
+            let secret = std::fs::read(secret_file).map_err(|error| {
+                super::diagnostics::failure("Nomad callback secret could not be read", error)
+            })?;
             let verifier = HmacCallbackVerifier::new(HmacVerificationPolicy {
                 key_id: key_id.clone(),
                 secret,
