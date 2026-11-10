@@ -1,6 +1,16 @@
 # Exercises the service module with a test-only loopback provider, without AWS resources.
-{ pkgs, telchar, nomadWorker, telcharModule }:
+{
+  pkgs,
+  telchar,
+  nomadWorker,
+  telcharModule,
+}:
 let
+  workerRuntime = pkgs.runCommand "microvm-worker-runtime" { } ''
+    mkdir -p "$out"
+    cp ${../../../deploy/microvm/execution.py} "$out/execution.py"
+    cp ${../../../deploy/microvm/retained_store.py} "$out/retained_store.py"
+  '';
   daemon = telchar.overrideAttrs (_previous: {
     pname = "telchar-microvm-service-test";
     CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS = "true";
@@ -15,12 +25,20 @@ pkgs.testers.nixosTest {
     virtualisation.cores = 1;
     virtualisation.diskSize = 16384;
     virtualisation.writableStoreUseTmpfs = false;
-    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.2"; prefixLength = 24; }];
+    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [
+      {
+        address = "192.168.1.2";
+        prefixLength = 24;
+      }
+    ];
     networking.firewall.enable = false;
     # Resolve the worker-facing callback without NixOS's local hostname loopback alias.
     networking.hosts."192.168.1.2" = [ "microvm-callback" ];
-    nix.settings.trusted-users = [ "root" "telchar" ];
-    nix.settings.substituters = pkgs.lib.mkForce [];
+    nix.settings.trusted-users = [
+      "root"
+      "telchar"
+    ];
+    nix.settings.substituters = pkgs.lib.mkForce [ ];
     environment.systemPackages = [ pkgs.openssl ];
     users.users.telchar.shell = pkgs.bashInteractive;
     services.openssh.enable = true;
@@ -29,7 +47,13 @@ pkgs.testers.nixosTest {
       enable = true;
       virtualHosts.gateway = {
         onlySSL = true;
-        listen = [{ addr = "192.168.1.2"; port = 7444; ssl = true; }];
+        listen = [
+          {
+            addr = "192.168.1.2";
+            port = 7444;
+            ssl = true;
+          }
+        ];
         sslCertificate = "/run/microvm-tls/cert.pem";
         sslCertificateKey = "/run/microvm-tls/key.pem";
         locations."/microvm" = {
@@ -38,7 +62,7 @@ pkgs.testers.nixosTest {
         };
       };
     };
-    systemd.services.nginx.wantedBy = pkgs.lib.mkForce [];
+    systemd.services.nginx.wantedBy = pkgs.lib.mkForce [ ];
     environment.etc."microvm-serve".source = pkgs.writeShellScript "microvm-serve" ''
       export TELCHAR_CONFIG=${config.systemd.services.telchar.environment.TELCHAR_CONFIG}
       export TELCHAR_IPC_SOCKET=/run/telchar/daemon.sock
@@ -49,7 +73,12 @@ pkgs.testers.nixosTest {
     services.postgresql = {
       enable = true;
       ensureDatabases = [ "telchar" ];
-      ensureUsers = [{ name = "telchar"; ensureDBOwnership = true; }];
+      ensureUsers = [
+        {
+          name = "telchar";
+          ensureDBOwnership = true;
+        }
+      ];
     };
     systemd.services.microvm-provider = {
       wantedBy = [ "multi-user.target" ];
@@ -76,14 +105,25 @@ pkgs.testers.nixosTest {
     };
     services.telchar = {
       enable = true;
-      credentials = [{ name = "aws-credentials"; source = "/run/microvm-aws/credentials"; }];
+      credentials = [
+        {
+          name = "aws-credentials";
+          source = "/run/microvm-aws/credentials";
+        }
+      ];
       package = daemon;
       frontendUid = 995;
       database.url = "host=/run/postgresql user=telchar dbname=telchar";
       settings = {
         identity.credentials = {
-          "ssh-pubkey:SHA256:microvm-alice" = { audit_subject = "alice"; quota_subject = "alice"; };
-          "ssh-pubkey:SHA256:microvm-bob" = { audit_subject = "bob"; quota_subject = "bob"; };
+          "ssh-pubkey:SHA256:microvm-alice" = {
+            audit_subject = "alice";
+            quota_subject = "alice";
+          };
+          "ssh-pubkey:SHA256:microvm-bob" = {
+            audit_subject = "bob";
+            quota_subject = "bob";
+          };
         };
         scheduling.default = {
           maximum_queued_builds = 1;
@@ -91,29 +131,31 @@ pkgs.testers.nixosTest {
         };
         backends = {
           microvm_bind = "127.0.0.1:7443";
-          microvm = [{
-            name = "build";
-            system = "aarch64-linux";
-            account_id = "116392764028";
-            region = "us-west-2";
-            image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder";
-            image_version = "1";
-            vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder";
-            maximum_concurrent_builds = 1;
-            maximum_duration_seconds = 60;
-            execution_timeout_seconds = 50;
-            admission_timeout_seconds = 20;
-            provider_timeout_seconds = 2;
-            cleanup_interval_seconds = 5;
-            callback_url = "wss://gateway:7444/microvm";
-            callback_host = "microvm-callback";
-            staging_directory = "/var/lib/telchar";
-            maximum_paths = 64;
-            maximum_nar_bytes = 67108864;
-            maximum_total_bytes = 134217728;
-            metadata_bytes = 16384;
-            chunk_bytes = 262144;
-          }];
+          microvm = [
+            {
+              name = "build";
+              system = "aarch64-linux";
+              account_id = "116392764028";
+              region = "us-west-2";
+              image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder";
+              image_version = "1";
+              vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder";
+              maximum_concurrent_builds = 1;
+              maximum_duration_seconds = 60;
+              execution_timeout_seconds = 50;
+              admission_timeout_seconds = 20;
+              provider_timeout_seconds = 2;
+              cleanup_interval_seconds = 5;
+              callback_url = "wss://gateway:7444/microvm";
+              callback_host = "microvm-callback";
+              staging_directory = "/var/lib/telchar";
+              maximum_paths = 64;
+              maximum_nar_bytes = 67108864;
+              maximum_total_bytes = 134217728;
+              metadata_bytes = 16384;
+              chunk_bytes = 262144;
+            }
+          ];
         };
       };
       environment = {
@@ -125,27 +167,45 @@ pkgs.testers.nixosTest {
       };
     };
     systemd.services.telchar = {
-      after = [ "postgresql-setup.service" "microvm-provider.service" "microvm-credentials.service" ];
-      requires = [ "postgresql-setup.service" "microvm-provider.service" "microvm-credentials.service" ];
+      after = [
+        "postgresql-setup.service"
+        "microvm-provider.service"
+        "microvm-credentials.service"
+      ];
+      requires = [
+        "postgresql-setup.service"
+        "microvm-provider.service"
+        "microvm-credentials.service"
+      ];
     };
     system.stateVersion = "26.05";
   };
   nodes.worker = { ... }: {
     virtualisation.memorySize = 1024;
     virtualisation.cores = 1;
-    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.3"; prefixLength = 24; }];
+    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [
+      {
+        address = "192.168.1.3";
+        prefixLength = 24;
+      }
+    ];
     networking.firewall.enable = false;
     nix.settings = {
       extra-platforms = [ "aarch64-linux" ];
       sandbox = true;
       sandbox-fallback = false;
-      substituters = pkgs.lib.mkForce [];
+      substituters = pkgs.lib.mkForce [ ];
       max-jobs = 1;
       cores = 1;
     };
     systemd.services.microvm-worker = {
+      path = [
+        pkgs.nix
+        pkgs.util-linux
+      ];
+      environment.PYTHONPATH = "${workerRuntime}";
       serviceConfig = {
-        ExecStart = "${pkgs.python3}/bin/python3 ${../../../tests/nixos/microvm-worker.py} ${nomadWorker}/bin/telchar-microvm-worker";
+        ExecStart = "${pkgs.python3}/bin/python3 ${../../../tests/nixos/microvm-worker.py} ${nomadWorker}/bin/telchar-microvm-worker ${pkgs.nix}/bin/nix ${pkgs.bash} ${pkgs.coreutils}";
         RuntimeDirectory = "microvm-worker";
         RuntimeDirectoryPreserve = true;
         UMask = "0077";
@@ -156,8 +216,16 @@ pkgs.testers.nixosTest {
   nodes.client = { ... }: {
     virtualisation.memorySize = 512;
     virtualisation.cores = 1;
-    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [{ address = "192.168.1.4"; prefixLength = 24; }];
-    nix.settings = { substituters = pkgs.lib.mkForce []; experimental-features = [ "nix-command" ]; };
+    networking.interfaces.eth1.ipv4.addresses = pkgs.lib.mkForce [
+      {
+        address = "192.168.1.4";
+        prefixLength = 24;
+      }
+    ];
+    nix.settings = {
+      substituters = pkgs.lib.mkForce [ ];
+      experimental-features = [ "nix-command" ];
+    };
     environment.etc."microvm-build.nix".text = ''
       { name ? "microvm-service-output", delay ? 0, payloadBytes ? 0 }:
       derivation {
@@ -267,6 +335,12 @@ pkgs.testers.nixosTest {
     gateway.wait_until_succeeds("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE reservation_released_at IS NULL'\" | grep -qx 0", timeout=90)
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc 'SELECT count(*) FROM microvm_launches WHERE termination_observed_at IS NOT NULL'\"").strip() == "3"
     assert client.succeed("cat $(cat /root/second-output)") == "microvm-service-success\n"
+    helper_statuses = json.loads(worker.succeed("${pkgs.curl}/bin/curl --fail --silent http://192.168.1.3:9877/statuses"))
+    assert len(helper_statuses) == 3 and all(status == 0 for status in helper_statuses.values()), helper_statuses
+    for name in ["first", "queued", "second"]:
+        output_path = client.succeed("cat /root/" + name + "-output").strip()
+        worker.fail("nix-store --check-validity " + shlex.quote(output_path))
+        worker.succeed("test ! -e " + shlex.quote(output_path))
     assert gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT count(*) FROM microvm_launches a JOIN microvm_launches b ON a.created_at < b.created_at WHERE a.reservation_released_at > b.created_at\\\"\"").strip() == "0"
     alice_order = gateway.succeed("su -s /bin/sh postgres -c \"psql -d telchar -Atc \\\"SELECT a.derivation_path FROM microvm_launches l JOIN shared_build_attempts a USING (attempt_id) JOIN shared_builds b USING (derivation_path) WHERE b.quota_subject = 'alice' ORDER BY l.created_at\\\"\"").strip().splitlines()
     assert alice_order == [derivation, queued], alice_order
