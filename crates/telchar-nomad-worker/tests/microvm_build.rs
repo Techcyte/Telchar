@@ -305,6 +305,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
 }
 
 fn run_isolated_build(case: &str) {
+    eprintln!("MicroVM build fixture case: {case}");
     let database = telchar_test_support::postgres::PostgresFixture::start();
     let output = Command::new("bash")
         .env("MICROVM_TEST_DATABASE", database.url())
