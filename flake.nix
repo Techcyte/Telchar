@@ -22,6 +22,15 @@
       craneLib = crane.mkLib pkgs;
       armPkgs = import nixpkgs { system = "aarch64-linux"; };
       armCraneLib = crane.mkLib armPkgs;
+      rustSource = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter =
+          path: type:
+          craneLib.filterCargoSources path type
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/migrations/" (toString path)
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar/tests/fixtures/" (toString path)
+          || pkgs.lib.hasPrefix "${toString ./.}/crates/telchar-nomad-worker/tests/fixtures/" (toString path);
+      };
       source = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -97,7 +106,9 @@
 
       checks.${system} =
         import ./nix/checks/rust.nix {
-          inherit pkgs craneLib source;
+          inherit pkgs craneLib;
+          source = rustSource;
+          runtimeSource = source;
         }
         // import ./nix/checks/nixos.nix {
           inherit pkgs system;

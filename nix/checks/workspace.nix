@@ -4,6 +4,7 @@
   craneLib,
   common,
   cargoArtifacts,
+  runtimeSource,
 }:
 let
   artifacts = craneLib.mkCargoDerivation (
@@ -76,7 +77,7 @@ pkgs.testers.nixosTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mkdir -p /var/workspace /build /nix/var/nix/daemon-socket && mount --bind /var/workspace /build && mkdir -p /build/source")
-    machine.succeed("cp -a ${artifacts}/source/. /build/source/")
+    machine.succeed("cp -a ${runtimeSource}/. /build/source/")
     machine.succeed("df -h /build && cp -a ${artifacts}/target /build/source/target", timeout=1200)
     machine.succeed("cp -a ${artifacts}/cargo-home /build/cargo-home")
     machine.succeed("chown -R runner:users /build && chmod -R u+w /build")
