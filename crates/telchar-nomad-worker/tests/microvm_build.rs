@@ -225,6 +225,7 @@ fn dedicated_worker_builds_and_returns_registered_output() {
                 .args([
                     "--exact",
                     "dedicated_worker_builds_and_returns_registered_output",
+                    "--nocapture",
                     "--test-threads=1",
                 ])
                 .output()
@@ -316,6 +317,7 @@ fn run_isolated_build(case: &str) {
         .args([
             "--exact",
             "dedicated_worker_builds_and_returns_registered_output",
+            "--nocapture",
             "--test-threads=1",
         ])
         .output()
