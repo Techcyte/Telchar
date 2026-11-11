@@ -101,7 +101,7 @@ pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
     maximum_retained_input_bytes: u64,
-    cache_publisher: Option<crate::service::cache_publication::CachePublisher>,
+    post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
     database_url: Option<String>,
     ownership_renewal_interval: Duration,
     ownership_lease_duration: Duration,
@@ -151,8 +151,8 @@ impl ServiceConfig {
         self.maximum_retained_input_bytes
     }
 
-    pub fn cache_publisher(&self) -> Option<&crate::service::cache_publication::CachePublisher> {
-        self.cache_publisher.as_ref()
+    pub fn post_build_hook(&self) -> Option<&crate::service::post_build_hook::PostBuildHook> {
+        self.post_build_hook.as_ref()
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -248,7 +248,7 @@ impl ServiceConfig {
         if self.running_disconnect_policy != replacement.running_disconnect_policy
             || self.output_retention != replacement.output_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
-            || self.cache_publisher != replacement.cache_publisher
+            || self.post_build_hook != replacement.post_build_hook
             || self.database_url != replacement.database_url
             || self.ownership_renewal_interval != replacement.ownership_renewal_interval
             || self.ownership_lease_duration != replacement.ownership_lease_duration
@@ -369,10 +369,10 @@ impl ServiceConfig {
             return Err(invalid("retained input byte limit is invalid"));
         }
 
-        let cache_publisher = raw
-            .cache_publication
+        let post_build_hook = raw
+            .post_build_hook
             .map(|config| {
-                crate::service::cache_publication::CachePublisher::new(
+                crate::service::post_build_hook::PostBuildHook::new(
                     config.executable,
                     config.arguments,
                     Duration::from_secs(config.timeout_seconds.unwrap_or(300)),
@@ -519,7 +519,7 @@ impl ServiceConfig {
             running_disconnect_policy,
             output_retention,
             maximum_retained_input_bytes,
-            cache_publisher,
+            post_build_hook,
             database_url,
             ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),
             ownership_lease_duration: Duration::from_secs(ownership_lease_seconds),

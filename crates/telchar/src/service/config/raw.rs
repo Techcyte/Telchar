@@ -6,7 +6,8 @@ pub(super) struct RawServiceConfig {
     pub(super) running_disconnect_policy: Option<String>,
     pub(super) output_retention_seconds: Option<u64>,
     pub(super) maximum_retained_input_bytes: Option<u64>,
-    pub(super) cache_publication: Option<CachePublicationSection>,
+    #[serde(alias = "cache_publication")]
+    pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) database: Option<DatabaseSection>,
     pub(super) ipc: Option<IpcSection>,
     pub(super) identity: Option<IdentityConfig>,
@@ -16,7 +17,7 @@ pub(super) struct RawServiceConfig {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CachePublicationSection {
+pub(super) struct PostBuildHookSection {
     pub(super) executable: PathBuf,
     #[serde(default)]
     pub(super) arguments: Vec<String>,

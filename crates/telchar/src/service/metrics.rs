@@ -46,8 +46,8 @@ struct Instruments {
     configuration_reload_static_ssh_removed: Histogram<u64>,
     cache_substitutions: Counter<u64>,
     cache_substitution_duration: Histogram<f64>,
-    cache_publications: Counter<u64>,
-    cache_publication_duration: Histogram<f64>,
+    post_build_hook_runs: Counter<u64>,
+    post_build_hook_duration: Histogram<f64>,
     store_validations: Counter<u64>,
     store_validation_duration: Histogram<f64>,
     transfer_active: Gauge<u64>,
@@ -361,12 +361,12 @@ fn instruments() -> &'static Instruments {
                 .f64_histogram("telchar.cache.substitution.duration")
                 .with_unit("s")
                 .build(),
-            cache_publications: meter
-                .u64_counter("telchar.cache.publications")
+            post_build_hook_runs: meter
+                .u64_counter("telchar.post_build_hook.runs")
                 .with_unit("{attempt}")
                 .build(),
-            cache_publication_duration: meter
-                .f64_histogram("telchar.cache.publication.duration")
+            post_build_hook_duration: meter
+                .f64_histogram("telchar.post_build_hook.duration")
                 .with_unit("s")
                 .build(),
             store_validations: meter
@@ -903,11 +903,11 @@ pub fn cache_substitution_finished(duration: Duration, outcome: &str) {
         .record(seconds(duration), &attributes);
 }
 
-pub fn cache_publication_finished(duration: Duration, outcome: &str) {
+pub fn post_build_hook_finished(duration: Duration, outcome: &str) {
     let attributes = [KeyValue::new("outcome", outcome.to_owned())];
-    instruments().cache_publications.add(1, &attributes);
+    instruments().post_build_hook_runs.add(1, &attributes);
     instruments()
-        .cache_publication_duration
+        .post_build_hook_duration
         .record(seconds(duration), &attributes);
 }
 
@@ -1218,7 +1218,7 @@ pub fn emit_smoke_metrics() {
         }),
     );
     cache_substitution_finished(Duration::from_millis(1), "miss");
-    cache_publication_finished(Duration::from_millis(1), "succeeded");
+    post_build_hook_finished(Duration::from_millis(1), "succeeded");
     store_validation_finished(Duration::from_millis(1), "succeeded", "input_addressed");
     transfer_started("outbound", "output", "smoke");
     transfer_finished(

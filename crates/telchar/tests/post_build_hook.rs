@@ -1,11 +1,35 @@
-//! Tests bounded cache publication command execution without shell interpolation.
+//! Tests bounded post-build hook command execution without shell interpolation.
 
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use telchar::service::cache_publication::CachePublisher;
+use telchar::service::post_build_hook::PostBuildHook;
+
+#[test]
+fn configuration_accepts_hook_names_and_rejects_duplicate_sections() {
+    use telchar::service::config::ServiceConfig;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("telchar.toml");
+    let section = "executable = \"/bin/sh\"\narguments = [\"-c\", \"cat >/dev/null\"]\ntimeout_seconds = 5\nmaximum_input_bytes = 1024\n";
+    let mut hooks = Vec::new();
+    for name in ["post_build_hook", "cache_publication"] {
+        fs::write(&path, format!("[{name}]\n{section}")).unwrap();
+        let config = ServiceConfig::load_from_default(&path).unwrap();
+        let hook = config.post_build_hook().unwrap().clone();
+        hook.run(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".into()])
+            .unwrap();
+        hooks.push(hook);
+    }
+    assert_eq!(hooks[0], hooks[1]);
+    fs::write(
+        &path,
+        format!("[post_build_hook]\n{section}[cache_publication]\n{section}"),
+    )
+    .unwrap();
+    assert!(ServiceConfig::load_from_default(&path).is_err());
+}
 
 #[derive(Clone, Default)]
 struct LogOutput(Arc<Mutex<Vec<u8>>>);
@@ -30,26 +54,26 @@ fn publisher_logs_bounded_stdout_and_stderr_at_debug() {
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    let publisher = CachePublisher::new(
+    let publisher = PostBuildHook::new(
         "/bin/sh", ["-c", "cat >/dev/null; printf stdout-marker; printf stderr-marker >&2; head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2"],
         Duration::from_secs(5), 1024,
     ).unwrap();
     tracing::subscriber::set_global_default(subscriber).unwrap();
     publisher
-        .publish(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".into()])
+        .run(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".into()])
         .unwrap();
     let bytes = output.0.lock().unwrap();
     let logs = String::from_utf8_lossy(&bytes);
     assert!(logs.contains("stdout-marker"), "{logs}");
     assert!(logs.contains("stderr-marker"), "{logs}");
-    assert!(logs.contains("cache_publication.output"), "{logs}");
+    assert!(logs.contains("post_build_hook.output"), "{logs}");
     assert!(logs.contains("truncated=true"), "{logs}");
     assert!(bytes.len() < 70000, "diagnostic output is bounded");
 }
 
 #[test]
 fn publisher_timeout_bounds_a_command_that_does_not_read_input() {
-    let publisher = CachePublisher::new(
+    let publisher = PostBuildHook::new(
         "/bin/sh",
         [
             "-c",
@@ -60,7 +84,7 @@ fn publisher_timeout_bounds_a_command_that_does_not_read_input() {
     )
     .unwrap();
     let started = std::time::Instant::now();
-    assert!(publisher.publish(&["x".repeat(100000)]).is_err());
+    assert!(publisher.run(&["x".repeat(100000)]).is_err());
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
@@ -68,7 +92,7 @@ fn publisher_timeout_bounds_a_command_that_does_not_read_input() {
 fn publisher_passes_validated_outputs_through_stdin() {
     let root = tempfile::tempdir().expect("fixture creates");
     let input = root.path().join("input");
-    let publisher = CachePublisher::new(
+    let publisher = PostBuildHook::new(
         "/bin/sh",
         ["-c", &format!("cat > '{}'", input.display())],
         Duration::from_secs(5),
@@ -77,7 +101,7 @@ fn publisher_passes_validated_outputs_through_stdin() {
     .expect("publisher config validates");
 
     publisher
-        .publish(&[
+        .run(&[
             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".to_owned(),
             "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-two".to_owned(),
         ])
@@ -92,7 +116,7 @@ fn publisher_passes_validated_outputs_through_stdin() {
 #[test]
 fn publisher_rejects_relative_executable_and_bounds_diagnostics() {
     assert!(
-        CachePublisher::new(
+        PostBuildHook::new(
             "publisher",
             std::iter::empty::<&str>(),
             Duration::from_secs(1),
@@ -100,7 +124,7 @@ fn publisher_rejects_relative_executable_and_bounds_diagnostics() {
         )
         .is_err()
     );
-    let publisher = CachePublisher::new(
+    let publisher = PostBuildHook::new(
         "/bin/sh",
         ["-c", "printf '%02048d' 0 >&2; exit 1"],
         Duration::from_secs(1),
@@ -109,8 +133,8 @@ fn publisher_rejects_relative_executable_and_bounds_diagnostics() {
     .expect("publisher config validates");
 
     let error = publisher
-        .publish(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".to_owned()])
+        .run(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".to_owned()])
         .expect_err("publisher failure reports");
 
-    assert_eq!(error.to_string(), "cache publication command failed");
+    assert_eq!(error.to_string(), "post-build hook command failed");
 }

@@ -213,19 +213,21 @@ The Nix builder entry describes the requested system and features. It cannot sel
 
 Requester disconnect normally leaves admitted execution running. Followers share the same execution and do not consume another execution slot or backend permit.
 
-## Cache publication
+## Post-build hook
 
-Optional post-success publication is configured in strict TOML:
+An optional command runs after successful builds and is configured in strict TOML:
 
 ```toml
-[cache_publication]
+[post_build_hook]
 executable = "/run/current-system/sw/bin/nix"
 arguments = ["copy", "--to", "https://cache.example"]
 timeout_seconds = 300
 maximum_input_bytes = 65536
 ```
 
-Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded. Up to 4096 bytes from each subprocess output stream are logged at DEBUG under `cache_publication.output` when the command finishes or times out, with `stream` and `truncated` fields. Enable `telchar::service::cache_publication=debug` in the server logging filter to inspect these diagnostics. Command output is operator-controlled and may contain sensitive data; publication scripts must not print credentials. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
+Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded. Up to 4096 bytes from each subprocess output stream are logged at DEBUG under `post_build_hook.output` when the command finishes or times out, with `stream` and `truncated` fields. Enable `telchar::service::post_build_hook=debug` in the server logging filter to inspect these diagnostics. Command output is operator-controlled and may contain sensitive data; publication scripts must not print credentials. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
+
+`cache_publication` is accepted as an alias for the configuration section. Specifying both section names is rejected.
 
 ## Read-only operator CLI
 

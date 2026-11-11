@@ -315,12 +315,7 @@ fn input_roots_precede_atomic_input_lease_commit_and_helper_execution() {
     );
 
     fs::write(&complete, b"complete").expect("helper completion releases");
-    assert_eq!(read_integer(&mut output), STDERR_LAST);
-    assert_eq!(read_integer(&mut output), 0, "Built status");
-    assert_eq!(read_string(&mut output), "", "empty build error message");
-    for _ in 0..7 {
-        read_integer(&mut output);
-    }
+    read_build_success(&mut output).expect("build succeeds");
     drop(input);
     drop(output);
     assert!(child.wait().expect("Telchar exits").success());

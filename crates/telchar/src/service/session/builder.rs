@@ -27,7 +27,7 @@ pub struct SessionBuilder<'a> {
     shared_builds: Option<&'a crate::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: Option<&'a crate::shared_build::scheduler::SharedBuildScheduler>,
     scheduling_limits: Option<crate::service::config::SchedulingLimits>,
-    cache_publisher: Option<&'a crate::service::cache_publication::CachePublisher>,
+    post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
 pub(super) struct SessionContext<'a> {
@@ -57,7 +57,7 @@ pub(super) struct SessionContext<'a> {
     pub shared_builds: &'a crate::shared_build::SharedBuildRegistry,
     pub shared_build_scheduler: &'a crate::shared_build::scheduler::SharedBuildScheduler,
     pub scheduling_limits: crate::service::config::SchedulingLimits,
-    pub cache_publisher: Option<&'a crate::service::cache_publication::CachePublisher>,
+    pub post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
 impl<'a> SessionBuilder<'a> {
@@ -93,7 +93,7 @@ impl<'a> SessionBuilder<'a> {
             shared_builds: None,
             shared_build_scheduler: None,
             scheduling_limits: None,
-            cache_publisher: None,
+            post_build_hook: None,
         }
     }
 
@@ -171,11 +171,11 @@ impl<'a> SessionBuilder<'a> {
         self.disk_probe = Some(probe);
         self
     }
-    pub fn cache_publisher(
+    pub fn post_build_hook(
         mut self,
-        publisher: Option<&'a crate::service::cache_publication::CachePublisher>,
+        publisher: Option<&'a crate::service::post_build_hook::PostBuildHook>,
     ) -> Self {
-        self.cache_publisher = publisher;
+        self.post_build_hook = publisher;
         self
     }
 
@@ -229,7 +229,7 @@ impl<'a> SessionBuilder<'a> {
             shared_builds: self.shared_builds.ok_or_else(missing)?,
             shared_build_scheduler: self.shared_build_scheduler.ok_or_else(missing)?,
             scheduling_limits: self.scheduling_limits.ok_or_else(missing)?,
-            cache_publisher: self.cache_publisher,
+            post_build_hook: self.post_build_hook,
         })
     }
 }

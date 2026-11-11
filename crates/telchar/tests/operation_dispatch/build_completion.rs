@@ -23,7 +23,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     .unwrap();
     fs::set_permissions(&publisher, fs::Permissions::from_mode(0o700)).unwrap();
     let config = root.join("config.toml");
-    fs::write(&config, format!("[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n[cache_publication]\nexecutable = \"{}\"\ntimeout_seconds = 5\nmaximum_input_bytes = 1024\n", publisher.display())).unwrap();
+    fs::write(&config, format!("[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n[post_build_hook]\nexecutable = \"{}\"\ntimeout_seconds = 5\nmaximum_input_bytes = 1024\n", publisher.display())).unwrap();
     fs::write(
         &helper,
         format!(

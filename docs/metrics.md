@@ -115,8 +115,8 @@ Reload metrics never contain configuration paths, backend names, destinations, c
 | --- | --- | --- | --- |
 | `telchar.cache.substitutions` | counter | `{attempt}` | Gateway substitution attempts by `hit` or `miss`; the current implementation classifies `EnsurePath` errors as misses. |
 | `telchar.cache.substitution.duration` | histogram | `s` | Complete substitution attempt duration. |
-| `telchar.cache.publications` | counter | `{attempt}` | Publication hook attempts by outcome. |
-| `telchar.cache.publication.duration` | histogram | `s` | Publication hook runtime. |
+| `telchar.post_build_hook.runs` | counter | `{attempt}` | Post-build hook attempts by outcome. |
+| `telchar.post_build_hook.duration` | histogram | `s` | Post-build hook runtime. |
 | `telchar.store.validations` | counter | `{validation}` | Output validation attempts by outcome and authority kind. |
 | `telchar.store.validation.duration` | histogram | `s` | Output validation duration. |
 

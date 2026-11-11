@@ -1,4 +1,4 @@
-//! Invokes an operator-controlled cache publication command after durable build success.
+//! Invokes an operator-controlled post-build hook command after durable build success.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
@@ -7,14 +7,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CachePublisher {
+pub struct PostBuildHook {
     executable: PathBuf,
     arguments: Vec<OsString>,
     timeout: Duration,
     maximum_input_bytes: usize,
 }
 
-impl CachePublisher {
+impl PostBuildHook {
     pub fn new(
         executable: impl AsRef<Path>,
         arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
@@ -44,7 +44,7 @@ impl CachePublisher {
         })
     }
 
-    pub fn publish(&self, outputs: &[String]) -> io::Result<()> {
+    pub fn run(&self, outputs: &[String]) -> io::Result<()> {
         let input = serde_json::to_vec(outputs).map_err(|_| invalid())?;
         let input_length = input.len().checked_add(1).ok_or_else(invalid)?;
         if outputs.is_empty() || input_length > self.maximum_input_bytes {
@@ -142,11 +142,11 @@ fn log_output(diagnostics: &[Vec<u8>; 2], truncated: &[bool; 2]) {
     for (index, stream) in ["stdout", "stderr"].into_iter().enumerate() {
         if !diagnostics[index].is_empty() || truncated[index] {
             tracing::debug!(
-                event = "cache_publication.output",
+                event = "post_build_hook.output",
                 stream,
                 truncated = truncated[index],
                 output = ?String::from_utf8_lossy(&diagnostics[index]),
-                "cache publication command output"
+                "post-build hook command output"
             );
         }
     }
@@ -155,10 +155,10 @@ fn log_output(diagnostics: &[Vec<u8>; 2], truncated: &[bool; 2]) {
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "cache publication configuration is invalid",
+        "post-build hook configuration is invalid",
     )
 }
 
 fn command_failed() -> io::Error {
-    io::Error::other("cache publication command failed")
+    io::Error::other("post-build hook command failed")
 }

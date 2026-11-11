@@ -2,7 +2,6 @@
 
 pub(crate) mod activity;
 pub mod admin;
-pub mod cache_publication;
 pub mod config;
 pub mod config_reload;
 pub mod daemon_services;
@@ -12,6 +11,7 @@ pub mod executor_service;
 pub mod identity;
 pub mod ipc;
 pub mod metrics;
+pub mod post_build_hook;
 pub mod session;
 pub mod singleton_ownership;
 pub mod static_ssh_consul;

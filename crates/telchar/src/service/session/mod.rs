@@ -53,7 +53,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_builds,
         shared_build_scheduler,
         scheduling_limits,
-        cache_publisher,
+        post_build_hook,
     } = context;
     let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
@@ -1165,32 +1165,32 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     );
                 }
                 if durable_execution_owned.get()
-                    && let Some(publisher) = cache_publisher.cloned()
+                    && let Some(hook) = post_build_hook.cloned()
                 {
-                    let publication_outputs = output_paths.clone();
+                    let hook_outputs = output_paths.clone();
                     std::thread::spawn(move || {
                         let started = std::time::Instant::now();
-                        match publisher.publish(&publication_outputs) {
+                        match hook.run(&hook_outputs) {
                             Ok(()) => {
-                                crate::service::metrics::cache_publication_finished(
+                                crate::service::metrics::post_build_hook_finished(
                                     started.elapsed(),
                                     "succeeded",
                                 );
                                 tracing::info!(
-                                    event = "worker.build_derivation.cache_published",
-                                    output_count = publication_outputs.len(),
-                                    "BuildDerivation outputs published"
+                                    event = "worker.build_derivation.post_build_hook_completed",
+                                    output_count = hook_outputs.len(),
+                                    "BuildDerivation post-build hook completed"
                                 )
                             }
                             Err(_) => {
-                                crate::service::metrics::cache_publication_finished(
+                                crate::service::metrics::post_build_hook_finished(
                                     started.elapsed(),
                                     "failed",
                                 );
                                 tracing::warn!(
-                                    event = "worker.build_derivation.cache_publication_failed",
-                                    output_count = publication_outputs.len(),
-                                    "BuildDerivation cache publication failed"
+                                    event = "worker.build_derivation.post_build_hook_failed",
+                                    output_count = hook_outputs.len(),
+                                    "BuildDerivation post-build hook failed"
                                 )
                             }
                         }
