@@ -138,9 +138,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-ec2"
-version = "1.271.0"
+version = "1.272.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a635daf789da7d9b2a5d01a76e1cad4223a828195a9af0e67d668f3d7713394"
+checksum = "a6bc2d03a48ee329ca32842e772c17d58f067b8abb7c7cd03a6861427ef8865c"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -164,9 +164,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-lambdamicrovms"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eecacbf240f2ea7b846ce1fe1e1505e54823a1eee3b5610e18a4fa82692543c"
+checksum = "1b8d8efe7a048d54b8b630bfae92b6e3895f3a28f3a2d64396bf96605c954325"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sts"
-version = "1.122.0"
+version = "1.123.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a10491638d9e560db90c484dbc77d73b8ad202780cdc9b9e92180603acb07ada"
+checksum = "8754d38d29448bd1d4aa4a6312ed010dfa296b3436eb2c551cc6e42fc6a66a38"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -801,7 +801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1915,7 +1915,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2134,7 +2134,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2192,7 +2192,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2671,7 +2671,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3390,7 +3390,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
