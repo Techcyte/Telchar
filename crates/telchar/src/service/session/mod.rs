@@ -684,6 +684,11 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         substitution_started.elapsed(),
                                         "miss",
                                     );
+                                    // Every failure from here, a backend permit timeout included,
+                                    // must reach the shared-build failure handling below. An early
+                                    // return would leave the shared build unfinished, and later
+                                    // requests for the derivation would wait on it until they time out.
+                                    (|| -> io::Result<_> {
                                     let permit = build_executor
                                         .reserve_target(admitted.system(), &required_features)?
                                         .ok_or_else(|| io::Error::other(
@@ -760,6 +765,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 Ok(disconnected)
                             },
                         ))
+                                    })()
                                 }
                             };
                             match result {
