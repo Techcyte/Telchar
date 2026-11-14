@@ -13,6 +13,9 @@ use rustls::{ClientConfig, RootCertStore};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
 
+/// How long a caller without a tighter deadline waits for a validated connection.
+pub(crate) const DEFAULT_CONNECTION_WAIT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Eq, PartialEq)]
 enum ConnectionSecurity {
     Plain,
@@ -104,7 +107,7 @@ impl Database {
     pub fn connection(
         &self,
     ) -> Result<DatabaseConnection, Box<dyn std::error::Error + Send + Sync>> {
-        self.connection_until(Instant::now() + Duration::from_secs(5))
+        self.connection_until(Instant::now() + DEFAULT_CONNECTION_WAIT)
     }
 
     pub(crate) fn connection_until(
