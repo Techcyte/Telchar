@@ -84,16 +84,34 @@ impl FrontendFixture {
         environment: impl IntoIterator<Item = (&'static str, String)>,
         maximum_concurrent_builds: usize,
     ) -> Self {
+        Self::spawn_multi_with_store_capacity_and_permit_wait(
+            store_uri,
+            environment,
+            maximum_concurrent_builds,
+            None,
+        )
+    }
+
+    fn spawn_multi_with_store_capacity_and_permit_wait(
+        store_uri: &str,
+        environment: impl IntoIterator<Item = (&'static str, String)>,
+        maximum_concurrent_builds: usize,
+        backend_permit_wait_seconds: Option<u64>,
+    ) -> Self {
         let mut environment = environment.into_iter().collect::<Vec<_>>();
         let config_path = std::env::temp_dir().join(format!(
             "telchar-operation-config-{}-{}",
             std::process::id(),
             FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
+        let backends = match backend_permit_wait_seconds {
+            Some(seconds) => format!("[backends]\npermit_wait_seconds = {seconds}\n\n"),
+            None => String::new(),
+        };
         fs::write(
             &config_path,
             format!(
-                "[scheduling.default]\nmaximum_queued_builds = 64\nmaximum_active_builds = 4\n\n[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nsupported_features = []\nmaximum_concurrent_builds = {maximum_concurrent_builds}\n\n[identity.credentials.\"ssh-pubkey:SHA256:bob\"]\naudit_subject = \"ssh-pubkey:SHA256:bob\"\nquota_subject = \"ssh-pubkey:SHA256:bob\"\n"
+                "[scheduling.default]\nmaximum_queued_builds = 64\nmaximum_active_builds = 4\n\n{backends}[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nsupported_features = []\nmaximum_concurrent_builds = {maximum_concurrent_builds}\n\n[identity.credentials.\"ssh-pubkey:SHA256:bob\"]\naudit_subject = \"ssh-pubkey:SHA256:bob\"\nquota_subject = \"ssh-pubkey:SHA256:bob\"\n"
             ),
         )
         .expect("service configuration writes");
