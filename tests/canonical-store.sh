@@ -26,7 +26,7 @@ export NIX_CONFIG+="trusted-users = $TELCHAR_STORE_USER"
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$TELCHAR_STORE_ROOT/upper,workdir=$TELCHAR_STORE_ROOT/work" "$TELCHAR_STORE_ROOT/store"
+mount -t overlay overlay -o "userxattr,lowerdir=/nix/store,upperdir=$TELCHAR_STORE_ROOT/upper,workdir=$TELCHAR_STORE_ROOT/work" "$TELCHAR_STORE_ROOT/store"
 mount --bind "$TELCHAR_STORE_ROOT/store" /nix/store
 mount --bind "$TELCHAR_STORE_ROOT/socket-dir" /nix/var/nix/daemon-socket
 exec unshare --user --map-user="$TELCHAR_STORE_UID" --map-group="$TELCHAR_STORE_GID" bash -c '\''
