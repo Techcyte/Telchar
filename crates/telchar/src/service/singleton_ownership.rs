@@ -364,11 +364,9 @@ impl SingletonOwnership {
         &self,
         database: &crate::persistence::Database,
     ) -> Result<(), SingletonOwnershipError> {
-        let deadline = {
-            let mut health = self.health.lock().expect("ownership health mutex");
-            health.check()?;
-            health.deadline.min(Instant::now() + Duration::from_secs(1))
-        };
+        let deadline = self
+            .authority_deadline()?
+            .min(Instant::now() + Duration::from_secs(1));
         let mut connection = database
             .connection_until(deadline)
             .map_err(|_| self.observe_failure(SingletonOwnershipFailure::Connection))?;
@@ -382,6 +380,13 @@ impl SingletonOwnership {
             return Err(self.observe_failure(SingletonOwnershipFailure::Fenced));
         }
         self.health.lock().expect("ownership health mutex").check()
+    }
+
+    /// The local stop bound; work done on this owner's authority must not wait past it.
+    pub(crate) fn authority_deadline(&self) -> Result<Instant, SingletonOwnershipError> {
+        let mut health = self.health.lock().expect("ownership health mutex");
+        health.check()?;
+        Ok(health.deadline)
     }
 
     pub(crate) fn uncertainty_sequence(&self) -> u64 {
