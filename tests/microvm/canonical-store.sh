@@ -56,7 +56,7 @@ fi
 unshare "${mapping[@]}" --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"
+mount -t overlay overlay -o "userxattr,lowerdir=/nix/store,upperdir=$MICROVM_STORE_ROOT/upper,workdir=$MICROVM_STORE_ROOT/work" "$MICROVM_STORE_ROOT/store"
 mount --bind "$MICROVM_STORE_ROOT/store" /nix/store
 nix-store --store local --init
 if test -n "${MICROVM_TEST_REGISTRATION:-}"; then

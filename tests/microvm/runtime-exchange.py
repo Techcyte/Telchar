@@ -58,7 +58,7 @@ def qualify(args):
     for name in ['upper', 'work', 'merged']:
         (store / name).mkdir(parents=True)
     mount('-t', 'overlay', 'overlay', '-o',
-          f'lowerdir={context / "nix/store"},upperdir={store / "upper"},workdir={store / "work"}',
+          f'userxattr,lowerdir={context / "nix/store"},upperdir={store / "upper"},workdir={store / "work"}',
           store / 'merged')
     mount('--bind', store / 'merged', root / 'nix/store')
     for name in ['null', 'zero', 'full', 'random', 'urandom', 'tty']:
