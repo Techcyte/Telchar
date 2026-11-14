@@ -39,7 +39,7 @@ pub use connection::{
     Database, DatabaseConnection, DatabaseError, DatabaseSource, DatabaseTransaction,
     validate_verified_connection,
 };
-pub(crate) use connection::{connect, validate as validate_connection};
+pub(crate) use connection::{DEFAULT_CONNECTION_WAIT, connect, validate as validate_connection};
 mod executor;
 mod leases;
 mod microvm_launches;

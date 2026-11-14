@@ -51,7 +51,7 @@ pub fn run_admitted(
                 let deadline = owner
                     .authority_deadline()
                     .map_err(io::Error::other)?
-                    .min(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                    .min(std::time::Instant::now() + crate::persistence::DEFAULT_CONNECTION_WAIT);
                 match crate::persistence::microvm_session_request_timed(
                     owner.database(),
                     &intent_id,

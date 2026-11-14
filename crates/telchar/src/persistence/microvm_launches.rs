@@ -705,7 +705,7 @@ pub fn microvm_session_request(
         database,
         intent_id,
         assignment_epoch,
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        std::time::Instant::now() + DEFAULT_CONNECTION_WAIT,
         |_, _| {},
     )
 }
