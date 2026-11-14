@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:best-practices"
   ],
   "nix": {
     "enabled": true
@@ -20,6 +20,13 @@
       "internalChecksFilter": "strict",
       "automerge": true,
       "automergeType": "pr"
+    },
+    {
+      "description": "Lock file maintenance has no release timestamp, so a release age would hold it pending forever",
+      "matchUpdateTypes": [
+        "lockFileMaintenance"
+      ],
+      "minimumReleaseAge": null
     }
   ]
 }
