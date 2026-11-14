@@ -701,19 +701,29 @@ pub fn microvm_session_request(
     intent_id: &str,
     assignment_epoch: i64,
 ) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
-    microvm_session_request_timed(database, intent_id, assignment_epoch, |_, _| {})
+    microvm_session_request_timed(
+        database,
+        intent_id,
+        assignment_epoch,
+        std::time::Instant::now() + DEFAULT_CONNECTION_WAIT,
+        |_, _| {},
+    )
 }
 
 pub(crate) fn microvm_session_request_timed(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,
     assignment_epoch: i64,
+    deadline: std::time::Instant,
     mut observe: impl FnMut(&'static str, std::time::Duration),
 ) -> Result<Option<crate::build::BuildRequest>, MicrovmLaunchError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(microvm_session_request));
     let started = std::time::Instant::now();
-    let client = connect(database).map_err(|_| MicrovmLaunchError);
+    let client = database
+        .database()
+        .and_then(|database| database.connection_until(deadline))
+        .map_err(|_| MicrovmLaunchError);
     observe("request_connection", started.elapsed());
     let mut client = client?;
     let started = std::time::Instant::now();
@@ -1084,4 +1094,32 @@ fn dispatch_launch(
     }
     transaction.commit().map_err(|_| MicrovmLaunchError)?;
     Ok(granted == 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use telchar_test_support::postgres::PostgresFixture;
+
+    #[test]
+    fn session_request_stops_at_deadline_during_database_outage() {
+        let mut fixture = PostgresFixture::start();
+        let database = Database::connect(fixture.url()).unwrap();
+        fixture.stop();
+        let started = Instant::now();
+        let result = microvm_session_request_timed(
+            &database,
+            "outage",
+            1,
+            started + Duration::from_millis(200),
+            |_, _| {},
+        );
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "session request outlived its deadline: {:?}",
+            started.elapsed()
+        );
+    }
 }
