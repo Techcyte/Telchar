@@ -22,7 +22,7 @@ export TELCHAR_EXECUTION_ROOT="$root"
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$TELCHAR_EXECUTION_ROOT/upper,workdir=$TELCHAR_EXECUTION_ROOT/work" "$TELCHAR_EXECUTION_ROOT/store"
+mount -t overlay overlay -o "userxattr,lowerdir=/nix/store,upperdir=$TELCHAR_EXECUTION_ROOT/upper,workdir=$TELCHAR_EXECUTION_ROOT/work" "$TELCHAR_EXECUTION_ROOT/store"
 mount --bind "$TELCHAR_EXECUTION_ROOT/store" /nix/store
 "$@"
 ' bash "$binary" "$@"
