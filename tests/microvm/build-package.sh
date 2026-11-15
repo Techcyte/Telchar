@@ -21,7 +21,7 @@ export MICROVM_PACKAGE_ROOT="$root" MICROVM_PACKAGE_DERIVATION="$derivation"
 unshare --user --map-root-user --mount --fork bash -c '
 set -euo pipefail
 mount --make-rprivate /
-mount -t overlay overlay -o "lowerdir=/nix/store,upperdir=$MICROVM_PACKAGE_ROOT/upper,workdir=$MICROVM_PACKAGE_ROOT/work" "$MICROVM_PACKAGE_ROOT/store"
+mount -t overlay overlay -o "userxattr,lowerdir=/nix/store,upperdir=$MICROVM_PACKAGE_ROOT/upper,workdir=$MICROVM_PACKAGE_ROOT/work" "$MICROVM_PACKAGE_ROOT/store"
 mount --bind "$MICROVM_PACKAGE_ROOT/store" /nix/store
 nix-store --store local --init
 nix-store --store local --load-db < "$MICROVM_PACKAGE_ROOT/registration"

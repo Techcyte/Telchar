@@ -1,7 +1,6 @@
 //! Executes and recovers builds through operator-configured SSH builders with bounded streaming and exact output import.
 
 use std::io::{self, Read, Seek, Write};
-use std::os::unix::process::CommandExt;
 use std::process::{ChildStdin, ChildStdout, Stdio};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
@@ -760,7 +759,6 @@ fn join_log_reader(reader: std::thread::JoinHandle<io::Result<()>>) -> io::Resul
         .map_err(|_| io::Error::other("static SSH stderr reader panicked"))?
 }
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn ssh_command(config: &StaticSshBackendConfig) -> std::process::Command {
     let mut command = std::process::Command::new(config.ssh_program());
     configure_child_lifecycle(&mut command);
@@ -793,7 +791,10 @@ fn ssh_command(config: &StaticSshBackendConfig) -> std::process::Command {
     command
 }
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn configure_child_lifecycle(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
     unsafe {
         command.pre_exec(|| {
             rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))

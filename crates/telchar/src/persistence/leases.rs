@@ -751,7 +751,8 @@ pub fn release_abandoned_request_leases(
             &request_id,
             &locked,
         )?);
-        if released.len() >= maximum_leases {
+        // Keep each lease-bearing request atomic within the connection deadline.
+        if !released.is_empty() {
             break;
         }
     }

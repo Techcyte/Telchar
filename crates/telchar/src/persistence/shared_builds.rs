@@ -564,6 +564,8 @@ fn claim_shared_build_inner(
                  completed_at = NULL,
                  expires_at = NULL
              WHERE shared_builds.state = 'failed'
+                OR (shared_builds.state = 'succeeded'
+                    AND shared_builds.expires_at <= transaction_timestamp())
              RETURNING derivation_path",
             &[
                 &derivation_path,

@@ -40,6 +40,7 @@ fn check_operation() {
     fixture.cleanup().expect("fixture cleans");
 }
 
+#[cfg(target_os = "linux")]
 fn regular_nar() -> Vec<u8> {
     let mut nar = Vec::new();
     for value in [

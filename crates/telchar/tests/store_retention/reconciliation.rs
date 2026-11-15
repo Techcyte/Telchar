@@ -227,7 +227,7 @@ fn reconciliation_releases_multiple_abandoned_batches() {
             .expect("session closes");
     }
 
-    let first = telchar::persistence::release_abandoned_request_leases(fixture.url(), 1)
+    let first = telchar::persistence::release_abandoned_request_leases(fixture.url(), 16)
         .expect("first batch releases");
     let second = telchar::persistence::release_abandoned_request_leases(fixture.url(), 1)
         .expect("second batch releases");
