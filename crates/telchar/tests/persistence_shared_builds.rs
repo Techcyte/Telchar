@@ -594,6 +594,56 @@ fn shared_build_lifecycle_rejects_skipped_transitions_and_bounds_terminal_data()
 }
 
 #[test]
+fn expired_success_can_be_claimed_for_execution() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-expired.drv";
+    let output_path = "/nix/store/cccccccccccccccccccccccccccccccc-expired";
+    let claim = || {
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            derivation_path,
+            &[6_u8; 32],
+            "local",
+            BackendKind::Local,
+            BackendKind::Local.capabilities(),
+            None,
+            &[output_path],
+        )
+        .expect("shared build claims")
+    };
+    claim();
+    telchar::persistence::start_shared_build(fixture.url(), derivation_path).unwrap();
+    telchar::persistence::collect_shared_build(fixture.url(), derivation_path).unwrap();
+    telchar::persistence::complete_shared_build_success(
+        fixture.url(),
+        derivation_path,
+        &serde_json::json!({"status": "built", "output_count": 1}),
+        Duration::from_secs(3_600),
+    )
+    .unwrap();
+    assert_eq!(
+        claim().ownership,
+        telchar::persistence::SharedBuildOwnership::Joined
+    );
+    fixture.connect().execute(
+        "UPDATE shared_builds SET created_at = created_at - interval '2 hours', started_at = started_at - interval '2 hours', collecting_at = collecting_at - interval '2 hours', completed_at = completed_at - interval '2 hours', expires_at = expires_at - interval '2 hours' WHERE derivation_path = $1",
+        &[&derivation_path],
+    ).unwrap();
+    let replacement = claim();
+    assert_eq!(
+        replacement.ownership,
+        telchar::persistence::SharedBuildOwnership::Claimed
+    );
+    assert_eq!(
+        replacement.build.state,
+        telchar::persistence::SharedBuildState::Claimed
+    );
+    assert!(replacement.build.result_metadata.is_none());
+    assert!(replacement.build.expires_at.is_none());
+}
+
+#[test]
 fn later_request_replaces_failed_shared_build_without_automatic_retry() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
