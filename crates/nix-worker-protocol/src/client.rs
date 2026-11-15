@@ -800,10 +800,7 @@ fn read_build_operation_frames(
     loop {
         match read_worker_integer_from(input)? {
             STDERR_NEXT => {
-                let message =
-                    read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
-                logs(&message)
-                    .map_err(|_| io::Error::other("Nix daemon BuildDerivation log sink failed"))?;
+                stream_build_log_string(input, logs)?;
             }
             STDERR_START_ACTIVITY => {
                 read_worker_integer_from(input)?;
@@ -820,10 +817,9 @@ fn read_build_operation_frames(
                 read_worker_integer_from(input)?;
                 let result_type = read_worker_integer_from(input)?;
                 let build_log_line =
-                    read_activity_fields(input, result_type == BUILD_LOG_LINE_RESULT_TYPE)?;
-                if let Some(mut message) = build_log_line {
-                    message.push(b'\n');
-                    logs(&message).map_err(|_| {
+                    read_activity_fields(input, result_type == BUILD_LOG_LINE_RESULT_TYPE, logs)?;
+                if build_log_line {
+                    logs(b"\n").map_err(|_| {
                         io::Error::other("Nix daemon BuildDerivation log sink failed")
                     })?;
                 }
@@ -1188,29 +1184,28 @@ fn read_operation_frames(input: &mut impl Read, version: WorkerVersion) -> io::R
 }
 
 fn discard_activity_fields(input: &mut impl Read) -> io::Result<()> {
-    read_activity_fields(input, false).map(|_| ())
+    read_activity_fields(input, false, &mut |_| Ok(())).map(|_| ())
 }
 
 fn read_activity_fields(
     input: &mut impl Read,
     capture_first_string: bool,
-) -> io::Result<Option<Vec<u8>>> {
+    logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<bool> {
     let count =
         usize::try_from(read_worker_integer_from(input)?).map_err(|_| protocol_client_error())?;
     if count > MAXIMUM_STRUCTURED_FRAME_FIELDS {
         return Err(protocol_client_error());
     }
-    let mut captured = None;
+    let mut captured = false;
     for index in 0..count {
         match read_worker_integer_from(input)? {
             0 => {
                 read_worker_integer_from(input)?;
             }
             1 if capture_first_string && index == 0 => {
-                captured = Some(read_worker_byte_string_from(
-                    input,
-                    MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES,
-                )?);
+                stream_build_log_string(input, logs)?;
+                captured = true;
             }
             1 => discard_worker_byte_string(input, MAXIMUM_STRUCTURED_FRAME_FIELD_BYTES)?,
             _ => return Err(protocol_client_error()),
@@ -1245,6 +1240,28 @@ fn discard_worker_error(input: &mut impl Read, version: WorkerVersion) -> io::Re
 
 fn discard_worker_byte_string(input: &mut impl Read, maximum: usize) -> io::Result<()> {
     read_worker_byte_string_from(input, maximum).map(|_| ())
+}
+
+fn stream_build_log_string(
+    input: &mut impl Read,
+    logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let length = read_worker_integer_from(input)?;
+    let mut remaining = length;
+    let mut buffer = [0_u8; MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES];
+    while remaining > 0 {
+        let count = remaining.min(buffer.len() as u64) as usize;
+        input.read_exact(&mut buffer[..count])?;
+        logs(&buffer[..count])
+            .map_err(|_| io::Error::other("Nix daemon BuildDerivation log sink failed"))?;
+        remaining -= count as u64;
+    }
+    let padding_length = ((8 - length % 8) % 8) as usize;
+    input.read_exact(&mut buffer[..padding_length])?;
+    if buffer[..padding_length].iter().any(|byte| *byte != 0) {
+        return Err(protocol_client_error());
+    }
+    Ok(())
 }
 
 fn read_worker_byte_string_from(input: &mut impl Read, maximum: usize) -> io::Result<Vec<u8>> {
@@ -1384,7 +1401,7 @@ mod tests {
 
     #[test]
     fn build_operation_forwards_long_structured_build_log_lines() {
-        let build_log = vec![b'x'; 8 * 1024];
+        let build_log = vec![b'x'; 103_529];
         let mut response = Vec::new();
         write_worker_integer_to(&mut response, STDERR_RESULT).expect("result marker writes");
         write_worker_integer_to(&mut response, 1).expect("activity ID writes");
@@ -1400,6 +1417,7 @@ mod tests {
             &mut response.as_slice(),
             LATEST_WORKER_VERSION,
             &mut |chunk| {
+                assert!(chunk.len() <= 16 * 1024);
                 logs.extend_from_slice(chunk);
                 Ok(())
             },
@@ -1409,6 +1427,24 @@ mod tests {
         let mut expected = build_log;
         expected.push(b'\n');
         assert_eq!(logs, expected);
+    }
+
+    #[test]
+    fn build_log_string_rejects_truncation_padding_and_sink_failure() {
+        let mut response = Vec::new();
+        write_worker_byte_string_to(&mut response, b"abc").unwrap();
+        let mut truncated = &response[..response.len() - 1];
+        assert!(super::stream_build_log_string(&mut truncated, &mut |_| Ok(())).is_err());
+        *response.last_mut().unwrap() = 1;
+        assert!(super::stream_build_log_string(&mut response.as_slice(), &mut |_| Ok(())).is_err());
+        let error = super::stream_build_log_string(&mut response.as_slice(), &mut |_| {
+            Err(std::io::Error::other("sink unavailable"))
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Nix daemon BuildDerivation log sink failed"
+        );
     }
 
     #[test]
