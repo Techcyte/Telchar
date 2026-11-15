@@ -76,6 +76,37 @@ fn request<'a>(
 }
 
 #[test]
+fn accepts_successful_daemon_build_statuses() {
+    for status in [0, 1, 2, 13] {
+        let mut input = Vec::new();
+        handshake(&mut input, 1);
+        integer(&mut input, STDERR_LAST);
+        integer(&mut input, status);
+        string(&mut input, b"");
+        for value in [1, 0, 10, 20, 0, 0, 0] {
+            integer(&mut input, value);
+        }
+        let outputs = [BuildDerivationOutputRequest {
+            name: b"out",
+            path: OUTPUT,
+            hash_algorithm: b"",
+            hash: b"",
+        }];
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+        let result = client.build_derivation(&request(&outputs), &mut |_| Ok(()));
+        let result = result.unwrap_or_else(|error| panic!("successful status {status}: {error}"));
+        assert_eq!(
+            result.status(),
+            if status == 0 || status == 1 {
+                WorkerBuildStatus::Built
+            } else {
+                WorkerBuildStatus::AlreadyValid
+            }
+        );
+    }
+}
+
+#[test]
 fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
     let mut input = Vec::new();
     handshake(&mut input, 1);
