@@ -427,7 +427,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     "BuildDerivation request admitted"
                 );
                 let mut execution =
-                    match BuildExecution::new(&request_id, &admitted, Duration::from_secs(30 * 60))
+                    match BuildExecution::new(&request_id, &admitted, Duration::from_secs(60 * 60))
                     {
                         Ok(execution) => execution,
                         Err(error) => {

@@ -16,7 +16,7 @@ use nix_worker_protocol::{
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSFER_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CONNECTION_ERROR: &str = "gateway Nix daemon connection failed";
 
 #[derive(Clone, Eq, PartialEq)]
