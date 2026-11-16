@@ -17,7 +17,9 @@ def check_docker_journal(machine, *, signature_errors=0, channel_errors=0, after
         if 'level=error' not in message and 'level=warning' not in message:
             continue
         if 'level=warning' in message:
-            assert 'msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration"' in message, message
+            migration = 'msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration"' in message
+            verity = re.search(r'msg="failed check for fsverity support" error="enable fsverity failed: operation not supported" path=/var/lib/docker/(containerd/daemon/io\.containerd\.content\.v1\.content|plugins/storage|buildkit/content)$', message)
+            assert migration or verity, message
         elif re.search(r'msg="failed to validate image signature" error="resolving signature chain for image sha256:[0-9a-f]{64}: expected image index descriptor, got application/vnd.docker.distribution.manifest.v2\+json"$', message):
             signatures += 1
         elif 'msg="failed sending message on channel" error="write unix /var/run/docker/containerd/containerd.sock.ttrpc->@: write: broken pipe"' in message:
