@@ -39,7 +39,7 @@ struct Keepalive {
 pub fn accept_connection<S: Read + Write>(
     stream: S,
     limits: CallbackHttpLimits,
-) -> io::Result<CallbackSocket<S>> {
+) -> io::Result<Option<CallbackSocket<S>>> {
     #[allow(clippy::result_large_err)]
     fn validate_upgrade(
         request: &Request,
@@ -89,6 +89,28 @@ pub fn accept_connection<S: Read + Write>(
         validate_upgrade(request, response)
     };
     let mut stream = HeaderLimitedStream::new(stream, limits.maximum_header_bytes);
+    let mut header = Vec::new();
+    while !stream.header_complete {
+        let mut byte = [0];
+        if stream.read(&mut byte)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Incomplete callback HTTP headers",
+            ));
+        }
+        header.push(byte[0]);
+    }
+    use tungstenite::handshake::machine::TryParse;
+    if let Ok(Some((_, request))) = Request::try_parse(&header)
+        && request.uri().path() == "/healthz"
+        && request.uri().query().is_none()
+        && !request.headers().contains_key("upgrade")
+    {
+        stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")?;
+        stream.flush()?;
+        return Ok(None);
+    }
+    stream.replay = io::Cursor::new(header);
     match tungstenite::accept_hdr(&mut stream, capture_upgrade) {
         Ok(socket) => {
             socket.into_inner();
@@ -119,14 +141,14 @@ pub fn accept_connection<S: Read + Write>(
     }
     let inner =
         tungstenite::WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
-    Ok(CallbackSocket {
+    Ok(Some(CallbackSocket {
         inner,
         trace_context: trace_context
             .into_inner()
             .expect("trace context lock holds"),
         maximum_message_bytes: limits.maximum_message_bytes,
         keepalive: None,
-    })
+    }))
 }
 
 impl<S: Read + Write> CallbackSocket<S> {
@@ -271,6 +293,7 @@ impl<S: Read + Write> CallbackSocket<S> {
 
 struct HeaderLimitedStream<S> {
     inner: S,
+    replay: io::Cursor<Vec<u8>>,
     maximum_header_bytes: usize,
     header_bytes: usize,
     header_complete: bool,
@@ -282,6 +305,7 @@ impl<S> HeaderLimitedStream<S> {
     fn new(inner: S, maximum_header_bytes: usize) -> Self {
         Self {
             inner,
+            replay: io::Cursor::new(Vec::new()),
             maximum_header_bytes,
             header_bytes: 0,
             header_complete: false,
@@ -293,6 +317,9 @@ impl<S> HeaderLimitedStream<S> {
 
 impl<S: Read> Read for HeaderLimitedStream<S> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.replay.position() < self.replay.get_ref().len() as u64 {
+            return self.replay.read(output);
+        }
         if self.header_complete {
             return self.inner.read(output);
         }

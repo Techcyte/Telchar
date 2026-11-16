@@ -65,8 +65,9 @@ fn accepts_bounded_websocket_upgrade_with_exact_subprotocol() {
         "\r\ntraceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\ntracestate: vendor=value\r\n\r\n",
     );
     let stream = FragmentedStream::new(request, 128);
-    let mut socket =
-        accept_connection(stream, CallbackHttpLimits::new(1024, 4096)).expect("WebSocket accepts");
+    let mut socket = accept_connection(stream, CallbackHttpLimits::new(1024, 4096))
+        .expect("WebSocket accepts")
+        .expect("callback socket");
     assert_eq!(
         socket
             .trace_context()
@@ -103,7 +104,8 @@ fn sends_ping_during_quiet_transfer_and_accepts_matching_pong() {
             .set_read_timeout(Some(Duration::from_millis(50)))
             .expect("read timeout sets");
         let mut socket = accept_connection(stream, CallbackHttpLimits::new(1024, 4096))
-            .expect("WebSocket accepts");
+            .expect("WebSocket accepts")
+            .expect("callback socket");
         socket.configure_keepalive(
             Duration::from_millis(100),
             Instant::now() + Duration::from_secs(2),
@@ -134,13 +136,49 @@ fn sends_ping_during_quiet_transfer_and_accepts_matching_pong() {
 #[test]
 fn applies_updated_message_limit_to_outbound_binary_frames() {
     let stream = FragmentedStream::new(handshake("/callback", "telchar-nomad-transfer-v1"), 128);
-    let mut socket =
-        accept_connection(stream, CallbackHttpLimits::new(1024, 64)).expect("WebSocket accepts");
+    let mut socket = accept_connection(stream, CallbackHttpLimits::new(1024, 64))
+        .expect("WebSocket accepts")
+        .expect("callback socket");
     socket.set_maximum_message_bytes(262_144 + 1024);
 
     socket
         .write_binary(vec![0; 262_144 + 512])
         .expect("bounded transfer frame writes");
+}
+
+#[test]
+fn serves_health_probe_without_websocket_upgrade() {
+    for maximum_read in [1, 128] {
+        let mut stream = FragmentedStream::new(
+            "GET /healthz HTTP/1.1\r\nHost: gateway\r\n\r\n",
+            maximum_read,
+        );
+        assert!(
+            accept_connection(&mut stream, CallbackHttpLimits::new(1024, 8))
+                .expect("health probe accepts")
+                .is_none()
+        );
+        assert_eq!(
+            stream.output,
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_health_requests() {
+    for request in [
+        "POST /healthz HTTP/1.1\r\nHost: gateway\r\n\r\n".to_owned(),
+        "GET /healthz?probe=1 HTTP/1.1\r\nHost: gateway\r\n\r\n".to_owned(),
+        format!(
+            "GET /healthz HTTP/1.1\r\nX-Fill: {}\r\n\r\n",
+            "a".repeat(1100)
+        ),
+    ] {
+        let mut stream = FragmentedStream::new(request, 11);
+        assert!(accept_connection(&mut stream, CallbackHttpLimits::new(1024, 8)).is_err());
+        assert!(!stream.output.starts_with(b"HTTP/1.1 200"));
+    }
 }
 
 #[test]
