@@ -163,11 +163,11 @@ fn build_connection_uses_full_execution_timeout() {
         .expect("shutdown handle clones");
     assert_eq!(
         stream.read_timeout().expect("read timeout reads"),
-        Some(std::time::Duration::from_secs(30 * 60))
+        Some(std::time::Duration::from_secs(60 * 60))
     );
     assert_eq!(
         stream.write_timeout().expect("write timeout reads"),
-        Some(std::time::Duration::from_secs(30 * 60))
+        Some(std::time::Duration::from_secs(60 * 60))
     );
     server.join().expect("server exits");
 }
