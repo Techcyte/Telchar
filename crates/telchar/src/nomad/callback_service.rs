@@ -217,7 +217,9 @@ pub fn serve_connection(
         callback.maximum_header_bytes(),
         callback.maximum_body_bytes(),
     );
-    let mut socket = accept_connection(connection, limits)?;
+    let Some(mut socket) = accept_connection(connection, limits)? else {
+        return Ok(());
+    };
     let body = socket.read_binary()?;
     let authentication = decode_authentication(&body, callback.maximum_body_bytes())?;
     let execution = resolver
