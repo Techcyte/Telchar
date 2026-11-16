@@ -59,8 +59,10 @@
         import shlex
         text_input = stock_client.succeed("nix-instantiate --eval --strict --json --expr '(import /tmp/telchar-nomad-gateway.nix).textInput'").strip()
         text_input = json.loads(text_input)
-        fresh_paths = [derivation_path, text_input]
-        source_info = json.loads(stock_client.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+        # BuildDerivation sends a derivation value, not its .drv store path.
+        source_info = json.loads(stock_client.succeed("nix --extra-experimental-features nix-command path-info --json --json-format 1 --recursive " + shlex.quote(text_input)))
+        fresh_paths = list(source_info)
+        assert len(fresh_paths) == 2, source_info
         for path in fresh_paths:
             gateway.succeed("test ! -e " + shlex.quote(path))
             gateway.fail("nix-store --check-validity " + shlex.quote(path))
@@ -78,7 +80,7 @@
         stock_client.succeed("kill $(cat /tmp/nomad-build-first.pid)")
         nomad_server.wait_until_succeeds("nomad job allocs -namespace telchar -json '" + job_id + "' | ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].ClientStatus == \"complete\"'", timeout=60)
         gateway.wait_until_succeeds("sudo -u postgres psql -d telchar-ingress -Atc \"select state from shared_builds where derivation_path = '" + derivation_path + "'\" | grep -qx succeeded", timeout=60)
-        destination_info = json.loads(gateway.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(map(shlex.quote, fresh_paths))))
+        destination_info = json.loads(gateway.succeed("nix --extra-experimental-features nix-command path-info --json --json-format 1 " + " ".join(map(shlex.quote, fresh_paths))))
         for path in fresh_paths:
             for field in ["narHash", "narSize", "references", "ca"]:
                 assert source_info[path][field] == destination_info[path][field], (path, field)

@@ -14,6 +14,7 @@ def check_nomad_journal(machine):
         r'\[WARN\]  client\.fingerprint_mgr\.consul: failed to acquire consul self endpoint: cluster=default error="Get \\"http://localhost:8500/v1/agent/self\\": dial tcp \[::1\]:8500: connect: connection refused"',
         r'\[WARN\]  client\.fingerprint_mgr\.cni_plugins: failed to read CNI plugins directory: cni_path=(/opt/cni/bin|/usr/libexec/cni) error="open (/opt/cni/bin|/usr/libexec/cni): no such file or directory"',
         r'\[ERROR\] client\.driver_mgr\.docker: failed to list pause containers for recovery: driver=docker error="Cannot connect to the Docker daemon at unix:///var/run/docker.sock\. Is the docker daemon running\?"',
+        r'\[ERROR\] agent\.plugin_loader\.docker: failed to list pause containers for recovery: plugin_dir=/nix/store/[a-z0-9]+-nomad-plugins/bin error="Cannot connect to the Docker daemon at unix:///var/run/docker.sock\. Is the docker daemon running\?"',
     ]
     patterns = [re.compile(pattern) for pattern in expected]
     counts = [0] * len(patterns)
