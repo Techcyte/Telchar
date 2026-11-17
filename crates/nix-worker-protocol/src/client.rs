@@ -883,17 +883,9 @@ fn read_worker_build_result(
     let raw_status = read_worker_integer_from(input)?;
     let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     let status = match raw_status {
-        0 | 1 => WorkerBuildStatus::Built,
-        2 | 13 => WorkerBuildStatus::AlreadyValid,
-        3..=12 | 14 => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                WorkerBuildFailureError(WorkerBuildFailure {
-                    status: raw_status,
-                    category: build_failure_category(&message),
-                }),
-            ));
-        }
+        0 | 1 => Some(WorkerBuildStatus::Built),
+        2 | 13 => Some(WorkerBuildStatus::AlreadyValid),
+        3..=12 | 14 => None,
         _ => return Err(protocol_client_error()),
     };
     if version >= WorkerVersion::new(1, 29) {
@@ -918,6 +910,15 @@ fn read_worker_build_result(
     } else {
         Vec::new()
     };
+    let status = status.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            WorkerBuildFailureError(WorkerBuildFailure {
+                status: raw_status,
+                category: build_failure_category(&message),
+            }),
+        )
+    })?;
     Ok(WorkerBuildResult { status, outputs })
 }
 
