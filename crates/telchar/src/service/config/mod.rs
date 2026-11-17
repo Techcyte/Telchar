@@ -101,6 +101,7 @@ pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
     maximum_retained_input_bytes: u64,
+    audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
     database_url: Option<String>,
     ownership_renewal_interval: Duration,
@@ -149,6 +150,10 @@ impl ServiceConfig {
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
         self.maximum_retained_input_bytes
+    }
+
+    pub fn audit_enabled(&self) -> bool {
+        self.audit_enabled
     }
 
     pub fn post_build_hook(&self) -> Option<&crate::service::post_build_hook::PostBuildHook> {
@@ -248,6 +253,7 @@ impl ServiceConfig {
         if self.running_disconnect_policy != replacement.running_disconnect_policy
             || self.output_retention != replacement.output_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
+            || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
             || self.database_url != replacement.database_url
             || self.ownership_renewal_interval != replacement.ownership_renewal_interval
@@ -519,6 +525,7 @@ impl ServiceConfig {
             running_disconnect_policy,
             output_retention,
             maximum_retained_input_bytes,
+            audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,
             database_url,
             ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),

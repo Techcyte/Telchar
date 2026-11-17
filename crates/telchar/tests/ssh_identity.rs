@@ -40,6 +40,8 @@ fn forced_command_preserves_public_key_and_certificate_identities() {
             .to_owned()
     };
     let ca = fingerprint("ca.pub");
+    let config = root.path().join("telchar.toml");
+    fs::write(&config, "[audit]\nenabled = true\n").unwrap();
     for (file, expected_id, audit) in [
         (
             "client.pub",
@@ -77,7 +79,8 @@ fn forced_command_preserves_public_key_and_certificate_identities() {
             .env("TELCHAR_AUTHENTICATED_CA", "untrusted")
             .env("TELCHAR_AUTHENTICATED_KEY_ID", "untrusted")
             .env("TELCHAR_AUTHENTICATED_PRINCIPALS", "untrusted")
-            .env_remove("TELCHAR_CONFIG")
+            .env("TELCHAR_CONFIG", &config)
+            .env("SSH_CONNECTION", "192.0.2.7 54321 192.0.2.8 22")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -105,5 +108,31 @@ fn forced_command_preserves_public_key_and_certificate_identities() {
         assert_eq!(envelope.requester.credential_id, expected_id);
         assert_eq!(envelope.requester.audit_subject, audit);
         assert_eq!(envelope.requester.quota_subject, expected_id);
+        let identity = envelope.identity_details.expect("audit identity supplied");
+        assert_eq!(identity.source_address, Some("192.0.2.7".parse().unwrap()));
+        assert_eq!(identity.source_port, Some(54321));
+        assert_eq!(identity.key_type.as_deref(), Some("ssh-ed25519"));
+        if file == "client.pub" {
+            assert_eq!(identity.auth_method, "publickey");
+            assert_eq!(identity.key_fingerprint, Some(fingerprint("client.pub")));
+        } else {
+            assert_eq!(identity.auth_method, "certificate");
+            assert_eq!(
+                identity.certificate_ca_fingerprint.as_deref(),
+                Some(ca.as_str())
+            );
+            assert_eq!(identity.certificate_key_id.as_deref(), Some("build client"));
+            assert_eq!(
+                identity.certificate_principals,
+                Some(vec!["builder".into(), "release".into()])
+            );
+            assert_eq!(identity.certificate_serial, Some(0));
+            assert!(identity.certificate_valid_from.is_some());
+            assert!(identity.certificate_valid_to.is_some());
+            assert_eq!(
+                identity.certificate_user_key_fingerprint,
+                Some(fingerprint("client.pub"))
+            );
+        }
     }
 }

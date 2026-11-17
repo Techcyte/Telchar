@@ -179,6 +179,7 @@ fn authenticated_envelope(session_id: &str) -> IpcEnvelope {
         },
         session_id: session_id.into(),
         trace_context: telchar_telemetry::TraceContext::default(),
+        identity_details: None,
         error: None,
     }
 }
