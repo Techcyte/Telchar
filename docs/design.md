@@ -95,7 +95,7 @@ NAR import follows a fixed validation order:
 3. validate the path, references, deriver, and supported content-address fields;
 4. require non-self references to exist in the gateway store;
 5. stream the normalized metadata and NAR with `AddToStoreNar`;
-6. query the store and require the registered metadata to match.
+6. query the store and require the registered metadata to match, except the deriver: Nix keeps the first registration's deriver, and one path can have several (a fixed-output path is the same on every platform, but each platform has its own derivation for it).
 
 Malformed data, metadata disagreement, missing references, interruption, or daemon failure fails closed. Telchar does not use `nix-store --import`, `nix store add`, or the Nix C++ ABI for production import.
 
