@@ -88,8 +88,14 @@ fn instantiate_expression(name: &str, expression: &str) -> BuildSpecification {
         expression,
     ]);
     let drv = fs::canonicalize(drv).unwrap().to_str().unwrap().to_owned();
-    let target =
-        BackendTarget::new("nomad", BackendKind::Nomad, "x86_64-linux", [] as [&str; 0]).unwrap();
+    let system = command(&[
+        "nix-instantiate",
+        "--eval",
+        "--raw",
+        "--expr",
+        "builtins.currentSystem",
+    ]);
+    let target = BackendTarget::new("nomad", BackendKind::Nomad, &system, [] as [&str; 0]).unwrap();
     let request =
         BuildRequest::from_stored_derivation(drv.as_bytes(), &fs::read(&drv).unwrap(), &[target])
             .unwrap();
@@ -591,8 +597,15 @@ print('# decline-permanently', file=sys.stderr, flush=True)
     .unwrap();
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
     let config = format!(
-        "{}\nmax-jobs = 1\nbuilders = ssh-ng://fixture x86_64-linux\nbuild-hook = {}\n",
+        "{}\nmax-jobs = 1\nbuilders = ssh-ng://fixture {}\nbuild-hook = {}\n",
         std::env::var("NIX_CONFIG").unwrap(),
+        command(&[
+            "nix-instantiate",
+            "--eval",
+            "--raw",
+            "--expr",
+            "builtins.currentSystem"
+        ]),
         hook.display()
     );
     command(&["nix-store", "--store", "local", "--init"]);

@@ -107,6 +107,65 @@ fn accepts_successful_daemon_build_statuses() {
 }
 
 #[test]
+fn failed_build_consumes_result_before_next_operation() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 5);
+    string(&mut input, b"hash mismatch");
+    for value in [1, 0, 10, 20, 0, 0, 0] {
+        integer(&mut input, value);
+    }
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 1);
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+    let error = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Nix daemon BuildDerivation failed with status 5 category hash-mismatch"
+    );
+    assert!(client.is_valid_path(OUTPUT).unwrap());
+}
+
+#[test]
+fn failed_build_rejects_incomplete_or_invalid_result_fields() {
+    for trailer in [
+        vec![],
+        1_u64.to_le_bytes().to_vec(),
+        [1_u64, 2].into_iter().flat_map(u64::to_le_bytes).collect(),
+    ] {
+        let mut input = Vec::new();
+        handshake(&mut input, 1);
+        integer(&mut input, STDERR_LAST);
+        integer(&mut input, 5);
+        string(&mut input, b"hash mismatch secret");
+        input.extend(trailer);
+        let outputs = [BuildDerivationOutputRequest {
+            name: b"out",
+            path: OUTPUT,
+            hash_algorithm: b"",
+            hash: b"",
+        }];
+        let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+        let error = client
+            .build_derivation(&request(&outputs), &mut |_| Ok(()))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Nix daemon BuildDerivation result failed"
+        );
+    }
+}
+
+#[test]
 fn writes_exact_input_addressed_request_streams_logs_and_reads_built_outputs() {
     let mut input = Vec::new();
     handshake(&mut input, 1);
@@ -264,6 +323,9 @@ fn preserves_dependency_terminal_status_and_category_without_peer_payload() {
         &mut input,
         b"interrupted by the user secret=/run/credentials/token",
     );
+    for value in [1, 0, 10, 20, 0, 0, 0] {
+        integer(&mut input, value);
+    }
     let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
 
     let error = client
@@ -498,6 +560,9 @@ fn terminal_build_failure_exposes_only_allowlisted_reason() {
         integer(&mut input, STDERR_LAST);
         integer(&mut input, 3); // PermanentFailure
         string(&mut input, message.as_bytes());
+        for value in [1, 0, 10, 20, 0, 0, 0] {
+            integer(&mut input, value);
+        }
         let outputs = [BuildDerivationOutputRequest {
             name: b"out",
             path: OUTPUT,
@@ -523,6 +588,9 @@ fn terminal_build_status_is_preserved_without_daemon_message() {
     integer(&mut input, STDERR_LAST);
     integer(&mut input, 6); // TimedOut
     string(&mut input, b"sensitive daemon message");
+    for value in [1, 0, 10, 20, 0, 0, 0] {
+        integer(&mut input, value);
+    }
     let outputs = [BuildDerivationOutputRequest {
         name: b"out",
         path: OUTPUT,
