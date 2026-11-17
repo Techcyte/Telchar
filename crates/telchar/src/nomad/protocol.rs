@@ -80,8 +80,7 @@ impl InputManifest {
                 "Nomad transfer build derivation does not match manifest",
             ));
         }
-        if self.paths.is_empty()
-            || self.paths.len() > maximum_paths
+        if self.paths.len() > maximum_paths
             || self.outputs.is_empty()
             || self.outputs.len() > maximum_paths
         {

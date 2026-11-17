@@ -52,6 +52,65 @@ fn routing_selects_highest_priority_backend_with_matching_system_and_features() 
 }
 
 #[test]
+fn builtin_routing_preserves_features_priority_and_capacity() {
+    let targets = vec![
+        BackendTarget::new("nomad-amd64", BackendKind::Nomad, "x86_64-linux", ["kvm"])
+            .unwrap()
+            .with_selection_priority(10)
+            .unwrap(),
+        BackendTarget::new("nomad-arm64", BackendKind::Nomad, "aarch64-linux", ["kvm"]).unwrap(),
+        BackendTarget::new(
+            "reserved",
+            BackendKind::Nomad,
+            "aarch64-linux",
+            ["kvm", "benchmark"],
+        )
+        .unwrap()
+        .with_mandatory_features(["benchmark"])
+        .unwrap()
+        .with_selection_priority(100)
+        .unwrap(),
+    ];
+    assert_eq!(
+        select_backend(&targets, "builtin", &["kvm"])
+            .unwrap()
+            .name(),
+        "nomad-amd64"
+    );
+    assert_eq!(
+        select_backend(&targets, "builtin", &["benchmark"])
+            .unwrap()
+            .name(),
+        "reserved"
+    );
+    assert!(select_backend(&targets, "builtin", &["missing"]).is_none());
+    let microvm = [BackendTarget::new(
+        "microvm",
+        BackendKind::Microvm,
+        "aarch64-linux",
+        [] as [&str; 0],
+    )
+    .unwrap()];
+    assert!(select_backend(&microvm, "builtin", &[]).is_none());
+    assert!(select_backend(&microvm, "aarch64-linux", &[]).is_some());
+    let pool = BackendPool::new(targets, vec![1, 1, 1]).unwrap();
+    let first = pool
+        .acquire("builtin", &["kvm"], Duration::from_secs(1))
+        .unwrap();
+    let second = pool
+        .acquire("builtin", &["kvm"], Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(first.target().system(), "x86_64-linux");
+    assert_eq!(second.target().system(), "aarch64-linux");
+    assert_eq!(
+        pool.acquire("builtin", &["kvm"], Duration::from_millis(1))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
+}
+
+#[test]
 fn backend_pool_falls_back_to_available_capacity_by_priority() {
     let pool = BackendPool::new(
         vec![

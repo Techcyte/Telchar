@@ -276,6 +276,139 @@ fn rejects_malformed_or_dynamic_stored_derivations() {
 }
 
 #[test]
+fn admits_builtin_fetch_without_changing_derivation_identity() {
+    for system in ["x86_64-linux", "aarch64-linux"] {
+        let targets = backends(system, &["kvm"]);
+        let worker = builtin_request("builtin:fetchurl", "kvm", true);
+        let request = BuildRequest::from_worker_request(&worker, &targets)
+            .expect("fixed-output builtin fetch admits on worker architecture");
+        assert_eq!(request.system(), "builtin");
+        assert_eq!(request.builder(), b"builtin:fetchurl");
+        assert_eq!(request.derivation_path(), worker.drv_path());
+        assert_eq!(request.environment(), worker.environment());
+        assert_eq!(
+            request.output_authorities()[0].hash(),
+            worker.outputs()[0].hash()
+        );
+        assert_eq!(request.required_system_features(), ["kvm"]);
+        let selected = telchar::backend::select_backend(&targets, request.system(), &["kvm"])
+            .expect("builtin fetch selects eligible worker");
+        assert_eq!(selected.system(), system);
+        let restored: BuildRequest =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        restored.validate_for_execution().unwrap();
+        assert_eq!(restored, request);
+        assert_eq!(restored.shared_build_key(), request.shared_build_key());
+        assert_eq!(
+            telchar::nomad::protocol::BuildSpecification::from(&request).system,
+            "builtin"
+        );
+    }
+}
+
+#[test]
+fn loads_builtin_fetch_from_stored_derivation() {
+    let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","sha256","0000000000000000000000000000000000000000000000000000000000000000")],[],[],"builtin","builtin:fetchurl",[],[("builder","builtin:fetchurl"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","builtin")])"#;
+    let request = BuildRequest::from_stored_derivation(
+        drv_path(),
+        derivation,
+        &backends("aarch64-linux", &[]),
+    )
+    .expect("stored builtin fetch admits");
+    let worker = BuildRequest::from_worker_request(
+        &builtin_request("builtin:fetchurl", "", true),
+        &backends("aarch64-linux", &[]),
+    )
+    .expect("worker builtin fetch admits");
+    assert_eq!(request.output_authorities(), worker.output_authorities());
+    assert_eq!(request.system(), worker.system());
+    assert_eq!(request.builder(), worker.builder());
+}
+
+#[test]
+fn builtin_fetch_preserves_backend_feature_eligibility() {
+    let targets = backends("aarch64-linux", &["kvm"]);
+    assert!(
+        BuildRequest::from_worker_request(
+            &builtin_request("builtin:fetchurl", "big-parallel", true),
+            &targets
+        )
+        .is_err()
+    );
+    let targets = [targets[0].clone().with_mandatory_features(["kvm"]).unwrap()];
+    assert!(
+        BuildRequest::from_worker_request(&builtin_request("builtin:fetchurl", "", true), &targets)
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_unsupported_builtin_builders_and_fetch_without_hash() {
+    for (builder, fixed) in [
+        ("builtin:unknown", true),
+        ("builtin:buildenv", true),
+        ("builtin:unpack-channel", true),
+        ("builtin:fetchurl", false),
+        ("/bin/sh", true),
+    ] {
+        let error = BuildRequest::from_worker_request(
+            &builtin_request(builder, "", fixed),
+            &backends("x86_64-linux", &[]),
+        )
+        .expect_err("unsupported builtin request rejects");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            if builder == "builtin:fetchurl" {
+                "unsupported builtin fetch output authority"
+            } else {
+                "unsupported builtin derivation builder"
+            }
+        );
+    }
+}
+
+fn builtin_request(
+    builder: &str,
+    features: &str,
+    fixed: bool,
+) -> nix_worker_protocol::BuildDerivationRequest {
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 36);
+    write_worker_byte_string(&mut wire, drv_path());
+    write_worker_integer(&mut wire, 1);
+    for value in [
+        b"out".as_slice(),
+        output_path(),
+        if fixed { b"sha256" } else { b"" },
+        if fixed {
+            b"0000000000000000000000000000000000000000000000000000000000000000"
+        } else {
+            b""
+        },
+    ] {
+        write_worker_byte_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    write_worker_byte_string(&mut wire, b"builtin");
+    write_worker_byte_string(&mut wire, builder.as_bytes());
+    write_worker_integer(&mut wire, 0);
+    write_worker_integer(&mut wire, 5);
+    for (name, value) in [
+        ("builder", builder.as_bytes()),
+        ("name", b"telchar-build-derivation-contract".as_slice()),
+        ("out", output_path()),
+        ("system", b"builtin".as_slice()),
+        ("requiredSystemFeatures", features.as_bytes()),
+    ] {
+        write_worker_byte_string(&mut wire, name.as_bytes());
+        write_worker_byte_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    decode_wire(wire)
+}
+
+#[test]
 fn rejects_worker_request_without_outputs() {
     let worker = decode_wire(build_request_wire_without_outputs());
 

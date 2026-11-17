@@ -77,6 +77,52 @@ exercises configured daemon dispatch and output return through isolated stores
 and a simulated provider. This is execution-policy and fixture integration
 coverage, not live Nomad, native MicroVM isolation, or AWS qualification.
 
+## Builtin fetch derivations
+
+Telchar admits `system = "builtin"` only with `builder = "builtin:fetchurl"`
+and a single fixed-output `out` carrying an expected hash. This is a derivation
+builder, not a Nix language `builtins.*` function. Other `builtin:` builders,
+including `builtin:buildenv` and `builtin:unpack-channel`, are not supported.
+
+The derivation system, builder, environment, output paths and hash authority
+remain unchanged in shared-build identity, persistence and worker transfer.
+`builtin` is architecture-independent for backend selection; each selected
+backend retains its configured execution platform. Required and mandatory
+features, backend priority, readiness and capacity still govern eligibility.
+MicroVM backends are excluded from builtin selection. Nomad jobs retain the
+selected backend's operator-configured placement constraints; recovery metadata
+uses that backend's platform, not the derivation's `builtin` system. Telchar does not download the URL: the
+worker's Nix daemon dispatches the builtin and enforces its fixed-output hash.
+Gateway output validation remains mandatory.
+
+The pinned nixpkgs revision resolves default Nix 2.34.9 and Lix 2.94.3. Their
+upstream builtin dispatchers register `fetchurl`, `buildenv` and `unpack-channel`;
+this inventory does not imply Telchar support for all three. Source authorities:
+[Nix dispatcher](https://github.com/NixOS/nix/blob/5fb7eb7d64ba7b78819aa3ac6a7fdd21354910fc/src/libstore/unix/build/derivation-builder.cc),
+[Nix registrations](https://github.com/NixOS/nix/tree/5fb7eb7d64ba7b78819aa3ac6a7fdd21354910fc/src/libstore/builtins),
+and [Lix dispatcher](https://git.lix.systems/lix-project/lix/src/commit/1320212ec32098ceb5eb99c5a062f5b50c1424ca/lix/libstore/build/local-derivation-goal.cc).
+This is upstream release-source inspection, not runtime qualification of Lix
+builtin fetches or an exhaustive audit of downstream patches.
+
+`build_request` and `build_backend` cover admission, identity and cross-platform
+selection. The builtin-fetch case in `execution_locality` uses a deterministic
+local HTTP server, an isolated canonical Nix store and real worker session/daemon
+execution. Callback orchestration is a fixture, not a live Nomad scheduler;
+ARM selection coverage does not establish native ARM execution. Production
+Nomad qualification requires separate operator approval.
+
+An operator-approved AMD64 Nomad qualification also exercised the changed gateway
+and worker against the real cluster, with an isolated PostgreSQL database,
+container-private gateway and worker stores, and deterministic HTTP payload.
+The gateway admitted the original builtin specification, submitted and authenticated
+the allocation, validated and imported its returned output, and recorded terminal
+success. Wrong-hash and HTTP 404 cases recorded terminal failure with no valid
+expected gateway output. The worker daemon was Nix 2.34.8 in this qualification;
+the pinned local fixture covers Nix 2.34.9. Callback transport used an SSH reverse
+tunnel, and ingress used a typed worker client over authenticated local IPC rather
+than stock-client SSH. This does not qualify native ARM execution, Lix builtin
+execution, production callback transport, or the live Telchar deployment.
+
 ## Cascading gateways
 
 The cascading VM contract passes. Full workspace qualification remains pending:

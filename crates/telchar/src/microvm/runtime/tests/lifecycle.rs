@@ -279,7 +279,26 @@ with tempfile.TemporaryDirectory() as directory:
                 while !admitted.load(std::sync::atomic::Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                socket.close(None).unwrap();
+                let tungstenite::Message::Binary(message) = socket.read().unwrap() else {
+                    panic!("gateway sends a binary input manifest");
+                };
+                let frame = crate::nomad::protocol::read_frame(
+                    &mut message.as_ref(),
+                    crate::nomad::protocol::ProtocolLimits::new(8 * 1024 * 1024, 0),
+                )
+                .unwrap();
+                assert_eq!(
+                    frame.kind(),
+                    crate::nomad::protocol::FrameKind::InputManifest
+                );
+                let manifest: crate::nomad::protocol::InputManifest =
+                    crate::nomad::protocol::decode_metadata(frame.metadata(), 8 * 1024 * 1024)
+                        .unwrap();
+                assert!(manifest.paths.is_empty());
+                assert_eq!(manifest.build.system, "aarch64-linux");
+                socket
+                    .send(tungstenite::Message::Text("invalid transfer frame".into()))
+                    .unwrap();
             } else {
                 assert!(incoming.starts_with("POST /aws/lambda-microvms/runtime/v1/validate "));
                 reply(
@@ -412,10 +431,10 @@ with tempfile.TemporaryDirectory() as directory:
     let error = executor
         .run_configured(&config, attempt, |_| {})
         .unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
     assert_eq!(
         error.to_string(),
-        "Nomad transfer manifest path count is invalid"
+        "MicroVM transfer requires binary messages"
     );
     callback_server.join().unwrap();
     let assignment=fixture.connect().query_one("SELECT assignment_epoch,admitted_at IS NOT NULL FROM microvm_assignments WHERE intent_id='runtime-intent' ORDER BY assignment_epoch DESC LIMIT 1",&[]).unwrap();

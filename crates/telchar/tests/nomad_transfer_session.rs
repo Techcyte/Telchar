@@ -58,6 +58,32 @@ fn frame<T: serde::Serialize>(kind: FrameKind, metadata: &T, payload: Vec<u8>) -
 }
 
 #[test]
+fn inputless_fetch_manifest_completes_resolution_without_transfer() {
+    let mut manifest = manifest();
+    manifest.paths.clear();
+    manifest.build.input_sources.clear();
+    manifest.build.system = "builtin".to_owned();
+    manifest.build.builder = b"builtin:fetchurl".to_vec();
+    manifest.build.environment.clear();
+    manifest.build.outputs[0].hash_algorithm = b"sha256".to_vec();
+    manifest.build.outputs[0].hash = HASH.as_bytes().to_vec();
+    let mut inputs =
+        telchar::nomad::protocol::InputTransferSession::new(manifest.clone(), 8, 32, 32)
+            .expect("inputless fetch manifest admits");
+    assert!(inputs.ready_to_build().is_err());
+    inputs
+        .record_valid_paths(PathSet { paths: vec![] })
+        .unwrap();
+    assert!(inputs.request_unresolved().unwrap().paths.is_empty());
+    inputs.ready_to_build().unwrap();
+    manifest
+        .build
+        .input_sources
+        .push(path('b', "input").into_bytes());
+    assert!(manifest.validate(8, 32).is_err());
+}
+
+#[test]
 fn rejects_manifest_when_exact_build_specification_disagrees() {
     let mut manifest = manifest();
     manifest.build.outputs[0].path = path('d', "foreign").into_bytes();
