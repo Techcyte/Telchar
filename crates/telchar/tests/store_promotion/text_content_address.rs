@@ -9,10 +9,10 @@ use telchar::store::daemon::GatewayStoreEndpoint;
 use telchar::store::import::{GatewayStoreImport, StoreImportBackend};
 use telchar::store::promotion::GatewayStorePromotionBackend;
 
-fn nix(program: &str, arguments: &[&str]) -> Vec<u8> {
+pub(super) fn nix(program: &str, arguments: &[&str]) -> Vec<u8> {
     assert!(
         std::env::var_os("TELCHAR_STORE_ROOT").is_some(),
-        "run text CA contracts under tests/canonical-store.sh"
+        "run canonical-store contracts under tests/canonical-store.sh"
     );
     let output = std::process::Command::new(program)
         .args([
@@ -39,7 +39,7 @@ fn nix(program: &str, arguments: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
-fn backend() -> GatewayStorePromotionBackend {
+pub(super) fn backend() -> GatewayStorePromotionBackend {
     GatewayStorePromotionBackend::new(
         GatewayStoreEndpoint::parse("unix:///nix/var/nix/daemon-socket/socket").unwrap(),
     )
@@ -101,7 +101,7 @@ fn export_and_delete(path: &Path) -> (DeclaredPathInfo, Vec<u8>, Vec<u8>) {
     )
 }
 
-fn import(declared: &DeclaredPathInfo, nar: &[u8]) -> io::Result<()> {
+pub(super) fn import(declared: &DeclaredPathInfo, nar: &[u8]) -> io::Result<()> {
     let mut logical = Vec::new();
     write_worker_integer(&mut logical, 1);
     write_worker_byte_string(&mut logical, declared.path.as_os_str().as_encoded_bytes());
