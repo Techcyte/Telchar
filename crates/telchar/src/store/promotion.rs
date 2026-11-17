@@ -496,11 +496,14 @@ fn promote_staged(
         };
     }
     let registered = backend.query_path_info(&declared.path)?;
+    // The deriver is advisory: Nix keeps the first registration's deriver, and
+    // one path can have several (a fixed-output path instantiated per platform,
+    // or outputs of derivations that differ only in equivalent fixed-output
+    // inputs). An upload of a path some other derivation registered is valid.
     if registered.path != declared.path
         || registered.nar_hash != declared.nar_hash
         || registered.nar_size != declared.nar_size
         || registered.references != declared.references
-        || registered.deriver != declared.deriver
         || registered.content_address != declared.content_address
     {
         return Err(io::Error::new(
