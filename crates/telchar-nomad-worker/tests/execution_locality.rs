@@ -17,14 +17,36 @@ use telchar::backend::static_ssh::StaticSshBackend;
 use telchar::backend::{BackendKind, BackendTarget, BuildBackend, BuildExecution};
 use telchar::build::BuildRequest;
 use telchar::nomad::protocol::{
-    BuildSpecification, Frame, FrameKind, InputManifest, NamedOutput, PathManifestEntry,
-    ProtocolLimits, encode_metadata, write_frame,
+    BuildOutcome, BuildResultMetadata, BuildSpecification, Frame, FrameKind, InputManifest,
+    NarMetadata, OutputReceipt, PathManifestEntry, ProtocolLimits, decode_metadata,
+    encode_metadata, read_frame, write_frame,
 };
 use telchar::service::config::ServiceConfig;
 use telchar::store::daemon::GatewayStoreEndpoint;
 use telchar_nomad_worker::{WorkerConfig, receive_manifest};
 
 struct Daemon(Child, PathBuf);
+
+struct FetchDaemon(Child, PathBuf);
+
+impl Drop for FetchDaemon {
+    fn drop(&mut self) {
+        self.0.kill().expect("fixture daemon terminates");
+        self.0.wait().expect("fixture daemon reaps");
+        if !std::thread::panicking() {
+            let diagnostic = fs::read_to_string(&self.1).unwrap();
+            for line in diagnostic.lines().filter(|line| line.contains("error:")) {
+                assert!(
+                    line.contains("hash mismatch")
+                        || line.contains("404")
+                        || line.contains("Cannot download")
+                        || line.contains("interrupted by the user"),
+                    "{diagnostic}"
+                );
+            }
+        }
+    }
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -46,9 +68,15 @@ fn command(arguments: &[&str]) -> String {
 }
 
 fn instantiate(name: &str) -> BuildSpecification {
-    let expression = format!(
-        "derivation {{ name = \"{name}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf terminal > $out\" ]; }}"
-    );
+    instantiate_expression(
+        name,
+        &format!(
+            "derivation {{ name = \"{name}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"printf terminal > $out\" ]; }}"
+        ),
+    )
+}
+
+fn instantiate_expression(name: &str, expression: &str) -> BuildSpecification {
     let link = PathBuf::from(std::env::var_os("TELCHAR_EXECUTION_ROOT").unwrap()).join(name);
     let drv = command(&[
         "nix-instantiate",
@@ -57,59 +85,15 @@ fn instantiate(name: &str) -> BuildSpecification {
         "--add-root",
         link.to_str().unwrap(),
         "--expr",
-        &expression,
+        expression,
     ]);
     let drv = fs::canonicalize(drv).unwrap().to_str().unwrap().to_owned();
-    let metadata: serde_json::Value = serde_json::from_str(&command(&[
-        "nix",
-        "--offline",
-        "--extra-experimental-features",
-        "nix-command",
-        "derivation",
-        "show",
-        "--store",
-        "local",
-        &drv,
-    ]))
-    .unwrap();
-    let derivation =
-        &metadata["derivations"][Path::new(&drv).file_name().unwrap().to_str().unwrap()];
-    let output = derivation["outputs"]["out"]["path"].as_str().unwrap();
-    let output = if output.starts_with('/') {
-        output.to_owned()
-    } else {
-        format!("/nix/store/{output}")
-    };
-    BuildSpecification {
-        derivation_path: drv.into_bytes(),
-        outputs: vec![NamedOutput {
-            name: b"out".to_vec(),
-            path: output.into_bytes(),
-            hash_algorithm: vec![],
-            hash: vec![],
-        }],
-        input_sources: vec![],
-        system: derivation["system"].as_str().unwrap().to_owned(),
-        required_system_features: vec![],
-        builder: derivation["builder"].as_str().unwrap().as_bytes().to_vec(),
-        arguments: derivation["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|arg| arg.as_str().unwrap().as_bytes().to_vec())
-            .collect(),
-        environment: derivation["env"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.as_bytes().to_vec(),
-                    value.as_str().unwrap().as_bytes().to_vec(),
-                )
-            })
-            .collect(),
-    }
+    let target =
+        BackendTarget::new("nomad", BackendKind::Nomad, "x86_64-linux", [] as [&str; 0]).unwrap();
+    let request =
+        BuildRequest::from_stored_derivation(drv.as_bytes(), &fs::read(&drv).unwrap(), &[target])
+            .unwrap();
+    BuildSpecification::from(&request)
 }
 
 fn wire_request(build: &BuildSpecification) -> Vec<u8> {
@@ -210,6 +194,10 @@ fn select_protocol(
 }
 
 fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
+    worker_build_result(build, uri, microvm, None);
+}
+
+fn worker_build_result(build: BuildSpecification, uri: &str, microvm: bool, failure: Option<&str>) {
     let endpoint = GatewayStoreEndpoint::parse(uri).unwrap();
     let info = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint)
         .unwrap()
@@ -226,6 +214,7 @@ fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
             .content_address()
             .map(|value| String::from_utf8(value.to_vec()).unwrap()),
     };
+    let builtin = build.system == "builtin";
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("ws://{}/callback", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
@@ -235,11 +224,16 @@ fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
             .unwrap();
         let mut socket = tungstenite::accept_hdr(stream, select_protocol).unwrap();
         socket.read().unwrap();
+        let paths = if build.system == "builtin" {
+            vec![]
+        } else {
+            vec![entry]
+        };
         let manifest = InputManifest {
             derivation_path: String::from_utf8(build.derivation_path.clone()).unwrap(),
             outputs: vec![String::from_utf8(build.outputs[0].path.clone()).unwrap()],
             build,
-            paths: vec![entry],
+            paths,
         };
         let mut bytes = Vec::new();
         write_frame(
@@ -255,7 +249,58 @@ fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
         socket
             .send(tungstenite::Message::Binary(bytes.into()))
             .unwrap();
-        while socket.read().is_ok() {}
+        let mut nar = Vec::new();
+        let mut metadata: Option<PathManifestEntry> = None;
+        let mut logs = Vec::new();
+        loop {
+            let message = socket.read().unwrap();
+            let frame = read_frame(
+                &mut message.into_data().as_ref(),
+                ProtocolLimits::new(8 * 1024 * 1024, 262144),
+            )
+            .unwrap();
+            match frame.kind() {
+                FrameKind::OutputMetadata => {
+                    metadata = Some(decode_metadata(frame.metadata(), 8 * 1024 * 1024).unwrap());
+                }
+                FrameKind::OutputNar => {
+                    let chunk: NarMetadata =
+                        decode_metadata(frame.metadata(), 8 * 1024 * 1024).unwrap();
+                    assert_eq!(chunk.offset, nar.len() as u64);
+                    nar.extend_from_slice(frame.payload());
+                    if chunk.final_chunk {
+                        let mut bytes = Vec::new();
+                        write_frame(
+                            &mut bytes,
+                            &Frame::new(
+                                FrameKind::OutputReceipt,
+                                encode_metadata(
+                                    &OutputReceipt {
+                                        path: chunk.path,
+                                        accepted: true,
+                                    },
+                                    4096,
+                                )
+                                .unwrap(),
+                                vec![],
+                            ),
+                            ProtocolLimits::new(4096, 0),
+                        )
+                        .unwrap();
+                        socket
+                            .send(tungstenite::Message::Binary(bytes.into()))
+                            .unwrap();
+                    }
+                }
+                FrameKind::LogChunk => logs.extend_from_slice(frame.payload()),
+                FrameKind::BuildResult => {
+                    let result: BuildResultMetadata =
+                        decode_metadata(frame.metadata(), 65536).unwrap();
+                    return (result, metadata, nar, logs);
+                }
+                _ => {}
+            }
+        }
     });
     let values = BTreeMap::from([
         ("TELCHAR_TRANSFER_ENDPOINT", endpoint.as_str()),
@@ -294,9 +339,201 @@ fn worker_build(build: BuildSpecification, uri: &str, microvm: bool) {
         receive_manifest(&config).unwrap()
     };
     session.resolve_inputs(uri).unwrap();
-    session.build(uri).unwrap();
+    match (session.build(uri), failure) {
+        (Ok(result), None) => session.return_outputs(uri, &result).unwrap(),
+        (Err(error), Some(_)) => session.report_failure(&error, 65536).unwrap(),
+        (result, expected) => {
+            panic!("unexpected build result {result:?}; expected failure {expected:?}")
+        }
+    }
     drop(session);
-    server.join().unwrap();
+    let (result, metadata, nar, logs) = server.join().unwrap();
+    if let Some(diagnostic) = failure {
+        assert_eq!(result.outcome, BuildOutcome::Failed);
+        assert!(metadata.is_none());
+        assert!(nar.is_empty());
+        let logs = String::from_utf8(logs).unwrap();
+        let diagnostic_text = result.diagnostic.expect("failed build reports diagnostic");
+        assert!(
+            logs.contains(diagnostic) || diagnostic_text.contains(diagnostic),
+            "logs={logs}; diagnostic={diagnostic_text}"
+        );
+    } else {
+        assert_eq!(result.outcome, BuildOutcome::Built);
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.nar_size, nar.len() as u64);
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(&nar)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(metadata.nar_hash, hash);
+        telchar::store::nar::stage_nar(nar.as_slice(), std::io::sink()).unwrap();
+        if builtin {
+            assert_eq!(
+                telchar::store::nar::read_regular_nar(nar.as_slice(), 4096).unwrap(),
+                b"deterministic builtin fetch\n"
+            );
+            assert!(metadata.content_address.is_some());
+        }
+    }
+}
+
+#[test]
+fn builtin_fetch_executes_on_worker_daemon_and_returns_only_verified_outputs() {
+    let Some(root) = std::env::var_os("TELCHAR_EXECUTION_ROOT") else {
+        let output = Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/test-execution-store.sh"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "builtin_fetch_executes_on_worker_daemon_and_returns_only_verified_outputs",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        return;
+    };
+    let root = PathBuf::from(root);
+    command(&["nix-store", "--store", "local", "--init"]);
+    let log = root.join("daemon.log");
+    let child = Command::new("nix-daemon")
+        .env(
+            "NIX_CONFIG",
+            format!(
+                "{}\nhashed-mirrors =\n",
+                std::env::var("NIX_CONFIG").unwrap()
+            ),
+        )
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let _daemon = FetchDaemon(child, log);
+    let socket = PathBuf::from(std::env::var_os("NIX_DAEMON_SOCKET_PATH").unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let uri = format!("unix://{}", socket.display());
+    let http = TcpListener::bind("127.0.0.1:0").unwrap();
+    http.set_nonblocking(true).unwrap();
+    let address = http.local_addr().unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let http_stop = stop.clone();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let mut requests = Vec::new();
+        while !http_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            match http.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut bytes = [0; 4096];
+                    let count = stream.read(&mut bytes).unwrap();
+                    let request = String::from_utf8_lossy(&bytes[..count]);
+                    let missing = request.starts_with("GET /missing ");
+                    requests.push(request.lines().next().unwrap().to_owned());
+                    let (status, body) = if missing {
+                        ("404 Not Found", "missing")
+                    } else {
+                        ("200 OK", "deterministic builtin fetch\n")
+                    };
+                    write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("HTTP fixture failed: {error}"),
+            }
+        }
+        requests
+    });
+    use sha2::Digest;
+    let expected_hash = sha2::Sha256::digest(b"deterministic builtin fetch\n")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    for (name, route, hash, failure) in [
+        ("fetch-success", "payload", expected_hash.as_str(), None),
+        (
+            "fetch-mismatch",
+            "payload",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            Some("hash-mismatch"),
+        ),
+        (
+            "fetch-failure",
+            "missing",
+            expected_hash.as_str(),
+            Some("404"),
+        ),
+    ] {
+        let expression = format!(
+            "derivation {{ name = \"{name}\"; system = \"builtin\"; builder = \"builtin:fetchurl\"; url = \"http://{address}/{route}\"; outputHashMode = \"flat\"; outputHashAlgo = \"sha256\"; outputHash = \"{hash}\"; preferLocalBuild = false; }}"
+        );
+        let build = instantiate_expression(name, &expression);
+        let wire = wire_request(&build);
+        let mut reader = nix_worker_protocol::WorkerReader::new(
+            wire.as_slice(),
+            nix_worker_protocol::ProtocolSessionLimits::new(1024 * 1024, Duration::from_secs(5)),
+        );
+        let worker = reader.complete_build_derivation().unwrap();
+        let targets = [BackendTarget::new(
+            "nomad-arm",
+            BackendKind::Nomad,
+            "aarch64-linux",
+            [] as [&str; 0],
+        )
+        .unwrap()];
+        let request = BuildRequest::from_worker_request(&worker, &targets).unwrap();
+        assert_eq!(request.system(), "builtin");
+        assert_eq!(
+            telchar::backend::select_backend(&targets, request.system(), &[])
+                .unwrap()
+                .system(),
+            "aarch64-linux"
+        );
+        assert_eq!(BuildSpecification::from(&request), build);
+        let output = PathBuf::from(String::from_utf8(build.outputs[0].path.clone()).unwrap());
+        worker_build_result(build, &uri, false, failure);
+        let mut store = telchar::store::daemon::GatewayStoreConnection::connect(
+            &GatewayStoreEndpoint::parse(&uri).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .query_path_info(output.as_os_str().as_encoded_bytes())
+                .unwrap()
+                .is_some(),
+            failure.is_none()
+        );
+        if failure.is_none() {
+            assert_eq!(fs::read(output).unwrap(), b"deterministic builtin fetch\n");
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request == "GET /payload HTTP/1.1"),
+        "{requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request == "GET /missing HTTP/1.1"),
+        "{requests:?}"
+    );
 }
 
 #[test]
