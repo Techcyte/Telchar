@@ -1282,6 +1282,37 @@ mod tests {
     }
 
     #[test]
+    fn inputless_fetch_callback_manifest_starts_transfer() {
+        let contents = br#"Derive([("out","/nix/store/11111111111111111111111111111111-fetch","sha256","0000000000000000000000000000000000000000000000000000000000000000")],[],[],"builtin","builtin:fetchurl",[],[("builder","builtin:fetchurl"),("name","fetch"),("out","/nix/store/11111111111111111111111111111111-fetch"),("system","builtin")])"#;
+        let target = crate::backend::BackendTarget::new(
+            "nomad",
+            crate::backend::BackendKind::Nomad,
+            "aarch64-linux",
+            [] as [&str; 0],
+        )
+        .unwrap();
+        let request = crate::build::BuildRequest::from_stored_derivation(
+            b"/nix/store/22222222222222222222222222222222-fetch.drv",
+            contents,
+            &[target],
+        )
+        .unwrap();
+        let mut closure = crate::store::closure::GatewayStoreClosureBackend::new(
+            crate::store::daemon::GatewayStoreEndpoint::parse(
+                "unix:///nonexistent-telchar-fixture/socket",
+            )
+            .unwrap(),
+        );
+        let manifest = super::input_manifest(&request, &mut closure).unwrap();
+        assert!(manifest.paths.is_empty());
+        assert_eq!(manifest.build.system, "builtin");
+        crate::nomad::protocol::TransferSession::new(
+            manifest, 8, 4096, 4096, 4096, 4096, 4096, 4096,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn failed_output_collection_logs_correlated_diagnostic_at_warn() {
         let captured = EventCapture::default();
         let dispatch =

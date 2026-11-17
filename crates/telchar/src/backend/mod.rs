@@ -218,7 +218,7 @@ impl BackendTarget {
     }
 
     pub(crate) fn supports(&self, system: &str, required_features: &[&str]) -> bool {
-        self.system == system
+        (self.system == system || (system == "builtin" && self.kind != BackendKind::Microvm))
             && required_features
                 .iter()
                 .all(|required| self.features.iter().any(|feature| feature == required))

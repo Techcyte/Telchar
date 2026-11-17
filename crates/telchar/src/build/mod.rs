@@ -247,6 +247,7 @@ impl BuildRequest {
             .map(String::as_str)
             .collect::<Vec<_>>();
         let system = std::str::from_utf8(&stored.system).map_err(|_| unsupported_request())?;
+        validate_builtin_builder(system, &stored.builder)?;
         if system.is_empty()
             || !backends
                 .iter()
@@ -318,6 +319,7 @@ impl BuildRequest {
             .map(String::as_str)
             .collect::<Vec<_>>();
         let system = std::str::from_utf8(request.platform()).map_err(|_| unsupported_request())?;
+        validate_builtin_builder(system, request.builder())?;
         if request.platform().is_empty()
             || !backends
                 .iter()
@@ -382,7 +384,7 @@ impl BuildRequest {
                 hash: output.hash().to_vec(),
             });
         }
-        Ok(Self {
+        let admitted = Self {
             derivation_path: request.drv_path().to_vec(),
             expected_outputs,
             output_authorities,
@@ -392,10 +394,25 @@ impl BuildRequest {
             builder: request.builder().to_vec(),
             arguments: request.arguments().to_vec(),
             environment: environment.to_vec(),
-        })
+        };
+        admitted.validate_for_execution()?;
+        Ok(admitted)
     }
 
     pub fn validate_for_execution(&self) -> io::Result<()> {
+        validate_builtin_builder(&self.system, &self.builder)?;
+        if self.system == "builtin"
+            && (self.output_authorities.len() != 1
+                || self.output_authorities[0].name() != b"out"
+                || self.output_authorities[0]
+                    .expected_content_address()
+                    .is_none())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported builtin fetch output authority",
+            ));
+        }
         if self.derivation_path.is_empty()
             || self.builder.is_empty()
             || derivation_name(&self.derivation_path).is_none()
@@ -607,6 +624,18 @@ fn required_system_features(environment: &[(Vec<u8>, Vec<u8>)]) -> io::Result<Ve
         }
     }
     Ok(features.into_iter().collect())
+}
+
+fn validate_builtin_builder(system: &str, builder: &[u8]) -> io::Result<()> {
+    if (system == "builtin" || builder.starts_with(b"builtin:"))
+        && (system != "builtin" || builder != b"builtin:fetchurl")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported builtin derivation builder",
+        ));
+    }
+    Ok(())
 }
 
 fn unsupported_request() -> io::Error {
