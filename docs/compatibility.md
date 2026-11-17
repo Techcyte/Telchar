@@ -111,6 +111,18 @@ execution. Callback orchestration is a fixture, not a live Nomad scheduler;
 ARM selection coverage does not establish native ARM execution. Production
 Nomad qualification requires separate operator approval.
 
+An operator-approved AMD64 Nomad qualification also exercised the changed gateway
+and worker against the real cluster, with an isolated PostgreSQL database,
+container-private gateway and worker stores, and deterministic HTTP payload.
+The gateway admitted the original builtin specification, submitted and authenticated
+the allocation, validated and imported its returned output, and recorded terminal
+success. Wrong-hash and HTTP 404 cases recorded terminal failure with no valid
+expected gateway output. The worker daemon was Nix 2.34.8 in this qualification;
+the pinned local fixture covers Nix 2.34.9. Callback transport used an SSH reverse
+tunnel, and ingress used a typed worker client over authenticated local IPC rather
+than stock-client SSH. This does not qualify native ARM execution, Lix builtin
+execution, production callback transport, or the live Telchar deployment.
+
 ## Cascading gateways
 
 The cascading VM contract passes. Full workspace qualification remains pending:
