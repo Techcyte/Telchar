@@ -109,6 +109,7 @@ let
 
         [backends.ssh.builders.builder]
         address = "builder"
+        supported_features = ["signing-ssh"]
       '';
     };
 
