@@ -1,5 +1,12 @@
 use super::*;
 
+fn bash() -> std::path::PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("bash"))
+        .find(|path| path.is_file())
+        .expect("bash on test PATH")
+}
+
 #[test]
 fn resolver_configuration_bounds_commands_and_refresh() {
     let valid = r#"[resolver]
@@ -66,7 +73,10 @@ fn command_refresh_is_rate_limited_and_keeps_last_good_snapshot() {
     .unwrap();
     std::fs::write(
         &script,
-        "#!/usr/bin/env bash\nprintf x >> \"$1\"\nexec cat \"$2\"\n",
+        format!(
+            "#!{}\nprintf x >> \"$1\"\nexec cat \"$2\"\n",
+            bash().display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -88,7 +98,14 @@ fn resolver_command_bounds_noisy_output_and_unclosed_pipes() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     let script = root.path().join("resolver");
-    std::fs::write(&script, "#!/usr/bin/env bash\nif [[ $1 == noisy ]]; then head -c 1048577 /dev/zero; else sleep 2; fi\n").unwrap();
+    std::fs::write(
+        &script,
+        format!(
+            "#!{}\nif [[ $1 == noisy ]]; then head -c 1048577 /dev/zero; else sleep 2; fi\n",
+            bash().display()
+        ),
+    )
+    .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     for argument in ["noisy", "blocked"] {
         let started = std::time::Instant::now();
@@ -139,7 +156,10 @@ fn successful_resolver_cleans_up_background_descendants() {
     let pid = root.path().join("pid");
     std::fs::write(
         &script,
-        "#!/usr/bin/env bash\nsleep 60 >/dev/null 2>&1 &\nprintf '%s' \"$!\" > \"$1\"\nprintf '{}'",
+        format!(
+            "#!{}\nsleep 60 >/dev/null 2>&1 &\nprintf '%s' \"$!\" > \"$1\"\nprintf '{{}}'",
+            bash().display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();

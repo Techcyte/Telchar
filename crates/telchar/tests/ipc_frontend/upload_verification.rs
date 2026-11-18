@@ -78,6 +78,16 @@ fn unsigned_client_upload_is_rejected_without_import() {
         nix_worker_protocol::STDERR_ERROR,
         "unsigned input accepted"
     );
+    assert_eq!(read_string(&mut stream), b"Error");
+    assert_eq!(read_word(&mut stream), 0);
+    assert_eq!(read_string(&mut stream), b"Error");
+    let reason = String::from_utf8(read_string(&mut stream)).unwrap();
+    assert!(
+        reason.contains(&path) && reason.contains("InsufficientSignatures"),
+        "{reason}"
+    );
+    assert_eq!(read_word(&mut stream), 0);
+    assert_eq!(read_word(&mut stream), 0);
     drop(client);
     drop(stream);
     let output = daemon.wait_with_output().unwrap();
