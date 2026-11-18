@@ -2637,6 +2637,7 @@ dependencies = [
  "tracing-subscriber",
  "tungstenite",
  "url",
+ "zeroize",
 ]
 
 [[package]]

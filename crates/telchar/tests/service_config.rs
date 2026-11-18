@@ -78,3 +78,57 @@ fn restore_environment(saved: Vec<(&'static str, Option<OsString>)>) {
         }
     }
 }
+
+#[test]
+fn signing_is_optional_and_requires_protected_key_and_known_failure_policy() {
+    let _guard = ENVIRONMENT.lock().unwrap();
+    let saved = clear_environment();
+    let root = fixture_root("signing");
+    let config = root.join("config.toml");
+    fs::write(&config, "").unwrap();
+    assert!(
+        ServiceConfig::load_from_default(&config)
+            .unwrap()
+            .signing()
+            .is_none()
+    );
+    let key = root.join("key");
+    fs::write(&key, "never-log-this-secret").unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&config, format!("[signing]\nkey_file = {:?}\n", key)).unwrap();
+    let error = ServiceConfig::load_from_default(&config).unwrap_err();
+    assert!(!error.to_string().contains("never-log"));
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let loaded = ServiceConfig::load_from_default(&config).unwrap();
+    assert_eq!(
+        loaded.signing().unwrap().failure_policy(),
+        telchar::service::output_signing::SigningFailurePolicy::Warn
+    );
+    fs::write(
+        &config,
+        format!(
+            "[signing]\nkey_file = {:?}\nfailure_policy = 'fail-build'\n",
+            key
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        ServiceConfig::load_from_default(&config)
+            .unwrap()
+            .signing()
+            .unwrap()
+            .failure_policy(),
+        telchar::service::output_signing::SigningFailurePolicy::FailBuild
+    );
+    fs::write(
+        &config,
+        format!(
+            "[signing]\nkey_file = {:?}\nfailure_policy = 'ignore'\n",
+            key
+        ),
+    )
+    .unwrap();
+    assert!(ServiceConfig::load_from_default(&config).is_err());
+    fs::remove_dir_all(root).unwrap();
+    restore_environment(saved);
+}

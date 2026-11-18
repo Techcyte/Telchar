@@ -10,7 +10,7 @@ use telchar::store::promotion::{GatewayStorePromotionBackend, StorePromotionBack
 
 const STORE_URI: &str = "unix:///nix/var/nix/daemon-socket/socket";
 
-fn assert_isolated_store() {
+pub(super) fn assert_isolated_store() {
     let root = PathBuf::from(
         std::env::var_os("TELCHAR_STORE_ROOT").expect("isolated canonical store required"),
     );

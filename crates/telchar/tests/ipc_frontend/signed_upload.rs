@@ -23,11 +23,11 @@ impl Drop for UploadDaemon {
     }
 }
 
-struct Upload {
-    path: String,
-    hash_hex: String,
-    nar_size: u64,
-    signatures: Vec<String>,
+pub(super) struct Upload {
+    pub(super) path: String,
+    pub(super) hash_hex: String,
+    pub(super) nar_size: u64,
+    pub(super) signatures: Vec<String>,
 }
 
 fn nix_command(root: &Path) -> Command {
@@ -50,7 +50,7 @@ fn nix_command(root: &Path) -> Command {
     command
 }
 
-fn nix_stdout(root: &Path, arguments: &[&str]) -> Vec<u8> {
+pub(super) fn nix_stdout(root: &Path, arguments: &[&str]) -> Vec<u8> {
     let output = nix_command(root).args(arguments).output().unwrap();
     assert!(
         output.status.success(),
@@ -65,7 +65,7 @@ fn nix_stdout(root: &Path, arguments: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
-fn path_info(root: &Path, path: &str) -> serde_json::Value {
+pub(super) fn path_info(root: &Path, path: &str) -> serde_json::Value {
     let output = nix_stdout(
         root,
         &["path-info", "--json", "--json-format", "1", "--sigs", path],
@@ -80,7 +80,7 @@ fn path_info(root: &Path, path: &str) -> serde_json::Value {
     info.clone()
 }
 
-fn hash_hex(root: &Path, hash: &str) -> String {
+pub(super) fn hash_hex(root: &Path, hash: &str) -> String {
     String::from_utf8(nix_stdout(
         root,
         &["hash", "convert", "--to", "base16", hash],
@@ -90,7 +90,7 @@ fn hash_hex(root: &Path, hash: &str) -> String {
     .to_owned()
 }
 
-fn upload_once(
+pub(super) fn upload_once(
     root: &Path,
     database: &PostgresFixture,
     session: &str,
@@ -114,6 +114,10 @@ fn upload_once(
         contents.push_str(&format!(
             "\n[upload_verification]\nenabled = true\nmin_signatures = 1\ntrusted_public_keys = [{public_key:?}]\n"
         ));
+    }
+    let signing_key = root.join("executor-signing-key");
+    if signing_key.exists() {
+        contents.push_str(&format!("\n[signing]\nkey_file = {signing_key:?}\n"));
     }
     let hook = root.join("policy");
     if hook.exists() {

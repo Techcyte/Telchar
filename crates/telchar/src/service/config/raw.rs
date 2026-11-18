@@ -10,6 +10,7 @@ pub(super) struct RawServiceConfig {
     pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) audit: Option<AuditSection>,
     pub(super) upload_verification: Option<crate::service::upload_verification::UploadVerification>,
+    pub(super) signing: Option<SigningSection>,
     pub(super) database: Option<DatabaseSection>,
     pub(super) ipc: Option<IpcSection>,
     pub(super) identity: Option<IdentityConfig>,
@@ -431,4 +432,12 @@ pub(super) struct RawNomadResourceProfile {
 pub(super) struct RawCredentialMapping {
     pub(super) audit_subject: Option<String>,
     pub(super) quota_subject: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SigningSection {
+    pub(super) key_file: PathBuf,
+    #[serde(default)]
+    pub(super) failure_policy: crate::service::output_signing::SigningFailurePolicy,
 }

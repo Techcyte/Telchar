@@ -459,3 +459,124 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
     );
     fs::remove_dir_all(root).expect("fixture cleans");
 }
+
+#[test]
+fn live_output_signing_failure_policy_includes_assigned_executor_already_valid() {
+    for (policy, status, expected_state, signs) in [
+        ("warn", "built", "succeeded", true),
+        ("warn", "already-valid", "succeeded", true),
+        ("fail-build", "built", "failed", true),
+        ("fail-build", "already-valid", "failed", true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let key = root.path().join("signing-key");
+        let generated = Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "key",
+                "generate-secret",
+                "--key-name",
+                "live-test",
+            ])
+            .output()
+            .unwrap();
+        assert!(generated.status.success());
+        fs::write(&key, &generated.stdout).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = root.path().join("config.toml");
+        fs::write(&config, format!("[backends.local]\nname = 'local'\nsystem = 'x86_64-linux'\nmaximum_concurrent_builds = 1\n[signing]\nkey_file = {:?}\nfailure_policy = '{policy}'\n", key)).unwrap();
+        let helper = root.path().join("build-helper");
+        fs::write(&helper, format!("#!/bin/sh\ncat >/dev/null\nprintf '{{\"version\":1,\"success\":true,\"status\":\"{status}\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}\\n'\n")).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut fixture = FrontendFixture::spawn_with_store(
+            None,
+            "unix:///fixed-gateway.sock",
+            [
+                ("TELCHAR_CONFIG", config.display().to_string()),
+                ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ],
+        );
+        let mut input = fixture.frontend.stdin.take().unwrap();
+        let mut output = fixture.frontend.stdout.take().unwrap();
+        complete_handshake(&mut input, &mut output);
+        write_build_derivation_request(&mut input, "x86_64-linux", 0);
+        input.flush().unwrap();
+        if expected_state == "failed" {
+            assert_eq!(read_integer(&mut output), STDERR_ERROR);
+            assert_eq!(read_string(&mut output), "Error");
+            read_integer(&mut output);
+            assert_eq!(read_string(&mut output), "Error");
+            assert_eq!(read_string(&mut output), "executor output signing failed");
+            assert_eq!(read_integer(&mut output), 0);
+            assert_eq!(read_integer(&mut output), 0);
+        } else {
+            let tag = read_integer(&mut output);
+            if tag == STDERR_ERROR {
+                read_string(&mut output);
+                read_integer(&mut output);
+                read_string(&mut output);
+                let message = read_string(&mut output);
+                panic!(
+                    "unexpected rejection: {message}; daemon: {}",
+                    fs::read_to_string(fixture.root.join("daemon.stderr")).unwrap_or_default()
+                );
+            }
+            assert_eq!(tag, STDERR_LAST);
+            assert_eq!(
+                read_integer(&mut output),
+                if status == "built" { 0 } else { 2 }
+            );
+            read_string(&mut output);
+            for _ in 0..6 {
+                read_integer(&mut output);
+            }
+            for _ in 0..read_integer(&mut output) {
+                read_string(&mut output);
+                read_string(&mut output);
+            }
+        }
+        drop(input);
+        drop(output);
+        assert!(fixture.frontend.wait().unwrap().success());
+        let build = telchar::persistence::read_shared_build(
+            fixture.database.url(),
+            "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            build.state,
+            if expected_state == "failed" {
+                telchar::persistence::SharedBuildState::Failed
+            } else {
+                telchar::persistence::SharedBuildState::Succeeded
+            }
+        );
+        let mut database = fixture.database.connect();
+        assert_eq!(
+            database
+                .query_one("SELECT state FROM shared_build_attempts", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            expected_state
+        );
+        assert_eq!(
+            database
+                .query_one(
+                    "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+                    &[]
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        let stderr = fixture.finish();
+        assert_eq!(
+            stderr.contains("executor.output_signing.failed"),
+            signs,
+            "{stderr}"
+        );
+        assert!(!stderr.contains(std::str::from_utf8(&generated.stdout).unwrap().trim()));
+    }
+}

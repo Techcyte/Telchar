@@ -153,6 +153,12 @@ impl GatewayStoreConnection {
         result
     }
 
+    pub fn add_signatures(&mut self, path: &[u8], signatures: &[Vec<u8>]) -> io::Result<()> {
+        self.client
+            .add_signatures(path, signatures)
+            .map_err(|_| connection_error())
+    }
+
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         let started = std::time::Instant::now();
         let result = self

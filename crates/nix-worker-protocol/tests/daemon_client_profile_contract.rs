@@ -238,3 +238,73 @@ fn profile_does_not_retain_raw_daemon_metadata() {
             + std::mem::size_of_val(&client.profile().capabilities)
     );
 }
+
+#[test]
+fn add_signatures_exact_bytes_across_supported_profiles_without_trust_gate() {
+    let path = b"/nix/store/00000000000000000000000000000000-output";
+    for minor in 35..=38 {
+        let version = WorkerVersion::new(1, minor);
+        let mut response = handshake_response(version, Some(2));
+        integer(&mut response, STDERR_LAST);
+        integer(&mut response, 1);
+        let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
+        client
+            .add_signatures(path, &[b"builder:signature".to_vec()])
+            .unwrap();
+        let mut expected = expected_handshake(version);
+        integer(&mut expected, 37);
+        byte_string(&mut expected, path);
+        integer(&mut expected, 1);
+        byte_string(&mut expected, b"builder:signature");
+        assert_eq!(client.into_inner().output, expected);
+    }
+}
+
+#[test]
+fn add_signatures_validates_before_writing_and_requires_complete_ack() {
+    let version = LATEST_WORKER_VERSION;
+    let mut client =
+        WorkerClient::connect(ScriptedStream::new(handshake_response(version, Some(1)))).unwrap();
+    assert!(client.add_signatures(b"bad-path", &[]).is_err());
+    assert!(
+        client
+            .add_signatures(
+                b"/nix/store/00000000000000000000000000000000-output",
+                &[vec![b'x'; 16385]]
+            )
+            .is_err()
+    );
+    assert_eq!(client.into_inner().output, expected_handshake(version));
+    for ack in [vec![], vec![1], 0u64.to_le_bytes().to_vec()] {
+        let mut response = handshake_response(version, Some(1));
+        integer(&mut response, STDERR_LAST);
+        response.extend(ack);
+        let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
+        assert!(
+            client
+                .add_signatures(b"/nix/store/00000000000000000000000000000000-output", &[])
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn add_signatures_daemon_error_is_redacted_and_has_no_ack() {
+    let version = LATEST_WORKER_VERSION;
+    let mut response = handshake_response(version, Some(1));
+    integer(&mut response, STDERR_ERROR);
+    byte_string(&mut response, b"Error");
+    integer(&mut response, 0);
+    byte_string(&mut response, b"Error");
+    byte_string(&mut response, b"private-daemon-diagnostic-sentinel");
+    integer(&mut response, 0);
+    integer(&mut response, 0);
+    let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
+    let error = client
+        .add_signatures(
+            b"/nix/store/00000000000000000000000000000000-output",
+            &[b"key:sig".to_vec()],
+        )
+        .unwrap_err();
+    assert!(!error.to_string().contains("private-daemon"));
+}
