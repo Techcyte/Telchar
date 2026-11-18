@@ -226,6 +226,52 @@ fn concurrent_batches_cannot_overcommit_retained_capacity() {
 }
 
 #[test]
+fn retained_admission_lock_deadline_recovers_without_database_restart() {
+    let (fixture, database) = database();
+    request(&database, "blocked-admission");
+    let entries = leases("blocked-admission", 1);
+    let mut blocker = fixture.connect();
+    let mut lock = blocker.transaction().unwrap();
+    lock.query_one(
+        "SELECT pg_advisory_xact_lock($1)",
+        &[&(0x5445_4c43_4841_5204_u64 as i64)],
+    )
+    .unwrap();
+    let bounded = database.for_request(
+        std::time::Instant::now() + Duration::from_millis(300),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let started = std::time::Instant::now();
+    let error = persistence::create_request_input_leases_with_limit(
+        &bounded,
+        "blocked-admission",
+        u64::MAX,
+        &entries,
+    )
+    .unwrap_err();
+    assert_eq!(error.failure(), StoreLeaseFailure::Query);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        fixture
+            .connect()
+            .query_one("SELECT count(*) FROM store_leases", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        0,
+        "timed-out admission must not persist leases"
+    );
+    lock.rollback().unwrap();
+    let records = persistence::create_request_input_leases_with_limit(
+        &database,
+        "blocked-admission",
+        u64::MAX,
+        &entries,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
 #[ignore = "release-mode PostgreSQL batch benchmark; no timing assertion"]
 fn measure_input_lease_batches() {
     let (fixture, database) = database();

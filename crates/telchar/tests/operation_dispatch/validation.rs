@@ -115,6 +115,48 @@ fn mismatched_build_derivation_system_is_rejected_before_execution() {
 }
 
 #[test]
+fn multiple_direct_store_targets_explain_daemon_offload_mode() {
+    let mut fixture = FrontendFixture::spawn(None);
+    let child = &mut fixture.frontend;
+    let mut input = child.stdin.take().expect("server input");
+    let mut output = child.stdout.take().expect("server output");
+    complete_handshake(&mut input, &mut output);
+
+    write_integer(&mut input, 46);
+    write_integer(&mut input, 2);
+    for name in ["first", "second"] {
+        write_string(
+            &mut input,
+            format!("/nix/store/11111111111111111111111111111111-{name}.drv!out").as_bytes(),
+        );
+    }
+    write_integer(&mut input, 0);
+    input
+        .flush()
+        .expect("BuildPathsWithResults request flushes");
+
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    let _level = read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(
+        read_string(&mut output),
+        "BuildPathsWithResults requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets"
+    );
+    assert_eq!(read_integer(&mut output), 0, "error has no position");
+    assert_eq!(read_integer(&mut output), 0, "error has no trace");
+    drop(input);
+    drop(output);
+    assert!(child.wait().expect("Telchar exits").success());
+    let stderr = fixture.finish();
+    assert!(
+        stderr.contains("unsupported-build-paths-with-results"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("gateway.stored_build.failed"), "{stderr}");
+}
+
+#[test]
 fn recognized_unsupported_operation_returns_a_distinct_framed_error() {
     let response = send_operation(39);
     assert_eq!(response.message, "unsupported worker operation");
