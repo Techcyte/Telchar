@@ -174,7 +174,7 @@ in
             failure_policy = "fail-build"
           '');
         };
-        builder = staticSshBuilderModule { };
+        builder = staticSshBuilderModule { systemFeatures = [ "signing-ssh" ]; };
       };
       testScript = ''
         start_all()
