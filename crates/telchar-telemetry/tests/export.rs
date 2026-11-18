@@ -19,6 +19,7 @@ fn emit_signals() {
         let span = tracing::info_span!("request", request_id = "identity-test");
         let _entered = span.enter();
         tracing::info!(request_id = "identity-test", "service started");
+        telchar_telemetry::emit_audit("session.started", "{\"session_id\":\"export-audit\"}");
         opentelemetry::global::meter("identity-test")
             .u64_counter("test.starts")
             .build()
@@ -42,6 +43,7 @@ fn export(endpoint: String, protocol: &str) -> Output {
     assert!(stderr.contains(" INFO service started"), "{stderr}");
     assert!(stderr.contains(" trace_id="), "{stderr}");
     assert!(!String::from_utf8_lossy(&output.stdout).contains(" trace_id="));
+    assert!(!stderr.contains("audit.export_failed"), "{stderr}");
     output
 }
 
@@ -52,7 +54,17 @@ fn exports_configured_service_identity() {
     assert!(collector.has_all_signals());
     let trace_id = collector.assert_correlated("identity-test", "test-service");
     assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("trace_id={trace_id}")));
-    for request in collector.log_requests.lock().expect("log requests").iter() {
+    let requests = collector.log_requests.lock().expect("log requests");
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| &request.resource_logs)
+            .flat_map(|resource| &resource.scope_logs)
+            .flat_map(|scope| &scope.log_records)
+            .any(|record| record.event_name == "session.started"),
+        "audit log not exported"
+    );
+    for request in requests.iter() {
         for resource in &request.resource_logs {
             assert!(collector::Collector::has_attribute(
                 &resource.resource.as_ref().expect("resource").attributes,

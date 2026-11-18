@@ -4,6 +4,7 @@
   lib,
   package,
   socketPath,
+  auditEnabled ? false,
 }:
 pkgs.writeShellScript "telchar-forced-command" ''
   export PATH=${
@@ -15,5 +16,11 @@ pkgs.writeShellScript "telchar-forced-command" ''
   }
   export TELCHAR_IPC_SOCKET=${lib.escapeShellArg socketPath}
   export TELCHAR_PROGRAM=${lib.escapeShellArg "${package}/bin/telchar"}
+  ${lib.optionalString auditEnabled ''
+    export TELCHAR_CONFIG=${pkgs.writeText "telchar-frontend.toml" ''
+      [audit]
+      enabled = true
+    ''}
+  ''}
   ${builtins.readFile ../deploy/ssh/telchar-ssh-forced-command.sh}
 ''

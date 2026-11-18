@@ -108,6 +108,15 @@ pub(super) fn serve_accepted_connection(
     );
     telchar::service::metrics::session_started();
     let session_running = std::time::Instant::now();
+    let audit_identity = service_config.audit_enabled().then(|| {
+        (
+            connection.envelope().requester.clone(),
+            connection.envelope().identity_details.clone(),
+        )
+    });
+    let audit = audit_identity.as_ref().map(|(requester, identity)| {
+        telchar::service::audit::SessionAudit::new(&session_id, requester, identity.as_ref())
+    });
     let result = (|| {
         let input = connection.stream_mut().try_clone()?;
         let mut store_query = gateway_store.query();
@@ -144,6 +153,7 @@ pub(super) fn serve_accepted_connection(
             &connection.envelope().requester.audit_subject,
             &connection.envelope().requester.quota_subject,
         )
+        .audit(audit.as_ref())
         .transfer_admission(transfer_limits, object_admission, rate_admission)
         .disk_admission(disk_reserve, disk_probe)
         .post_build_hook(service_config.post_build_hook())
@@ -154,6 +164,7 @@ pub(super) fn serve_accepted_connection(
         )
         .run()
     })();
+    drop(audit);
     telchar::service::metrics::session_finished();
     tracing::debug!(
         event = "ipc.daemon.session_run.completed",

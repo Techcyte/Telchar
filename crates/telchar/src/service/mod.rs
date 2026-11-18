@@ -2,6 +2,7 @@
 
 pub(crate) mod activity;
 pub mod admin;
+pub mod audit;
 pub mod config;
 pub mod config_reload;
 pub mod daemon_services;

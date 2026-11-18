@@ -19,6 +19,7 @@ pub struct SessionBuilder<'a> {
     session_id: Option<&'a str>,
     audit_subject: Option<&'a str>,
     quota_subject: Option<&'a str>,
+    audit: Option<&'a crate::service::audit::SessionAudit<'a>>,
     transfer_limits: Option<&'a crate::service::transfer_limits::TransferLimits>,
     object_admission: Option<&'a crate::service::transfer_limits::ObjectAdmissionState>,
     rate_admission: Option<&'a crate::service::transfer_limits::RateAdmissionState>,
@@ -49,6 +50,7 @@ pub(super) struct SessionContext<'a> {
     pub session_id: &'a str,
     pub audit_subject: &'a str,
     pub quota_subject: &'a str,
+    pub audit: Option<&'a crate::service::audit::SessionAudit<'a>>,
     pub transfer_limits: &'a crate::service::transfer_limits::TransferLimits,
     pub object_admission: &'a crate::service::transfer_limits::ObjectAdmissionState,
     pub rate_admission: &'a crate::service::transfer_limits::RateAdmissionState,
@@ -85,6 +87,7 @@ impl<'a> SessionBuilder<'a> {
             session_id: None,
             audit_subject: None,
             quota_subject: None,
+            audit: None,
             transfer_limits: None,
             object_admission: None,
             rate_admission: None,
@@ -149,6 +152,10 @@ impl<'a> SessionBuilder<'a> {
         self.session_id = Some(session_id);
         self.audit_subject = Some(audit_subject);
         self.quota_subject = Some(quota_subject);
+        self
+    }
+    pub fn audit(mut self, audit: Option<&'a crate::service::audit::SessionAudit<'a>>) -> Self {
+        self.audit = audit;
         self
     }
     pub fn transfer_admission(
@@ -221,6 +228,7 @@ impl<'a> SessionBuilder<'a> {
             session_id: self.session_id.ok_or_else(missing)?,
             audit_subject: self.audit_subject.ok_or_else(missing)?,
             quota_subject: self.quota_subject.ok_or_else(missing)?,
+            audit: self.audit,
             transfer_limits: self.transfer_limits.ok_or_else(missing)?,
             object_admission: self.object_admission.ok_or_else(missing)?,
             rate_admission: self.rate_admission.ok_or_else(missing)?,

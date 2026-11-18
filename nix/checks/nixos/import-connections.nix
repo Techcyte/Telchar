@@ -41,6 +41,7 @@ pkgs.testers.nixosTest {
           hostKeyFile = "/etc/ssh/ssh_host_ed25519_key";
           authorizedKeysFile = "/etc/ssh/authorized_keys.d/telchar";
         };
+        settings.audit.enabled = true;
         settings.backends.local = {
           name = "local";
           inherit system;
@@ -151,8 +152,21 @@ pkgs.testers.nixosTest {
         print("CACHE_VALIDITY " + report)
         gateway.succeed("test $(cat " + cached_path + ") = " + shlex.quote(nonce))
         gateway.succeed("nix-store --verify-path " + cached_path)
+    journal = gateway.succeed("journalctl --sync; journalctl -u telchar.service --no-pager -o cat")
+    audit = []
+    for line in journal.splitlines():
+        if "WARN audit." in line and "{" in line:
+            audit.append(json.loads(line[line.index("{"):]))
+    assert any(event["event"] == "session.started" and event["identity"]["source_address"] for event in audit), audit
+    assert any(event["event"] == "upload.accepted" for event in audit), audit
+    for event in audit:
+        assert event["session_id"] and event["audit_subject"] and event["credential_id"], event
+    client.succeed("SSH_CONNECTION='203.0.113.99 1 203.0.113.98 22' NIX_SSHOPTS='-4 -o SendEnv=SSH_CONNECTION' nix --store ssh-ng://telchar@gateway:2222 store info >/dev/null")
+    journal = gateway.succeed("sleep 2; journalctl --sync; journalctl -u telchar.service --no-pager -o cat")
+    sessions = [json.loads(line[line.index("{"):]) for line in journal.splitlines() if "WARN audit." in line and "{" in line]
+    assert not any(event.get("identity", {}).get("source_address") == "203.0.113.99" for event in sessions if event["event"] == "session.started"), sessions
     print("IMPORT_BENCHMARK_RESULTS " + json.dumps(results))
     for result in results:
-        assert result["connections"] == (1 if result["frontend"] == "plain" else 2), result
+        assert result["connections"] == (1 if result["frontend"] == "plain" else 3), result
   '';
 }

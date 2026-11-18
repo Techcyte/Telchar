@@ -244,6 +244,25 @@ telchar operator recovery --limit 64
 
 `config-check` validates configuration without requiring PostgreSQL. Other commands require the configured database and an already migrated schema. `queue` reports durable queue order. `build` reports one derivation's durable state and current attempt. `backends` combines configured capacity with active durable builds and performs the same bounded SSH/Nix readiness probe for static SSH entries. `recovery` reports bounded active work and its persisted recovery mode. Limits default to 64 and may not exceed 256.
 
+## Client audit
+
+Client audit is optional and disabled by default. We recommend enabling it for attribution within the shared trusted store domain:
+
+```toml
+[audit]
+enabled = true
+```
+
+NixOS uses `services.telchar.settings.audit.enabled = true`. The example SSH compositions pass the toggle to a minimal frontend configuration; custom users of `lib.sshForcedCommand` must pass `auditEnabled = true`, or supply the same audit configuration to `telchar serve-stdio`. The frontend never needs database credentials. Frontend and daemon must run matching Telchar versions. Stock Nix clients require no changes: only private Telchar IPC carries the additional identity metadata.
+
+`session.started` includes credential, audit/quota subjects, available SSH key/certificate details, source address/port and negotiated worker protocol. The supported stock handshake does not send a client Nix release string; `client_nix_version` is null. Each subsequent audit record includes `session_id`, `audit_subject` and `credential_id`. Upload decisions include declared path/hash/size/content address/deriver, reference count, supplied public signatures and observed `already_valid` (null if the audit lookup fails). Build records contain requested targets and terminal status/output paths; session summaries count accepted/rejected uploads and build requests.
+
+Audit does not verify signatures or prove that input-addressed content was built from a derivation. An accepted upload means the existing gateway import validation succeeded, not trusted build provenance. Executor output imports are not client upload events. Public signature values are logged deliberately; secret signing keys and credentials are never audit fields. Treat identity and path metadata as sensitive operational data and apply retention/access controls at the collector.
+
+Audit uses a bounded background queue independent of ordinary logs. Export failure or queue saturation attempts a local WARN containing the record, bypassing recursive OTLP export and the shared stderr lock. Audit never waits for network or queue capacity. If the local sink is unavailable or full, its nonblocking write can be dropped or incomplete: this is best-effort operational audit, not a lossless compliance ledger. Shutdown is bounded and may leave queued records unexported. Audit remains enabled independently of `RUST_LOG` filtering.
+
+SSH authentication details must come from sshd `ExposeAuthInfo`; the adapter clears inherited `TELCHAR_AUTHENTICATED_*` identity variables. `SSH_CONNECTION` must be sshd-owned. Never add `SSH_CONNECTION` or `TELCHAR_AUTHENTICATED_*` to `AcceptEnv`, user environment files, or client-controlled startup configuration. The supplied ingress does not accept these variables.
+
 ## Logs and telemetry
 
 Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.
