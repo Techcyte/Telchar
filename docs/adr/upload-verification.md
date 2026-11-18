@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress; qualification pending.
+Implemented; default off. Registry/signature and deny-only policy checks are qualified independently. Combined executor-signing workflow is qualified through sequential producer/receiver IPC with real Nix in one isolated store, not simultaneous two-gateway SSH execution.
 
 ## Context
 

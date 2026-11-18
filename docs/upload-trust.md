@@ -92,6 +92,14 @@ Request shape:
 
 Telchar carries `contentAddress` and `alreadyValid`; Attic's hook instead carries cache name and `deduplicated`. Policies using those product-specific fields need corresponding logic. Shared signer metadata and response semantics do not imply byte-identical request payloads.
 
+## Executor signing and receiving trust
+
+Optional [executor output signing](operations.md#optional-executor-output-signing) lets a receiving Telchar trust results supplied by an assigned trusted executor. Publish that signer's public key in the receiving registry; keep its private key only on the producing gateway. Executor-store cache hits can be signed after gateway validation. Client uploads, gateway-only reuse and recovery do not acquire executor signatures merely because their paths exist. A signature is not proof of fresh execution.
+
+Signing failures warn by default. Optional `fail-build` applies to live completion only; restart recovery can still declare exact validated outputs successful without signatures. A receiving gateway with verification enabled rejects unsigned input-addressed uploads regardless of the producer's successful build status.
+
+Qualification includes real Nix executor signing, export, removal of the exact output from a disposable store, and receiving IPC upload verification against a fresh database/configuration. Unsigned and untrusted developer-signed versions are rejected; the trusted executor signature is accepted. This is sequential producer/receiver qualification in one isolated canonical store, not a simultaneous two-gateway SSH topology. Separate stock-client SSH checks qualify signed input uploads and remote executor signing.
+
 ## Related implementation contract
 
 Registry JSON and duplicate handling were checked against the Attic fork feature source at `5e76942d356b875c99aafdf9d07710790612e3c9`, not upstream/main. Telchar uses its normal snake_case TOML naming, whereas that fork uses kebab-case. This is format provenance, not a claim that either product's entire configuration or policy request can be used unchanged in the other.
