@@ -454,10 +454,14 @@ Local, static SSH and microVM builds use session completion; Nomad signs in the
 callback before its durable completion. Signatures use registered gateway metadata,
 not worker declarations, and are added synchronously through typed Nix
 `AddSignatures` (op 37). Imported signatures are preserved. Inputs, client uploads,
-gateway substitution hits, followers, durable-result reuse and executor
-`AlreadyValid` results are not signed. A gateway-level microVM `Built` result means
-the assigned execution completed and transferred validated outputs; it is not a
-claim that the worker ignored its own valid store paths.
+gateway-only reuse/substitution hits, followers and durable-result reuse are not
+signed. A signature attests that the assigned trusted executor supplied a result
+that passed gateway validation; it does **not** prove a fresh build. An assigned
+executor's own store cache hit (`AlreadyValid`) is eligible for signing, including
+local and static SSH results. Nomad and microVM normalize successful assigned
+execution/cache-hit results to gateway-level `Built` after transferring validated
+outputs; they do not preserve the raw Nix `AlreadyValid` distinction. Gateway-only
+reuse is excluded by the actual execution branch, not by the result status.
 
 Default `warn` emits `executor.output_signing.failed` and increments
 `telchar.executor.output_signing` with `result=failed`, then allows successful live

@@ -459,6 +459,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 execution.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
+                // Assigned executor cache hits are attestable; gateway-only reuse is not.
+                let assigned_executor_completed = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();
                 let derivation_path =
                     std::str::from_utf8(admitted.derivation_path()).map_err(|_| {
@@ -729,7 +731,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         selection_priority = selected_target.selection_priority(),
                                         "shared build assigned available backend capacity"
                                     );
-                                    crate::service::activity::run("execute", || build_executor.execute_reserved(
+                                    let result = crate::service::activity::run("execute", || build_executor.execute_reserved(
                             &execution,
                             permit,
                             &mut |chunk| {
@@ -774,7 +776,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                                 Ok(disconnected)
                             },
-                        ))
+                        ));
+                                    assigned_executor_completed.set(result.is_ok());
+                                    result
                                     })()
                                 }
                             };
@@ -1156,7 +1160,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         });
                 if durable_execution_owned.get()
                     && !build_already_succeeded
-                    && result.status() == BuildStatus::Built
+                    && assigned_executor_completed.get()
                     && let Some(signer) = output_signer
                     && signer.sign_validated_outputs(&validated_outputs, || database.wait_for_ownership()).is_err()
                 {

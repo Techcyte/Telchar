@@ -136,6 +136,49 @@ fn live_executor_outputs_are_signed_before_success_and_verify_with_pinned_nix() 
             .unwrap();
         assert_eq!(info.signatures(), after.signatures());
     }
+    // A separately realized gateway-only result must remain unsigned, even with
+    // the same AlreadyValid client result status as an assigned executor hit.
+    let cached_expression = expression.replace("telchar-signing-", "telchar-gateway-reuse-");
+    let cached_drv = Command::new("nix-instantiate")
+        .args(["--expr", &cached_expression])
+        .output()
+        .unwrap();
+    assert!(cached_drv.status.success());
+    let cached_drv = String::from_utf8(cached_drv.stdout).unwrap();
+    let cached_output = Command::new("nix-store")
+        .args(["--realise", cached_drv.trim()])
+        .output()
+        .unwrap();
+    assert!(cached_output.status.success());
+    let cached_output = String::from_utf8(cached_output.stdout).unwrap();
+    let mut stream = UnixStream::connect(&socket).unwrap();
+    IpcListener::send_envelope(&mut stream, &authenticated_envelope("gateway-only-reuse")).unwrap();
+    let mut client = nix_worker_protocol::WorkerClient::connect(stream).unwrap();
+    client
+        .build_paths_with_results(&[format!("{}!*", cached_drv.trim()).into_bytes()])
+        .unwrap();
+    drop(client);
+    let endpoint =
+        telchar::store::GatewayStoreEndpoint::parse("unix:///nix/var/nix/daemon-socket/socket")
+            .unwrap();
+    assert!(
+        telchar::store::GatewayStoreConnection::connect(&endpoint)
+            .unwrap()
+            .query_path_info(cached_output.trim().as_bytes())
+            .unwrap()
+            .unwrap()
+            .signatures()
+            .is_empty(),
+        "gateway-only reuse must not acquire executor signature"
+    );
+    assert_eq!(
+        telchar::persistence::read_shared_build(database.url(), cached_drv.trim())
+            .unwrap()
+            .unwrap()
+            .result_metadata
+            .unwrap()["status"],
+        "already-valid"
+    );
     daemon.kill().unwrap();
     let result = daemon.wait_with_output().unwrap();
     assert!(

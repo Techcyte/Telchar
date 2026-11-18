@@ -461,11 +461,12 @@ fn invalid_output_metadata_fails_before_result_and_releases_request_state() {
 }
 
 #[test]
-fn live_output_signing_failure_warns_or_terminalizes_and_already_valid_never_signs() {
+fn live_output_signing_failure_policy_includes_assigned_executor_already_valid() {
     for (policy, status, expected_state, signs) in [
         ("warn", "built", "succeeded", true),
+        ("warn", "already-valid", "succeeded", true),
         ("fail-build", "built", "failed", true),
-        ("fail-build", "already-valid", "succeeded", false),
+        ("fail-build", "already-valid", "failed", true),
     ] {
         let root = tempfile::tempdir().unwrap();
         let key = root.path().join("signing-key");
