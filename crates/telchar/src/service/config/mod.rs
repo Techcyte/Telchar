@@ -102,6 +102,7 @@ pub struct ServiceConfig {
     output_retention: OutputRetention,
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
+    upload_verification: crate::service::upload_verification::UploadVerification,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
     database_url: Option<String>,
     ownership_renewal_interval: Duration,
@@ -150,6 +151,10 @@ impl ServiceConfig {
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
         self.maximum_retained_input_bytes
+    }
+
+    pub fn upload_verification(&self) -> &crate::service::upload_verification::UploadVerification {
+        &self.upload_verification
     }
 
     pub fn audit_enabled(&self) -> bool {
@@ -254,6 +259,7 @@ impl ServiceConfig {
             || self.output_retention != replacement.output_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
+            || self.upload_verification != replacement.upload_verification
             || self.post_build_hook != replacement.post_build_hook
             || self.database_url != replacement.database_url
             || self.ownership_renewal_interval != replacement.ownership_renewal_interval
@@ -374,6 +380,9 @@ impl ServiceConfig {
         if maximum_retained_input_bytes > i64::MAX as u64 {
             return Err(invalid("retained input byte limit is invalid"));
         }
+
+        let upload_verification = raw.upload_verification.unwrap_or_default();
+        upload_verification.validate()?;
 
         let post_build_hook = raw
             .post_build_hook
@@ -526,6 +535,7 @@ impl ServiceConfig {
             output_retention,
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
+            upload_verification,
             post_build_hook,
             database_url,
             ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),

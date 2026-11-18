@@ -9,6 +9,7 @@ pub(super) struct RawServiceConfig {
     #[serde(alias = "cache_publication")]
     pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) audit: Option<AuditSection>,
+    pub(super) upload_verification: Option<crate::service::upload_verification::UploadVerification>,
     pub(super) database: Option<DatabaseSection>,
     pub(super) ipc: Option<IpcSection>,
     pub(super) identity: Option<IdentityConfig>,

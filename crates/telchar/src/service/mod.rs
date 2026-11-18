@@ -19,3 +19,4 @@ pub mod singleton_ownership;
 pub mod static_ssh_consul;
 pub mod static_ssh_ec2;
 pub mod transfer_limits;
+pub mod upload_verification;
