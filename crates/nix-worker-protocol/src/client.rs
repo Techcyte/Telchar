@@ -387,6 +387,30 @@ impl<S: Read + Write> WorkerClient<S> {
         Ok(valid)
     }
 
+    /// Adds signatures to registered metadata. This is not an ingress authorization API.
+    /// Pinned Nix 2.34.9: remote-store.cc:741 and daemon.cc:887 (operation 37).
+    pub fn add_signatures(&mut self, path: &[u8], signatures: &[Vec<u8>]) -> io::Result<()> {
+        validate_store_path_in_directory(path, &self.store_directory)?;
+        if signatures.len() > 1024
+            || signatures
+                .iter()
+                .any(|signature| signature.is_empty() || signature.len() > 16_384)
+            || signatures.iter().map(Vec::len).sum::<usize>() > 1024 * 1024
+            || signatures.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(protocol_client_error());
+        }
+        write_worker_integer_to(&mut self.stream, WorkerOperation::AddSignatures.code())?;
+        write_worker_byte_string_to(&mut self.stream, path)?;
+        write_byte_string_collection(&mut self.stream, signatures)?;
+        self.stream.flush()?;
+        read_operation_frames(&mut self.stream, self.profile.version)?;
+        if read_worker_integer_from(&mut self.stream)? != 1 {
+            return Err(protocol_client_error());
+        }
+        Ok(())
+    }
+
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         self.write_store_path_operation(WorkerOperation::QueryPathInfo, path)?;
         read_operation_frames(&mut self.stream, self.profile.version)?;
