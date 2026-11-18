@@ -3,6 +3,7 @@
 use super::*;
 use std::fs;
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -125,11 +126,18 @@ fn refresh(
 ) {
     snapshot.stamp = file_stamp(resolver);
     if let Some(path) = &resolver.file {
-        let result = fs::File::open(path).and_then(|file| {
-            let mut bytes = Vec::new();
-            file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-            snapshot.file.replace(&bytes, "file")
-        });
+        let result = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)
+            .and_then(|file| {
+                if !file.metadata()?.is_file() {
+                    return Err(invalid("registry source must be a regular file"));
+                }
+                let mut bytes = Vec::new();
+                file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                snapshot.file.replace(&bytes, "file")
+            });
         if result.is_err() {
             tracing::warn!(event = "registry.refresh_failed", source = "file");
         }
@@ -217,13 +225,11 @@ pub(super) fn run_command(command: &[String], timeout: Duration) -> io::Result<V
             std::thread::sleep(Duration::from_millis(10));
         }
     })();
-    if result.is_err() {
-        // Descendants may retain output pipes after the resolver exits.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
+    // Resolver-owned descendants cannot outlive a refresh invocation.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
+    let _ = child.kill();
+    let _ = child.wait();
     result
 }

@@ -101,6 +101,72 @@ fn resolver_command_bounds_noisy_output_and_unclosed_pipes() {
     }
 }
 
+#[test]
+fn registry_rejects_oversized_metadata_before_signature_expansion() {
+    let config: UploadVerification = toml::from_str(&format!(
+        "[[trusted_keys]]\npublic_key = {:?}\nmetadata = {{ identity = {:?} }}",
+        key("ci"),
+        "x".repeat(4097)
+    ))
+    .unwrap();
+    assert!(config.validate().is_err());
+    let mut source = KeySource::default();
+    source.replace(&serde_json::to_vec(&serde_json::json!({"version":1,"keys":[{"publicKey":key("ci"),"metadata":{"identity":"x".repeat(4097)}}]})).unwrap(), "file").unwrap();
+    assert!(source.keys.is_empty());
+}
+
+#[test]
+fn registry_file_fifo_never_blocks_startup() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = tempfile::tempdir().unwrap();
+    let fifo = root.path().join("keys");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let config: UploadVerification =
+        toml::from_str(&format!("[resolver]\nfile = {:?}", fifo)).unwrap();
+    let started = std::time::Instant::now();
+    let registry = registry::Registry::start(&config).unwrap();
+    assert!(registry.lookup(&[]).is_empty());
+    drop(registry);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn successful_resolver_cleans_up_background_descendants() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("resolver");
+    let pid = root.path().join("pid");
+    std::fs::write(
+        &script,
+        "#!/usr/bin/env bash\nsleep 60 >/dev/null 2>&1 &\nprintf '%s' \"$!\" > \"$1\"\nprintf '{}'",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = registry::run_command(
+        &[
+            script.to_string_lossy().into_owned(),
+            pid.to_string_lossy().into_owned(),
+        ],
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap();
+    assert_eq!(output, b"{}");
+    let pid: i32 = std::fs::read_to_string(pid).unwrap().parse().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+        if stat.as_ref().is_err() || stat.unwrap().split_whitespace().nth(2) == Some("Z") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "resolver descendant remains running"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn key(name: &str) -> String {
     format!("{name}:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 }

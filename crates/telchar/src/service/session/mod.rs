@@ -1664,6 +1664,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
                 let mut disk_rejection = None;
+                let mut upload_rejection = None;
                 let staging_directory = store_import.staging_directory().map(Path::to_path_buf);
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
@@ -1714,14 +1715,11 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     })
                                     .collect::<Vec<_>>()
                                     .join(", ");
-                                return Err(io::Error::new(
-                                    io::ErrorKind::PermissionDenied,
-                                    format!(
-                                        "upload {} rejected: {:?}; signatures [{statuses}]",
-                                        String::from_utf8_lossy(info.path()),
-                                        decision.reason
-                                    ),
-                                ));
+                                let reason = format!(
+                                    "upload {} rejected: {:?}; signatures [{statuses}]",
+                                    String::from_utf8_lossy(info.path()), decision.reason);
+                                upload_rejection = Some(reason.clone());
+                                return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
                             }
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
@@ -1761,6 +1759,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 "gateway-disk-reserve",
                                 disk_reserve_error(error),
                             );
+                        }
+                        if let Some(reason) = upload_rejection {
+                            return reject(&mut output, "upload-verification", &reason);
                         }
                         tracing::error!(
                             event = "worker.operation.rejected",

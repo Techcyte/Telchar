@@ -42,6 +42,7 @@ pub enum EvaluationReason {
     InsufficientSignatures,
     IdentityMismatch,
     InvalidFingerprint,
+    MetadataLimit,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -130,6 +131,8 @@ pub fn evaluate(
     let mut identity_mismatch = false;
     let mut matching_identity = false;
     let identity_field = config.identity_field.as_deref().unwrap_or("identity");
+    let mut metadata_bytes = 0usize;
+    let mut metadata_limit = false;
     let signatures = info
         .signatures()
         .iter()
@@ -152,14 +155,26 @@ pub fn evaluate(
                 key_name: name.map(str::to_owned),
                 status,
                 source: key.map(|key| key.source),
-                metadata: key.map(|key| key.metadata.clone()),
+                metadata: key.and_then(|key| {
+                    metadata_bytes = metadata_bytes.saturating_add(
+                        serde_json::to_vec(&key.metadata).map_or(usize::MAX, |bytes| bytes.len()),
+                    );
+                    if metadata_bytes > 64 * 1024 {
+                        metadata_limit = true;
+                        None
+                    } else {
+                        Some(key.metadata.clone())
+                    }
+                }),
             }
         })
         .collect();
 
     let content_addressed_exemption_eligible =
         config.exempt_content_addressed.unwrap_or(true) && info.content_address().is_some();
-    let (allowed, reason) = if content_addressed_exemption_eligible {
+    let (allowed, reason) = if metadata_limit && !content_addressed_exemption_eligible {
+        (false, EvaluationReason::MetadataLimit)
+    } else if content_addressed_exemption_eligible {
         (true, EvaluationReason::ContentAddressedExemption)
     } else if fingerprint.is_none() {
         (false, EvaluationReason::InvalidFingerprint)

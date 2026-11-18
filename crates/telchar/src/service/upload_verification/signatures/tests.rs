@@ -137,6 +137,23 @@ fn sign(name: &str, pair: &Ed25519KeyPair) -> Vec<u8> {
 }
 
 #[test]
+fn repeated_malformed_signatures_have_bounded_metadata_reports() {
+    let pair = key_pair(7);
+    let mut key = registered("ci", &pair);
+    key.metadata
+        .insert("identity".into(), MetadataValue::String("x".repeat(4000)));
+    let keys = keys(vec![key]);
+    let upload = Upload {
+        signatures: vec![b"ci:AAAA".to_vec(); 256],
+        ..Upload::default()
+    };
+    let result = upload.evaluate(&config(), &keys);
+    assert!(!result.allowed);
+    assert_eq!(result.reason, EvaluationReason::MetadataLimit);
+    assert!(serde_json::to_vec(&result).unwrap().len() < 128 * 1024);
+}
+
+#[test]
 fn fingerprint_is_exact_nix_format_with_sorted_set_references() {
     let upload = Upload::default();
     upload.with_info(|info| assert_eq!(fingerprint(info).unwrap(), fingerprint_bytes()));

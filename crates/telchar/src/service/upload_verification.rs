@@ -60,6 +60,13 @@ impl TrustedKey {
         if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
             return Err(invalid("trusted public key name is invalid"));
         }
+        if serde_json::to_vec(&self.metadata)
+            .map_err(|_| invalid("trusted key metadata is invalid"))?
+            .len()
+            > 4096
+        {
+            return Err(invalid("trusted key metadata exceeds limit"));
+        }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .ok()
