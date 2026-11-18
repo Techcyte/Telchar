@@ -1669,12 +1669,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
                     |info, source| {
-                        let already_valid = audit.and_then(|_| {
+                        let policy_hook = upload_verification.filter(|config| config.enabled).and_then(|config| config.policy_hook.as_ref());
+                        let already_valid = (audit.is_some() || policy_hook.is_some()).then(|| {
                             store_query
                                 .query_valid_paths(&[info.path().to_vec()], false)
                                 .map(|paths| paths.iter().any(|path| path == info.path()))
                                 .ok()
-                        });
+                        }).flatten();
                         let verification =
                             upload_verification
                                 .filter(|config| config.enabled)
@@ -1699,6 +1700,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         time::OffsetDateTime::now_utc(),
                                     )
                                 });
+                        let mut policy_decision = None;
                         let result = (|| {
                             if let Some(decision) = &verification
                                 && !decision.allowed
@@ -1726,6 +1728,30 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     reason,
                                 ));
                             }
+                            if let Some(hook) = policy_hook
+                                && !verification.as_ref().is_some_and(|decision| decision.content_addressed_exemption_eligible) {
+                                let request = serde_json::json!({
+                                    "version": 1,
+                                    "upload": {
+                                        "storePath": String::from_utf8_lossy(info.path()),
+                                        "narHash": format!("sha256:{}", String::from_utf8_lossy(info.nar_hash())),
+                                        "narSize": info.nar_size(),
+                                        "references": info.references().iter().map(|path| String::from_utf8_lossy(path)).collect::<Vec<_>>(),
+                                        "contentAddress": info.content_address().map(String::from_utf8_lossy),
+                                        "alreadyValid": already_valid,
+                                    },
+                                    "token": {"sub": audit_subject},
+                                    "signatures": verification.as_ref().map(|decision| &decision.signatures),
+                                });
+                                let decision = hook.invoke(&request).unwrap_or(crate::service::upload_verification::policy::Decision { allow: false, reason: Some("upload policy hook failed".into()) });
+                                let allowed = decision.allow;
+                                let reason = decision.reason.clone().unwrap_or_else(|| "policy denied".into());
+                                policy_decision = Some(decision);
+                                if !allowed {
+                                    upload_rejection = Some(format!("upload {} rejected by upload policy: {}", String::from_utf8_lossy(info.path()), reason));
+                                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upload policy rejected"));
+                                }
+                            }
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                             let _permit = object_admission.admit_inbound()?;
@@ -1751,7 +1777,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             store_import.import(info, &mut limited)
                         })();
                         if let Some(audit) = audit {
-                            audit.upload(info, already_valid, &result, verification.as_ref());
+                            audit.upload(info, already_valid, &result, verification.as_ref(), policy_decision.as_ref());
                         }
                         result
                     },

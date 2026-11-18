@@ -162,6 +162,9 @@ impl Gateway {
         let mut contents = fs::read_to_string(&config).unwrap();
         // Deliberately leave exempt_content_addressed unspecified: qualify its default true.
         contents.push_str("\n[upload_verification]\nenabled = true\n\n[audit]\nenabled = true\n");
+        contents.push_str(
+            "\n[upload_verification.policy_hook]\ncommand = [\"/telchar-policy-must-not-run\"]\n",
+        );
         fs::write(config, contents).unwrap();
         let mut daemon = command
             .env("TELCHAR_GATEWAY_STORE_URI", STORE_URI)

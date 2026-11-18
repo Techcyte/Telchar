@@ -54,6 +54,7 @@ impl<'a> SessionAudit<'a> {
         already_valid: Option<bool>,
         result: &std::io::Result<()>,
         verification: Option<&crate::service::upload_verification::signatures::Evaluation>,
+        policy: Option<&crate::service::upload_verification::policy::Decision>,
     ) {
         let counter = if result.is_ok() {
             &self.paths_uploaded
@@ -88,6 +89,7 @@ impl<'a> SessionAudit<'a> {
                 "already_valid": already_valid,
                 "signatures": signatures,
                 "verification": verification,
+                "policy": policy,
             }),
         );
     }

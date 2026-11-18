@@ -115,6 +115,13 @@ fn upload_once(
             "\n[upload_verification]\nenabled = true\nmin_signatures = 1\ntrusted_public_keys = [{public_key:?}]\n"
         ));
     }
+    let hook = root.join("policy");
+    if hook.exists() {
+        contents.push_str(&format!(
+            "\n[upload_verification.policy_hook]\ncommand = [{:?}]\n",
+            hook
+        ));
+    }
     fs::write(&config, contents).unwrap();
     command.env("TELCHAR_GATEWAY_STORE_URI", STORE_URI);
     let mut daemon = UploadDaemon(command.spawn().unwrap());
@@ -154,6 +161,17 @@ fn upload_once(
     stream.write_all(&wire).unwrap();
     stream.flush().unwrap();
     let wire_result = read_word(&mut stream);
+    if wire_result == nix_worker_protocol::STDERR_ERROR {
+        assert_eq!(read_string(&mut stream), b"Error");
+        assert_eq!(read_word(&mut stream), 0);
+        assert_eq!(read_string(&mut stream), b"Error");
+        let reason = String::from_utf8(read_string(&mut stream)).unwrap();
+        if session == "signed-upload-policy-deny" {
+            assert!(reason.contains("site denies"), "{reason}");
+        }
+        assert_eq!(read_word(&mut stream), 0);
+        assert_eq!(read_word(&mut stream), 0);
+    }
     drop(client);
     drop(stream);
     let output = wait_with_deadline(&mut daemon.0, Duration::from_secs(10));
@@ -379,4 +397,43 @@ fn nix_signed_reupload_requires_signatures_and_matching_staged_nar() {
     let final_info = path_info(&root.0, &upload.path);
     assert_eq!(final_info["narHash"], signed_info["narHash"]);
     assert_eq!(final_info["signatures"], signed_info["signatures"]);
+
+    let hook = root.0.join("policy");
+    let received = root.0.join("policy-request.json");
+    fs::write(&hook, format!("#!/usr/bin/env bash\ncat > {:?}\nprintf '%s' '{{\"allow\":false,\"reason\":\"site denies\"}}'\n", received)).unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let denied = upload_once(
+        &root.0,
+        &database,
+        "signed-upload-policy-deny",
+        Some(public_key),
+        &upload,
+        &exported,
+    );
+    assert_eq!(denied["event"], "upload.rejected");
+    assert_eq!(denied["policy"]["allow"], false);
+    assert_eq!(denied["policy"]["reason"], "site denies");
+    let request: serde_json::Value = serde_json::from_slice(&fs::read(&received).unwrap()).unwrap();
+    assert_eq!(request["version"], 1);
+    assert_eq!(request["upload"]["storePath"], upload.path);
+    assert_eq!(request["upload"]["alreadyValid"], true);
+    assert_eq!(request["token"]["sub"], "fixture");
+    assert_eq!(request["signatures"][0]["status"], "valid");
+    fs::write(&hook, format!("#!/usr/bin/env bash\ncat > {:?}\nprintf '%s' '{{\"allow\":true}}'\n", received)).unwrap();
+    let allowed = upload_once(&root.0, &database, "signed-upload-policy-allow", Some(public_key), &upload, &exported);
+    assert_eq!(allowed["event"], "upload.accepted");
+    assert_eq!(allowed["policy"]["allow"], true);
+    fs::remove_file(&received).unwrap();
+    upload.signatures.clear();
+    let rejected = upload_once(
+        &root.0,
+        &database,
+        "unsigned-upload-policy-skip",
+        Some(public_key),
+        &upload,
+        &exported,
+    );
+    assert_eq!(rejected["event"], "upload.rejected");
+    assert!(rejected["policy"].is_null());
+    assert!(!received.exists(), "built-in rejection invoked policy");
 }

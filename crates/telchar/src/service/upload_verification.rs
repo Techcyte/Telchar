@@ -6,6 +6,7 @@ use std::io;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+pub mod policy;
 pub mod registry;
 pub mod signatures;
 
@@ -108,6 +109,7 @@ pub struct UploadVerification {
     pub trusted_public_keys: Vec<String>,
     pub trusted_keys: Vec<TrustedKey>,
     pub resolver: Option<Resolver>,
+    pub policy_hook: Option<policy::PolicyHook>,
 }
 
 impl UploadVerification {
@@ -161,6 +163,9 @@ impl UploadVerification {
         self.static_keys()?;
         if let Some(resolver) = &self.resolver {
             resolver.validate()?;
+        }
+        if let Some(hook) = &self.policy_hook {
+            hook.validate()?;
         }
         Ok(())
     }
