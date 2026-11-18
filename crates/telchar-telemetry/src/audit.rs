@@ -123,13 +123,17 @@ impl<P: LogProcessor> LogProcessor for AuditProcessor<P> {
 
     fn force_flush(&self) -> OTelSdkResult {
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.sender
+        let audit_result = self
+            .sender
             .try_send(Message::Flush(sender))
-            .map_err(|_| OTelSdkError::Timeout(super::EXPORT_TIMEOUT))?;
-        receiver
-            .recv_timeout(super::EXPORT_TIMEOUT)
-            .map_err(|_| OTelSdkError::Timeout(super::EXPORT_TIMEOUT))?;
-        self.ordinary.force_flush()
+            .map_err(|_| OTelSdkError::Timeout(super::EXPORT_TIMEOUT))
+            .and_then(|()| {
+                receiver
+                    .recv_timeout(super::EXPORT_TIMEOUT)
+                    .map_err(|_| OTelSdkError::Timeout(super::EXPORT_TIMEOUT))
+            });
+        let ordinary_result = self.ordinary.force_flush();
+        audit_result.and(ordinary_result)
     }
 
     fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {

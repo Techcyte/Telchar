@@ -40,7 +40,10 @@ fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
 
     drop(input);
     assert!(frontend.wait().expect("frontend exits").success());
-    fixture.finish_successfully();
+    let result = fixture.daemon.wait_with_output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("audit."));
+    fs::remove_dir_all(fixture.root).unwrap();
 }
 
 #[test]
