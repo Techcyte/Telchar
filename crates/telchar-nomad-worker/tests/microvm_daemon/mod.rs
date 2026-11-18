@@ -106,6 +106,35 @@ chunk_bytes = 262144
             metadata_bytes = if compiler { 65536 } else { 8192 }
         ),
     )?;
+    if matches!(
+        case.as_str(),
+        "configured-daemon"
+            | "configured-daemon-multiple"
+            | "configured-daemon-coalesced"
+            | "configured-daemon-detached"
+    ) {
+        let generated = Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "key",
+                "generate-secret",
+                "--key-name",
+                "microvm-executor",
+            ])
+            .output()?;
+        assert!(generated.status.success());
+        let key = home.join("signing-key");
+        std::fs::write(&key, generated.stdout)?;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&config)?;
+        writeln!(
+            file,
+            "\n[signing]\nkey_file = {:?}\nfailure_policy = 'fail-build'",
+            key
+        )?;
+    }
     let uid = Command::new("id").arg("-u").output()?;
     assert!(uid.status.success());
     assert!(uid.stderr.is_empty());
@@ -413,6 +442,30 @@ chunk_bytes = 262144
                     "cleanup_interval_seconds = 60",
                     "cleanup_interval_seconds = 1",
                 ),
+            )?;
+        }
+        if recovers_outputs {
+            // Crash left registered unsigned outputs. Enabling strict live signing on
+            // replacement must not change recovery's exact-valid-outputs-win rule.
+            let generated = Command::new("nix")
+                .args([
+                    "--extra-experimental-features",
+                    "nix-command",
+                    "key",
+                    "generate-secret",
+                    "--key-name",
+                    "recovery-live-only",
+                ])
+                .output()?;
+            assert!(generated.status.success());
+            let key = home.join("recovery-signing-key");
+            std::fs::write(&key, generated.stdout)?;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
+            let mut configuration = std::fs::OpenOptions::new().append(true).open(&config)?;
+            writeln!(
+                configuration,
+                "\n[signing]\nkey_file = {:?}\nfailure_policy = 'fail-build'",
+                key
             )?;
         }
         std::fs::write(root.join("replacement-starting"), b"")?;

@@ -13,17 +13,22 @@ const TEST: &str = "nomad_trace::rendered_environment_connects_real_worker_and_c
 #[test]
 fn rendered_environment_connects_real_worker_and_callback() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
-        let database = telchar_test_support::postgres::PostgresFixture::start();
-        let status = Command::new("bash")
-            .env("MICROVM_TEST_DATABASE", database.url())
-            .arg(FIXTURE)
-            .arg(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
-            .status()
-            .unwrap();
-        assert!(status.success());
+        for case in ["success", "warn", "fail-build"] {
+            let database = telchar_test_support::postgres::PostgresFixture::start();
+            let status = Command::new("bash")
+                .env("MICROVM_TEST_DATABASE", database.url())
+                .env("SIGNING_NOMAD_CASE", case)
+                .arg(FIXTURE)
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "Nomad signing case {case}");
+        }
         return;
     }
+    let case = std::env::var("SIGNING_NOMAD_CASE").unwrap_or_else(|_| "success".to_owned());
+    let signing_failure_policy = if case == "warn" { "warn" } else { "fail-build" };
     let collector = collector::start_collector();
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
@@ -45,11 +50,30 @@ fn rendered_environment_connects_real_worker_and_callback() {
     // the fake raw_exec launcher; the rendered Env itself is consumed unchanged.
     let worker_socket = root.join("nomad-worker.sock");
     let worker_store_uri = format!("unix://{}", worker_socket.display());
+    let signing_key = root.join("executor-signing-key");
+    let generated = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "key",
+            "generate-secret",
+            "--key-name",
+            "nomad-executor",
+        ])
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+    std::fs::write(&signing_key, generated.stdout).unwrap();
+    std::fs::set_permissions(&signing_key, std::fs::Permissions::from_mode(0o600)).unwrap();
     let config_path = root.join("nomad.toml");
     std::fs::write(
         &config_path,
         format!(
             r#"
+[signing]
+key_file = "{signing_key}"
+failure_policy = "{signing_failure_policy}"
+
 [backends.nomad_callback]
 bind = "{callback_address}"
 public_url = "ws://{callback_address}/callback"
@@ -80,7 +104,8 @@ secret_file = "{}"
 mode = "daemon"
 uri = "{worker_store_uri}"
 "#,
-            secret.display()
+            secret.display(),
+            signing_key = signing_key.display()
         ),
     )
     .unwrap();
@@ -178,6 +203,17 @@ uri = "{worker_store_uri}"
         endpoint.clone(),
         Duration::from_secs(60),
         Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        Some(
+            config
+                .signing()
+                .unwrap()
+                .load(if case == "success" {
+                    endpoint.clone()
+                } else {
+                    GatewayStoreEndpoint::parse("unix:///missing-nomad-signing-store.sock").unwrap()
+                })
+                .unwrap(),
+        ),
     )
     .unwrap();
     let env = job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]
@@ -212,13 +248,44 @@ uri = "{worker_store_uri}"
     callback_service.shutdown().unwrap();
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(store.is_valid_path(output.as_bytes()).unwrap());
+    let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+    if case == "success" {
+        assert_eq!(info.signatures().len(), 1);
+        assert!(info.signatures()[0].starts_with(b"nomad-executor:"));
+    } else {
+        assert!(info.signatures().is_empty());
+    }
+    assert!(
+        store
+            .query_path_info(input.as_bytes())
+            .unwrap()
+            .unwrap()
+            .signatures()
+            .is_empty(),
+        "inputs must not be signed"
+    );
     assert_eq!(std::fs::read(output).unwrap(), b"connected-nomad");
     assert_eq!(
         db::read_shared_build(&database, drv)
             .unwrap()
             .unwrap()
             .state,
-        db::SharedBuildState::Succeeded
+        if case == "fail-build" {
+            db::SharedBuildState::Failed
+        } else {
+            db::SharedBuildState::Succeeded
+        }
+    );
+    let attempt = db::read_shared_build_attempt(&database, drv)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        attempt.state,
+        if case == "fail-build" {
+            db::SharedBuildAttemptState::Failed
+        } else {
+            db::SharedBuildAttemptState::Succeeded
+        }
     );
     drop(entered);
     drop(parent);

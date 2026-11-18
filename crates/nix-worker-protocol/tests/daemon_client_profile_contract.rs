@@ -287,3 +287,24 @@ fn add_signatures_validates_before_writing_and_requires_complete_ack() {
         );
     }
 }
+
+#[test]
+fn add_signatures_daemon_error_is_redacted_and_has_no_ack() {
+    let version = LATEST_WORKER_VERSION;
+    let mut response = handshake_response(version, Some(1));
+    integer(&mut response, STDERR_ERROR);
+    byte_string(&mut response, b"Error");
+    integer(&mut response, 0);
+    byte_string(&mut response, b"Error");
+    byte_string(&mut response, b"private-daemon-diagnostic-sentinel");
+    integer(&mut response, 0);
+    integer(&mut response, 0);
+    let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
+    let error = client
+        .add_signatures(
+            b"/nix/store/00000000000000000000000000000000-output",
+            &[b"key:sig".to_vec()],
+        )
+        .unwrap_err();
+    assert!(!error.to_string().contains("private-daemon"));
+}

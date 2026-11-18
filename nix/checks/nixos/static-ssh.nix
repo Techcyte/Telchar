@@ -35,6 +35,7 @@
     in
     harness.mkStaticSshBuildTest {
       name = "telchar-nixos-static-ssh-build";
+      signOutputs = true;
       testScript = ''
         stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/static-ssh-build.nix")
         derivation_path = stock_client.succeed("nix-instantiate /tmp/static-ssh-build.nix").strip()
@@ -45,6 +46,8 @@
         stock_client.succeed("test \"$(cat " + output_path + ")\" = static-ssh-source")
         builder.succeed("grep -Eq '^original_command=nix-daemon --stdio' /var/lib/telchar-builder/forced-command-evidence")
         gateway.succeed("nix-store --verify-path '" + output_path + "'")
+        gateway.succeed("nix --extra-experimental-features nix-command store verify --sigs-needed 1 --trusted-public-keys \"$(cat /var/lib/telchar-static-ssh/signing-key.pub)\" '" + output_path + "'")
+        builder.succeed("nix --extra-experimental-features nix-command path-info --json '" + output_path + "' | ${pkgs.python3}/bin/python -c 'import json,sys; assert not next(iter(json.load(sys.stdin).values()))[\"signatures\"]'")
       '';
     };
   nixos-static-ssh-gateway =

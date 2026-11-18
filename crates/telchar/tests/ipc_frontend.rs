@@ -18,6 +18,8 @@ use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, Req
 
 #[path = "ipc_frontend/audit.rs"]
 mod audit;
+#[path = "ipc_frontend/output_signing.rs"]
+mod output_signing;
 #[path = "ipc_frontend/upload_audit.rs"]
 mod upload_audit;
 
