@@ -167,6 +167,6 @@ pkgs.testers.nixosTest {
     assert not any(event.get("identity", {}).get("source_address") == "203.0.113.99" for event in sessions if event["event"] == "session.started"), sessions
     print("IMPORT_BENCHMARK_RESULTS " + json.dumps(results))
     for result in results:
-        assert result["connections"] == (1 if result["frontend"] == "plain" else 3), result
+        assert result["connections"] == (1 if result["frontend"] == "plain" else result["paths"] + 2), result
   '';
 }
