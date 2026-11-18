@@ -46,6 +46,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         audit_subject,
         quota_subject,
         audit,
+        upload_verification,
+        upload_registry,
         transfer_limits,
         object_admission,
         rate_admission,
@@ -55,6 +57,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_build_scheduler,
         scheduling_limits,
         post_build_hook,
+        output_signer,
     } = context;
     let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
@@ -458,6 +461,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 execution.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
+                // Assigned executor cache hits are attestable; gateway-only reuse is not.
+                let assigned_executor_completed = std::cell::Cell::new(false);
                 let shared_build_key = admitted.shared_build_key();
                 let derivation_path =
                     std::str::from_utf8(admitted.derivation_path()).map_err(|_| {
@@ -728,7 +733,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         selection_priority = selected_target.selection_priority(),
                                         "shared build assigned available backend capacity"
                                     );
-                                    crate::service::activity::run("execute", || build_executor.execute_reserved(
+                                    let result = crate::service::activity::run("execute", || build_executor.execute_reserved(
                             &execution,
                             permit,
                             &mut |chunk| {
@@ -773,7 +778,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                                 Ok(disconnected)
                             },
-                        ))
+                        ));
+                                    assigned_executor_completed.set(result.is_ok());
+                                    result
                                     })()
                                 }
                             };
@@ -968,7 +975,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "input_addressed"
                     },
                 );
-                let output_paths = match output_paths {
+                let (output_paths, validated_outputs) = match output_paths {
                     Ok(paths) => {
                         if durable_execution_owned.get() {
                             let build = crate::persistence::read_shared_build(
@@ -1153,6 +1160,18 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         .is_some_and(|build| {
                             build.state == crate::persistence::SharedBuildState::Succeeded
                         });
+                if durable_execution_owned.get()
+                    && !build_already_succeeded
+                    && assigned_executor_completed.get()
+                    && let Some(signer) = output_signer
+                    && signer.sign_validated_outputs(&validated_outputs, || database.wait_for_ownership()).is_err()
+                {
+                    crate::persistence::complete_shared_build_failure(
+                        database, derivation_path, "output-signing-failure",
+                        &serde_json::json!({"stage": "signing"}), output_retention.duration(),
+                    ).map_err(|_| io::Error::other("shared build signing failure completion failed"))?;
+                    return reject(&mut output, "output-signing-failure", "executor output signing failed");
+                }
                 if durable_execution_owned.get()
                     && !build_already_succeeded
                     && let Err(error) = crate::persistence::complete_shared_build_success(
@@ -1662,17 +1681,94 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             }
             Ok(WorkerOperation::AddMultipleToStore) => {
                 let mut disk_rejection = None;
+                let mut upload_rejection = None;
                 let staging_directory = store_import.staging_directory().map(Path::to_path_buf);
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
                     |info, source| {
-                        let already_valid = audit.and_then(|_| {
+                        let policy_hook = upload_verification.filter(|config| config.enabled).and_then(|config| config.policy_hook.as_ref());
+                        let already_valid = (audit.is_some() || policy_hook.is_some()).then(|| {
                             store_query
                                 .query_valid_paths(&[info.path().to_vec()], false)
                                 .map(|paths| paths.iter().any(|path| path == info.path()))
                                 .ok()
-                        });
+                        }).flatten();
+                        let verification =
+                            upload_verification
+                                .filter(|config| config.enabled)
+                                .map(|config| {
+                                    let names = info
+                                    .signatures()
+                                    .iter()
+                                    .filter_map(|signature| {
+                                        crate::service::upload_verification::signatures::key_name(
+                                            signature,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                    let keys = upload_registry
+                                        .map(|registry| registry.lookup(&names))
+                                        .unwrap_or_default();
+                                    crate::service::upload_verification::signatures::evaluate(
+                                        info,
+                                        &keys,
+                                        config,
+                                        audit_subject,
+                                        time::OffsetDateTime::now_utc(),
+                                    )
+                                });
+                        let mut policy_decision = None;
                         let result = (|| {
+                            if let Some(decision) = &verification
+                                && !decision.allowed
+                            {
+                                let statuses = decision
+                                    .signatures
+                                    .iter()
+                                    .map(|signature| {
+                                        format!(
+                                            "{}:{:?}",
+                                            signature.key_name.as_deref().unwrap_or("malformed"),
+                                            signature.status
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let reason = format!(
+                                    "upload {} rejected: {:?}; signatures [{statuses}]",
+                                    String::from_utf8_lossy(info.path()),
+                                    decision.reason
+                                );
+                                upload_rejection = Some(reason.clone());
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    reason,
+                                ));
+                            }
+                            if let Some(hook) = policy_hook
+                                && !verification.as_ref().is_some_and(|decision| decision.content_addressed_exemption_eligible) {
+                                let request = serde_json::json!({
+                                    "version": 1,
+                                    "upload": {
+                                        "storePath": String::from_utf8_lossy(info.path()),
+                                        "narHash": format!("sha256:{}", String::from_utf8_lossy(info.nar_hash())),
+                                        "narSize": info.nar_size(),
+                                        "references": info.references().iter().map(|path| String::from_utf8_lossy(path)).collect::<Vec<_>>(),
+                                        "contentAddress": info.content_address().map(String::from_utf8_lossy),
+                                        "alreadyValid": already_valid,
+                                    },
+                                    "token": {"sub": audit_subject},
+                                    "signatures": verification.as_ref().map(|decision| &decision.signatures),
+                                });
+                                let decision = hook.invoke(&request).unwrap_or(crate::service::upload_verification::policy::Decision { allow: false, reason: Some("upload policy hook failed".into()) });
+                                let allowed = decision.allow;
+                                let reason = decision.reason.clone().unwrap_or_else(|| "policy denied".into());
+                                policy_decision = Some(decision);
+                                if !allowed {
+                                    upload_rejection = Some(format!("upload {} rejected by upload policy: {}", String::from_utf8_lossy(info.path()), reason));
+                                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upload policy rejected"));
+                                }
+                            }
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                             let _permit = object_admission.admit_inbound()?;
@@ -1698,7 +1794,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             store_import.import(info, &mut limited)
                         })();
                         if let Some(audit) = audit {
-                            audit.upload(info, already_valid, &result);
+                            audit.upload(info, already_valid, &result, verification.as_ref(), policy_decision.as_ref());
                         }
                         result
                     },
@@ -1711,6 +1807,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 "gateway-disk-reserve",
                                 disk_reserve_error(error),
                             );
+                        }
+                        if let Some(reason) = upload_rejection {
+                            return reject(&mut output, "upload-verification", &reason);
                         }
                         tracing::error!(
                             event = "worker.operation.rejected",
@@ -2278,32 +2377,22 @@ fn validate_build_outputs(
     result: &crate::backend::BuildResult,
     request: &crate::build::BuildRequest,
     store_export: &mut dyn crate::store::export::StoreExportBackend,
-) -> io::Result<Vec<String>> {
-    let paths = result
-        .outputs()
-        .iter()
-        .map(|(_, path)| {
-            std::str::from_utf8(path)
-                .map(str::to_owned)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid output path"))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    for (path, authority) in paths.iter().zip(request.output_authorities()) {
-        if path.as_bytes() != authority.path() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "build output authority mismatch",
-            ));
-        }
-        let metadata = crate::store::export::validate_store_output(Path::new(path), store_export)?;
-        if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "build output content address mismatch",
-            ));
-        }
+) -> io::Result<(
+    Vec<String>,
+    Vec<crate::store::promotion::RegisteredPathInfo>,
+)> {
+    if result.outputs() != request.expected_outputs() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "build output authority mismatch",
+        ));
     }
-    Ok(paths)
+    let metadata = crate::service::output_signing::validate_outputs(request, store_export)?;
+    let paths = metadata
+        .iter()
+        .map(|info| info.path.to_string_lossy().into_owned())
+        .collect();
+    Ok((paths, metadata))
 }
 
 fn durable_shared_build_result(

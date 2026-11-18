@@ -20,6 +20,8 @@ pub struct SessionBuilder<'a> {
     audit_subject: Option<&'a str>,
     quota_subject: Option<&'a str>,
     audit: Option<&'a crate::service::audit::SessionAudit<'a>>,
+    upload_verification: Option<&'a crate::service::upload_verification::UploadVerification>,
+    upload_registry: Option<&'a crate::service::upload_verification::registry::Registry>,
     transfer_limits: Option<&'a crate::service::transfer_limits::TransferLimits>,
     object_admission: Option<&'a crate::service::transfer_limits::ObjectAdmissionState>,
     rate_admission: Option<&'a crate::service::transfer_limits::RateAdmissionState>,
@@ -28,6 +30,7 @@ pub struct SessionBuilder<'a> {
     shared_builds: Option<&'a crate::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: Option<&'a crate::shared_build::scheduler::SharedBuildScheduler>,
     scheduling_limits: Option<crate::service::config::SchedulingLimits>,
+    output_signer: Option<&'a crate::service::output_signing::OutputSigner>,
     post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
@@ -51,6 +54,8 @@ pub(super) struct SessionContext<'a> {
     pub audit_subject: &'a str,
     pub quota_subject: &'a str,
     pub audit: Option<&'a crate::service::audit::SessionAudit<'a>>,
+    pub upload_verification: Option<&'a crate::service::upload_verification::UploadVerification>,
+    pub upload_registry: Option<&'a crate::service::upload_verification::registry::Registry>,
     pub transfer_limits: &'a crate::service::transfer_limits::TransferLimits,
     pub object_admission: &'a crate::service::transfer_limits::ObjectAdmissionState,
     pub rate_admission: &'a crate::service::transfer_limits::RateAdmissionState,
@@ -59,6 +64,7 @@ pub(super) struct SessionContext<'a> {
     pub shared_builds: &'a crate::shared_build::SharedBuildRegistry,
     pub shared_build_scheduler: &'a crate::shared_build::scheduler::SharedBuildScheduler,
     pub scheduling_limits: crate::service::config::SchedulingLimits,
+    pub output_signer: Option<&'a crate::service::output_signing::OutputSigner>,
     pub post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
@@ -88,6 +94,8 @@ impl<'a> SessionBuilder<'a> {
             audit_subject: None,
             quota_subject: None,
             audit: None,
+            upload_verification: None,
+            upload_registry: None,
             transfer_limits: None,
             object_admission: None,
             rate_admission: None,
@@ -97,6 +105,7 @@ impl<'a> SessionBuilder<'a> {
             shared_build_scheduler: None,
             scheduling_limits: None,
             post_build_hook: None,
+            output_signer: None,
         }
     }
 
@@ -158,6 +167,16 @@ impl<'a> SessionBuilder<'a> {
         self.audit = audit;
         self
     }
+    pub fn upload_verification(
+        mut self,
+        config: &'a crate::service::upload_verification::UploadVerification,
+        registry: Option<&'a crate::service::upload_verification::registry::Registry>,
+    ) -> Self {
+        self.upload_verification = Some(config);
+        self.upload_registry = registry;
+        self
+    }
+
     pub fn transfer_admission(
         mut self,
         limits: &'a crate::service::transfer_limits::TransferLimits,
@@ -178,6 +197,14 @@ impl<'a> SessionBuilder<'a> {
         self.disk_probe = Some(probe);
         self
     }
+    pub fn output_signer(
+        mut self,
+        signer: Option<&'a crate::service::output_signing::OutputSigner>,
+    ) -> Self {
+        self.output_signer = signer;
+        self
+    }
+
     pub fn post_build_hook(
         mut self,
         publisher: Option<&'a crate::service::post_build_hook::PostBuildHook>,
@@ -229,6 +256,8 @@ impl<'a> SessionBuilder<'a> {
             audit_subject: self.audit_subject.ok_or_else(missing)?,
             quota_subject: self.quota_subject.ok_or_else(missing)?,
             audit: self.audit,
+            upload_verification: self.upload_verification,
+            upload_registry: self.upload_registry,
             transfer_limits: self.transfer_limits.ok_or_else(missing)?,
             object_admission: self.object_admission.ok_or_else(missing)?,
             rate_admission: self.rate_admission.ok_or_else(missing)?,
@@ -238,6 +267,7 @@ impl<'a> SessionBuilder<'a> {
             shared_build_scheduler: self.shared_build_scheduler.ok_or_else(missing)?,
             scheduling_limits: self.scheduling_limits.ok_or_else(missing)?,
             post_build_hook: self.post_build_hook,
+            output_signer: self.output_signer,
         })
     }
 }

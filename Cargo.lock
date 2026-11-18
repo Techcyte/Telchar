@@ -2598,6 +2598,7 @@ version = "2026.11.5"
 dependencies = [
  "aws-config",
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sdk-ec2",
  "aws-sdk-lambdamicrovms",
  "aws-sdk-sts",
@@ -2624,6 +2625,7 @@ dependencies = [
  "telchar-telemetry",
  "telchar-test-support",
  "tempfile",
+ "time",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -2635,6 +2637,7 @@ dependencies = [
  "tracing-subscriber",
  "tungstenite",
  "url",
+ "zeroize",
 ]
 
 [[package]]

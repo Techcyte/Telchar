@@ -109,6 +109,7 @@ let
 
         [backends.ssh.builders.builder]
         address = "builder"
+        supported_features = ["signing-ssh"]
       '';
     };
 
@@ -160,13 +161,21 @@ in
     {
       name,
       testScript ? "",
+      signOutputs ? false,
     }:
     pkgs.testers.nixosTest {
       inherit name;
       nodes = {
         stock-client = restrictedIngressClientModule;
-        gateway = staticSshGatewayModule;
-        builder = staticSshBuilderModule { };
+        gateway = {
+          imports = [ staticSshGatewayModule ];
+          environment.etc."telchar/telchar.toml".text = pkgs.lib.mkIf signOutputs (pkgs.lib.mkAfter ''
+            [signing]
+            key_file = "/var/lib/telchar-static-ssh/signing-key"
+            failure_policy = "fail-build"
+          '');
+        };
+        builder = staticSshBuilderModule { systemFeatures = [ "signing-ssh" ]; };
       };
       testScript = ''
         start_all()
@@ -179,6 +188,10 @@ in
         builder.succeed("printf 'command=\"/etc/telchar-static-ssh/forced-command\",restrict %s\\n' '" + public_key + "' > /var/lib/telchar-builder/.ssh/authorized_keys")
         builder.succeed("chown -R telchar-builder:telchar-builder /var/lib/telchar-builder/.ssh && chmod 700 /var/lib/telchar-builder/.ssh && chmod 600 /var/lib/telchar-builder/.ssh/authorized_keys")
         gateway.succeed("${pkgs.openssh}/bin/ssh-keyscan -t ed25519 builder > /var/lib/telchar-static-ssh/known-hosts 2>/dev/null && chown telchar-ingress:telchar /var/lib/telchar-static-ssh/known-hosts && chmod 644 /var/lib/telchar-static-ssh/known-hosts")
+        ${pkgs.lib.optionalString signOutputs ''
+          gateway.succeed("umask 077; ${pkgs.nix}/bin/nix --extra-experimental-features nix-command key generate-secret --key-name static-ssh-executor > /var/lib/telchar-static-ssh/signing-key; chown telchar-ingress:telchar /var/lib/telchar-static-ssh/signing-key")
+          gateway.succeed("${pkgs.nix}/bin/nix --extra-experimental-features nix-command key convert-secret-to-public < /var/lib/telchar-static-ssh/signing-key > /var/lib/telchar-static-ssh/signing-key.pub")
+        ''}
         gateway.succeed("systemctl start telchar-daemon.service")
         gateway.wait_for_unit("telchar-daemon.service")
         gateway.wait_until_succeeds("test -S /run/telchar/daemon.sock")

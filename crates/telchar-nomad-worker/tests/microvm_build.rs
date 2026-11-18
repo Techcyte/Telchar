@@ -1378,6 +1378,49 @@ chunk_bytes = 262144
     );
     for expected in outputs {
         assert!(store.is_valid_path(expected.as_bytes()).unwrap());
+        if matches!(
+            case.as_str(),
+            "configured-daemon"
+                | "configured-daemon-multiple"
+                | "configured-daemon-coalesced"
+                | "configured-daemon-detached"
+        ) {
+            let info = store.query_path_info(expected.as_bytes()).unwrap().unwrap();
+            assert_eq!(
+                info.signatures().len(),
+                1,
+                "live microVM output signature in {case}"
+            );
+            assert!(info.signatures()[0].starts_with(b"microvm-executor:"));
+        }
+    }
+    if matches!(
+        case.as_str(),
+        "configured-daemon"
+            | "configured-daemon-multiple"
+            | "configured-daemon-coalesced"
+            | "configured-daemon-detached"
+    ) {
+        assert!(
+            store
+                .query_path_info(input.as_bytes())
+                .unwrap()
+                .unwrap()
+                .signatures()
+                .is_empty(),
+            "microVM inputs must not receive executor signatures"
+        );
+    }
+    if case == "configured-daemon-output-recovery" {
+        assert!(
+            store
+                .query_path_info(output.as_bytes())
+                .unwrap()
+                .unwrap()
+                .signatures()
+                .is_empty(),
+            "fail-build signing is live-only: recovery must not sign existing outputs"
+        );
     }
     if fixed_output {
         let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();

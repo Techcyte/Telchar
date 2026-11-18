@@ -24,6 +24,26 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
     let config = socket.with_extension("toml");
     let mut contents = fs::read_to_string(&config).unwrap();
     contents.push_str("\n[audit]\nenabled = true\n");
+    let key = root.join("signing-key");
+    let generated = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "key",
+            "generate-secret",
+            "--key-name",
+            "telchar-executor",
+        ])
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+    fs::write(&key, generated.stdout).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    contents.push_str(&format!(
+        "\n[signing]\nkey_file = {:?}\nfailure_policy = 'fail-build'\n",
+        key
+    ));
+
     fs::write(&config, contents).unwrap();
     command.env(
         "TELCHAR_GATEWAY_STORE_URI",
@@ -117,6 +137,20 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
         }
         drop(stream);
     }
+    let endpoint =
+        telchar::store::GatewayStoreEndpoint::parse("unix:///nix/var/nix/daemon-socket/socket")
+            .unwrap();
+    let info = telchar::store::GatewayStoreConnection::connect(&endpoint)
+        .unwrap()
+        .query_path_info(path.as_bytes())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        info.signatures().len(),
+        1,
+        "client upload must not receive executor signature"
+    );
+    assert!(info.signatures()[0].starts_with(b"host-key:"));
     thread::sleep(Duration::from_millis(1200));
     daemon.kill().unwrap();
     let output = daemon.wait_with_output().unwrap();

@@ -31,6 +31,35 @@ fn upload_audit_is_optional_and_strict() {
 }
 
 #[test]
+fn upload_verification_configuration_is_optional_and_strict() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("upload-verification");
+    let config = root.join("telchar.toml");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config) };
+    fs::write(&config, "").unwrap();
+    let default = ServiceConfig::load().unwrap();
+    fs::write(&config, "[upload_verification]\nenabled = false\n").unwrap();
+    let disabled = ServiceConfig::load();
+    fs::write(&config, "[upload_verification]\nenabled = true\ntrusted_public_keys = [\"ci-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"]\n").unwrap();
+    let enabled = ServiceConfig::load();
+    fs::write(
+        &config,
+        "[upload_verification]\nenabled = true\nmin_signatures = 0\n",
+    )
+    .unwrap();
+    let zero_threshold = ServiceConfig::load();
+    fs::write(&config, "[upload_verification]\nunknown = true\n").unwrap();
+    let unknown = ServiceConfig::load();
+    restore_environment(saved);
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(default, disabled.expect("disabled verification config"));
+    assert!(enabled.is_ok(), "enabled verification config: {enabled:?}");
+    assert!(zero_threshold.is_err());
+    assert!(unknown.is_err());
+}
+
+#[test]
 fn rejects_database_url_file_with_unsafe_permissions() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

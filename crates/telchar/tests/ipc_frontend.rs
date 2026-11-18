@@ -18,8 +18,16 @@ use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, Req
 
 #[path = "ipc_frontend/audit.rs"]
 mod audit;
+#[path = "ipc_frontend/content_address_upload.rs"]
+mod content_address_upload;
+#[path = "ipc_frontend/output_signing.rs"]
+mod output_signing;
+#[path = "ipc_frontend/signed_upload.rs"]
+mod signed_upload;
 #[path = "ipc_frontend/upload_audit.rs"]
 mod upload_audit;
+#[path = "ipc_frontend/upload_verification.rs"]
+mod upload_verification;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

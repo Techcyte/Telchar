@@ -46,6 +46,7 @@ struct Instruments {
     configuration_reload_static_ssh_removed: Histogram<u64>,
     cache_substitutions: Counter<u64>,
     cache_substitution_duration: Histogram<f64>,
+    output_signing: Counter<u64>,
     post_build_hook_runs: Counter<u64>,
     post_build_hook_duration: Histogram<f64>,
     store_validations: Counter<u64>,
@@ -361,6 +362,7 @@ fn instruments() -> &'static Instruments {
                 .f64_histogram("telchar.cache.substitution.duration")
                 .with_unit("s")
                 .build(),
+            output_signing: meter.u64_counter("telchar.executor.output_signing").build(),
             post_build_hook_runs: meter
                 .u64_counter("telchar.post_build_hook.runs")
                 .with_unit("{attempt}")
@@ -1254,4 +1256,10 @@ pub fn emit_smoke_metrics() {
     nomad_execution_finished("smoke", Duration::from_millis(9), "succeeded");
     nomad_callback_started();
     nomad_callback_finished("succeeded");
+}
+
+pub(crate) fn output_signing_finished(result: &'static str) {
+    instruments()
+        .output_signing
+        .add(1, &[KeyValue::new("result", result)]);
 }

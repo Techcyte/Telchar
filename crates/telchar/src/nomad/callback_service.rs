@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::build::BuildRequest;
 use crate::nomad::authentication::{
     HmacCallbackVerifier, HmacVerificationPolicy, WorkloadIdentityPolicy, WorkloadIdentityVerifier,
 };
@@ -34,6 +35,7 @@ pub struct NomadCallbackService {
 }
 
 impl NomadCallbackService {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         listener: TcpListener,
         callback: NomadCallbackConfig,
@@ -42,6 +44,7 @@ impl NomadCallbackService {
         gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
         shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
+        output_signer: Option<crate::service::output_signing::OutputSigner>,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -85,6 +88,7 @@ impl NomadCallbackService {
                 let connections = Arc::clone(&listener_connections);
                 let gateway_store = gateway_store.clone();
                 let shared_builds = Arc::clone(&shared_builds);
+                let output_signer = output_signer.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     crate::service::metrics::nomad_callback_started();
@@ -96,6 +100,7 @@ impl NomadCallbackService {
                         &gateway_store,
                         output_retention,
                         &shared_builds,
+                        output_signer.as_ref(),
                     );
                     match result {
                         Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
@@ -189,6 +194,7 @@ impl Drop for NomadCallbackService {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve_connection(
     connection: &mut TcpStream,
     callback: &NomadCallbackConfig,
@@ -197,6 +203,7 @@ pub fn serve_connection(
     gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
+    output_signer: Option<&crate::service::output_signing::OutputSigner>,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -493,6 +500,18 @@ pub fn serve_connection(
         .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
         return Ok(());
     }
+    if let Some(signer) = output_signer {
+        let mut export =
+            crate::store::export::GatewayStoreExportBackend::new(gateway_store.clone());
+        sign_outputs_before_success(
+            database,
+            derivation_path,
+            build_request,
+            signer,
+            &mut export,
+            output_retention,
+        )?;
+    }
     crate::persistence::complete_shared_build_success(
         database,
         derivation_path,
@@ -510,6 +529,39 @@ pub fn serve_connection(
         output_retention,
     )
     .map_err(|_| io::Error::other("Nomad shared build completion failed"))?;
+    Ok(())
+}
+
+fn sign_outputs_before_success(
+    database: &crate::persistence::Database,
+    derivation_path: &str,
+    request: &BuildRequest,
+    signer: &crate::service::output_signing::OutputSigner,
+    export: &mut dyn crate::store::export::StoreExportBackend,
+    output_retention: std::time::Duration,
+) -> io::Result<()> {
+    // Validate the complete output set before adding even the first signature.
+    let validated = crate::service::output_signing::validate_outputs(request, export);
+    let failure = match validated {
+        Err(_) => Some("output-validation-failure"),
+        Ok(outputs) => signer
+            .sign_validated_outputs(&outputs, || database.wait_for_ownership())
+            .err()
+            .map(|_| "output-signing-failure"),
+    };
+    if let Some(classification) = failure {
+        crate::persistence::complete_shared_build_failure(
+            database,
+            derivation_path,
+            classification,
+            &serde_json::json!({"stage": classification}),
+            output_retention,
+        )
+        .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
+        return Err(io::Error::other(
+            "Nomad output validation or signing failed",
+        ));
+    }
     Ok(())
 }
 
@@ -1467,5 +1519,144 @@ mod tests {
         assert_eq!(taken.len(), 262_144);
         assert!(chunk.is_empty());
         assert_eq!(chunk.capacity(), 262_144);
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use crate::service::output_signing::{SigningConfig, SigningFailurePolicy};
+    use crate::store::export::{StoreExportBackend, StoreExportRequest};
+    use crate::store::promotion::RegisteredPathInfo;
+    use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Export {
+        metadata: RegisteredPathInfo,
+        nar: Vec<u8>,
+    }
+    impl StoreExportBackend for Export {
+        fn store_uri(&self) -> &str {
+            "test"
+        }
+        fn query_path_info(&mut self, _: &std::path::Path) -> io::Result<RegisteredPathInfo> {
+            Ok(self.metadata.clone())
+        }
+        fn export_nar(
+            &mut self,
+            _: &StoreExportRequest,
+            _: u64,
+            sink: &mut dyn io::Write,
+        ) -> io::Result<()> {
+            sink.write_all(&self.nar)
+        }
+    }
+
+    #[test]
+    fn callback_signing_prerequisite_integrity_failure_terminalizes_even_with_warn_policy() {
+        let fixture = telchar_test_support::postgres::PostgresFixture::start();
+        crate::persistence::migrate(fixture.url()).unwrap();
+        let database = crate::persistence::Database::connect(fixture.url()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let key = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let mut bytes = vec![7; 32];
+        bytes.extend(key.public_key().as_ref());
+        let key_path = root.path().join("key");
+        std::fs::write(&key_path, format!("test:{}", STANDARD.encode(bytes))).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let signer = SigningConfig::new(key_path, SigningFailurePolicy::Warn)
+            .load(GatewayStoreEndpoint::parse("unix:///must-not-sign-invalid-output.sock").unwrap())
+            .unwrap();
+        let mut nar = Vec::new();
+        for value in [
+            b"nix-archive-1".as_slice(),
+            b"(",
+            b"type",
+            b"regular",
+            b"contents",
+            b"test",
+            b")",
+        ] {
+            nix_worker_protocol::write_worker_byte_string(&mut nar, value);
+        }
+        for mutation in 0..3 {
+            let path = format!("/nix/store/00000000000000000000000000000000-output-{mutation}");
+            let drv = format!("/nix/store/00000000000000000000000000000000-test-{mutation}.drv");
+            let derivation = format!(
+                r#"Derive([("out","{path}","","")],[],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","test-{mutation}"),("out","{path}"),("system","x86_64-linux")])"#
+            );
+            let target = crate::backend::BackendTarget::new(
+                "test",
+                crate::backend::BackendKind::Nomad,
+                "x86_64-linux",
+                [] as [&str; 0],
+            )
+            .unwrap();
+            let request = BuildRequest::from_stored_derivation(
+                drv.as_bytes(),
+                derivation.as_bytes(),
+                &[target],
+            )
+            .unwrap();
+            crate::persistence::claim_shared_build_with_request(
+                &database,
+                &drv,
+                &request.shared_build_digest(),
+                "test",
+                crate::backend::BackendKind::Nomad,
+                crate::backend::BackendKind::Nomad.capabilities(),
+                Some("test-job"),
+                &[&path],
+                &request,
+            )
+            .unwrap();
+            crate::persistence::start_shared_build(&database, &drv).unwrap();
+            crate::persistence::collect_shared_build(&database, &drv).unwrap();
+            let mut metadata = RegisteredPathInfo {
+                path: path.into(),
+                nar_hash: Sha256::digest(&nar).into(),
+                nar_size: nar.len() as u64,
+                references: vec![],
+                deriver: None,
+                content_address: None,
+            };
+            match mutation {
+                0 => metadata.nar_hash = [0; 32],
+                1 => metadata.path = "/nix/store/11111111111111111111111111111111-other".into(),
+                _ => metadata.content_address = Some("fixed:r:sha256:bad".into()),
+            }
+            let mut export = Export {
+                metadata,
+                nar: nar.clone(),
+            };
+            assert!(
+                sign_outputs_before_success(
+                    &database,
+                    &drv,
+                    &request,
+                    &signer,
+                    &mut export,
+                    Duration::from_secs(60)
+                )
+                .is_err()
+            );
+            let build = crate::persistence::read_shared_build(&database, &drv)
+                .unwrap()
+                .unwrap();
+            assert_eq!(build.state, crate::persistence::SharedBuildState::Failed);
+            assert_eq!(
+                build.failure_classification.as_deref(),
+                Some("output-validation-failure")
+            );
+            assert_eq!(
+                crate::persistence::read_shared_build_attempt(&database, &drv)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                crate::persistence::SharedBuildAttemptState::Failed
+            );
+        }
     }
 }

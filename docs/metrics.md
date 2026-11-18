@@ -277,3 +277,10 @@ the entire build-result-to-reset latency. Telemetry retention/export failure doe
 not grant authority or change build success. Trace and assignment IDs are never
 metric labels. New timing fields contain no credentials, request bodies or store
 paths; existing product log events retain their existing diagnostics policy.
+
+Executor output signing (disabled by default): `telchar.executor.output_signing`
+is a counter of live signing invocations with bounded `result` values `succeeded`
+and `failed`. It contains no key names, signatures, output paths or credentials.
+Default failures warn and allow completion; configured `fail-build` fails only
+live attempts. See [output signing](operations.md#optional-executor-output-signing)
+for recovery and partial-write limitations.

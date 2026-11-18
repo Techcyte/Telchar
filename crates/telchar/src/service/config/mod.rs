@@ -102,6 +102,8 @@ pub struct ServiceConfig {
     output_retention: OutputRetention,
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
+    upload_verification: crate::service::upload_verification::UploadVerification,
+    signing: Option<crate::service::output_signing::SigningConfig>,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
     database_url: Option<String>,
     ownership_renewal_interval: Duration,
@@ -152,8 +154,16 @@ impl ServiceConfig {
         self.maximum_retained_input_bytes
     }
 
+    pub fn upload_verification(&self) -> &crate::service::upload_verification::UploadVerification {
+        &self.upload_verification
+    }
+
     pub fn audit_enabled(&self) -> bool {
         self.audit_enabled
+    }
+
+    pub fn signing(&self) -> Option<&crate::service::output_signing::SigningConfig> {
+        self.signing.as_ref()
     }
 
     pub fn post_build_hook(&self) -> Option<&crate::service::post_build_hook::PostBuildHook> {
@@ -254,6 +264,8 @@ impl ServiceConfig {
             || self.output_retention != replacement.output_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
+            || self.upload_verification != replacement.upload_verification
+            || self.signing != replacement.signing
             || self.post_build_hook != replacement.post_build_hook
             || self.database_url != replacement.database_url
             || self.ownership_renewal_interval != replacement.ownership_renewal_interval
@@ -375,6 +387,20 @@ impl ServiceConfig {
             return Err(invalid("retained input byte limit is invalid"));
         }
 
+        let upload_verification = raw.upload_verification.unwrap_or_default();
+        upload_verification.validate()?;
+
+        let signing = raw
+            .signing
+            .map(|section| {
+                let path =
+                    validate_protected_file(section.key_file, "signing key file is invalid")?;
+                Ok::<_, io::Error>(crate::service::output_signing::SigningConfig::new(
+                    path,
+                    section.failure_policy,
+                ))
+            })
+            .transpose()?;
         let post_build_hook = raw
             .post_build_hook
             .map(|config| {
@@ -526,6 +552,8 @@ impl ServiceConfig {
             output_retention,
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
+            upload_verification,
+            signing,
             post_build_hook,
             database_url,
             ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),
