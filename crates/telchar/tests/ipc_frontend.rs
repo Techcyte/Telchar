@@ -16,6 +16,11 @@ use telchar_test_support::postgres::PostgresFixture;
 use nix_worker_protocol::{CLIENT_WORKER_MAGIC, LATEST_WORKER_VERSION, SERVER_WORKER_MAGIC};
 use telchar::service::ipc::{IPC_VERSION, IpcEnvelope, IpcError, IpcListener, RequesterMetadata};
 
+#[path = "ipc_frontend/audit.rs"]
+mod audit;
+#[path = "ipc_frontend/upload_audit.rs"]
+mod upload_audit;
+
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[path = "ipc_frontend/handshake.rs"]
@@ -179,6 +184,7 @@ fn authenticated_envelope(session_id: &str) -> IpcEnvelope {
         },
         session_id: session_id.into(),
         trace_context: telchar_telemetry::TraceContext::default(),
+        identity_details: None,
         error: None,
     }
 }

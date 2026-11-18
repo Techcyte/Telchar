@@ -2,6 +2,7 @@
 
 pub(crate) mod activity;
 pub mod admin;
+pub mod audit;
 pub mod config;
 pub mod config_reload;
 pub mod daemon_services;
@@ -9,6 +10,7 @@ pub mod deployment;
 pub mod disk_reserve;
 pub mod executor_service;
 pub mod identity;
+pub mod identity_details;
 pub mod ipc;
 pub mod metrics;
 pub mod post_build_hook;

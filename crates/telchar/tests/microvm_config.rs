@@ -651,6 +651,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
                 },
                 session_id: "microvm-ipc".into(),
                 trace_context: telchar_telemetry::TraceContext::default(),
+                identity_details: None,
                 error: None,
             },
         )

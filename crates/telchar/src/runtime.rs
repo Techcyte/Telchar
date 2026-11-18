@@ -265,6 +265,54 @@ pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Syn
     result.map_err(Into::into)
 }
 
+fn frontend_identity_details() -> io::Result<telchar::service::identity_details::IdentityDetails> {
+    let optional = |name| std::env::var(name).ok();
+    let certificate = std::env::var_os("TELCHAR_AUTHENTICATED_CA").is_some();
+    let mut identity = telchar::service::identity_details::IdentityDetails {
+        auth_method: if certificate {
+            "certificate"
+        } else {
+            "publickey"
+        }
+        .into(),
+        key_fingerprint: optional("TELCHAR_AUTHENTICATED_KEY"),
+        key_type: optional("TELCHAR_AUTHENTICATED_KEY_TYPE"),
+        certificate_ca_fingerprint: optional("TELCHAR_AUTHENTICATED_CA"),
+        certificate_key_id: optional("TELCHAR_AUTHENTICATED_KEY_ID"),
+        certificate_principals: optional("TELCHAR_AUTHENTICATED_PRINCIPALS")
+            .map(|value| value.lines().map(str::to_owned).collect()),
+        certificate_serial: optional("TELCHAR_AUTHENTICATED_SERIAL")
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|_| invalid("certificate serial is invalid"))
+            })
+            .transpose()?,
+        certificate_valid_from: optional("TELCHAR_AUTHENTICATED_VALID_FROM"),
+        certificate_valid_to: optional("TELCHAR_AUTHENTICATED_VALID_TO"),
+        certificate_user_key_fingerprint: optional("TELCHAR_AUTHENTICATED_USER_KEY"),
+        ..Default::default()
+    };
+    if let Some(connection) = optional("SSH_CONNECTION") {
+        let fields = connection.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 4 {
+            return Err(invalid("SSH connection metadata is invalid"));
+        }
+        identity.source_address = Some(
+            fields[0]
+                .parse()
+                .map_err(|_| invalid("SSH source address is invalid"))?,
+        );
+        identity.source_port = Some(
+            fields[1]
+                .parse()
+                .map_err(|_| invalid("SSH source port is invalid"))?,
+        );
+    }
+    identity.validate()?;
+    Ok(identity)
+}
+
 #[tracing::instrument(level = "trace", skip_all)]
 fn run_frontend() -> io::Result<()> {
     let config = telchar::service::config::ServiceConfig::load()?;
@@ -310,11 +358,20 @@ fn run_frontend() -> io::Result<()> {
         success = daemon.is_ok()
     );
     let mut daemon = daemon?;
+    let identity_details = config
+        .audit_enabled()
+        .then(frontend_identity_details)
+        .transpose()?;
     let envelope = IpcEnvelope {
-        version: IPC_VERSION,
+        version: if identity_details.is_some() {
+            telchar::service::ipc::AUDIT_IPC_VERSION
+        } else {
+            IPC_VERSION
+        },
         requester: RequesterMetadata::try_from(&requester)?,
         session_id: session_id(),
         trace_context: telchar_telemetry::TraceContext::capture_current(),
+        identity_details,
         error: None,
     };
     let _session =

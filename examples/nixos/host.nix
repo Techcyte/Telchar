@@ -70,6 +70,7 @@ let
   forcedCommand = telcharSshCommand {
     inherit pkgs lib;
     inherit (cfg) package socketPath;
+    auditEnabled = cfg.settings.audit.enabled or false;
   };
   certificateIngress = cfg.ingress.openssh.hostCertificateFile != null;
   sshdConfiguration = pkgs.writeText "telchar-sshd_config" ''

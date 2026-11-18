@@ -175,6 +175,7 @@ chunk_bytes = 262144
                 },
                 session_id: "microvm-daemon-build".into(),
                 trace_context: telchar_telemetry::TraceContext::default(),
+                identity_details: None,
                 error: None,
             },
         )?;
@@ -276,6 +277,7 @@ chunk_bytes = 262144
                     },
                     session_id: "microvm-daemon-follower".into(),
                     trace_context: telchar_telemetry::TraceContext::default(),
+                    identity_details: None,
                     error: None,
                 },
             )?;

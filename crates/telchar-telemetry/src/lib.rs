@@ -1,6 +1,8 @@
 //! Initializes bounded structured logs and OTLP exporters without retaining sensitive request data.
 
+mod audit;
 mod progress;
+pub use audit::emit_audit;
 mod trace_context;
 pub use progress::Progress;
 pub use trace_context::{MAXIMUM_TRACEPARENT_BYTES, MAXIMUM_TRACESTATE_BYTES, TraceContext};
@@ -264,24 +266,29 @@ impl Telemetry {
                     .with_timeout(EXPORT_TIMEOUT)
                     .build()?,
             };
+            let mut exporter = exporter;
+            opentelemetry_sdk::logs::LogExporter::set_resource(&mut exporter, &resource);
+            let exporter = std::sync::Arc::new(exporter);
+            let ordinary =
+                BatchLogProcessor::builder(audit::SharedExporter(std::sync::Arc::clone(&exporter)))
+                    .with_batch_config(
+                        LogBatchConfigBuilder::default()
+                            .with_max_queue_size(MAX_QUEUE_SIZE)
+                            .with_max_export_batch_size(MAX_EXPORT_BATCH_SIZE)
+                            .with_scheduled_delay(EXPORT_INTERVAL)
+                            .build(),
+                    )
+                    .build();
+            let processor = audit::AuditProcessor::new(ordinary, exporter);
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkLoggerProvider::builder()
                     .with_resource(resource)
-                    .with_log_processor(
-                        BatchLogProcessor::builder(exporter)
-                            .with_batch_config(
-                                LogBatchConfigBuilder::default()
-                                    .with_max_queue_size(MAX_QUEUE_SIZE)
-                                    .with_max_export_batch_size(MAX_EXPORT_BATCH_SIZE)
-                                    .with_scheduled_delay(EXPORT_INTERVAL)
-                                    .build(),
-                            )
-                            .build(),
-                    )
+                    .with_log_processor(processor)
                     .build(),
             )
         })?;
 
+        audit::initialize(&logger_provider);
         global::set_tracer_provider(tracer_provider.clone());
         global::set_meter_provider(meter_provider.clone());
 

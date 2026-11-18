@@ -45,6 +45,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         session_id,
         audit_subject,
         quota_subject,
+        audit,
         transfer_limits,
         object_admission,
         rate_admission,
@@ -75,13 +76,17 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         WorkerTrust::Trusted,
     )?;
     drop(handshake);
+    if let Some(audit) = audit {
+        audit.started(negotiated.version);
+    }
 
     macro_rules! execute_admitted_build {
-        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $write_success:expr $(,)?) => {{
+        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $write_success:expr $(,)?) => {{
             let admitted = $admitted;
             let request_started = $request_started;
             let build_mode = $build_mode;
             let requested_system = $requested_system;
+            let build_audit = $build_audit;
                 if return_cached_outputs(
                     &admitted,
                     database,
@@ -92,6 +97,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     audit_subject,
                     quota_subject,
                 )? {
+                    if let Some(build_audit) = build_audit.as_ref() {
+                        build_audit.completed("already-valid", admitted.expected_outputs().iter()
+                            .map(|(_, path)| String::from_utf8_lossy(path).into_owned()).collect());
+                    }
                     $write_success(&mut output, negotiated.version, true, &admitted)?;
                     crate::service::metrics::build_request_finished(
                         request_started.elapsed(), "succeeded", None,
@@ -1202,6 +1211,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         }
                     });
                 }
+                if let Some(build_audit) = build_audit.as_ref() {
+                    build_audit.completed("succeeded", admitted.expected_outputs().iter()
+                        .map(|(_, path)| String::from_utf8_lossy(path).into_owned()).collect());
+                }
                 if !requester_detached.get() {
                     $write_success(
                         &mut output,
@@ -1282,6 +1295,18 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                let build_audit = audit.map(|audit| {
+                    let outputs = request
+                        .outputs()
+                        .iter()
+                        .map(|output| String::from_utf8_lossy(output.name()).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    audit.build(vec![format!(
+                        "{}!{outputs}",
+                        String::from_utf8_lossy(request.drv_path())
+                    )])
+                });
                 let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
                     Ok(admitted) => admitted,
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
@@ -1316,6 +1341,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     request.platform(),
+                    build_audit,
                     |output, version, already_valid, build: &BuildRequest| {
                         nix_worker_protocol::write_build_derivation_success_response(
                             output,
@@ -1347,6 +1373,15 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                let build_audit = audit.map(|audit| {
+                    audit.build(
+                        request
+                            .targets()
+                            .iter()
+                            .map(|target| String::from_utf8_lossy(target).into_owned())
+                            .collect(),
+                    )
+                });
                 let target = &request.targets()[0];
                 if !target.ends_with(b".drv") && !target.contains(&b'!') {
                     let valid_paths =
@@ -1366,6 +1401,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             }
                         };
                     if valid_paths == [target.clone()] {
+                        if let Some(build_audit) = build_audit.as_ref() {
+                            build_audit.completed(
+                                "already-valid",
+                                vec![String::from_utf8_lossy(target).into_owned()],
+                            );
+                        }
                         nix_worker_protocol::write_build_paths_with_results_success_response(
                             &mut output,
                             negotiated.version,
@@ -1453,6 +1494,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request_started,
                     request.build_mode(),
                     requested_system.as_slice(),
+                    build_audit,
                     |output, version, already_valid, _build: &BuildRequest| {
                         nix_worker_protocol::write_build_paths_with_results_success_response(
                             output,
@@ -1624,28 +1666,41 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let request = match reader.complete_add_multiple_to_store(
                     negotiated.version,
                     |info, source| {
-                        object_counts
-                            .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
-                        let _permit = object_admission.admit_inbound()?;
-                        if let Some(staging_directory) = staging_directory.as_deref()
-                            && let Err(error) = disk_reserve.admit_transfer(
-                                disk_probe,
-                                &store_directory,
-                                staging_directory,
-                                info.nar_size(),
-                            )
-                        {
-                            disk_reserve_rejected("transfer", disk_reserve, error);
-                            disk_rejection = Some(error);
-                            return Err(io::Error::other("disk reserve rejected"));
+                        let already_valid = audit.and_then(|_| {
+                            store_query
+                                .query_valid_paths(&[info.path().to_vec()], false)
+                                .map(|paths| paths.iter().any(|path| path == info.path()))
+                                .ok()
+                        });
+                        let result = (|| {
+                            object_counts
+                                .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
+                            let _permit = object_admission.admit_inbound()?;
+                            if let Some(staging_directory) = staging_directory.as_deref()
+                                && let Err(error) = disk_reserve.admit_transfer(
+                                    disk_probe,
+                                    &store_directory,
+                                    staging_directory,
+                                    info.nar_size(),
+                                )
+                            {
+                                disk_reserve_rejected("transfer", disk_reserve, error);
+                                disk_rejection = Some(error);
+                                return Err(io::Error::other("disk reserve rejected"));
+                            }
+                            let mut limited =
+                                crate::service::transfer_limits::LimitedReader::with_rate(
+                                    source,
+                                    transfer_limits.maximum_object_bytes,
+                                    &mut inbound_budget,
+                                    rate_admission.clone(),
+                                );
+                            store_import.import(info, &mut limited)
+                        })();
+                        if let Some(audit) = audit {
+                            audit.upload(info, already_valid, &result);
                         }
-                        let mut limited = crate::service::transfer_limits::LimitedReader::with_rate(
-                            source,
-                            transfer_limits.maximum_object_bytes,
-                            &mut inbound_budget,
-                            rate_admission.clone(),
-                        );
-                        store_import.import(info, &mut limited)
+                        result
                     },
                 ) {
                     Ok(request) => request,

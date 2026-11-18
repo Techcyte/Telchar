@@ -24,15 +24,19 @@ The envelope length may not exceed `16 KiB`. The envelope is:
 
 ```text
 4 bytes   magic: "TIPC"
-u16 LE    version: 1
+u16 LE    version: 2 (audit disabled) or 3 (audit enabled)
 string    credential_id
 string    audit_subject
 string    quota_subject
 string    session_id
+u8        traceparent-present flag; optional string traceparent
+u8        tracestate-present flag; optional string tracestate
 u8        error-present flag
 [if 1]
   string  error code
   string  error message
+[version 3]
+  string  strict JSON authentication identity details
 ```
 
 Each string is encoded as:
@@ -53,6 +57,8 @@ Bounds:
 | `session_id` | 256 |
 | error code | 256 |
 | error message | 4,096 |
+
+The optional audit identity JSON is bounded to 8 KiB within the total envelope. Individual public identity strings are bounded to 256 bytes; at most 64 certificate principals are accepted, with control characters rejected. It carries authentication method, public key/certificate details and sshd source address/port. Default version 2 bytes are unchanged when audit is disabled. Version 1 envelopes without trace context remain decodable; audit does not change the external stock Nix worker protocol.
 
 Strings must be non-empty. Wrong magic, unsupported version, invalid error flag, trailing bytes, truncation, invalid UTF-8, and bound violations fail closed. The daemon applies a five-second default envelope-read timeout, then removes that timeout before handing the stream to the Nix session.
 

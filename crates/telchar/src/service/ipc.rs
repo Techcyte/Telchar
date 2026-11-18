@@ -207,6 +207,7 @@ pub fn authorize_peer<Fd: AsFd>(socket: Fd, expected_uid: u32) -> io::Result<()>
 }
 
 pub const IPC_VERSION: u16 = 2;
+pub const AUDIT_IPC_VERSION: u16 = 3;
 const MINIMUM_IPC_VERSION: u16 = 1;
 const MAGIC: &[u8; 4] = b"TIPC";
 pub const MAX_IPC_COMPONENT_BYTES: usize = 256;
@@ -248,13 +249,14 @@ pub struct IpcEnvelope {
     pub requester: RequesterMetadata,
     pub session_id: String,
     pub trace_context: telchar_telemetry::TraceContext,
+    pub identity_details: Option<crate::service::identity_details::IdentityDetails>,
     pub error: Option<IpcError>,
 }
 
 impl IpcEnvelope {
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         let _span = tracing::debug_span!("ipc.envelope.encode", version = self.version).entered();
-        if self.version != IPC_VERSION {
+        if self.version != IPC_VERSION && self.version != AUDIT_IPC_VERSION {
             return Err(invalid("unsupported IPC version"));
         }
         let mut output = Vec::with_capacity(128);
@@ -294,6 +296,20 @@ impl IpcEnvelope {
             }
             None => output.push(0),
         }
+        if self.version == AUDIT_IPC_VERSION {
+            let identity = self
+                .identity_details
+                .as_ref()
+                .ok_or_else(|| invalid("IPC audit identity is missing"))?;
+            identity.validate()?;
+            let identity = serde_json::to_string(identity)
+                .map_err(|_| invalid("IPC audit identity is invalid"))?;
+            write_string(&mut output, &identity, MAX_IPC_ENVELOPE_BYTES / 2)?;
+        } else if self.identity_details.is_some() {
+            return Err(invalid(
+                "IPC audit identity requires audit envelope version",
+            ));
+        }
         if output.len() > MAX_IPC_ENVELOPE_BYTES {
             return Err(invalid("IPC envelope exceeds size limit"));
         }
@@ -310,7 +326,7 @@ impl IpcEnvelope {
             return Err(invalid("invalid IPC envelope magic"));
         }
         let version = reader.u16()?;
-        if !(MINIMUM_IPC_VERSION..=IPC_VERSION).contains(&version) {
+        if !(MINIMUM_IPC_VERSION..=AUDIT_IPC_VERSION).contains(&version) {
             return Err(invalid("unsupported IPC version"));
         }
         let requester = RequesterMetadata {
@@ -336,6 +352,16 @@ impl IpcEnvelope {
             }),
             _ => return Err(invalid("invalid IPC error flag")),
         };
+        let identity_details = if version == AUDIT_IPC_VERSION {
+            let value = reader.string(MAX_IPC_ENVELOPE_BYTES / 2)?;
+            let identity: crate::service::identity_details::IdentityDetails =
+                serde_json::from_str(&value)
+                    .map_err(|_| invalid("IPC audit identity is invalid"))?;
+            identity.validate()?;
+            Some(identity)
+        } else {
+            None
+        };
         if reader.offset != input.len() {
             return Err(invalid("trailing IPC envelope bytes"));
         }
@@ -344,6 +370,7 @@ impl IpcEnvelope {
             requester,
             session_id,
             trace_context,
+            identity_details,
             error,
         })
     }

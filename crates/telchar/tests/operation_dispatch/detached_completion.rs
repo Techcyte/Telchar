@@ -202,6 +202,8 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
         FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir(&root).expect("fixture root creates");
+    let config = root.join("audit.toml");
+    fs::write(&config, "[audit]\nenabled = true\n[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
     let helper = root.join("build-helper");
     let pid_path = root.join("pid");
     let started = root.join("started");
@@ -220,7 +222,10 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
     let mut fixture = FrontendFixture::spawn_with_store_default_disconnect_policy(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        [
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ("TELCHAR_CONFIG", config.display().to_string()),
+        ],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -325,7 +330,23 @@ fn detached_frontend_finishes_valid_output_and_retains_output_resources() {
         telchar::persistence::SharedBuildState::Succeeded,
         Duration::from_secs(2),
     );
+    thread::sleep(Duration::from_millis(100));
     let stderr = fixture.finish();
+    let completed = stderr
+        .lines()
+        .filter_map(|line| {
+            let start = line.find('{')?;
+            serde_json::from_str::<serde_json::Value>(&line[start..]).ok()
+        })
+        .find(|event| event["event"] == "build.completed")
+        .unwrap_or_else(|| panic!("detached build audit missing: {stderr}"));
+    assert_eq!(completed["status"], "succeeded");
+    assert_eq!(
+        completed["output_paths"],
+        serde_json::json!([
+            "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"
+        ])
+    );
     assert!(
         stderr.contains("worker.build_derivation.completed"),
         "{stderr}"

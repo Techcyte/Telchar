@@ -5,6 +5,32 @@ use std::time::Duration;
 use super::*;
 
 #[test]
+fn upload_audit_is_optional_and_strict() {
+    let _guard = ENVIRONMENT.lock().expect("environment lock");
+    let saved = clear_environment();
+    let root = fixture_root("upload-audit");
+    let config = root.join("telchar.toml");
+    unsafe { std::env::set_var("TELCHAR_CONFIG", &config) };
+    fs::write(&config, "").unwrap();
+    let default = ServiceConfig::load();
+    fs::write(&config, "[audit]\nenabled = true\n").unwrap();
+    let enabled = ServiceConfig::load();
+    fs::write(&config, "[audit]\nenabled = false\n").unwrap();
+    let disabled = ServiceConfig::load();
+    fs::write(&config, "[audit]\nenabled = true\nunknown = true\n").unwrap();
+    let invalid = ServiceConfig::load();
+    restore_environment(saved);
+    fs::remove_dir_all(root).unwrap();
+    assert!(default.is_ok(), "default config: {default:?}");
+    assert!(enabled.is_ok(), "audit config: {enabled:?}");
+    assert!(disabled.is_ok(), "disabled audit config: {disabled:?}");
+    let default = default.unwrap();
+    assert_eq!(default, disabled.unwrap());
+    assert_ne!(default, enabled.unwrap());
+    assert!(invalid.is_err(), "unknown audit option accepted");
+}
+
+#[test]
 fn rejects_database_url_file_with_unsafe_permissions() {
     let _guard = ENVIRONMENT.lock().expect("environment lock");
     let saved = clear_environment();

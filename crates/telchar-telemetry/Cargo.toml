@@ -17,6 +17,8 @@ tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 otlp-http-client.workspace = true
 rustls.workspace = true
+libc = "0.2"
+futures-executor = "0.3"
 
 [dev-dependencies]
 opentelemetry-proto.workspace = true

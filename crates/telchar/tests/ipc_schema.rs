@@ -19,6 +19,7 @@ fn envelope_round_trips_authenticated_metadata_and_session() {
             Some("vendor=value".into()),
         )
         .expect("trace context validates"),
+        identity_details: None,
         error: Some(IpcError {
             code: "protocol-rejected".into(),
             message: "unsupported operation".into(),
@@ -28,6 +29,83 @@ fn envelope_round_trips_authenticated_metadata_and_session() {
     let encoded = envelope.encode().expect("envelope encodes");
     let decoded = IpcEnvelope::decode(&encoded).expect("envelope decodes");
     assert_eq!(decoded, envelope);
+}
+
+#[test]
+fn envelope_round_trips_optional_audit_identity() {
+    let mut envelope = IpcEnvelope {
+        version: IPC_VERSION,
+        requester: RequesterMetadata {
+            credential_id: "ssh-pubkey:SHA256:fixture".into(),
+            audit_subject: "alice".into(),
+            quota_subject: "team".into(),
+        },
+        session_id: "audit-session".into(),
+        trace_context: TraceContext::default(),
+        identity_details: None,
+        error: None,
+    }
+    .encode()
+    .unwrap();
+    envelope[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    let identity = serde_json::to_string(&telchar::service::identity_details::IdentityDetails {
+        auth_method: "publickey".into(),
+        key_fingerprint: Some("SHA256:fixture".into()),
+        key_type: Some("ssh-ed25519".into()),
+        source_address: Some("192.0.2.1".parse().unwrap()),
+        source_port: Some(12345),
+        ..Default::default()
+    })
+    .unwrap();
+    envelope.extend_from_slice(&(identity.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(identity.as_bytes());
+    let decoded = IpcEnvelope::decode(&envelope).expect("audit identity decodes");
+    assert_eq!(decoded.encode().unwrap(), envelope);
+}
+
+#[test]
+fn audit_identity_rejects_control_characters_and_oversized_metadata() {
+    use telchar::service::identity_details::IdentityDetails;
+    use telchar::service::ipc::AUDIT_IPC_VERSION;
+    let mut envelope = IpcEnvelope {
+        version: AUDIT_IPC_VERSION,
+        requester: RequesterMetadata {
+            credential_id: "credential".into(),
+            audit_subject: "alice".into(),
+            quota_subject: "team".into(),
+        },
+        session_id: "session".into(),
+        trace_context: TraceContext::default(),
+        identity_details: Some(IdentityDetails {
+            auth_method: "certificate".into(),
+            certificate_key_id: Some("build\nforged-event".into()),
+            ..Default::default()
+        }),
+        error: None,
+    };
+    assert!(envelope.encode().is_err());
+    envelope
+        .identity_details
+        .as_mut()
+        .unwrap()
+        .certificate_key_id = Some("x".repeat(257));
+    assert!(envelope.encode().is_err());
+    envelope
+        .identity_details
+        .as_mut()
+        .unwrap()
+        .certificate_key_id = Some("build".into());
+    envelope
+        .identity_details
+        .as_mut()
+        .unwrap()
+        .certificate_principals = Some(vec!["p".repeat(256); 64]);
+    assert!(envelope.encode().is_err(), "oversized identity accepted");
+    envelope.identity_details = None;
+    assert!(
+        envelope.encode().is_err(),
+        "audit envelope without identity accepted"
+    );
 }
 
 #[test]
@@ -47,6 +125,7 @@ fn maximum_normalized_requester_fits_the_ipc_envelope() {
         requester: metadata,
         session_id: "session".into(),
         trace_context: telchar_telemetry::TraceContext::default(),
+        identity_details: None,
         error: None,
     };
 
@@ -65,6 +144,7 @@ fn daemon_decodes_version_one_envelopes_without_trace_context() {
         },
         session_id: "session".into(),
         trace_context: TraceContext::default(),
+        identity_details: None,
         error: None,
     };
     let mut encoded = Vec::new();
@@ -100,11 +180,13 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
         },
         session_id: "session".into(),
         trace_context: telchar_telemetry::TraceContext::default(),
+        identity_details: None,
         error: None,
     }
     .encode()
     .expect("envelope encodes");
-    unsupported[4..6].copy_from_slice(&(IPC_VERSION + 1).to_le_bytes());
+    unsupported[4..6]
+        .copy_from_slice(&(telchar::service::ipc::AUDIT_IPC_VERSION + 1).to_le_bytes());
     assert!(IpcEnvelope::decode(&unsupported).is_err());
 
     let oversized = IpcEnvelope {
@@ -116,6 +198,7 @@ fn envelope_rejects_unsupported_version_and_oversized_error() {
         },
         session_id: "session".into(),
         trace_context: telchar_telemetry::TraceContext::default(),
+        identity_details: None,
         error: Some(IpcError {
             code: "error".into(),
             message: "x".repeat(4097),

@@ -2671,6 +2671,8 @@ dependencies = [
 name = "telchar-telemetry"
 version = "2026.11.5"
 dependencies = [
+ "futures-executor",
+ "libc",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",

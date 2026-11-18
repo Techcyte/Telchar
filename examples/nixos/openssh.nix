@@ -11,6 +11,7 @@ let
   command = telcharSshCommand {
     inherit pkgs lib;
     inherit (cfg) package socketPath;
+    auditEnabled = cfg.settings.audit.enabled or false;
   };
 in
 {

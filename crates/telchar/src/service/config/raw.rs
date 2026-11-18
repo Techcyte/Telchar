@@ -8,11 +8,19 @@ pub(super) struct RawServiceConfig {
     pub(super) maximum_retained_input_bytes: Option<u64>,
     #[serde(alias = "cache_publication")]
     pub(super) post_build_hook: Option<PostBuildHookSection>,
+    pub(super) audit: Option<AuditSection>,
     pub(super) database: Option<DatabaseSection>,
     pub(super) ipc: Option<IpcSection>,
     pub(super) identity: Option<IdentityConfig>,
     pub(super) scheduling: Option<SchedulingConfig>,
     pub(super) backends: Option<BackendConfig>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AuditSection {
+    #[serde(default)]
+    pub(super) enabled: bool,
 }
 
 #[derive(Deserialize)]

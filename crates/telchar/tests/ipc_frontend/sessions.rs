@@ -18,6 +18,7 @@ fn daemon_persists_authenticated_session_before_worker_handshake_and_closes_it_a
             },
             session_id: session_id.into(),
             trace_context: telchar_telemetry::TraceContext::default(),
+            identity_details: None,
             error: None,
         },
     )
@@ -67,6 +68,7 @@ fn daemon_closes_authenticated_session_after_worker_protocol_failure() {
             },
             session_id: session_id.into(),
             trace_context: telchar_telemetry::TraceContext::default(),
+            identity_details: None,
             error: None,
         },
     )
@@ -142,6 +144,7 @@ fn daemon_closes_authenticated_session_after_requester_disconnect() {
             },
             session_id: session_id.into(),
             trace_context: telchar_telemetry::TraceContext::default(),
+            identity_details: None,
             error: None,
         },
     )
@@ -238,6 +241,7 @@ fn daemon_rejects_frontend_error_envelope_before_worker_protocol() {
             },
             session_id: "failed-session".into(),
             trace_context: telchar_telemetry::TraceContext::default(),
+            identity_details: None,
             error: Some(IpcError {
                 code: "identity-unavailable".into(),
                 message: "frontend could not attach requester".into(),
