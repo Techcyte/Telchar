@@ -6,6 +6,9 @@ use std::io;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+pub mod registry;
+pub mod signatures;
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum MetadataValue {
@@ -97,6 +100,7 @@ pub struct UploadVerification {
     pub exempt_content_addressed: Option<bool>,
     pub trusted_public_keys: Vec<String>,
     pub trusted_keys: Vec<TrustedKey>,
+    pub resolver: Option<Resolver>,
 }
 
 impl UploadVerification {
@@ -148,8 +152,83 @@ impl UploadVerification {
             return Err(invalid("trusted key count exceeds limit"));
         }
         self.static_keys()?;
+        if let Some(resolver) = &self.resolver {
+            resolver.validate()?;
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Resolver {
+    pub command: Option<Vec<String>>,
+    pub file: Option<std::path::PathBuf>,
+    #[serde(default = "refresh_interval")]
+    pub refresh_interval: String,
+    #[serde(default = "command_timeout")]
+    pub command_timeout: String,
+    #[serde(default = "refresh_limit")]
+    pub unknown_key_refresh_limit: String,
+}
+
+fn refresh_interval() -> String {
+    "5m".into()
+}
+fn command_timeout() -> String {
+    "10s".into()
+}
+fn refresh_limit() -> String {
+    "6/min".into()
+}
+
+impl Resolver {
+    pub fn validate(&self) -> io::Result<()> {
+        parse_duration(&self.refresh_interval)?;
+        parse_duration(&self.command_timeout)?;
+        self.refresh_limit()?;
+        if self.file.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err(invalid("registry file path must be absolute"));
+        }
+        if self.command.as_ref().is_some_and(|command| {
+            command.is_empty()
+                || command.len() > 64
+                || !std::path::Path::new(&command[0]).is_absolute()
+                || command
+                    .iter()
+                    .any(|argument| argument.len() > 4096 || argument.contains('\0'))
+        }) {
+            return Err(invalid("registry command is invalid"));
+        }
+        Ok(())
+    }
+
+    pub fn refresh_limit(&self) -> io::Result<u32> {
+        self.unknown_key_refresh_limit
+            .strip_suffix("/min")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|limit| *limit <= 3600)
+            .ok_or_else(|| invalid("registry refresh limit is invalid"))
+    }
+}
+
+fn parse_duration(value: &str) -> io::Result<std::time::Duration> {
+    let (number, multiplier) = if let Some(number) = value.strip_suffix('s') {
+        (number, 1)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 3600)
+    } else {
+        return Err(invalid("registry duration is invalid"));
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(multiplier))
+        .filter(|seconds| *seconds > 0 && *seconds <= 86400)
+        .map(std::time::Duration::from_secs)
+        .ok_or_else(|| invalid("registry duration is invalid"))
 }
 
 #[derive(Default)]

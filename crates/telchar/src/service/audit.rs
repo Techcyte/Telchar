@@ -53,6 +53,7 @@ impl<'a> SessionAudit<'a> {
         info: &nix_worker_protocol::AddMultipleToStorePathInfo,
         already_valid: Option<bool>,
         result: &std::io::Result<()>,
+        verification: Option<&crate::service::upload_verification::signatures::Evaluation>,
     ) {
         let counter = if result.is_ok() {
             &self.paths_uploaded
@@ -86,6 +87,7 @@ impl<'a> SessionAudit<'a> {
                 "reference_count": info.references().len(),
                 "already_valid": already_valid,
                 "signatures": signatures,
+                "verification": verification,
             }),
         );
     }

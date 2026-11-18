@@ -60,6 +60,7 @@ pub(super) fn serve_accepted_connection(
     shared_builds: &Arc<telchar::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
     gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
+    upload_registry: Option<&telchar::service::upload_verification::registry::Registry>,
 ) -> io::Result<()> {
     database.wait_for_ownership()?;
     if connection.envelope().error.is_some() {
@@ -154,6 +155,7 @@ pub(super) fn serve_accepted_connection(
             &connection.envelope().requester.quota_subject,
         )
         .audit(audit.as_ref())
+        .upload_verification(service_config.upload_verification(), upload_registry)
         .transfer_admission(transfer_limits, object_admission, rate_admission)
         .disk_admission(disk_reserve, disk_probe)
         .post_build_hook(service_config.post_build_hook())

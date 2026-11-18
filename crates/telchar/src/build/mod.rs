@@ -532,7 +532,7 @@ fn decode_hex(value: &[u8]) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn encode_nix_base32(bytes: &[u8]) -> String {
+pub(crate) fn encode_nix_base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
     let length = (bytes.len() * 8).div_ceil(5);
     let mut encoded = String::with_capacity(length);

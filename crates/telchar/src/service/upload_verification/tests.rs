@@ -1,5 +1,106 @@
 use super::*;
 
+#[test]
+fn resolver_configuration_bounds_commands_and_refresh() {
+    let valid = r#"[resolver]
+command = ["/bin/true"]
+refresh_interval = "5m"
+command_timeout = "10s"
+unknown_key_refresh_limit = "6/min"
+"#;
+    let config: UploadVerification = toml::from_str(valid).unwrap();
+    config.validate().unwrap();
+    for invalid in [
+        valid.replace("5m", "0s"),
+        valid.replace("/bin/true", "true"),
+        valid.replace("6/min", "6/hour"),
+    ] {
+        let result = toml::from_str::<UploadVerification>(&invalid)
+            .and_then(|config| config.validate().map_err(serde::de::Error::custom));
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn registry_refreshes_changed_files_and_retains_keys_on_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("keys.json");
+    let write = |name: &str| {
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&serde_json::json!({"version":1,"keys":[{"publicKey":key(name)}]}))
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    write("first");
+    let config: UploadVerification = toml::from_str(&format!(
+        "[resolver]\nfile = {:?}\nrefresh_interval = \"1s\"",
+        file
+    ))
+    .unwrap();
+    let registry = registry::Registry::start(&config).unwrap();
+    assert!(registry.lookup(&["first"]).contains_key("first"));
+    write("second");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while !registry.lookup(&[]).contains_key("second") {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    std::fs::write(&file, b"invalid").unwrap();
+    assert!(registry.lookup(&["unknown"]).contains_key("second"));
+}
+
+#[test]
+fn command_refresh_is_rate_limited_and_keeps_last_good_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("resolver");
+    let counter = root.path().join("calls");
+    let response = root.path().join("response");
+    std::fs::write(
+        &response,
+        serde_json::to_vec(&serde_json::json!({"version":1,"keys":[{"publicKey":key("ci") }]}))
+            .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &script,
+        "#!/usr/bin/env bash\nprintf x >> \"$1\"\nexec cat \"$2\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config: UploadVerification = toml::from_str(&format!(
+        "[resolver]\ncommand = [{:?}, {:?}, {:?}]\nunknown_key_refresh_limit = \"1/min\"",
+        script, counter, response
+    ))
+    .unwrap();
+    let registry = registry::Registry::start(&config).unwrap();
+    assert!(registry.lookup(&["ci"]).contains_key("ci"));
+    std::fs::write(&response, b"invalid").unwrap();
+    assert!(registry.lookup(&["unknown"]).contains_key("ci"));
+    assert!(registry.lookup(&["another"]).contains_key("ci"));
+    assert_eq!(std::fs::read(counter).unwrap(), b"xx");
+}
+
+#[test]
+fn resolver_command_bounds_noisy_output_and_unclosed_pipes() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("resolver");
+    std::fs::write(&script, "#!/usr/bin/env bash\nif [[ $1 == noisy ]]; then head -c 1048577 /dev/zero; else sleep 2; fi\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for argument in ["noisy", "blocked"] {
+        let started = std::time::Instant::now();
+        let result = registry::run_command(
+            &[script.to_string_lossy().into_owned(), argument.into()],
+            std::time::Duration::from_millis(100),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+}
+
 fn key(name: &str) -> String {
     format!("{name}:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 }

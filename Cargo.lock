@@ -2598,6 +2598,7 @@ version = "2026.11.5"
 dependencies = [
  "aws-config",
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sdk-ec2",
  "aws-sdk-lambdamicrovms",
  "aws-sdk-sts",

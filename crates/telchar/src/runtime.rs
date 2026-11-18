@@ -426,6 +426,16 @@ fn configuration_failure(failure_class: &'static str, error: io::Error) -> io::E
 fn run_daemon() -> io::Result<()> {
     let mut config = telchar::service::config::ServiceConfig::load()
         .map_err(|error| configuration_failure("load-or-validation", error))?;
+    let upload_registry = config
+        .upload_verification()
+        .enabled
+        .then(|| {
+            telchar::service::upload_verification::registry::Registry::start(
+                config.upload_verification(),
+            )
+            .map(Arc::new)
+        })
+        .transpose()?;
     let running_disconnect_policy = config.running_disconnect_policy();
     let output_retention = config.output_retention();
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
@@ -986,6 +996,7 @@ fn run_daemon() -> io::Result<()> {
         let shared_builds = Arc::clone(&shared_builds);
         let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
         let gateway_store = gateway_store.clone();
+        let upload_registry = upload_registry.clone();
         let once_result = once_result.clone();
         once_started = once;
         std::thread::spawn(move || {
@@ -1012,6 +1023,7 @@ fn run_daemon() -> io::Result<()> {
                         &shared_builds,
                         &shared_build_scheduler,
                         &gateway_store,
+                        upload_registry.as_deref(),
                     )
                 });
             if let Err(error) = &result {

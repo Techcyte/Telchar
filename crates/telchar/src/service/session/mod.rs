@@ -46,6 +46,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         audit_subject,
         quota_subject,
         audit,
+        upload_verification,
+        upload_registry,
         transfer_limits,
         object_admission,
         rate_admission,
@@ -1672,7 +1674,55 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 .map(|paths| paths.iter().any(|path| path == info.path()))
                                 .ok()
                         });
+                        let verification =
+                            upload_verification
+                                .filter(|config| config.enabled)
+                                .map(|config| {
+                                    let names = info
+                                    .signatures()
+                                    .iter()
+                                    .filter_map(|signature| {
+                                        crate::service::upload_verification::signatures::key_name(
+                                            signature,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                    let keys = upload_registry
+                                        .map(|registry| registry.lookup(&names))
+                                        .unwrap_or_default();
+                                    crate::service::upload_verification::signatures::evaluate(
+                                        info,
+                                        &keys,
+                                        config,
+                                        audit_subject,
+                                        time::OffsetDateTime::now_utc(),
+                                    )
+                                });
                         let result = (|| {
+                            if let Some(decision) = &verification
+                                && !decision.allowed
+                            {
+                                let statuses = decision
+                                    .signatures
+                                    .iter()
+                                    .map(|signature| {
+                                        format!(
+                                            "{}:{:?}",
+                                            signature.key_name.as_deref().unwrap_or("malformed"),
+                                            signature.status
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    format!(
+                                        "upload {} rejected: {:?}; signatures [{statuses}]",
+                                        String::from_utf8_lossy(info.path()),
+                                        decision.reason
+                                    ),
+                                ));
+                            }
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                             let _permit = object_admission.admit_inbound()?;
@@ -1698,7 +1748,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             store_import.import(info, &mut limited)
                         })();
                         if let Some(audit) = audit {
-                            audit.upload(info, already_valid, &result);
+                            audit.upload(info, already_valid, &result, verification.as_ref());
                         }
                         result
                     },
