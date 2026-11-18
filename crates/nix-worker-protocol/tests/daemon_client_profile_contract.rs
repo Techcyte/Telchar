@@ -248,7 +248,9 @@ fn add_signatures_exact_bytes_across_supported_profiles_without_trust_gate() {
         integer(&mut response, STDERR_LAST);
         integer(&mut response, 1);
         let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
-        client.add_signatures(path, &[b"builder:signature".to_vec()]).unwrap();
+        client
+            .add_signatures(path, &[b"builder:signature".to_vec()])
+            .unwrap();
         let mut expected = expected_handshake(version);
         integer(&mut expected, 37);
         byte_string(&mut expected, path);
@@ -261,15 +263,27 @@ fn add_signatures_exact_bytes_across_supported_profiles_without_trust_gate() {
 #[test]
 fn add_signatures_validates_before_writing_and_requires_complete_ack() {
     let version = LATEST_WORKER_VERSION;
-    let mut client = WorkerClient::connect(ScriptedStream::new(handshake_response(version, Some(1)))).unwrap();
+    let mut client =
+        WorkerClient::connect(ScriptedStream::new(handshake_response(version, Some(1)))).unwrap();
     assert!(client.add_signatures(b"bad-path", &[]).is_err());
-    assert!(client.add_signatures(b"/nix/store/00000000000000000000000000000000-output", &[vec![b'x'; 16385]]).is_err());
+    assert!(
+        client
+            .add_signatures(
+                b"/nix/store/00000000000000000000000000000000-output",
+                &[vec![b'x'; 16385]]
+            )
+            .is_err()
+    );
     assert_eq!(client.into_inner().output, expected_handshake(version));
     for ack in [vec![], vec![1], 0u64.to_le_bytes().to_vec()] {
         let mut response = handshake_response(version, Some(1));
         integer(&mut response, STDERR_LAST);
         response.extend(ack);
         let mut client = WorkerClient::connect(ScriptedStream::new(response)).unwrap();
-        assert!(client.add_signatures(b"/nix/store/00000000000000000000000000000000-output", &[]).is_err());
+        assert!(
+            client
+                .add_signatures(b"/nix/store/00000000000000000000000000000000-output", &[])
+                .is_err()
+        );
     }
 }

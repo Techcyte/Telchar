@@ -434,6 +434,18 @@ fn run_daemon() -> io::Result<()> {
     telchar::service::disk_reserve::gateway_store_directory()
         .map_err(|error| configuration_failure("gateway-store-directory", error))?;
     let gateway_store = telchar::store::runtime::GatewayStoreRuntime::from_environment()?;
+    let output_signer = config
+        .signing()
+        .map(|signing| {
+            signing.load(
+                gateway_store
+                    .endpoint()
+                    .cloned()
+                    .ok_or_else(|| invalid("signing requires a gateway store endpoint"))?,
+            )
+        })
+        .transpose()?;
+
     let database_url = config
         .require_database_url()
         .map_err(|error| configuration_failure("database-url-missing", error))?
@@ -701,6 +713,7 @@ fn run_daemon() -> io::Result<()> {
                     .ok_or_else(|| invalid("gateway store endpoint is not configured"))?,
                 output_retention.duration(),
                 Arc::clone(&shared_builds),
+                output_signer.clone(),
             )?,
         )
     } else {
@@ -986,6 +999,7 @@ fn run_daemon() -> io::Result<()> {
         let shared_builds = Arc::clone(&shared_builds);
         let shared_build_scheduler = Arc::clone(&shared_build_scheduler);
         let gateway_store = gateway_store.clone();
+        let output_signer = output_signer.clone();
         let once_result = once_result.clone();
         once_started = once;
         std::thread::spawn(move || {
@@ -1012,6 +1026,7 @@ fn run_daemon() -> io::Result<()> {
                         &shared_builds,
                         &shared_build_scheduler,
                         &gateway_store,
+                        output_signer.as_ref(),
                     )
                 });
             if let Err(error) = &result {

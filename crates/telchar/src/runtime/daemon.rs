@@ -60,6 +60,7 @@ pub(super) fn serve_accepted_connection(
     shared_builds: &Arc<telchar::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: &telchar::shared_build::scheduler::SharedBuildScheduler,
     gateway_store: &telchar::store::runtime::GatewayStoreRuntime,
+    output_signer: Option<&telchar::service::output_signing::OutputSigner>,
 ) -> io::Result<()> {
     database.wait_for_ownership()?;
     if connection.envelope().error.is_some() {
@@ -157,6 +158,7 @@ pub(super) fn serve_accepted_connection(
         .transfer_admission(transfer_limits, object_admission, rate_admission)
         .disk_admission(disk_reserve, disk_probe)
         .post_build_hook(service_config.post_build_hook())
+        .output_signer(output_signer)
         .shared_builds(
             shared_builds,
             shared_build_scheduler,

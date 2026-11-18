@@ -34,6 +34,7 @@ pub struct NomadCallbackService {
 }
 
 impl NomadCallbackService {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         listener: TcpListener,
         callback: NomadCallbackConfig,
@@ -42,6 +43,7 @@ impl NomadCallbackService {
         gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
         shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
+        output_signer: Option<crate::service::output_signing::OutputSigner>,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -85,6 +87,7 @@ impl NomadCallbackService {
                 let connections = Arc::clone(&listener_connections);
                 let gateway_store = gateway_store.clone();
                 let shared_builds = Arc::clone(&shared_builds);
+                let output_signer = output_signer.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     crate::service::metrics::nomad_callback_started();
@@ -96,6 +99,7 @@ impl NomadCallbackService {
                         &gateway_store,
                         output_retention,
                         &shared_builds,
+                        output_signer.as_ref(),
                     );
                     match result {
                         Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
@@ -189,6 +193,7 @@ impl Drop for NomadCallbackService {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve_connection(
     connection: &mut TcpStream,
     callback: &NomadCallbackConfig,
@@ -197,6 +202,7 @@ pub fn serve_connection(
     gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
+    output_signer: Option<&crate::service::output_signing::OutputSigner>,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -492,6 +498,33 @@ pub fn serve_connection(
         )
         .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
         return Ok(());
+    }
+    if let Some(signer) = output_signer {
+        let mut export =
+            crate::store::export::GatewayStoreExportBackend::new(gateway_store.clone());
+        // Validate the complete output set before adding even the first signature.
+        let validated =
+            crate::service::output_signing::validate_outputs(build_request, &mut export);
+        let failure = match validated {
+            Err(_) => Some("output-validation-failure"),
+            Ok(outputs) => signer
+                .sign_validated_outputs(&outputs, || database.wait_for_ownership())
+                .err()
+                .map(|_| "output-signing-failure"),
+        };
+        if let Some(classification) = failure {
+            crate::persistence::complete_shared_build_failure(
+                database,
+                derivation_path,
+                classification,
+                &serde_json::json!({"stage": classification}),
+                output_retention,
+            )
+            .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
+            return Err(io::Error::other(
+                "Nomad output validation or signing failed",
+            ));
+        }
     }
     crate::persistence::complete_shared_build_success(
         database,

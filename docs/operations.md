@@ -426,3 +426,54 @@ Do not rely on Telchar for:
 - active/active scheduling;
 - client-selected infrastructure;
 - native TLS termination.
+
+## Optional executor output signing
+
+Signing is disabled unless `signing.key_file` is configured. Supply an operator-owned
+Nix Ed25519 secret key through a protected runtime file (regular file, owned by
+root or the service user, no group/other permissions), like other service credentials:
+
+```toml
+[signing]
+key_file = "/run/credentials/telchar/executor-signing-key"
+failure_policy = "warn" # default; alternatively "fail-build"
+```
+
+Generate the key with `nix key generate-secret --key-name gateway.example-1` into
+a protected file using `umask 077`; derive the public key with
+`nix key convert-secret-to-public`. Distribute only the public key to downstream
+verifiers. Never put the secret key in a Nix expression, generated world-readable
+configuration, PostgreSQL, or logs. Configuration validates file metadata; daemon
+startup rechecks the opened descriptor and loads the bounded key, rejecting unsafe,
+unreadable, oversized, malformed or inconsistent key material before admission.
+Key changes require daemon restart, not SIGHUP. Runtime failures are redacted.
+
+The live execution owner signs only the admitted expected output paths, after
+complete gateway NAR/metadata/content-address validation and before durable success.
+Local, static SSH and microVM builds use session completion; Nomad signs in the
+callback before its durable completion. Signatures use registered gateway metadata,
+not worker declarations, and are added synchronously through typed Nix
+`AddSignatures` (op 37). Imported signatures are preserved. Inputs, client uploads,
+gateway substitution hits, followers, durable-result reuse and executor
+`AlreadyValid` results are not signed. A gateway-level microVM `Built` result means
+the assigned execution completed and transferred validated outputs; it is not a
+claim that the worker ignored its own valid store paths.
+
+Default `warn` emits `executor.output_signing.failed` and increments
+`telchar.executor.output_signing` with `result=failed`, then allows successful live
+completion. `fail-build` instead terminalizes the live attempt as
+`output-signing-failure`; attached requesters observe failure, not an indefinitely
+collecting build. Integrity/authority validation failures are always failures,
+independent of signing policy. The metric also records `result=succeeded` for each
+successful enabled signing invocation, not per output.
+
+**The fail-build policy is live-only, not a durable all-outputs-signed invariant.**
+Recovery is unchanged: exact valid gateway outputs win even after a crash between
+registration, signing and durable completion. Recovery does not sign or require
+signatures. Multiple output signature writes and PostgreSQL completion are not
+atomic: partial signatures can remain after a later write fails; a missing daemon
+acknowledgment does not prove that a signature was not committed. Ownership is
+checked before writes, but fencing cannot roll back Nix metadata writes. There is
+no automatic signing retry or migration. Downstream consumers requiring signatures
+must independently verify them (`nix store verify --sigs-needed 1` with the public
+key); do not infer their presence from recovered success.

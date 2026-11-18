@@ -28,6 +28,7 @@ pub struct SessionBuilder<'a> {
     shared_builds: Option<&'a crate::shared_build::SharedBuildRegistry>,
     shared_build_scheduler: Option<&'a crate::shared_build::scheduler::SharedBuildScheduler>,
     scheduling_limits: Option<crate::service::config::SchedulingLimits>,
+    output_signer: Option<&'a crate::service::output_signing::OutputSigner>,
     post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
@@ -59,6 +60,7 @@ pub(super) struct SessionContext<'a> {
     pub shared_builds: &'a crate::shared_build::SharedBuildRegistry,
     pub shared_build_scheduler: &'a crate::shared_build::scheduler::SharedBuildScheduler,
     pub scheduling_limits: crate::service::config::SchedulingLimits,
+    pub output_signer: Option<&'a crate::service::output_signing::OutputSigner>,
     pub post_build_hook: Option<&'a crate::service::post_build_hook::PostBuildHook>,
 }
 
@@ -97,6 +99,7 @@ impl<'a> SessionBuilder<'a> {
             shared_build_scheduler: None,
             scheduling_limits: None,
             post_build_hook: None,
+            output_signer: None,
         }
     }
 
@@ -178,6 +181,14 @@ impl<'a> SessionBuilder<'a> {
         self.disk_probe = Some(probe);
         self
     }
+    pub fn output_signer(
+        mut self,
+        signer: Option<&'a crate::service::output_signing::OutputSigner>,
+    ) -> Self {
+        self.output_signer = signer;
+        self
+    }
+
     pub fn post_build_hook(
         mut self,
         publisher: Option<&'a crate::service::post_build_hook::PostBuildHook>,
@@ -238,6 +249,7 @@ impl<'a> SessionBuilder<'a> {
             shared_build_scheduler: self.shared_build_scheduler.ok_or_else(missing)?,
             scheduling_limits: self.scheduling_limits.ok_or_else(missing)?,
             post_build_hook: self.post_build_hook,
+            output_signer: self.output_signer,
         })
     }
 }

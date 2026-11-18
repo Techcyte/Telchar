@@ -13,6 +13,7 @@ pub mod identity;
 pub mod identity_details;
 pub mod ipc;
 pub mod metrics;
+pub mod output_signing;
 pub mod post_build_hook;
 pub mod session;
 pub mod singleton_ownership;

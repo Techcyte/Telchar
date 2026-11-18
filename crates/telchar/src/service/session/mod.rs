@@ -55,6 +55,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_build_scheduler,
         scheduling_limits,
         post_build_hook,
+        output_signer,
     } = context;
     let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
@@ -968,7 +969,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "input_addressed"
                     },
                 );
-                let output_paths = match output_paths {
+                let (output_paths, validated_outputs) = match output_paths {
                     Ok(paths) => {
                         if durable_execution_owned.get() {
                             let build = crate::persistence::read_shared_build(
@@ -1153,6 +1154,18 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         .is_some_and(|build| {
                             build.state == crate::persistence::SharedBuildState::Succeeded
                         });
+                if durable_execution_owned.get()
+                    && !build_already_succeeded
+                    && result.status() == BuildStatus::Built
+                    && let Some(signer) = output_signer
+                    && signer.sign_validated_outputs(&validated_outputs, || database.wait_for_ownership()).is_err()
+                {
+                    crate::persistence::complete_shared_build_failure(
+                        database, derivation_path, "output-signing-failure",
+                        &serde_json::json!({"stage": "signing"}), output_retention.duration(),
+                    ).map_err(|_| io::Error::other("shared build signing failure completion failed"))?;
+                    return reject(&mut output, "output-signing-failure", "executor output signing failed");
+                }
                 if durable_execution_owned.get()
                     && !build_already_succeeded
                     && let Err(error) = crate::persistence::complete_shared_build_success(
@@ -2278,32 +2291,22 @@ fn validate_build_outputs(
     result: &crate::backend::BuildResult,
     request: &crate::build::BuildRequest,
     store_export: &mut dyn crate::store::export::StoreExportBackend,
-) -> io::Result<Vec<String>> {
-    let paths = result
-        .outputs()
-        .iter()
-        .map(|(_, path)| {
-            std::str::from_utf8(path)
-                .map(str::to_owned)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid output path"))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    for (path, authority) in paths.iter().zip(request.output_authorities()) {
-        if path.as_bytes() != authority.path() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "build output authority mismatch",
-            ));
-        }
-        let metadata = crate::store::export::validate_store_output(Path::new(path), store_export)?;
-        if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "build output content address mismatch",
-            ));
-        }
+) -> io::Result<(
+    Vec<String>,
+    Vec<crate::store::promotion::RegisteredPathInfo>,
+)> {
+    if result.outputs() != request.expected_outputs() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "build output authority mismatch",
+        ));
     }
-    Ok(paths)
+    let metadata = crate::service::output_signing::validate_outputs(request, store_export)?;
+    let paths = metadata
+        .iter()
+        .map(|info| info.path.to_string_lossy().into_owned())
+        .collect();
+    Ok((paths, metadata))
 }
 
 fn durable_shared_build_result(
