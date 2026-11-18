@@ -346,7 +346,7 @@ fn worker_build_result(build: BuildSpecification, uri: &str, microvm: bool, fail
     };
     session.resolve_inputs(uri).unwrap();
     match (session.build(uri), failure) {
-        (Ok(result), None) => session.return_outputs(uri, &result).unwrap(),
+        (Ok(result), _) => session.return_outputs(uri, &result).unwrap(),
         (Err(error), Some(_)) => session.report_failure(&error, 65536).unwrap(),
         (result, expected) => {
             panic!("unexpected build result {result:?}; expected failure {expected:?}")
@@ -359,7 +359,11 @@ fn worker_build_result(build: BuildSpecification, uri: &str, microvm: bool, fail
         assert!(metadata.is_none());
         assert!(nar.is_empty());
         let logs = String::from_utf8(logs).unwrap();
-        let diagnostic_text = result.diagnostic.expect("failed build reports diagnostic");
+        let failure = result
+            .nix_failure
+            .expect("Nix failure is distinct from infrastructure diagnostics");
+        assert!(result.diagnostic.is_none());
+        let diagnostic_text = failure.message;
         assert!(
             logs.contains(diagnostic) || diagnostic_text.contains(diagnostic),
             "logs={logs}; diagnostic={diagnostic_text}"
@@ -474,7 +478,7 @@ fn builtin_fetch_executes_on_worker_daemon_and_returns_only_verified_outputs() {
             "fetch-mismatch",
             "payload",
             "0000000000000000000000000000000000000000000000000000000000000000",
-            Some("hash-mismatch"),
+            Some("hash mismatch"),
         ),
         (
             "fetch-failure",
@@ -690,6 +694,54 @@ print('# decline-permanently', file=sys.stderr, flush=True)
             "attempt\n",
             "{backend} delegated"
         );
+    }
+    for backend in ["local", "ssh", "worker", "microvm"] {
+        let name = format!("{backend}-exit-three");
+        let build = instantiate_expression(
+            &name,
+            &format!(
+                r#"derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo telchar-exit-three >&2; exit 3" ]; }}"#,
+            ),
+        );
+        if matches!(backend, "worker" | "microvm") {
+            worker_build_result(build, &uri, backend == "microvm", Some("exit code 3"));
+            continue;
+        }
+        let kind = if backend == "local" {
+            BackendKind::Local
+        } else {
+            BackendKind::StaticSsh
+        };
+        let request = admit(&build, kind);
+        let mut executor: Box<dyn BuildBackend> = if backend == "local" {
+            Box::new(GatewayStoreExecutor::new(endpoint.clone()))
+        } else {
+            let config = ServiceConfig::load().unwrap();
+            Box::new(StaticSshBackend::new(
+                config.static_ssh_backends()[0].clone(),
+                endpoint.clone(),
+            ))
+        };
+        let mut logs = Vec::new();
+        let result = executor
+            .execute_with_logs(
+                &BuildExecution::new(&name, &request, Duration::from_secs(10)).unwrap(),
+                &mut |chunk| {
+                    logs.extend_from_slice(chunk);
+                    Ok(())
+                },
+                &mut || Ok(false),
+            )
+            .unwrap();
+        let failure = result.failure().unwrap();
+        assert_eq!(failure.status, 3);
+        assert!(
+            failure.message.contains("exit code 3"),
+            "{}",
+            failure.message
+        );
+        assert!(String::from_utf8_lossy(&logs).contains("telchar-exit-three"));
+        assert!(result.outputs().is_empty());
     }
     ordinary_build(&instantiate("ordinary-after"), &socket);
     assert_eq!(fs::read_to_string(&marker).unwrap(), "attempt\nattempt\n");

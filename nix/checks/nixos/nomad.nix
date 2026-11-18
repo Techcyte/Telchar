@@ -45,6 +45,14 @@
           args = [ "-c" "test -s \"$textInput\" && ${pkgs.coreutils}/bin/sleep 10 && printf nomad > \"$out\"" ];
         }
       '';
+      failingDerivation = pkgs.writeText "telchar-nomad-failure.nix" ''
+        derivation {
+          name = "telchar-nomad-failure";
+          system = builtins.currentSystem;
+          builder = builtins.storePath "${pkgs.runtimeShell}";
+          args = [ "-c" "${pkgs.coreutils}/bin/sleep 10; echo nomad-exit-three >&2; exit 3" ];
+        }
+      '';
     in
     harness.mkNomadGatewayTest {
       name = "telchar-nixos-nomad-gateway";
@@ -93,6 +101,23 @@
         stock_client.succeed(build + " > /tmp/nomad-build-reused.out 2>&1 || { cat /tmp/nomad-build-reused.out >&2; exit 1; }")
         stock_client.succeed("grep -Fqx '" + output_path + "' /tmp/nomad-build-reused.out")
         nomad_server.succeed("${pkgs.curl}/bin/curl --fail --silent --show-error 'http://127.0.0.1:4646/v1/jobs?namespace=telchar' | ${pkgs.jq}/bin/jq -e 'length == 1'")
+        # A sole request and four joined stock clients must see the actual Nix
+        # failure, not a transfer error. A later request executes a new attempt.
+        failed_drv = stock_client.succeed("nix-instantiate ${failingDerivation}").strip()
+        failed_build = build.replace(derivation_path, failed_drv)
+        for i in range(4):
+            stock_client.succeed("(" + failed_build + " > /tmp/failed-" + str(i) + ".log 2>&1; echo $? > /tmp/failed-" + str(i) + ".status) </dev/null >/dev/null 2>&1 &")
+        for i in range(4):
+            stock_client.wait_for_file("/tmp/failed-" + str(i) + ".status")
+            status = int(stock_client.succeed("cat /tmp/failed-" + str(i) + ".status").strip())
+            assert status not in (0, 124, 137), status
+            stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-" + str(i) + ".log")
+            stock_client.fail("grep -E 'Nomad build transfer failed|unexpected end-of-file|Connection reset' /tmp/failed-" + str(i) + ".log")
+        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 1")
+        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select result_metadata->'nix_failure'->>'status' from shared_builds where derivation_path = '" + failed_drv + "'\" | grep -qx 3")
+        stock_client.fail(failed_build + " > /tmp/failed-retry.log 2>&1")
+        stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-retry.log")
+        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 2")
         nomad_server.succeed("nomad job stop -namespace telchar -purge '" + job_id + "'")
         nomad_server.wait_until_fails("nomad job status -namespace telchar '" + job_id + "'", timeout=30)
       '';

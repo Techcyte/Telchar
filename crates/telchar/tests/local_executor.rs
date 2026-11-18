@@ -442,11 +442,10 @@ fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
     let endpoint = GatewayStoreEndpoint::parse(&store.store_url()).expect("endpoint parses");
     let mut executor = GatewayStoreExecutor::new(endpoint);
 
-    let error = executor
+    let result = executor
         .execute(&request)
-        .expect_err("incorrect fixed-output content must be rejected by Nix");
-
-    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        .expect("Nix rejection is a normal result");
+    assert!(result.failure().is_some());
     store.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
 }
@@ -463,11 +462,10 @@ fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
     let endpoint = GatewayStoreEndpoint::parse(&store.store_url()).expect("endpoint parses");
     let mut executor = GatewayStoreExecutor::new(endpoint);
 
-    let error = executor
+    let result = executor
         .execute(&request)
-        .expect_err("zero-exit builder without output must fail execution");
-
-    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        .expect("missing output is a normal Nix result");
+    assert!(result.failure().is_some());
     store.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
 }
@@ -553,4 +551,38 @@ fn unique_root(label: &str) -> PathBuf {
             .expect("clock follows epoch")
             .as_nanos()
     ))
+}
+
+#[test]
+fn gateway_executor_preserves_exit_three_and_live_logs() {
+    let fixture = NixFixture::create().unwrap();
+    let mut store = fixture
+        .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
+        .unwrap();
+    let build = admitted_request_with_builder(b"echo telchar-exit-three >&2; exit 3");
+    let request = BuildExecution::new("exit-three", &build, Duration::from_secs(30)).unwrap();
+    let mut executor =
+        GatewayStoreExecutor::new(GatewayStoreEndpoint::parse(&store.store_url()).unwrap());
+    let mut logs = Vec::new();
+    let result = executor
+        .execute_with_logs(
+            &request,
+            &mut |chunk| {
+                logs.extend_from_slice(chunk);
+                Ok(())
+            },
+            &mut || Ok(false),
+        )
+        .unwrap();
+    let failure = result.failure().expect("ordinary failure");
+    assert_eq!(failure.status, 3);
+    assert!(
+        failure.message.contains("exit code 3"),
+        "{}",
+        failure.message
+    );
+    assert!(String::from_utf8_lossy(&logs).contains("telchar-exit-three"));
+    assert!(result.outputs().is_empty());
+    store.stop().unwrap();
+    fixture.cleanup().unwrap();
 }

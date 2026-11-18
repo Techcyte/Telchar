@@ -140,6 +140,15 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
 
 #[test]
 fn configured_backend_does_not_retry_callback_recorded_build_failure() {
+    callback_recorded_failure(true);
+}
+
+#[test]
+fn configured_backend_keeps_callback_infrastructure_failure_distinct() {
+    callback_recorded_failure(false);
+}
+
+fn callback_recorded_failure(ordinary: bool) {
     let _guard = CONFIGURATION_TESTS
         .lock()
         .expect("configuration lock holds");
@@ -217,7 +226,8 @@ fn configured_backend_does_not_retry_callback_recorded_build_failure() {
             &failure_database,
             &failure_derivation,
             "nomad-build-failure",
-            &serde_json::json!({"diagnostic": "builder exited 1"}),
+            &if ordinary { serde_json::json!({"nix_failure": {"status": 4, "message": "builder failed with exit code 3"}}) }
+            else { serde_json::json!({"diagnostic": "worker Nix store connection failed"}) },
             Duration::from_secs(60),
         )
         .expect("build failure records");
@@ -240,9 +250,15 @@ fn configured_backend_does_not_retry_callback_recorded_build_failure() {
         )
         .expect("executor configures");
 
-    executor
-        .execute(&execution)
-        .expect_err("deterministic build failure rejects");
+    let result = executor.execute(&execution);
+    if ordinary {
+        let failure = result.unwrap().failure().cloned().unwrap();
+        assert_eq!(failure.status, 4);
+        assert_eq!(failure.message, "builder failed with exit code 3");
+    } else {
+        let error = result.expect_err("infrastructure failure remains an execution error");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    }
 
     assert_eq!(
         telchar::persistence::read_shared_build_attempt(database.url(), derivation)

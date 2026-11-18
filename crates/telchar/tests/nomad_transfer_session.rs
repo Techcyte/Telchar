@@ -265,6 +265,7 @@ fn validates_complete_selective_transfer_sequence() {
                 &BuildResultMetadata {
                     outcome: BuildOutcome::Built,
                     diagnostic: None,
+                    nix_failure: None,
                 },
                 vec![],
             ),
@@ -339,6 +340,7 @@ fn rejects_log_sequence_gaps_payload_misuse_and_early_success() {
                     &BuildResultMetadata {
                         outcome: BuildOutcome::Built,
                         diagnostic: None,
+                        nix_failure: None,
                     },
                     vec![],
                 ),

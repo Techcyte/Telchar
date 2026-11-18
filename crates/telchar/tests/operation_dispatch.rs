@@ -31,6 +31,8 @@ mod build_admission;
 mod build_cleanup;
 #[path = "operation_dispatch/build_completion.rs"]
 mod build_completion;
+#[path = "operation_dispatch/build_failure.rs"]
+mod build_failure;
 #[path = "operation_dispatch/build_logs.rs"]
 mod build_logs;
 #[path = "operation_dispatch/cancellation.rs"]

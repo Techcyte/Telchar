@@ -482,12 +482,16 @@ pub fn serve_connection(
         build_request.expected_outputs().len(),
         &outcome,
     );
-    if let BuildCollectionOutcome::Failed { diagnostic } = outcome {
+    if let BuildCollectionOutcome::Failed {
+        diagnostic,
+        nix_failure,
+    } = outcome
+    {
         crate::persistence::complete_shared_build_failure(
             database,
             derivation_path,
             "nomad-build-failure",
-            &serde_json::json!({"diagnostic": diagnostic}),
+            &serde_json::json!({"diagnostic": diagnostic, "nix_failure": nix_failure}),
             output_retention,
         )
         .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
@@ -541,7 +545,10 @@ fn read_transfer_frame<S: io::Read + io::Write>(
 
 enum BuildCollectionOutcome {
     Built,
-    Failed { diagnostic: Option<String> },
+    Failed {
+        diagnostic: Option<String>,
+        nix_failure: Option<crate::backend::BuildFailure>,
+    },
 }
 
 struct OutputCollectionDeadline {
@@ -602,7 +609,7 @@ fn log_output_collection_outcome(
             expected_output_count,
             "Nomad callback output collection completed"
         ),
-        BuildCollectionOutcome::Failed { diagnostic } => tracing::warn!(
+        BuildCollectionOutcome::Failed { diagnostic, .. } => tracing::warn!(
             event = "nomad.callback.output_collection.completed",
             backend,
             job_id,
@@ -727,10 +734,14 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 }
                 let result: BuildResultMetadata =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
+                if result.nix_failure.as_ref().is_some_and(|failure| failure.message.len() > limits.maximum_diagnostic_bytes()) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Nomad build diagnostic exceeds limit"));
+                }
                 session.accept(Direction::WorkerToGateway, frame)?;
                 if result.outcome == BuildOutcome::Failed {
                     return Ok(BuildCollectionOutcome::Failed {
                         diagnostic: result.diagnostic,
+                        nix_failure: result.nix_failure,
                     });
                 }
                 for (_, path) in build_request.expected_outputs() {
@@ -1325,6 +1336,7 @@ mod tests {
                 1,
                 &super::BuildCollectionOutcome::Failed {
                     diagnostic: Some("builder exited with status 1".to_owned()),
+                    nix_failure: None,
                 },
             );
         });
