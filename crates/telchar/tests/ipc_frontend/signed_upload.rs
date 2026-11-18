@@ -419,8 +419,22 @@ fn nix_signed_reupload_requires_signatures_and_matching_staged_nar() {
     assert_eq!(request["upload"]["alreadyValid"], true);
     assert_eq!(request["token"]["sub"], "fixture");
     assert_eq!(request["signatures"][0]["status"], "valid");
-    fs::write(&hook, format!("#!/usr/bin/env bash\ncat > {:?}\nprintf '%s' '{{\"allow\":true}}'\n", received)).unwrap();
-    let allowed = upload_once(&root.0, &database, "signed-upload-policy-allow", Some(public_key), &upload, &exported);
+    fs::write(
+        &hook,
+        format!(
+            "#!/usr/bin/env bash\ncat > {:?}\nprintf '%s' '{{\"allow\":true}}'\n",
+            received
+        ),
+    )
+    .unwrap();
+    let allowed = upload_once(
+        &root.0,
+        &database,
+        "signed-upload-policy-allow",
+        Some(public_key),
+        &upload,
+        &exported,
+    );
     assert_eq!(allowed["event"], "upload.accepted");
     assert_eq!(allowed["policy"]["allow"], true);
     fs::remove_file(&received).unwrap();
