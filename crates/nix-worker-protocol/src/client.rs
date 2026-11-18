@@ -878,6 +878,25 @@ fn read_worker_build_result(
         Vec::new()
     };
     let mut message = String::from_utf8_lossy(&message).into_owned();
+    // Nix appends a log excerpt to its error text. Logs remain live-only and
+    // must not become durable terminal metadata at the gateway.
+    if matches!(status, WorkerBuildStatus::Failed(_)) {
+        let mut offset = 0;
+        for line in message.split_inclusive('\n') {
+            if line
+                .trim_end()
+                .strip_prefix("Last ")
+                .and_then(|line| line.strip_suffix(" log lines:"))
+                .is_some_and(|count| {
+                    !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                message.truncate(offset);
+                break;
+            }
+            offset += line.len();
+        }
+    }
     let mut end = message
         .len()
         .min(crate::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES);

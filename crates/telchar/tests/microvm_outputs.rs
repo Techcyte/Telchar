@@ -47,7 +47,8 @@ fn disk_reserve_rejects_output_before_staging() {
         outputs
             .finish(&BuildResultMetadata {
                 outcome: BuildOutcome::Built,
-                diagnostic: None
+                diagnostic: None,
+                nix_failure: None,
             })
             .is_err()
     );

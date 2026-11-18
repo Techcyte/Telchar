@@ -3,6 +3,15 @@ use super::*;
 
 #[test]
 fn four_clients_receive_exit_three_logs_and_can_retry_on_the_same_sessions() {
+    failed_build_sessions(false);
+}
+
+#[test]
+fn ordinary_failure_cleanup_fault_has_a_framed_error() {
+    failed_build_sessions(true);
+}
+
+fn failed_build_sessions(cleanup_fault: bool) {
     // Run under tests/canonical-store.sh: clients and gateway share only this disposable store.
     let root = std::env::temp_dir().join(format!(
         "telchar-failure-{}-{}",
@@ -12,8 +21,14 @@ fn four_clients_receive_exit_three_logs_and_can_retry_on_the_same_sessions() {
     fs::create_dir(&root).unwrap();
     let started = root.join("failure-started");
     let release = root.join("failure-release");
+    let sleep = Command::new("sh")
+        .args(["-c", "command -v sleep"])
+        .output()
+        .unwrap();
+    assert!(sleep.status.success());
+    let sleep = String::from_utf8(sleep.stdout).unwrap().trim().to_owned();
     let expression = format!(
-        "derivation {{ name = \"telchar-shared-failure\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"echo x >> {}; while [ ! -e {} ]; do /bin/sleep 0.01; done; echo telchar-exit-three >&2; exit 3\" ]; }}",
+        "derivation {{ name = \"telchar-shared-failure\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"echo x >> {}; while [ ! -e {} ]; do {sleep} 0.01; done; echo telchar-exit-three >&2; exit 3\" ]; }}",
         started.display(),
         release.display(),
     );
@@ -85,6 +100,10 @@ fn four_clients_receive_exit_three_logs_and_can_retry_on_the_same_sessions() {
     for (index, (input, output)) in clients.iter_mut().enumerate() {
         let (message, logs) = read_failure_result(output, (index >= 2).then_some(target.as_str()));
         assert!(message.contains("exit code 3"), "{message}");
+        assert!(
+            !message.contains("telchar-exit-three"),
+            "terminal message must not contain logs: {message}"
+        );
         assert!(logs.contains("telchar-exit-three"), "{logs}");
         messages.push(message);
         write_integer(input, 31); // QueryValidPaths after failure, on this connection.
@@ -114,9 +133,29 @@ fn four_clients_receive_exit_three_logs_and_can_retry_on_the_same_sessions() {
     assert_eq!(failure["message"], messages[0]);
     // A subsequent independent request, on the same session, executes again (no stale wait).
     let (input, output) = &mut clients[0];
-    send_failure_build(input, &build, &target, false);
-    let (message, _) = read_failure_result(output, None);
-    assert!(message.contains("exit code 3"));
+    if cleanup_fault {
+        fixture.database.connect().batch_execute("CREATE FUNCTION reject_failure_detach() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject detach'; END $$; CREATE TRIGGER reject_failure_detach BEFORE UPDATE ON request_attachments FOR EACH ROW EXECUTE FUNCTION reject_failure_detach();").unwrap();
+    }
+    send_failure_build(input, &build, &target, true);
+    if cleanup_fault {
+        loop {
+            let frame = read_integer(output);
+            if frame == STDERR_ERROR {
+                break;
+            }
+            assert_eq!(frame, nix_worker_protocol::STDERR_NEXT);
+            read_string(output);
+        }
+        assert_eq!(read_string(output), "Error");
+        read_integer(output);
+        assert_eq!(read_string(output), "Error");
+        assert_eq!(read_string(output), "store lease state operation failed");
+        assert_eq!(read_integer(output), 0);
+        assert_eq!(read_integer(output), 0);
+    } else {
+        let (message, _) = read_failure_result(output, Some(&target));
+        assert!(message.contains("exit code 3"));
+    }
     assert_eq!(fs::read_to_string(&started).unwrap(), "x\nx\n");
     drop(clients);
     assert!(fixture.frontend.wait().unwrap().success());

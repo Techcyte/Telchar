@@ -582,7 +582,10 @@ impl NomadClient {
                 "Nomad execution failed"
             );
         }
-        let result_name = if result.is_ok() {
+        let result_name = if result
+            .as_ref()
+            .is_ok_and(|result| result.failure().is_none())
+        {
             "succeeded"
         } else {
             "failed"

@@ -734,8 +734,13 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 }
                 let result: BuildResultMetadata =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
-                if result.nix_failure.as_ref().is_some_and(|failure| failure.message.len() > limits.maximum_diagnostic_bytes()) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Nomad build diagnostic exceeds limit"));
+                if result.nix_failure.as_ref().is_some_and(|failure| {
+                    failure.message.len() > limits.maximum_diagnostic_bytes()
+                }) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Nomad build diagnostic exceeds limit",
+                    ));
                 }
                 session.accept(Direction::WorkerToGateway, frame)?;
                 if result.outcome == BuildOutcome::Failed {

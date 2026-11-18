@@ -567,12 +567,14 @@ fn terminal_build_failure_preserves_bounded_message_and_status() {
 
 #[test]
 fn terminal_build_message_is_truncated_at_a_utf8_boundary() {
-    let message = "€".repeat(20_000);
+    // Lossy decoding can expand a bounded non-UTF-8 peer string.
+    let bytes = vec![0xff; nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES];
+    let message = String::from_utf8_lossy(&bytes);
     let mut input = Vec::new();
     handshake(&mut input, 1);
     integer(&mut input, STDERR_LAST);
     integer(&mut input, 6);
-    string(&mut input, message.as_bytes());
+    string(&mut input, &bytes);
     for value in [1, 0, 10, 20, 0, 0, 0] {
         integer(&mut input, value);
     }
@@ -662,4 +664,31 @@ fn failed_keyed_build_consumes_all_results_before_next_operation() {
         4
     );
     assert!(client.is_valid_path(OUTPUT).unwrap());
+}
+
+#[test]
+fn terminal_diagnostic_omits_nix_embedded_log_excerpt() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 3);
+    string(&mut input, b"Cannot build derivation.\nReason: builder failed with exit code 3.\nLast 25 log lines:\n> private-log-marker\nFor full logs, run nix-store -l");
+    for _ in 0..7 {
+        integer(&mut input, 0);
+    }
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+    let result = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        result.message(),
+        "Cannot build derivation.\nReason: builder failed with exit code 3.\n"
+    );
+    assert_eq!(result.status(), WorkerBuildStatus::Failed(3));
 }
