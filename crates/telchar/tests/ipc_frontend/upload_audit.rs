@@ -87,7 +87,8 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
         word(&mut logical, 0);
         word(&mut logical, nar.len() as u64);
         word(&mut logical, 0);
-        word(&mut logical, 0);
+        word(&mut logical, 1);
+        string(&mut logical, b"host-key:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==");
         string(&mut logical, b"");
         logical.extend_from_slice(&nar);
         let mut wire = Vec::new();
@@ -147,6 +148,10 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
         assert!(event["session_id"].is_string());
         assert_eq!(event["audit_subject"], "fixture");
         assert_eq!(event["credential_id"], "ssh-pubkey:fixture");
+        assert_eq!(
+            event["signatures"],
+            serde_json::json!([{"key_name":"host-key","value":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}])
+        );
     }
     fs::remove_dir_all(root).unwrap();
 }

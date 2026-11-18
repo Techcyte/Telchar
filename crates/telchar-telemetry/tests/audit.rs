@@ -23,6 +23,31 @@ fn emit_audit() {
 }
 
 #[test]
+fn failed_export_falls_back_to_socket_stderr() {
+    use std::io::Read;
+    let (mut reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["emit_audit", "--exact", "--nocapture"])
+        .env("TELCHAR_AUDIT_TEST", "1")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+        .env("RUST_LOG", "off")
+        .stderr(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+            writer,
+        )))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    reader
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    let mut stderr = String::new();
+    reader.read_to_string(&mut stderr).unwrap();
+    assert!(stderr.contains("WARN audit.export_failed"), "{stderr}");
+    assert!(stderr.contains("audit-fixture"), "{stderr}");
+}
+
+#[test]
 fn saturated_queue_and_blocked_stderr_do_not_stall_producer() {
     use std::io::Write;
     use std::process::Stdio;

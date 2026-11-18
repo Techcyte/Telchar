@@ -171,8 +171,17 @@ fn fallback(record: &SdkLogRecord, reason: &str) {
         unsafe {
             let mut stat = std::mem::zeroed::<libc::stat>();
             if libc::fstat(libc::STDERR_FILENO, &mut stat) == 0
-                && stat.st_mode & libc::S_IFMT == libc::S_IFREG
+                && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
             {
+                let _ = libc::send(
+                    libc::STDERR_FILENO,
+                    line.as_ptr().cast(),
+                    line.len(),
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                );
+                return;
+            }
+            if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
                 let flags = libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL);
                 if flags >= 0 {
                     libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_APPEND);

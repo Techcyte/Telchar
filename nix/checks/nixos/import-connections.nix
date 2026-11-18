@@ -152,7 +152,7 @@ pkgs.testers.nixosTest {
         print("CACHE_VALIDITY " + report)
         gateway.succeed("test $(cat " + cached_path + ") = " + shlex.quote(nonce))
         gateway.succeed("nix-store --verify-path " + cached_path)
-    journal = gateway.succeed("journalctl --sync; journalctl -u telchar.service --no-pager -o cat")
+    journal = gateway.succeed("sleep 2; journalctl --sync; journalctl -u telchar.service --no-pager -o cat")
     audit = []
     for line in journal.splitlines():
         if "WARN audit." in line and "{" in line:
