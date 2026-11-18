@@ -8,7 +8,11 @@ use std::thread;
 fn command(script: &str) -> (tempfile::TempDir, PolicyHook) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("policy");
-    fs::write(&path, format!("#!/usr/bin/env bash\n{script}\n")).unwrap();
+    let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("bash"))
+        .find(|path| path.is_file())
+        .expect("bash on test PATH");
+    fs::write(&path, format!("#!{}\n{script}\n", bash.display())).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     let hook = PolicyHook {
         command: Some(vec![path.to_str().unwrap().into()]),
