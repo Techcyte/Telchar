@@ -248,7 +248,10 @@ impl Gateway {
             let reason = read_string(&mut stream);
             if address.is_none() {
                 let reason = String::from_utf8(reason).unwrap();
-                assert!(reason.contains(path) && reason.contains("InsufficientSignatures"), "{reason}");
+                assert!(
+                    reason.contains(path) && reason.contains("InsufficientSignatures"),
+                    "{reason}"
+                );
             } else {
                 assert_eq!(reason, b"invalid AddMultipleToStore request");
             }

@@ -1717,9 +1717,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     .join(", ");
                                 let reason = format!(
                                     "upload {} rejected: {:?}; signatures [{statuses}]",
-                                    String::from_utf8_lossy(info.path()), decision.reason);
+                                    String::from_utf8_lossy(info.path()),
+                                    decision.reason
+                                );
                                 upload_rejection = Some(reason.clone());
-                                return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    reason,
+                                ));
                             }
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;

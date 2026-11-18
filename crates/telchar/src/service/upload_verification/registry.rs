@@ -203,9 +203,16 @@ pub(super) fn run_command(command: &[String], timeout: Duration) -> io::Result<V
                 }
             }
             if status.is_none() {
-                status = child.try_wait()?;
+                let pid = rustix::process::Pid::from_raw(child.id() as i32)
+                    .ok_or_else(|| invalid("registry process identity is invalid"))?;
+                status = rustix::process::waitid(
+                    rustix::process::WaitId::Pid(pid),
+                    rustix::process::WaitIdOptions::EXITED
+                        | rustix::process::WaitIdOptions::NOHANG
+                        | rustix::process::WaitIdOptions::NOWAIT,
+                )?;
             }
-            if let Some(status) = status.filter(|_| stdout_eof) {
+            if let Some(status) = status.as_ref().filter(|_| stdout_eof) {
                 if stderr_bytes > 0 {
                     tracing::warn!(
                         event = "registry.command_stderr",
@@ -213,7 +220,7 @@ pub(super) fn run_command(command: &[String], timeout: Duration) -> io::Result<V
                         "registry command emitted diagnostics; content withheld"
                     );
                 }
-                return if status.success() {
+                return if status.exit_status() == Some(0) {
                     Ok(bytes)
                 } else {
                     Err(invalid("registry command failed"))
@@ -225,7 +232,7 @@ pub(super) fn run_command(command: &[String], timeout: Duration) -> io::Result<V
             std::thread::sleep(Duration::from_millis(10));
         }
     })();
-    // Resolver-owned descendants cannot outlive a refresh invocation.
+    // The unreaped leader reserves the process-group identity through cleanup.
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }

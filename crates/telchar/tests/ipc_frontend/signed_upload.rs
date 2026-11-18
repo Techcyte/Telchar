@@ -157,7 +157,11 @@ fn upload_once(
     drop(client);
     drop(stream);
     let output = wait_with_deadline(&mut daemon.0, Duration::from_secs(10));
-    assert!(output.status.success(), "upload daemon failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "upload daemon failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     let events = super::audit::audit_events(&stderr);
     let uploads = events
