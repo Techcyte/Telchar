@@ -146,7 +146,7 @@ fn run_executor() -> io::Result<()> {
                         ) {
                             Ok(result) if result.failure().is_some() => Some((
                                 telchar::persistence::LocalBackendExecutionState::Failed,
-                                "nix-build-failure",
+                                "build-failure",
                                 serde_json::json!({"nix_failure": result.failure()}),
                             )),
                             Ok(result) => {

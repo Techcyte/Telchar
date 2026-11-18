@@ -34,7 +34,7 @@ impl Outputs {
                 10000,
                 maximum_nar_bytes,
                 maximum_total_bytes,
-                4096,
+                nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES,
             )?,
             endpoint,
             staging,

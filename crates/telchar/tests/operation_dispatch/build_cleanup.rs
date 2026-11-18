@@ -11,31 +11,42 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     ));
     fs::create_dir(&root).expect("fixture root creates");
     let helper = root.join("build-helper");
-    fs::write(
-        &helper,
-        "#!/bin/sh\nset -eu\ncat >/dev/null\nprintf '{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}\\n'\n",
-    )
+    let started = root.join("started");
+    let release = root.join("release");
+    let response = r#"{"version":1,"success":true,"status":"built","outputs":[["out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"]]}"#;
+    fs::write(&helper, format!("#!/bin/sh\nset -eu\ncat >/dev/null\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '%s\n' '{}'\n", started.display(), release.display(), response))
     .expect("helper writes");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper executable");
-    let mut fixture = FrontendFixture::spawn_with_store(
-        None,
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
         "unix:///fixed-gateway.sock",
         [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
     );
-    fixture
-        .database
-        .connect()
-        .batch_execute(
-            "CREATE FUNCTION reject_output_lease() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.purpose = 'output' THEN RAISE EXCEPTION 'reject output lease'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_output_lease BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_output_lease();",
-        )
-        .expect("output lease failure trigger installs");
-    let child = &mut fixture.frontend;
-    let mut input = child.stdin.take().expect("server input");
-    let mut output = child.stdout.take().expect("server output");
+    let mut input = fixture.frontend.stdin.take().expect("server input");
+    let mut output = fixture.frontend.stdout.take().expect("server output");
     complete_handshake(&mut input, &mut output);
     write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
 
+    wait_for_file_for(&started, Duration::from_secs(5), "leader not started");
+    let leader_request = request_id(&mut fixture.database.connect());
+    fixture.database.connect().batch_execute(&format!(
+        "CREATE FUNCTION reject_output_lease() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.purpose = 'output' AND NEW.owner_id = '{leader_request}' THEN RAISE EXCEPTION 'reject output lease'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_output_lease BEFORE INSERT ON store_leases FOR EACH ROW EXECUTE FUNCTION reject_output_lease();"
+    )).unwrap();
+    let mut follower = fixture.spawn_frontend();
+    let mut follower_input = follower.stdin.take().unwrap();
+    let mut follower_output = follower.stdout.take().unwrap();
+    complete_handshake(&mut follower_input, &mut follower_output);
+    write_build_derivation_request(&mut follower_input, "x86_64-linux", 0);
+    follower_input.flush().unwrap();
+    assert_eq!(
+        read_integer(&mut follower_output),
+        nix_worker_protocol::STDERR_NEXT
+    );
+    assert_eq!(
+        read_string(&mut follower_output),
+        "identical build already in progress\n"
+    );
+    fs::write(&release, "release").unwrap();
     assert_eq!(read_integer(&mut output), STDERR_ERROR);
     assert_eq!(read_string(&mut output), "Error");
     let _level = read_integer(&mut output);
@@ -48,10 +59,26 @@ fn output_lease_failure_rolls_back_output_root_before_request_cleanup() {
     assert_eq!(read_integer(&mut output), 0, "error has no trace");
     drop(input);
     drop(output);
-    assert!(child.wait().expect("Telchar exits").success());
+    assert!(fixture.frontend.wait().expect("Telchar exits").success());
 
+    assert_eq!(
+        read_integer(&mut follower_output),
+        STDERR_ERROR,
+        "failed durable owner must not authorize follower success"
+    );
+    assert_eq!(read_string(&mut follower_output), "Error");
+    read_integer(&mut follower_output);
+    assert_eq!(read_string(&mut follower_output), "Error");
+    assert_eq!(
+        read_string(&mut follower_output),
+        "BuildDerivation execution failed"
+    );
+    assert_eq!(read_integer(&mut follower_output), 0);
+    assert_eq!(read_integer(&mut follower_output), 0);
+    drop(follower_input);
+    assert!(follower.wait().unwrap().success());
     let mut database = fixture.database.connect();
-    let request_id = request_id(&mut database);
+    let request_id = leader_request;
     assert_eq!(
         database
             .query_one(

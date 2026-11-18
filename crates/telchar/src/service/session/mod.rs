@@ -560,7 +560,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 crate::persistence::SharedBuildState::Claimed
                                 | crate::persistence::SharedBuildState::Running
                                 | crate::persistence::SharedBuildState::Collecting => {
-                                    let result = match wait_for_shared_build_terminal(
+                                    let result = match wait_for_shared_build_terminal_state(
                                         database,
                                         derivation_path,
                                     )
@@ -963,7 +963,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 if let Some(failure) = result.failure() {
-                    release_attached_request_leases(store_retention, database, session_id, &request_id)?;
+                    if let Err(error) = release_attached_request_leases(store_retention, database, session_id, &request_id) {
+                        return reject(&mut output, "request-lease-release", release_error_message(&error));
+                    }
                     if let Some(build_audit) = build_audit.as_ref() { build_audit.completed("failed", Vec::new()); }
                     if !requester_detached.get() {
                         nix_worker_protocol::write_build_failure_response(
@@ -2280,6 +2282,16 @@ fn wait_for_shared_build_terminal(
     database: &crate::persistence::Database,
     derivation_path: &str,
 ) -> io::Result<()> {
+    match wait_for_shared_build_terminal_state(database, derivation_path)? {
+        crate::persistence::SharedBuildState::Succeeded => Ok(()),
+        _ => Err(io::Error::other("shared BuildDerivation execution failed")),
+    }
+}
+
+fn wait_for_shared_build_terminal_state(
+    database: &crate::persistence::Database,
+    derivation_path: &str,
+) -> io::Result<crate::persistence::SharedBuildState> {
     crate::service::activity::run("await-terminal", || {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -2287,8 +2299,8 @@ fn wait_for_shared_build_terminal(
                 .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
                 .ok_or_else(|| io::Error::other("shared build is missing"))?;
             match build.state {
-                crate::persistence::SharedBuildState::Succeeded => return Ok(()),
-                crate::persistence::SharedBuildState::Failed => return Ok(()),
+                crate::persistence::SharedBuildState::Succeeded
+                | crate::persistence::SharedBuildState::Failed => return Ok(build.state),
                 crate::persistence::SharedBuildState::Claimed
                 | crate::persistence::SharedBuildState::Running
                 | crate::persistence::SharedBuildState::Collecting => {}
