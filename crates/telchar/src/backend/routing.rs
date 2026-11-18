@@ -418,7 +418,7 @@ impl BuildBackend for BackendExecutor {
 
     fn live_log_queue_bytes(&self, target: &crate::backend::BackendTarget) -> usize {
         if target.kind() != BackendKind::Nomad {
-            return 1;
+            return 64 * 1024;
         }
         self.backends
             .inner
@@ -676,7 +676,10 @@ impl BuildBackend for BackendExecutor {
                     config.transfer_limits().live_log_queue_bytes(),
                     cancelled,
                 );
-                let result_name = if result.is_ok() {
+                let result_name = if result
+                    .as_ref()
+                    .is_ok_and(|result| result.failure().is_none())
+                {
                     "succeeded"
                 } else {
                     "failed"
@@ -705,8 +708,19 @@ impl BuildBackend for BackendExecutor {
                 return result;
             }
         };
-        let result = backend.execute_with_logs(execution, logs, cancelled);
-        let result_name = if result.is_ok() {
+        let result = backend.execute_with_logs(
+            execution,
+            &mut |chunk| {
+                self.shared_builds
+                    .publish_log(&execution.build().shared_build_key(), chunk);
+                logs(chunk)
+            },
+            cancelled,
+        );
+        let result_name = if result
+            .as_ref()
+            .is_ok_and(|result| result.failure().is_none())
+        {
             "succeeded"
         } else {
             "failed"

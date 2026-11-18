@@ -81,7 +81,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     }
 
     macro_rules! execute_admitted_build {
-        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $write_success:expr $(,)?) => {{
+        ($admitted:expr, $request_started:expr, $build_mode:expr, $requested_system:expr, $build_audit:expr, $failure_target:expr, $write_success:expr $(,)?) => {{
             let admitted = $admitted;
             let request_started = $request_started;
             let build_mode = $build_mode;
@@ -549,14 +549,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     }
                                 }
                                 crate::persistence::SharedBuildState::Failed => {
-                                    let _ = leader.complete(Err(
-                                        crate::shared_build::SharedBuildTerminalFailure::Backend,
-                                    ));
-                                    return reject(
-                                        &mut output,
-                                        "shared-build-state",
-                                        "shared BuildDerivation execution failed",
-                                    );
+                                    match durable_shared_build_result(&durable_claim.build) {
+                                        Ok(result) => leader.complete(Ok(result)).map_err(|_| io::Error::other("shared BuildDerivation execution failed")),
+                                        Err(error) => {
+                                            let _ = leader.complete(Err(crate::shared_build::SharedBuildTerminalFailure::Backend));
+                                            Err(error)
+                                        }
+                                    }
                                 }
                                 crate::persistence::SharedBuildState::Claimed
                                 | crate::persistence::SharedBuildState::Running
@@ -779,9 +778,19 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             };
                             match result {
                                 Ok(result) => {
+                                    if let Some(failure) = result.failure() {
+                                        let build = crate::persistence::read_shared_build(database, derivation_path)
+                                            .map_err(|_| io::Error::other("shared build read failed"))?;
+                                        if !build.is_some_and(|build| build.state == crate::persistence::SharedBuildState::Failed) {
+                                            crate::persistence::complete_shared_build_failure(
+                                                database, derivation_path, "nix-build-failure",
+                                                &serde_json::json!({"nix_failure": failure}), output_retention.duration(),
+                                            ).map_err(|_| io::Error::other("shared build failure completion failed"))?;
+                                        }
+                                    }
                                     crate::service::metrics::build_execution_finished(
                                         execution_started.elapsed(),
-                                        "succeeded",
+                                        if result.failure().is_some() { "failed" } else { "succeeded" },
                                         None,
                                     );
                                     leader.complete(Ok(result)).map_err(|_| {
@@ -816,7 +825,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             }
                         }
                     }
-                    crate::shared_build::SharedBuildAccess::Follower(follower) => {
+                    crate::shared_build::SharedBuildAccess::Follower(follower) => (|| {
                         if let Ok(Some(attempt)) = crate::persistence::read_shared_build_attempt(
                             database,
                             derivation_path,
@@ -890,9 +899,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 }
                             }
                             })?;
-                        wait_for_shared_build_terminal(database, derivation_path)?;
+                        // Ordinary failure is durably terminal before registry completion.
+                        // Do not wait on a newer retry that may already replace that row.
+                        if result.failure().is_none() {
+                            wait_for_shared_build_terminal(database, derivation_path)?;
+                        }
                         Ok(result)
-                    }
+                    })()
                 };
                 let result = match shared_result {
                     Ok(result) => result,
@@ -949,6 +962,17 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
+                if let Some(failure) = result.failure() {
+                    release_attached_request_leases(store_retention, database, session_id, &request_id)?;
+                    if let Some(build_audit) = build_audit.as_ref() { build_audit.completed("failed", Vec::new()); }
+                    if !requester_detached.get() {
+                        nix_worker_protocol::write_build_failure_response(
+                            &mut output, negotiated.version, $failure_target, failure.status, &failure.message,
+                        )?;
+                    }
+                    crate::service::metrics::build_request_finished(request_started.elapsed(), "failed", Some("nix-build"));
+                    continue;
+                }
                 let validation_started = std::time::Instant::now();
                 let output_paths = crate::service::activity::run("validate-outputs", || validate_build_outputs(&result, &admitted, store_export));
                 crate::service::metrics::store_validation_finished(
@@ -1162,6 +1186,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "status": match result.status() {
                             BuildStatus::Built => "built",
                             BuildStatus::AlreadyValid => "already-valid",
+                            BuildStatus::Failed(_) => unreachable!("failure returned before output validation"),
                         },
                         "outputs": result.outputs().iter().map(|(name, path)| {
                             serde_json::json!({
@@ -1342,6 +1367,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request.build_mode(),
                     request.platform(),
                     build_audit,
+                    None,
                     |output, version, already_valid, build: &BuildRequest| {
                         nix_worker_protocol::write_build_derivation_success_response(
                             output,
@@ -1495,6 +1521,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     request.build_mode(),
                     requested_system.as_slice(),
                     build_audit,
+                    Some(target.as_slice()),
                     |output, version, already_valid, _build: &BuildRequest| {
                         nix_worker_protocol::write_build_paths_with_results_success_response(
                             output,
@@ -2234,9 +2261,7 @@ fn wait_for_shared_build_terminal(
                 .ok_or_else(|| io::Error::other("shared build is missing"))?;
             match build.state {
                 crate::persistence::SharedBuildState::Succeeded => return Ok(()),
-                crate::persistence::SharedBuildState::Failed => {
-                    return Err(io::Error::other("shared BuildDerivation execution failed"));
-                }
+                crate::persistence::SharedBuildState::Failed => return Ok(()),
                 crate::persistence::SharedBuildState::Claimed
                 | crate::persistence::SharedBuildState::Running
                 | crate::persistence::SharedBuildState::Collecting => {}
@@ -2309,6 +2334,16 @@ fn validate_build_outputs(
 fn durable_shared_build_result(
     build: &crate::persistence::SharedBuild,
 ) -> io::Result<crate::backend::BuildResult> {
+    if build.state == crate::persistence::SharedBuildState::Failed {
+        let failure = build
+            .result_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("nix_failure"))
+            .ok_or_else(|| io::Error::other("shared build failed"))?;
+        let failure = serde_json::from_value(failure.clone())
+            .map_err(|_| io::Error::other("invalid shared build failure"))?;
+        return crate::backend::BuildResult::failed(failure);
+    }
     if build.state != crate::persistence::SharedBuildState::Succeeded {
         return Err(io::Error::other("shared build is not complete"));
     }

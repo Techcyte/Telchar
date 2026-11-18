@@ -157,7 +157,7 @@ Chunks are ordered and non-interleaved. Empty chunks, gaps, overlap, early compl
 
 For each expected output, the worker sends `OutputMetadata` followed by ordered `OutputNar` chunks. The gateway validates declared identity and authority, NAR structure and hash, references, exact path set, transfer bounds, and gateway registration. The current gateway sends an accepted `OutputReceipt` only after successful import; rejection terminates the callback. The protocol model reserves rejected receipts, but production does not emit them.
 
-`BuildResult` is terminal. `Built` requires every expected output to have an accepted receipt and no diagnostic. `Failed` may carry one bounded diagnostic. Allocation completion alone is not build success.
+`BuildResult` is terminal. `Built` requires every expected output to have an accepted receipt and no diagnostic. `Failed` carries either a bounded infrastructure `diagnostic`, or a typed `nix_failure` containing the original Nix status and a UTF-8 message bounded to 16 KiB (and the configured diagnostic limit). These are mutually exclusive. `nix_failure` is terminal metadata, never a log stream; ordinary builder failures skip output transfer and remain normal failed Nix results. Allocation completion alone is not build success.
 
 ### Observed authority
 

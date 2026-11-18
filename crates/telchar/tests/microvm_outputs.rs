@@ -110,6 +110,7 @@ fn receipts_require_authoritative_registration() {
     let result = BuildResultMetadata {
         outcome: BuildOutcome::Built,
         diagnostic: None,
+        nix_failure: None,
     };
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(!store.is_valid_path(path.as_bytes()).unwrap());
@@ -301,6 +302,7 @@ fn gateway_session(
                     &BuildResultMetadata {
                         outcome: BuildOutcome::Built,
                         diagnostic: None,
+                        nix_failure: None,
                     },
                     8192,
                 )

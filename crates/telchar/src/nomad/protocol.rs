@@ -394,6 +394,7 @@ pub enum BuildOutcome {
 pub struct BuildResultMetadata {
     pub outcome: BuildOutcome,
     pub diagnostic: Option<String>,
+    pub nix_failure: Option<crate::backend::BuildFailure>,
 }
 
 #[derive(Debug)]
@@ -859,6 +860,15 @@ impl OutputTransferSession {
             .is_some_and(|diagnostic| diagnostic.len() > self.maximum_diagnostic_bytes)
         {
             return Err(invalid_data("Nomad build diagnostic exceeds limit"));
+        }
+        if let Some(failure) = &result.nix_failure {
+            failure.validate()?;
+            if failure.message.len() > self.maximum_diagnostic_bytes {
+                return Err(invalid_data("Nomad build diagnostic exceeds limit"));
+            }
+            if result.outcome != BuildOutcome::Failed || result.diagnostic.is_some() {
+                return Err(invalid_data("Nomad terminal build result is invalid"));
+            }
         }
         match result.outcome {
             BuildOutcome::Built

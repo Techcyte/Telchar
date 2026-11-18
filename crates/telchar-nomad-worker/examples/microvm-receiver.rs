@@ -631,6 +631,7 @@ mod tests {
                     &BuildResultMetadata {
                         outcome: BuildOutcome::Built,
                         diagnostic: None,
+                        nix_failure: None,
                     },
                     METADATA,
                 )
@@ -873,6 +874,7 @@ mod tests {
                     &BuildResultMetadata {
                         outcome: BuildOutcome::Failed,
                         diagnostic: Some("fixture failure".to_owned()),
+                        nix_failure: None,
                     },
                     METADATA,
                 )

@@ -204,6 +204,7 @@ impl WorkerSession {
             &BuildResultMetadata {
                 outcome: BuildOutcome::Failed,
                 diagnostic: Some(diagnostic),
+                nix_failure: None,
             },
         )
     }
@@ -214,6 +215,19 @@ impl WorkerSession {
         result: &nix_worker_protocol::WorkerBuildResult,
     ) -> io::Result<()> {
         self.ensure_connection_active()?;
+        if let nix_worker_protocol::WorkerBuildStatus::Failed(status) = result.status() {
+            return self.send_metadata(
+                FrameKind::BuildResult,
+                &BuildResultMetadata {
+                    outcome: BuildOutcome::Failed,
+                    diagnostic: None,
+                    nix_failure: Some(telchar::backend::BuildFailure {
+                        status,
+                        message: result.message().to_owned(),
+                    }),
+                },
+            );
+        }
         let mut actual_outputs = result.outputs().to_vec();
         actual_outputs.sort();
         let mut expected_outputs = self
@@ -309,6 +323,7 @@ impl WorkerSession {
             &BuildResultMetadata {
                 outcome: BuildOutcome::Built,
                 diagnostic: None,
+                nix_failure: None,
             },
         )
     }
