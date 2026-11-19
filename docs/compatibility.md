@@ -42,6 +42,21 @@ Compatibility claims come from code and tests, not a separate support manifest.
 
 `scripts/check-release.sh` names the end-to-end checks required for release. Reasons for tests marked `#[ignore]` remain beside the tests.
 
+## Direct-store target boundary
+
+Direct `ssh-ng` store requests support one `BuildPathsWithResults` target in
+normal build mode. Requests containing multiple targets are rejected before
+build admission. For multiple installables, use a local Nix daemon configured
+with `--builders ssh-ng://telchar` so the local daemon owns the build graph and
+submits individual builds to Telchar. Replace `telchar` with the configured SSH
+host alias or destination.
+
+`operation_dispatch::validation::multiple_direct_store_targets_explain_daemon_offload_mode`
+checks the framed rejection and offload guidance. This does not qualify
+multi-target direct-store builds, macOS clients, or Lix 2.96. A single target can
+still require dependency builds; target-count validation alone does not establish
+that its graph is supported.
+
 ## Gateway Nix daemon
 
 Telchar's pure-Rust gateway-store client advertises worker protocol 1.38 and requires:

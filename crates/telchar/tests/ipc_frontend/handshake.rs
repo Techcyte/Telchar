@@ -47,6 +47,51 @@ fn separate_frontend_and_daemon_processes_complete_worker_handshake() {
 }
 
 #[test]
+fn frontend_delivers_response_after_request_half_close() {
+    let root = tempfile::tempdir().expect("frontend fixture directory creates");
+    let socket = root.path().join("daemon.sock");
+    let listener =
+        std::os::unix::net::UnixListener::bind(&socket).expect("fixture daemon socket binds");
+    let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_IPC_SOCKET", &socket)
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("frontend starts");
+    let daemon = thread::spawn(move || {
+        let listener = IpcListener::from_listener(listener, rustix::process::getuid().as_raw());
+        let mut connection = listener.accept().expect("authenticated envelope reads");
+        let stream = connection.stream_mut();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("fixture daemon read timeout sets");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .expect("request reaches EOF");
+        assert_eq!(request, b"request-marker");
+        thread::sleep(Duration::from_millis(30));
+        stream
+            .write_all(b"response-marker")
+            .expect("response writes");
+    });
+    frontend
+        .stdin
+        .take()
+        .expect("frontend stdin")
+        .write_all(b"request-marker")
+        .expect("request writes before stdin closes");
+    let output = wait_with_deadline(&mut frontend, Duration::from_secs(3));
+    daemon.join().expect("fixture daemon completes");
+    assert!(output.status.success(), "frontend failed: {output:?}");
+    assert_eq!(output.stdout, b"response-marker");
+    assert!(output.stderr.is_empty(), "frontend diagnostics: {output:?}");
+}
+
+#[test]
 fn frontend_applies_configured_identity_mapping() {
     let fixture = Fixture::start();
     let config = fixture.root.join("frontend.toml");

@@ -272,6 +272,62 @@ fn retained_admission_lock_deadline_recovers_without_database_restart() {
 }
 
 #[test]
+fn admission_lock_deadline_pauses_owner_until_confirmed_renewal() {
+    let (fixture, database) = database();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let generation = owner.generation();
+    request(owner.database(), "owned-admission");
+    let entries = leases("owned-admission", 1);
+    let mut blocker = fixture.connect();
+    let mut lock = blocker.transaction().unwrap();
+    lock.query_one(
+        "SELECT pg_advisory_xact_lock($1)",
+        &[&(0x5445_4c43_4841_5204_u64 as i64)],
+    )
+    .unwrap();
+    let bounded = owner.database().for_request(
+        std::time::Instant::now() + Duration::from_millis(300),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let error = persistence::create_request_input_leases_with_limit(
+        &bounded,
+        "owned-admission",
+        u64::MAX,
+        &entries,
+    )
+    .unwrap_err();
+    assert_eq!(error.failure(), StoreLeaseFailure::Query);
+    assert!(!owner.admission_available().unwrap());
+    owner.verify().unwrap();
+    assert!(!owner.admission_available().unwrap());
+    lock.rollback().unwrap();
+    owner.renew().unwrap();
+    assert!(owner.admission_available().unwrap());
+    assert_eq!(owner.generation(), generation);
+    let records = persistence::create_request_input_leases_with_limit(
+        owner.database(),
+        "owned-admission",
+        u64::MAX,
+        &entries,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        database
+            .connection()
+            .unwrap()
+            .query_one("SELECT count(*) FROM store_leases", &[])
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+}
+
+#[test]
 #[ignore = "release-mode PostgreSQL batch benchmark; no timing assertion"]
 fn measure_input_lease_batches() {
     let (fixture, database) = database();

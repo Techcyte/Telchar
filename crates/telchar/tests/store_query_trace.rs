@@ -80,6 +80,22 @@ fn connection_failure_trace_is_bounded() {
 
 #[test]
 fn relay_failure_reports_io_phase_without_error_payload() {
+    struct FailedReader {
+        fail: bool,
+        input: &'static [u8],
+    }
+    impl io::Read for FailedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.fail {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "sensitive-error-marker",
+                ))
+            } else {
+                self.input.read(buffer)
+            }
+        }
+    }
     struct FailedWriter {
         phase: &'static str,
     }
@@ -101,18 +117,26 @@ fn relay_failure_reports_io_phase_without_error_payload() {
             ))
         }
     }
-    for phase in ["write", "flush"] {
+    for phase in ["read", "write", "flush"] {
+        let expected_kind = if phase == "read" {
+            io::ErrorKind::ConnectionReset
+        } else {
+            io::ErrorKind::BrokenPipe
+        };
         let trace = capture(tracing::Level::WARN, || {
             let error = telchar::service::ipc::copy_bounded(
-                b"sensitive-wire-marker".as_slice(),
+                FailedReader {
+                    fail: phase == "read",
+                    input: b"sensitive-wire-marker",
+                },
                 FailedWriter { phase },
             )
             .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+            assert_eq!(error.kind(), expected_kind);
         });
         assert!(trace.contains("ipc.relay.failed"), "{trace}");
         assert!(trace.contains(&format!("phase=\"{phase}\"")), "{trace}");
-        assert!(trace.contains("BrokenPipe"), "{trace}");
+        assert!(trace.contains(&format!("{expected_kind:?}")), "{trace}");
         assert!(!trace.contains("sensitive-"), "{trace}");
     }
 }

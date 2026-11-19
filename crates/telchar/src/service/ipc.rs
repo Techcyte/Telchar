@@ -14,10 +14,21 @@ pub fn copy_bounded(mut source: impl Read, mut destination: impl Write) -> io::R
     let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
     let mut buffer = [0; MAX_FRONTEND_BUFFER_BYTES];
     let mut maximum_buffered_bytes = 0;
+    let report_failure = |phase: &'static str| {
+        move |error: io::Error| {
+            tracing::warn!(
+                event = "ipc.relay.failed",
+                phase,
+                error_kind = ?error.kind(),
+                "bounded IPC stream relay failed"
+            );
+            error
+        }
+    };
     loop {
-        let received = source.read(&mut buffer)?;
+        let received = source.read(&mut buffer).map_err(report_failure("read"))?;
         if received == 0 {
-            destination.flush()?;
+            destination.flush().map_err(report_failure("flush"))?;
             tracing::trace!(
                 event = "ipc.relay.finished",
                 elapsed_us = started.map(|start| start.elapsed().as_micros() as u64)
@@ -34,8 +45,10 @@ pub fn copy_bounded(mut source: impl Read, mut destination: impl Write) -> io::R
             );
         }
         maximum_buffered_bytes = maximum_buffered_bytes.max(received);
-        destination.write_all(&buffer[..received])?;
-        destination.flush()?;
+        destination
+            .write_all(&buffer[..received])
+            .map_err(report_failure("write"))?;
+        destination.flush().map_err(report_failure("flush"))?;
     }
 }
 
