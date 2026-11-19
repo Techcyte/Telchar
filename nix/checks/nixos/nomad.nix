@@ -50,7 +50,8 @@
           name = "telchar-nomad-failure";
           system = builtins.currentSystem;
           builder = builtins.storePath "${pkgs.runtimeShell}";
-          args = [ "-c" "${pkgs.coreutils}/bin/sleep 10; echo nomad-exit-three >&2; exit 3" ];
+          sleepPackage = builtins.storePath "${pkgs.coreutils}";
+          args = [ "-c" "$sleepPackage/bin/sleep 10; echo nomad-exit-three >&2; exit 3" ];
         }
       '';
     in
