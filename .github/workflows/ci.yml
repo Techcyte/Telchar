@@ -44,11 +44,14 @@ jobs:
         with:
           primary-key: >-
             nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{
-            hashFiles('flake.lock') }}-${{ github.run_id }}-${{
-            github.run_attempt }}
+            hashFiles('flake.lock', 'Cargo.lock', '**/*.nix', '**/Cargo.toml')
+            }}
           restore-prefixes-first-match: |
             nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
-          gc-max-store-size: 5G
+          save: >-
+            ${{ github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' }}
+          gc-max-store-size: 3G
 
       - name: Allow test namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -102,11 +105,14 @@ jobs:
         with:
           primary-key: >-
             nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{
-            hashFiles('flake.lock') }}-${{ github.run_id }}-${{
-            github.run_attempt }}
+            hashFiles('flake.lock', 'Cargo.lock', '**/*.nix', '**/Cargo.toml')
+            }}
           restore-prefixes-first-match: |
             nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
-          gc-max-store-size: 5G
+          save: >-
+            ${{ github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' }}
+          gc-max-store-size: 3G
 
       - name: Check VM acceleration
         run: test -r /dev/kvm && test -w /dev/kvm
@@ -165,10 +171,13 @@ jobs:
           primary-key: >-
             nix-build-${{ runner.os }}-${{ runner.arch }}-${{
             hashFiles('flake.lock', 'Cargo.lock', '**/*.nix', '**/Cargo.toml')
-            }}-${{ github.sha }}-${{ github.run_attempt }}
+            }}
           restore-prefixes-first-match: |
             nix-build-${{ runner.os }}-${{ runner.arch }}-
-          gc-max-store-size-linux: 5G
+          save: >-
+            ${{ github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 3G
 
       - name: Evaluate flake checks
         run: nix flake check --impure --no-build
