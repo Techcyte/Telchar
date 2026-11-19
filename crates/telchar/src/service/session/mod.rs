@@ -1040,7 +1040,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         crate::store::retention::RetentionEntry::new(lease_id, store_path)
                     })
                     .collect::<Vec<_>>();
-                let retained_outputs = match store_retention.retain(&output_entries) {
+                let retained_outputs = match crate::service::activity::run("retain-outputs", || store_retention.retain(&output_entries)) {
                     Ok(retained) => {
                         retention_batch_event(
                             "retain",
@@ -1216,12 +1216,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         .map(|(_, path)| String::from_utf8_lossy(path).into_owned()).collect());
                 }
                 if !requester_detached.get() {
-                    $write_success(
+                    crate::service::activity::run("respond", || $write_success(
                         &mut output,
                         negotiated.version,
                         result.status() == BuildStatus::AlreadyValid,
                         &admitted,
-                    )?;
+                    ))?;
                 }
                 crate::service::metrics::build_request_finished(
                     request_started.elapsed(),
@@ -1243,8 +1243,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         let operation = reader.read_operation();
         tracing::trace!(event = "worker.operation.received", operation = ?operation.as_ref().ok(), elapsed_us = receiving.map(|start| start.elapsed().as_micros() as u64), success = operation.is_ok());
         let _operation =
-            tracing::trace_span!("worker.operation", operation = ?operation.as_ref().ok())
-                .entered();
+            tracing::info_span!("worker.operation", operation = ?operation.as_ref().ok()).entered();
         match operation {
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
@@ -1259,7 +1258,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             }
             Ok(WorkerOperation::BuildDerivation) => {
                 let request_started = std::time::Instant::now();
-                let request = match reader.complete_build_derivation() {
+                let request = match crate::service::activity::run("decode-build", || {
+                    reader.complete_build_derivation()
+                }) {
                     Ok(request) => request,
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                         tracing::error!(
@@ -1307,7 +1308,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         String::from_utf8_lossy(request.drv_path())
                     )])
                 });
-                let admitted = match BuildRequest::from_worker_request(&request, backend_targets) {
+                let admitted = match crate::service::activity::run("admission", || {
+                    BuildRequest::from_worker_request(&request, backend_targets)
+                }) {
                     Ok(admitted) => admitted,
                     Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
                         tracing::warn!(
@@ -1354,7 +1357,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
             }
             Ok(WorkerOperation::BuildPathsWithResults) => {
                 let request_started = std::time::Instant::now();
-                let request = match reader.complete_build_paths_with_results() {
+                let request = match crate::service::activity::run("decode-build", || {
+                    reader.complete_build_paths_with_results()
+                }) {
                     Ok(request) if request.build_mode() == 0 && request.targets().len() == 1 => {
                         request
                     }
@@ -1445,7 +1450,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     }
                 };
                 let admitted =
-                    match BuildRequest::load_stored(derivation_path, store_export, backend_targets)
+                    match crate::service::activity::run("load-derivation", || BuildRequest::load_stored(derivation_path, store_export, backend_targets))
                     {
                         Ok(admitted) => admitted,
                         Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
@@ -1616,7 +1621,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let _permit = object_admission.admit_outbound()?;
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
                 let (verified, first_byte_us, write_elapsed_us, write_call_count) = {
-                    let mut measured_output = NarResponseWriter::new(&mut output);
+                    let mut transfer_output = telchar_telemetry::TransferIo::new(&mut output, telchar_telemetry::TransferSide::Destination);
+                    let mut measured_output = NarResponseWriter::new(&mut transfer_output);
                     let verified =
                         match crate::store::export::export_verified_nar_with_limits_and_rate(
                             path,

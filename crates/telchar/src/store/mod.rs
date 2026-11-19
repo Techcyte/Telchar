@@ -10,5 +10,6 @@ pub mod query;
 pub mod retention;
 pub mod runtime;
 pub mod substitution;
+mod telemetry;
 
 pub use daemon::{GatewayStoreConnection, GatewayStoreEndpoint};

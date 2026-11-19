@@ -161,6 +161,35 @@ impl Collector {
         assert_eq!(value.attributes.len(), 1, "unexpected counter labels");
     }
 
+    pub fn assert_sum_attributes(&self, name: &str, attributes: &[(&str, &str)], expected: i64) {
+        use opentelemetry_proto::tonic::metrics::v1::{metric::Data, number_data_point::Value};
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let point = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .filter(|metric| metric.name == name)
+            .filter_map(|metric| match &metric.data {
+                Some(Data::Sum(sum)) => Some(sum),
+                _ => None,
+            })
+            .flat_map(|sum| &sum.data_points)
+            .find(|point| {
+                attributes
+                    .iter()
+                    .all(|(key, value)| Self::has_attribute(&point.attributes, key, value))
+            })
+            .expect("sum attributes exported");
+        assert_eq!(point.value, Some(Value::AsInt(expected)));
+        assert_eq!(
+            point.attributes.len(),
+            attributes.len(),
+            "unexpected sum labels"
+        );
+    }
+
     pub fn assert_histogram_sample(&self, name: &str, outcome: &str, minimum: f64) {
         self.assert_histogram_attributes(name, &[("outcome", outcome)], minimum);
     }

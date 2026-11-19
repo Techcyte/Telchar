@@ -4,8 +4,10 @@ mod audit;
 mod progress;
 pub use audit::emit_audit;
 mod trace_context;
+mod transfer;
 pub use progress::Progress;
 pub use trace_context::{MAXIMUM_TRACEPARENT_BYTES, MAXIMUM_TRACESTATE_BYTES, TraceContext};
+pub use transfer::{TransferIo, TransferSide};
 
 use std::error::Error;
 use std::fmt;

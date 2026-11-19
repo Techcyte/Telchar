@@ -131,19 +131,22 @@ impl Database {
             } else {
                 remaining
             };
-            let mut connection = match self.pool.get_timeout(wait) {
-                Ok(connection) => connection,
-                Err(_) if self.request.is_some() => continue,
-                Err(error) => {
-                    if let Some(owner) = &self.ownership {
-                        owner.observe_connection_failure();
+            let mut connection =
+                match super::telemetry::run("checkout", || self.pool.get_timeout(wait)) {
+                    Ok(connection) => connection,
+                    Err(_) if self.request.is_some() => continue,
+                    Err(error) => {
+                        if let Some(owner) = &self.ownership {
+                            owner.observe_connection_failure();
+                        }
+                        return Err(error.into());
                     }
-                    return Err(error.into());
-                }
-            };
+                };
             // Validation failures are transport uncertainty, even if a later checkout succeeds.
             connection.observe_ownership(self.ownership.clone());
-            match connection.validate(deadline, self.request.clone()) {
+            match super::telemetry::run("validation", || {
+                connection.validate(deadline, self.request.clone())
+            }) {
                 Ok(()) => return Ok(DatabaseConnection(connection)),
                 Err(error) if Instant::now() >= deadline => return Err(error.into()),
                 Err(_) => {}

@@ -4,6 +4,8 @@ pub(crate) fn run<T>(
     phase: &'static str,
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
+    let span = tracing::info_span!("server.phase", phase, outcome = tracing::field::Empty);
+    let _entered = span.enter();
     let started = std::time::Instant::now();
     tracing::info!(event = "server.phase.started", phase);
     let progress = telchar_telemetry::Progress::start(move |elapsed_ms| {
@@ -20,7 +22,21 @@ pub(crate) fn run<T>(
     .ok();
     let result = operation();
     drop(progress);
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let elapsed = started.elapsed();
+    let outcome = if result.is_ok() { "success" } else { "failure" };
+    span.record("outcome", outcome);
+    opentelemetry::global::meter("telchar")
+        .f64_histogram("telchar.build.phase.duration")
+        .with_unit("s")
+        .build()
+        .record(
+            elapsed.as_secs_f64(),
+            &[
+                opentelemetry::KeyValue::new("phase", phase),
+                opentelemetry::KeyValue::new("outcome", outcome),
+            ],
+        );
+    let elapsed_ms = elapsed.as_millis() as u64;
     match &result {
         Ok(_) => tracing::info!(event = "server.phase.completed", phase, elapsed_ms),
         Err(error) => {

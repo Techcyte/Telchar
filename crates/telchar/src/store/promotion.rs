@@ -450,7 +450,7 @@ fn promote_staged(
         .content_address
         .as_deref()
         .is_some_and(|address| address.starts_with("text:"));
-    let fingerprint = stage_nar_to_file(source, &mut staged, text_root)?;
+    let fingerprint = super::telemetry::run("stage_nar", || stage_nar_to_file(source, &mut staged, text_root))?;
     if fingerprint.sha256 != declared.nar_hash {
         let error = io::Error::new(io::ErrorKind::InvalidData, "NAR hash mismatch");
         let _ = backend.is_valid_path(&declared.path);
@@ -484,7 +484,7 @@ fn promote_staged(
         nar_path: nar_path.to_path_buf(),
     };
     backend.before_promote(&request)?;
-    if let Err(error) = backend.promote(&request) {
+    if let Err(error) = super::telemetry::run("promote_nar", || backend.promote(&request)) {
         return match backend.is_valid_path(&declared.path) {
             Ok(false) => Err(io::Error::other(format!("promotion failed: {error}"))),
             Ok(true) => Err(io::Error::other(format!(
@@ -495,7 +495,7 @@ fn promote_staged(
             ))),
         };
     }
-    let registered = backend.query_path_info(&declared.path)?;
+    let registered = super::telemetry::run("verify_registration", || backend.query_path_info(&declared.path))?;
     // The deriver is advisory: Nix keeps the first registration's deriver, and
     // one path can have several (a fixed-output path instantiated per platform,
     // or outputs of derivations that differ only in equivalent fixed-output
