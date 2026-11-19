@@ -13,7 +13,14 @@ let
   '';
   daemon = telchar.overrideAttrs (_previous: {
     pname = "telchar-microvm-service-test";
-    CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS = "true";
+    buildPhase = ''
+      runHook preBuild
+      cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+      cargoWithProfile build --locked -p telchar \
+        --config profile.release.package.telchar.debug-assertions=true \
+        --message-format json-render-diagnostics > "$cargoBuildLog"
+      runHook postBuild
+    '';
     doCheck = false;
   });
 in
