@@ -47,6 +47,7 @@ pub fn run(
     let collector = (case == "configured-daemon").then(collector::start_collector);
     let crashes = case == "configured-daemon-crash";
     let recovers_outputs = case == "configured-daemon-output-recovery";
+    let ordinary_failure = case == "configured-daemon-failure";
     let fails = matches!(
         case.as_str(),
         "configured-daemon-failure"
@@ -179,7 +180,7 @@ chunk_bytes = 262144
                 error: None,
             },
         )?;
-        let client = match nix_worker_protocol::WorkerClient::connect(stream.try_clone()?) {
+        let mut client = match nix_worker_protocol::WorkerClient::connect(stream.try_clone()?) {
             Ok(client) => client,
             Err(error) => {
                 daemon.0.kill()?;
@@ -228,8 +229,45 @@ chunk_bytes = 262144
         } else {
             None
         };
-        stream.write_all(&wire)?;
-        stream.flush()?;
+        if ordinary_failure {
+            let outputs = request
+                .output_authorities()
+                .iter()
+                .map(|output| nix_worker_protocol::BuildDerivationOutputRequest {
+                    name: output.name(),
+                    path: output.path(),
+                    hash_algorithm: output.hash_algorithm(),
+                    hash: output.hash(),
+                })
+                .collect::<Vec<_>>();
+            let result = client.build_derivation(
+                &nix_worker_protocol::BuildDerivationClientRequest {
+                    drv_path: request.derivation_path(),
+                    outputs: &outputs,
+                    input_sources: request.input_sources(),
+                    platform: request.system().as_bytes(),
+                    builder: request.builder(),
+                    arguments: request.arguments(),
+                    environment: request.environment(),
+                },
+                &mut |_| Ok(()),
+            )?;
+            assert_eq!(
+                result.status(),
+                nix_worker_protocol::WorkerBuildStatus::Failed(3)
+            );
+            assert!(
+                result.message().contains("exit code 42"),
+                "{}",
+                result.message()
+            );
+            assert!(result.outputs().is_empty());
+            // The failure result must not close or desynchronize this client.
+            client.query_valid_paths(&[], false)?;
+        } else {
+            stream.write_all(&wire)?;
+            stream.flush()?;
+        }
         let mut expected = Vec::new();
         if std::env::var_os("MICROVM_TEST_RUNTIME").is_some() {
             nix_worker_protocol::write_stderr_frame(
@@ -340,7 +378,7 @@ chunk_bytes = 262144
             }
             stream.shutdown(std::net::Shutdown::Both)?;
             std::fs::write(root.join("requester-disconnected"), b"")?;
-        } else {
+        } else if !ordinary_failure {
             let mut actual = vec![0; expected.len()];
             let read = stream.read_exact(&mut actual);
             if read.is_err() || actual != expected {
@@ -471,7 +509,7 @@ chunk_bytes = 262144
         .lines()
         .filter(|line| line.contains(" ERROR "))
         .collect::<Vec<_>>();
-    if fails && !crashes {
+    if fails && !crashes && !ordinary_failure {
         assert_eq!(errors.len(), 2, "{stderr}");
         assert!(
             errors[0].contains("event=\"worker.build_derivation.failed\""),
@@ -565,7 +603,21 @@ chunk_bytes = 262144
         collector.assert_histogram_sample("telchar.microvm.admission.duration", "accepted", 0.0);
         collector.assert_metric_attributes_are_bounded();
     }
-    if fails {
+    if ordinary_failure {
+        let metadata: String = control
+            .query_one("SELECT result_metadata::text FROM shared_builds", &[])
+            .unwrap()
+            .get(0);
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["nix_failure"]["status"], 3);
+        assert!(
+            metadata["nix_failure"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("exit code 42")
+        );
+        Ok(BuildOutcome::Failed)
+    } else if fails {
         Err(std::io::Error::other("BuildDerivation execution failed"))
     } else {
         Ok(BuildOutcome::Built)

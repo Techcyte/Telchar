@@ -832,9 +832,22 @@ chunk_bytes = 262144
                     shutdown.unwrap();
                 }
                 result.map(|result| {
-                    assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
-                    assert_eq!(result.outputs(), request.expected_outputs());
-                    BuildOutcome::Built
+                    if build_failure {
+                        let failure = result.failure().expect("ordinary Nix failure metadata");
+                        assert_eq!(result.status(), telchar::backend::BuildStatus::Failed(3));
+                        assert_eq!(failure.status, 3);
+                        assert!(
+                            failure.message.contains("exit code 42"),
+                            "{}",
+                            failure.message
+                        );
+                        assert!(result.outputs().is_empty());
+                        BuildOutcome::Failed
+                    } else {
+                        assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
+                        assert_eq!(result.outputs(), request.expected_outputs());
+                        BuildOutcome::Built
+                    }
                 })
             } else {
                 execution
@@ -1270,26 +1283,36 @@ chunk_bytes = 262144
     );
     let worker = worker.wait_with_output().unwrap();
     if build_failure || corrupt_output {
-        assert!(!worker.status.success());
         assert!(worker.stdout.is_empty());
         let diagnostic = String::from_utf8(worker.stderr).unwrap();
-        assert!(
-            diagnostic.contains("MicroVM worker failed\n"),
-            "{diagnostic}"
-        );
-        assert!(
-            diagnostic.contains("Canonical store fixture retained: "),
-            "{diagnostic}"
-        );
+        if build_failure {
+            assert!(worker.status.success(), "{diagnostic}");
+            assert!(
+                !diagnostic.contains("MicroVM worker failed"),
+                "{diagnostic}"
+            );
+        } else {
+            assert!(!worker.status.success());
+            assert!(
+                diagnostic.contains("MicroVM worker failed\n"),
+                "{diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("Canonical store fixture retained: "),
+                "{diagnostic}"
+            );
+        }
         assert!(
             !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
             "worker diagnostic exposed bearer"
         );
-        let error = result.unwrap_err();
-        if case.starts_with("configured-daemon") {
-            assert_eq!(error.to_string(), "BuildDerivation execution failed");
-        } else if build_failure {
-            assert_eq!(error.to_string(), "MicroVM build failed");
+        if build_failure {
+            assert_eq!(result.unwrap(), BuildOutcome::Failed);
+        } else {
+            let error = result.unwrap_err();
+            if case.starts_with("configured-daemon") {
+                assert_eq!(error.to_string(), "BuildDerivation execution failed");
+            }
         }
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
         let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
