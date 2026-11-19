@@ -253,9 +253,9 @@ impl Service {
     ) -> io::Result<()> {
         self.check_request(Some(scope))?;
         let timeout = scope.remaining()?.min(std::time::Duration::from_secs(2));
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
+        self.provider
+            .runtime()
+            .map_err(io::Error::other)?
             .block_on(async {
                 tokio::time::timeout(timeout, async {
                     tokio::pin!(verification);
