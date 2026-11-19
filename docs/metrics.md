@@ -16,6 +16,12 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 
 For OTLP/HTTP, Telchar appends the standard `/v1/traces`, `/v1/logs`, and `/v1/metrics` paths to the configured base endpoint. If no endpoint is configured, the transport defaults are `http://127.0.0.1:4317` for gRPC and `http://127.0.0.1:4318` for HTTP. Unsupported protocol values fail startup.
 
+Duration histograms with unit `s` use explicit boundaries from 10 microseconds
+through two hours, including submillisecond and subsecond buckets. Values above
+two hours fall in the overflow bucket. Percentiles remain bucket estimates;
+individual traces provide timing detail. Byte/count histograms keep their own
+SDK aggregation defaults.
+
 Metric attributes must have bounded cardinality. Allowed dimensions describe configured or enumerated behavior, such as backend name and kind, operation, outcome, failure class, transfer direction, cache result, build mode, and fixed-output presence. Metrics must never contain requester identity, quota subject, request ID, trace ID, derivation or store path, shared-build key, execution ID, allocation ID, credential identity, endpoint, namespace, or arbitrary error text.
 
 ## Terminology
@@ -122,6 +128,41 @@ Reload metrics never contain configuration paths, backend names, destinations, c
 
 Cache policy, substituter names, URLs, keys, and credentials are never attributes.
 
+### Operation attribution
+
+| Instrument | Kind | Unit | Meaning |
+| --- | --- | --- | --- |
+| `telchar.store.operations` | counter | `{operation}` | Completed store boundary calls by `operation` and `outcome` (`success` or `failure`). |
+| `telchar.store.operation.duration` | histogram | `s` | Wall time of each store boundary call, including failed calls. |
+| `telchar.store.operations.active` | up/down sum | `{operation}` | Current calls by `operation`; balanced on unwinding. |
+| `telchar.database.operations` | counter | `{operation}` | Database checkout attempts, validation attempts and query-method calls by outcome. |
+| `telchar.database.operation.duration` | histogram | `s` | Database boundary duration by `operation` and outcome. |
+| `telchar.database.lifecycle.duration` | histogram | `s` | Durable lifecycle function duration by bounded source-defined `operation`, including no-op maintenance calls. |
+| `telchar.build.phase.duration` | histogram | `s` | Gateway phase duration by bounded `phase` and outcome. |
+| `telchar.build.cached_output.phase.duration` | histogram | `s` | Cached-output lookup, validity, retention, integrity, request and lease work by phase/outcome. |
+
+Store operations include `connect` (Unix socket connection), `handshake` (Nix
+protocol negotiation), `is_valid_path`, `query_valid_paths`, `query_path_info`,
+`query_missing`, `ensure_path`, `set_options`, `build_derivation`, and
+`build_paths_with_results`. `nar_from_path` and `add_to_store_nar` include streaming
+I/O and downstream/upstream backpressure. `stage_nar` includes reading, parsing,
+hashing and writing the staging file; `promote_nar` is the promotion backend call;
+`verify_registration` queries authoritative metadata. These boundaries can nest.
+A successful daemon call does not imply a successful derivation result.
+
+Database `checkout` measures each pool acquisition attempt, including waiting for
+a new connection. Request-scoped acquisition may retry in bounded slices; sum
+attempt durations to investigate contention, not just individual percentiles.
+`validation` measures connection validation separately. Query methods are bounded
+names (`query`, `query_one`, `query_opt`, `execute`, `batch_execute`, `simple_query`),
+never SQL, query parameters or connection strings. Validation uses `simple_query`,
+so those durations nest. Lifecycle timing includes pool and query costs and has
+no outcome label: scope exit alone does not establish transaction success.
+
+Store operation spans are available at `info`; database query spans require
+`debug` to avoid default per-query trace volume. Metrics do not require verbose
+logging. Gateway `server.phase` spans accompany phase duration metrics.
+
 ## Transfer and Nomad metrics
 
 | Instrument | Kind | Unit | Meaning |
@@ -221,6 +262,26 @@ not at cleanup eligibility, and can include active builds. Accounts and regions
 share histogram series deliberately. These instruments do not replace durable
 operator reports for exact obligation inventory.
 
+## Streaming I/O attribution
+
+`telchar.transfer.io.duration` is a histogram in seconds;
+`telchar.transfer.io.calls` and `telchar.transfer.io.bytes` are counters. All use
+only `side` (`source` or `destination`) and `outcome` (`success` or `failure`). Each stream emits one
+summary at scope exit, not one span or metric update per buffer. Bytes include
+successfully processed partial data even if a later I/O call fails; these are
+**not** the completed-object byte counters above. Outcome describes observed I/O
+errors, not validated transfer or build success. Flush time and calls are included
+in destination measurements.
+
+Gateway/worker store import measures time inside its source reader; store export
+measures time inside its destination writer. Static SSH staging uses the same
+boundaries, and frontend NAR responses measure client writes. Source time may
+include network receive, decoding or file reads. Destination time may include
+network send, file writes or slow-consumer backpressure. Neither is pure network
+latency or CPU time. Stream summaries overlap enclosing RPC and transfer duration;
+do not add them to build wall time or subtract concurrent percentiles. Trace debug
+summaries retain local correlation without labels identifying individual builds.
+
 ## Interpretation
 
 Useful service-level views include:
@@ -236,6 +297,52 @@ Useful service-level views include:
 - fixed-output versus input-addressed validation outcomes.
 
 Counters and histograms are monotonic within a process lifetime. Gauges generally report current process state. Shared-build queue depth, running builds, and collecting builds are initialized from PostgreSQL after startup recovery and follow committed durable state transitions. Backend limits and session limits are established during composition; active session, permit, Nomad, and callback gauges change as the running process performs those operations.
+
+## Stress-test workflow
+
+Configure a reachable OTLP collector for gateway and allocation workers before
+sending load. Nomad task rendering propagates gateway OTLP endpoint/protocol;
+`127.0.0.1` therefore means each allocation's own network namespace, not the
+gateway. Use operator-owned collectors/routes reachable from both, or configure
+the worker launcher appropriately. Gateway metrics alone do not prove workers
+successfully exported. Verify both `service.name=telchar` and
+`service.name=telchar-nomad-worker` and inspect one connected trace first.
+
+Start with `RUST_LOG=info`; enable database `debug` selectively for short diagnostic
+windows. Store RPC and worker operation spans are available at info. Export
+queues are bounded and best-effort: unavailable or overloaded collectors can lose
+telemetry. An incomplete trace is not evidence that a phase did not execute.
+Monitor collector receive/export/drop counts and host CPU, memory, disk latency,
+network bandwidth and PostgreSQL activity alongside Telchar. Telchar cannot
+attribute kernel, compiler or remote Nix internals that it does not instrument.
+
+Increase CI concurrency in steps and retain offered load, completed builds/sec,
+error rate and request p50/p95/p99 for each interval. Separate unique builds from
+coalescing/reuse workloads; distinguish cold inputs/outputs from warm stores.
+Change one dimension at a time (concurrency, input size, output size, backend
+capacity), allowing intervals long enough for long builds to complete. Compare
+observations with identical telemetry settings; tracing itself has overhead.
+
+| Symptom | Corroborating signal / next boundary |
+| --- | --- |
+| Queue wait grows, backend permits spare | Subject admission limits, fair queue demand; not automatically executor shortage. |
+| Backend permit wait grows with full utilization | Execution capacity saturated; inspect backend build versus transfer phases. |
+| Nomad pending/placement grows | Scheduler placement or allocation startup; worker build duration alone misses this. |
+| Store RPC latency grows with connect/handshake counts | Connection churn or daemon pressure; compare metadata RPCs, staging, promotion and host disk activity. |
+| Checkout duration grows | Pool demand or connection establishment; compare validation/query/lifecycle durations and PostgreSQL activity. |
+| Transfer duration grows with source I/O time | Slow producer/read path, potentially network receive or source storage. |
+| Transfer duration grows with destination I/O time | Slow consumer/write path, potentially network send, client backpressure or destination storage. |
+| Staging grows while network throughput stays low | Parsing/hash/local staging I/O candidate; confirm host CPU/disk rather than calling it network time. |
+| Backend execution stable, request latency grows | Input/load/admission, result validation/retention, durable completion or response path. |
+
+Compute throughput from completed byte-counter rates and use object sizes and
+concurrency as context. Stream partial-byte counters answer a different question;
+never combine them with completed bytes. Do not subtract p99 values from different
+histograms or sum nested phase durations to invent an unexplained residual.
+For one build, inspect actual parent/child span intervals and concurrent overlap.
+SSH spans measure gateway-visible boundaries only, not a distributed trace inside
+the remote Nix daemon. Stock client work before Telchar ingress is outside this
+trace and must be measured in CI if total job latency matters.
 
 ## Connected build traces
 

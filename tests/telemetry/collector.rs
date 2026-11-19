@@ -219,7 +219,7 @@ impl Collector {
                     .iter()
                     .all(|(key, value)| Self::has_attribute(&point.attributes, key, value))
             })
-            .expect("histogram attributes exported");
+            .unwrap_or_else(|| panic!("histogram {name} attributes {attributes:?} not exported"));
         assert!(point.count > 0);
         assert!(point.max.expect("maximum exported") >= minimum);
         assert_eq!(
@@ -227,6 +227,37 @@ impl Collector {
             attributes.len(),
             "unexpected histogram labels"
         );
+    }
+
+    pub fn assert_duration_resolution(&self, name: &str) {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let histogram = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .find_map(|metric| match &metric.data {
+                Some(Data::Histogram(histogram)) if metric.name == name => Some(histogram),
+                _ => None,
+            })
+            .expect("duration histogram exported");
+        for point in &histogram.data_points {
+            assert!(
+                point
+                    .explicit_bounds
+                    .iter()
+                    .any(|value| *value > 0.0 && *value <= 0.001),
+                "missing submillisecond buckets: {:?}",
+                point.explicit_bounds
+            );
+            assert!(
+                point.explicit_bounds.iter().any(|value| *value >= 3600.0),
+                "missing long-build buckets: {:?}",
+                point.explicit_bounds
+            );
+        }
     }
 
     pub fn assert_metric_attributes_are_bounded(&self) {

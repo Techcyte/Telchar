@@ -101,7 +101,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         build_audit.completed("already-valid", admitted.expected_outputs().iter()
                             .map(|(_, path)| String::from_utf8_lossy(path).into_owned()).collect());
                     }
-                    $write_success(&mut output, negotiated.version, true, &admitted)?;
+                    crate::service::activity::run("respond", || $write_success(&mut output, negotiated.version, true, &admitted))?;
                     crate::service::metrics::build_request_finished(
                         request_started.elapsed(), "succeeded", None,
                     );
@@ -197,7 +197,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         lease_id.clone(),
                         derivation_path,
                     )];
-                    let retained_derivation = match store_retention.retain(&derivation_entries) {
+                    let retained_derivation = match crate::service::activity::run("retain-derivation", || store_retention.retain(&derivation_entries)) {
                         Ok(retained) => {
                             retention_batch_event("retain", "derivation", 1, "succeeded", None);
                             retained
@@ -248,7 +248,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 }
-                let closure = match store_closure.input_closure(admitted.input_sources()) {
+                let closure = match crate::service::activity::run("input-closure", || store_closure.input_closure(admitted.input_sources())) {
                     Ok(closure) => closure,
                     Err(error) => {
                         let (path, path_kind) = crate::store::closure::failure_path(&error)
@@ -298,7 +298,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         crate::store::retention::RetentionEntry::new(lease_id, store_path)
                     })
                     .collect::<Vec<_>>();
-                let retained_inputs = match store_retention.retain(&input_entries) {
+                let retained_inputs = match crate::service::activity::run("retain-inputs", || store_retention.retain(&input_entries)) {
                     Ok(retained) => {
                         retention_batch_event(
                             "retain",
@@ -1449,49 +1449,47 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         );
                     }
                 };
-                let admitted =
-                    match crate::service::activity::run("load-derivation", || BuildRequest::load_stored(derivation_path, store_export, backend_targets))
-                    {
-                        Ok(admitted) => admitted,
-                        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                            return reject(
-                                &mut output,
-                                "unsupported-build-paths-with-results",
-                                "unsupported BuildPathsWithResults request",
-                            );
-                        }
-                        Err(error) => {
-                            let dependency_result =
-                                crate::build::stored_load_dependency_result(&error);
-                            let dependency_target = dependency_result
+                let admitted = match crate::service::activity::run("load-derivation", || {
+                    BuildRequest::load_stored(derivation_path, store_export, backend_targets)
+                }) {
+                    Ok(admitted) => admitted,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        return reject(
+                            &mut output,
+                            "unsupported-build-paths-with-results",
+                            "unsupported BuildPathsWithResults request",
+                        );
+                    }
+                    Err(error) => {
+                        let dependency_result = crate::build::stored_load_dependency_result(&error);
+                        let dependency_target = dependency_result
+                            .as_ref()
+                            .map(|result| String::from_utf8_lossy(&result.target).into_owned())
+                            .unwrap_or_else(|| "none".to_owned());
+                        tracing::error!(
+                            event = "gateway.stored_build.failed",
+                            phase = crate::build::stored_load_failure_phase(&error)
+                                .map(crate::build::StoredLoadFailurePhase::as_str)
+                                .unwrap_or("unknown"),
+                            dependency_phase = crate::build::stored_load_dependency_phase(&error)
+                                .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
+                                .unwrap_or("none"),
+                            dependency_target,
+                            dependency_status =
+                                dependency_result.as_ref().map(|result| result.status),
+                            dependency_category = dependency_result
                                 .as_ref()
-                                .map(|result| String::from_utf8_lossy(&result.target).into_owned())
-                                .unwrap_or_else(|| "none".to_owned());
-                            tracing::error!(
-                                event = "gateway.stored_build.failed",
-                                phase = crate::build::stored_load_failure_phase(&error)
-                                    .map(crate::build::StoredLoadFailurePhase::as_str)
-                                    .unwrap_or("unknown"),
-                                dependency_phase =
-                                    crate::build::stored_load_dependency_phase(&error)
-                                        .map(nix_worker_protocol::BuildPathsFailurePhase::as_str)
-                                        .unwrap_or("none"),
-                                dependency_target,
-                                dependency_status =
-                                    dependency_result.as_ref().map(|result| result.status),
-                                dependency_category = dependency_result
-                                    .as_ref()
-                                    .map(|result| result.category)
-                                    .unwrap_or("none"),
-                                "stored build request loading failed"
-                            );
-                            return reject(
-                                &mut output,
-                                "invalid-build-paths-with-results",
-                                "invalid BuildPathsWithResults request",
-                            );
-                        }
-                    };
+                                .map(|result| result.category)
+                                .unwrap_or("none"),
+                            "stored build request loading failed"
+                        );
+                        return reject(
+                            &mut output,
+                            "invalid-build-paths-with-results",
+                            "invalid BuildPathsWithResults request",
+                        );
+                    }
+                };
                 let target = target.clone();
                 let requested_system = admitted.system().as_bytes().to_vec();
                 execute_admitted_build!(
@@ -1621,7 +1619,10 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 let _permit = object_admission.admit_outbound()?;
                 output.write_all(&nix_worker_protocol::STDERR_LAST.to_le_bytes())?;
                 let (verified, first_byte_us, write_elapsed_us, write_call_count) = {
-                    let mut transfer_output = telchar_telemetry::TransferIo::new(&mut output, telchar_telemetry::TransferSide::Destination);
+                    let mut transfer_output = telchar_telemetry::TransferIo::new(
+                        &mut output,
+                        telchar_telemetry::TransferSide::Destination,
+                    );
                     let mut measured_output = NarResponseWriter::new(&mut transfer_output);
                     let verified =
                         match crate::store::export::export_verified_nar_with_limits_and_rate(
@@ -1956,8 +1957,28 @@ fn run_cached_output_phase<T>(
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
     let started = std::time::Instant::now();
+    let span = tracing::info_span!(
+        "cached_output.phase",
+        phase,
+        outcome = tracing::field::Empty
+    );
+    let _entered = span.enter();
     let result = operation();
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let elapsed = started.elapsed();
+    let outcome = if result.is_ok() { "success" } else { "failure" };
+    span.record("outcome", outcome);
+    opentelemetry::global::meter("telchar")
+        .f64_histogram("telchar.build.cached_output.phase.duration")
+        .with_unit("s")
+        .build()
+        .record(
+            elapsed.as_secs_f64(),
+            &[
+                opentelemetry::KeyValue::new("phase", phase),
+                opentelemetry::KeyValue::new("outcome", outcome),
+            ],
+        );
+    let elapsed_ms = elapsed.as_millis() as u64;
     match &result {
         Ok(_) => tracing::debug!(event = "cached_output.phase.completed", phase, elapsed_ms),
         Err(error) => tracing::warn!(

@@ -66,6 +66,7 @@ fn store_operations_export_bounded_timings_and_failures() {
         "sensitive-socket-marker",
         &daemon.store_url(),
     ]);
+    collector.assert_duration_resolution("telchar.store.operation.duration");
     collector.assert_metric_attributes_are_bounded();
     daemon.stop().unwrap();
     fixture.cleanup().unwrap();

@@ -237,6 +237,25 @@ impl Telemetry {
             };
             Ok::<_, opentelemetry_otlp::ExporterBuildError>(
                 SdkMeterProvider::builder()
+                    .with_view(|instrument: &opentelemetry_sdk::metrics::Instrument| {
+                        use opentelemetry_sdk::metrics::{Aggregation, InstrumentKind, Stream};
+                        if instrument.kind() != InstrumentKind::Histogram
+                            || instrument.unit() != "s"
+                        {
+                            return None;
+                        }
+                        Stream::builder()
+                            .with_aggregation(Aggregation::ExplicitBucketHistogram {
+                                boundaries: vec![
+                                    0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025,
+                                    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0,
+                                    300.0, 600.0, 1800.0, 3600.0, 7200.0,
+                                ],
+                                record_min_max: true,
+                            })
+                            .build()
+                            .ok()
+                    })
                     .with_resource(resource.clone())
                     .with_reader(
                         PeriodicReader::builder(exporter)

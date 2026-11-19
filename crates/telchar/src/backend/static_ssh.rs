@@ -502,7 +502,8 @@ fn copy_gateway_path_to_remote(
         let mut nar = create_staging_file()?;
         gateway.nar_from_path(path.store_path.as_bytes(), path.nar_size, &mut nar)?;
         nar.rewind()?;
-        let mut source = telchar_telemetry::TransferIo::new(&mut nar, telchar_telemetry::TransferSide::Source);
+        let mut source =
+            telchar_telemetry::TransferIo::new(&mut nar, telchar_telemetry::TransferSide::Source);
         remote.add_to_store_nar(&metadata, &mut source, false, true)
     })();
     match &result {
@@ -567,7 +568,10 @@ fn copy_remote_path_to_gateway(
     let result = (|| {
         let mut nar = create_staging_file()?;
         {
-            let mut sink = telchar_telemetry::TransferIo::new(&mut nar, telchar_telemetry::TransferSide::Destination);
+            let mut sink = telchar_telemetry::TransferIo::new(
+                &mut nar,
+                telchar_telemetry::TransferSide::Destination,
+            );
             remote.nar_from_path(path, metadata.nar_size(), &mut sink)?;
         }
         nar.rewind()?;

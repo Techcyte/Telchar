@@ -5,11 +5,13 @@ use super::*;
 #[test]
 fn build_derivation_streams_helper_logs_before_success_result() {
     for level in ["info", "debug", "trace"] {
-        check_build_logs(level);
+        check_build_logs(level, true);
     }
+    check_build_logs("info", false);
 }
 
-fn check_build_logs(level: &str) {
+fn check_build_logs(level: &str, export_available: bool) {
+    let collector = collector::start_collector();
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-log-helper-{}-{}",
         std::process::id(),
@@ -33,6 +35,15 @@ fn check_build_logs(level: &str) {
         [
             ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
             ("RUST_LOG", format!("info,telchar={level}")),
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                if export_available {
+                    collector.endpoint()
+                } else {
+                    "http://127.0.0.1:1".to_owned()
+                },
+            ),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc".to_owned()),
         ],
     );
     let child = &mut fixture.frontend;
@@ -95,6 +106,19 @@ fn check_build_logs(level: &str) {
         "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv"
     );
     assert_eq!(persisted.system, "x86_64-linux");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while fixture
+        .daemon
+        .try_wait()
+        .expect("daemon status reads")
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not finish telemetry shutdown"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     let stderr = fixture.finish();
     assert!(status.success(), "Telchar failed with {status}: {stderr}");
     assert!(
@@ -131,5 +155,27 @@ fn check_build_logs(level: &str) {
         level != "info",
         "{stderr}"
     );
+    if export_available {
+        for phase in [
+            "decode-build",
+            "admission",
+            "input-closure",
+            "retain-inputs",
+            "queue",
+            "substitute",
+            "execute",
+            "validate-outputs",
+            "retain-outputs",
+            "respond",
+        ] {
+            collector.assert_histogram_attributes(
+                "telchar.build.phase.duration",
+                &[("phase", phase), ("outcome", "success")],
+                0.0,
+            );
+        }
+        collector.assert_span_parent("worker.operation", "server.phase");
+        collector.assert_metric_attributes_are_bounded();
+    }
     fs::remove_dir_all(root).expect("fixture cleans");
 }

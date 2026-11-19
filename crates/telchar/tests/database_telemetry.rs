@@ -31,6 +31,12 @@ fn database_operations_export_checkout_validation_and_query_timings() {
         Some(&postgres::error::SqlState::UNDEFINED_TABLE)
     );
     drop(connection);
+    telchar::persistence::migrate(&database).unwrap();
+    assert!(
+        telchar::persistence::read_shared_build(&database, "private-build-marker")
+            .unwrap()
+            .is_none()
+    );
     drop(database);
     telemetry.shutdown();
     for operation in ["checkout", "validation", "query_one"] {
@@ -45,8 +51,14 @@ fn database_operations_export_checkout_validation_and_query_timings() {
         &[("operation", "batch_execute"), ("outcome", "failure")],
         0.0,
     );
+    collector.assert_histogram_attributes(
+        "telchar.database.lifecycle.duration",
+        &[("operation", "read_shared_build")],
+        0.0,
+    );
     collector.assert_no_private_markers(&[
         "private-query-marker",
+        "private-build-marker",
         "private_missing_table_marker",
         fixture.url(),
     ]);
