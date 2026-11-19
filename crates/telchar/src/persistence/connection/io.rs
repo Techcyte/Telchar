@@ -207,7 +207,9 @@ impl DatabaseClient {
     where
         T: ?Sized + ToStatement,
     {
-        self.driver.run(self.client.query(statement, parameters))
+        super::super::telemetry::run("query", || {
+            self.driver.run(self.client.query(statement, parameters))
+        })
     }
 
     pub fn query_one<T>(
@@ -218,8 +220,10 @@ impl DatabaseClient {
     where
         T: ?Sized + ToStatement,
     {
-        self.driver
-            .run(self.client.query_one(statement, parameters))
+        super::super::telemetry::run("query_one", || {
+            self.driver
+                .run(self.client.query_one(statement, parameters))
+        })
     }
 
     pub fn query_opt<T>(
@@ -230,8 +234,10 @@ impl DatabaseClient {
     where
         T: ?Sized + ToStatement,
     {
-        self.driver
-            .run(self.client.query_opt(statement, parameters))
+        super::super::telemetry::run("query_opt", || {
+            self.driver
+                .run(self.client.query_opt(statement, parameters))
+        })
     }
 
     pub fn execute<T>(
@@ -242,15 +248,21 @@ impl DatabaseClient {
     where
         T: ?Sized + ToStatement,
     {
-        self.driver.run(self.client.execute(statement, parameters))
+        super::super::telemetry::run("execute", || {
+            self.driver.run(self.client.execute(statement, parameters))
+        })
     }
 
     pub fn batch_execute(&mut self, query: &str) -> Result<(), DatabaseError> {
-        self.driver.run(self.client.batch_execute(query))
+        super::super::telemetry::run("batch_execute", || {
+            self.driver.run(self.client.batch_execute(query))
+        })
     }
 
     pub fn simple_query(&mut self, query: &str) -> Result<Vec<SimpleQueryMessage>, DatabaseError> {
-        self.driver.run(self.client.simple_query(query))
+        super::super::telemetry::run("simple_query", || {
+            self.driver.run(self.client.simple_query(query))
+        })
     }
 
     pub fn transaction(&mut self) -> Result<DatabaseTransaction<'_>, DatabaseError> {

@@ -258,6 +258,26 @@ uri = "{worker_store_uri}"
     collector::Collector::assert_child(&callbacks[0], &exports[0]);
     collector::Collector::assert_child(&callbacks[0], &builds[0]);
     collector::Collector::assert_child(&builds[0], &collections[0]);
+    for operation in [
+        "connect",
+        "handshake",
+        "query_path_info",
+        "nar_from_path",
+        "add_to_store_nar",
+    ] {
+        collector.assert_histogram_attributes(
+            "telchar.store.operation.duration",
+            &[("operation", operation), ("outcome", "success")],
+            0.0,
+        );
+    }
+    for side in ["source", "destination"] {
+        collector.assert_histogram_attributes(
+            "telchar.transfer.io.duration",
+            &[("side", side), ("outcome", "success")],
+            0.0,
+        );
+    }
     collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
     collector.assert_metric_attributes_are_bounded();
     if let Some(path) = std::env::var_os("TELCHAR_NOMAD_TRACE_ARTIFACT") {

@@ -90,7 +90,8 @@ impl GatewayStoreConnection {
             return Err(connection_error());
         }
         let connecting = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-        let stream = UnixStream::connect(&endpoint.socket_path);
+        let stream =
+            super::telemetry::run("connect", || UnixStream::connect(&endpoint.socket_path));
         tracing::trace!(
             event = "store.daemon.connected",
             elapsed_us = connecting.map(|start| start.elapsed().as_micros() as u64),
@@ -105,7 +106,7 @@ impl GatewayStoreConnection {
             .map_err(|_| connection_error())?;
         let shutdown_stream = stream.try_clone().map_err(|_| connection_error())?;
         let handshaking = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-        let client = WorkerClient::connect(stream);
+        let client = super::telemetry::run("handshake", || WorkerClient::connect(stream));
         tracing::trace!(
             event = "store.daemon.handshake",
             elapsed_us = handshaking.map(|start| start.elapsed().as_micros() as u64),
@@ -128,9 +129,11 @@ impl GatewayStoreConnection {
     }
 
     pub fn is_valid_path(&mut self, path: &[u8]) -> io::Result<bool> {
-        self.client
-            .is_valid_path(path)
-            .map_err(|_| connection_error())
+        super::telemetry::run("is_valid_path", || {
+            self.client
+                .is_valid_path(path)
+                .map_err(|_| connection_error())
+        })
     }
 
     #[tracing::instrument(level = "trace", skip_all, fields(path_count = paths.len(), substitute))]
@@ -140,10 +143,11 @@ impl GatewayStoreConnection {
         substitute: bool,
     ) -> io::Result<Vec<Vec<u8>>> {
         let querying = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
-        let result = self
-            .client
-            .query_valid_paths(paths, substitute)
-            .map_err(|_| connection_error());
+        let result = super::telemetry::run("query_valid_paths", || {
+            self.client
+                .query_valid_paths(paths, substitute)
+                .map_err(|_| connection_error())
+        });
         tracing::trace!(
             event = "store.daemon.query_valid_paths",
             elapsed_us = querying.map(|start| start.elapsed().as_micros() as u64),
@@ -155,10 +159,11 @@ impl GatewayStoreConnection {
 
     pub fn query_path_info(&mut self, path: &[u8]) -> io::Result<Option<WorkerPathInfo>> {
         let started = std::time::Instant::now();
-        let result = self
-            .client
-            .query_path_info(path)
-            .map_err(|_| connection_error());
+        let result = super::telemetry::run("query_path_info", || {
+            self.client
+                .query_path_info(path)
+                .map_err(|_| connection_error())
+        });
         tracing::debug!(
             event = "store.daemon.query_path_info.completed",
             elapsed_us = started.elapsed().as_micros() as u64,
@@ -169,36 +174,41 @@ impl GatewayStoreConnection {
     }
 
     pub fn query_missing(&mut self, targets: &[Vec<u8>]) -> io::Result<WorkerMissingPaths> {
-        self.client
-            .query_missing(targets)
-            .map_err(|_| connection_error())
+        super::telemetry::run("query_missing", || {
+            self.client
+                .query_missing(targets)
+                .map_err(|_| connection_error())
+        })
     }
 
     pub fn build_paths_with_results(
         endpoint: &GatewayStoreEndpoint,
         targets: &[Vec<u8>],
     ) -> io::Result<()> {
-        Self::connect_with_timeout(endpoint, BUILD_OPERATION_TIMEOUT)?
-            .client
-            .build_paths_with_results(targets)
-            .map_err(|error| {
-                nix_worker_protocol::build_paths_failure_phase(&error)
-                    .map(|phase| {
-                        crate::store::export::dependency_realization_error_with_result(
-                            phase,
-                            nix_worker_protocol::build_paths_failure_result(&error),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        io::Error::other("gateway Nix daemon dependency realization failed")
-                    })
-            })
+        let mut connection = Self::connect_with_timeout(endpoint, BUILD_OPERATION_TIMEOUT)?;
+        super::telemetry::run("build_paths_with_results", || {
+            connection.client.build_paths_with_results(targets)
+        })
+        .map_err(|error| {
+            nix_worker_protocol::build_paths_failure_phase(&error)
+                .map(|phase| {
+                    crate::store::export::dependency_realization_error_with_result(
+                        phase,
+                        nix_worker_protocol::build_paths_failure_result(&error),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    io::Error::other("gateway Nix daemon dependency realization failed")
+                })
+        })
     }
 
     pub fn ensure_path(&mut self, path: &[u8]) -> io::Result<()> {
-        self.client
-            .ensure_path(path)
-            .map_err(|_| connection_error())
+        super::telemetry::run("ensure_path", || {
+            self.client
+                .ensure_path(path)
+                .map_err(|_| connection_error())
+        })
     }
 
     pub fn build_derivation(
@@ -206,22 +216,24 @@ impl GatewayStoreConnection {
         request: &BuildDerivationClientRequest<'_>,
         logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<WorkerBuildResult> {
-        self.client
-            .set_options(&WorkerOptions {
+        super::telemetry::run("set_options", || {
+            self.client.set_options(&WorkerOptions {
                 overrides: vec![(b"builders".to_vec(), Vec::new())],
                 ..WorkerOptions::default()
             })
-            .map_err(|_| io::Error::other("gateway Nix daemon execution options failed"))?;
-        self.client
-            .build_derivation(request, logs)
-            .map_err(|error| {
-                let message = error.to_string();
-                let diagnostic = message
-                    .strip_prefix("Nix daemon BuildDerivation ")
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("operation failed: {message}"));
-                io::Error::other(format!("gateway Nix daemon BuildDerivation {diagnostic}"))
-            })
+        })
+        .map_err(|_| io::Error::other("gateway Nix daemon execution options failed"))?;
+        super::telemetry::run("build_derivation", || {
+            self.client.build_derivation(request, logs)
+        })
+        .map_err(|error| {
+            let message = error.to_string();
+            let diagnostic = message
+                .strip_prefix("Nix daemon BuildDerivation ")
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("operation failed: {message}"));
+            io::Error::other(format!("gateway Nix daemon BuildDerivation {diagnostic}"))
+        })
     }
 
     pub fn shutdown_handle(&self) -> io::Result<UnixStream> {
@@ -238,16 +250,20 @@ impl GatewayStoreConnection {
     ) -> io::Result<()> {
         self.set_operation_timeout(TRANSFER_OPERATION_TIMEOUT)?;
         let started = std::time::Instant::now();
-        let result = self
-            .client
-            .nar_from_path(path, nar_size, sink)
-            .map_err(|error| {
-                let message = error.to_string();
-                let phase = message
-                    .strip_prefix("Nix daemon NarFromPath ")
-                    .unwrap_or("operation failed");
-                io::Error::other(format!("gateway Nix daemon NarFromPath {phase}"))
-            });
+        let result = super::telemetry::run("nar_from_path", || {
+            let mut sink = telchar_telemetry::TransferIo::new(
+                sink,
+                telchar_telemetry::TransferSide::Destination,
+            );
+            self.client.nar_from_path(path, nar_size, &mut sink)
+        })
+        .map_err(|error| {
+            let message = error.to_string();
+            let phase = message
+                .strip_prefix("Nix daemon NarFromPath ")
+                .unwrap_or("operation failed");
+            io::Error::other(format!("gateway Nix daemon NarFromPath {phase}"))
+        });
         tracing::debug!(
             event = "store.daemon.nar_from_path.completed",
             nar_size,
@@ -265,15 +281,19 @@ impl GatewayStoreConnection {
         dont_check_signatures: bool,
     ) -> io::Result<()> {
         self.set_operation_timeout(TRANSFER_OPERATION_TIMEOUT)?;
-        self.client
-            .add_to_store_nar(info, source, repair, dont_check_signatures)
-            .map_err(|error| {
-                let message = error.to_string();
-                let phase = message
-                    .strip_prefix("Nix daemon AddToStoreNar ")
-                    .unwrap_or("operation failed");
-                io::Error::other(format!("gateway Nix daemon AddToStoreNar {phase}"))
-            })
+        super::telemetry::run("add_to_store_nar", || {
+            let mut source =
+                telchar_telemetry::TransferIo::new(source, telchar_telemetry::TransferSide::Source);
+            self.client
+                .add_to_store_nar(info, &mut source, repair, dont_check_signatures)
+        })
+        .map_err(|error| {
+            let message = error.to_string();
+            let phase = message
+                .strip_prefix("Nix daemon AddToStoreNar ")
+                .unwrap_or("operation failed");
+            io::Error::other(format!("gateway Nix daemon AddToStoreNar {phase}"))
+        })
     }
 
     fn set_operation_timeout(&self, timeout: Duration) -> io::Result<()> {
