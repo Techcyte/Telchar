@@ -309,6 +309,7 @@ fn run_isolated_build(case: &str) {
     eprintln!("MicroVM build fixture case: {case}");
     let database = telchar_test_support::postgres::PostgresFixture::start();
     let output = Command::new("bash")
+        .stderr(std::process::Stdio::inherit())
         .env("MICROVM_TEST_DATABASE", database.url())
         .env("MICROVM_TEST_CASE", case)
         .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
@@ -1267,7 +1268,9 @@ chunk_bytes = 262144
             "packaged worker must execute builder"
         );
     }
+    eprintln!("MicroVM fixture {case}: joining gateway");
     let result = gateway_thread.join().unwrap();
+    eprintln!("MicroVM fixture {case}: gateway joined");
     if corrupt_output {
         drop(upstream);
         drop(socket);
@@ -1281,7 +1284,9 @@ chunk_bytes = 262144
         )
         .unwrap()
     );
+    eprintln!("MicroVM fixture {case}: collecting worker output");
     let worker = worker.wait_with_output().unwrap();
+    eprintln!("MicroVM fixture {case}: worker exited");
     if build_failure || corrupt_output {
         assert!(worker.stdout.is_empty());
         let diagnostic = String::from_utf8(worker.stderr).unwrap();
