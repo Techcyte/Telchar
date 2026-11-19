@@ -11,7 +11,7 @@ fn live_set_options_request_returns_terminal_frame() {
         [
             ("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint()),
             ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc".to_owned()),
-            ("RUST_LOG", "trace".to_owned()),
+            ("RUST_LOG", "info,telchar=trace".to_owned()),
         ],
         Some("cancel-running"),
     );
@@ -67,7 +67,7 @@ fn live_set_options_request_returns_terminal_frame() {
     let stderr = fixture.finish();
     assert!(
         collector.has_log_event("worker.set_options.completed"),
-        "worker SetOptions event was not exported through OTLP"
+        "worker SetOptions event was not exported through OTLP: {stderr}"
     );
     assert!(
         stderr.contains("worker.set_options.completed"),

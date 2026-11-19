@@ -309,7 +309,10 @@ successfully exported. Verify both `service.name=telchar` and
 `service.name=telchar-nomad-worker` and inspect one connected trace first.
 
 Start with `RUST_LOG=info`; enable database `debug` selectively for short diagnostic
-windows. Store RPC and worker operation spans are available at info. Export
+windows, such as `RUST_LOG=info,telchar::persistence=debug`. For application trace
+logging use `RUST_LOG=info,telchar=trace`, not global `trace`: HTTP/2 and OTLP
+transport diagnostics can themselves flood the bounded export queues and displace
+application events. Store RPC and worker operation spans are available at info. Export
 queues are bounded and best-effort: unavailable or overloaded collectors can lose
 telemetry. An incomplete trace is not evidence that a phase did not execute.
 Monitor collector receive/export/drop counts and host CPU, memory, disk latency,
