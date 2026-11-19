@@ -45,6 +45,19 @@ fn detached_frontend_allows_failed_helper_to_finish_without_dead_transport_write
     drop(input);
     drop(output);
 
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let stderr = fs::read_to_string(fixture.root.join("daemon.stderr")).unwrap();
+        if stderr.contains("worker.build_derivation.requester_detached") {
+            assert!(stderr.contains("phase=\"request-read\""), "{stderr}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "disconnect diagnostic missing: {stderr}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     fs::write(&complete, b"complete").expect("helper completion releases");
     let mut database = fixture.database.connect();
     let request_id = request_id(&mut database);
