@@ -889,3 +889,209 @@ chunk_bytes = 1024
     );
     assert!(row.get::<_, bool>(2));
 }
+
+/// The provider's SDK client pools HTTP connections. Concurrent launches from
+/// separate execution threads must each reach the provider even when the
+/// endpoint keeps connections alive between requests.
+#[test]
+fn concurrent_launches_succeed_over_kept_alive_provider_connections() {
+    const LAUNCHES: usize = 16;
+    const ROUNDS: usize = 4;
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let (endpoint, served) = keep_alive_provider(|launch| {
+        let body = serde_json::json!({
+            "microvmId": format!("microvm-{}", launch["clientToken"].as_str().unwrap()),
+            "state": "PENDING", "endpoint": "https://unused.invalid",
+            "imageArn": "image-fixture", "imageVersion": "1",
+            "maximumDurationInSeconds": 600, "startedAt": 1,
+        });
+        ("200 OK", "", body.to_string())
+    });
+    let provider = loopback_provider(endpoint);
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires");
+    for round in 0..ROUNDS {
+        let launches = (0..LAUNCHES)
+            .map(|index| reserve_loopback_launch(&fixture, round * LAUNCHES + index, LAUNCHES))
+            .collect::<Vec<_>>();
+        let results = std::thread::scope(|scope| {
+            let handles = launches
+                .iter()
+                .map(|(intent, payload)| {
+                    let provider = &provider;
+                    let owner = &owner;
+                    scope.spawn(move || provider.launch_reserved(owner, intent, payload))
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("launch thread"))
+                .collect::<Vec<_>>()
+        });
+        for ((intent, _), result) in launches.iter().zip(results) {
+            assert_eq!(
+                result.expect("launch binds"),
+                Some(format!("microvm-{}", intent.intent_id)),
+                "round {round}"
+            );
+        }
+        fixture
+            .connect()
+            .execute(
+                "UPDATE microvm_launches SET phase = 'closed', reservation_released_at = clock_timestamp() WHERE phase = 'bound'",
+                &[],
+            )
+            .expect("fixture releases capacity");
+    }
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        LAUNCHES * ROUNDS
+    );
+}
+
+/// Serves RunMicrovm on a loopback endpoint that keeps every connection open
+/// for further requests. `respond` maps a launch request to its status line,
+/// extra headers, and body. Returns the endpoint and a count of answered
+/// requests.
+fn keep_alive_provider(
+    respond: impl Fn(&serde_json::Value) -> (&'static str, &'static str, String) + Send + Sync + 'static,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let respond = std::sync::Arc::new(respond);
+    {
+        let served = std::sync::Arc::clone(&served);
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let mut socket = socket.expect("connection accepts");
+                let served = std::sync::Arc::clone(&served);
+                let respond = std::sync::Arc::clone(&respond);
+                std::thread::spawn(move || {
+                    loop {
+                        let mut headers = Vec::new();
+                        let mut byte = [0];
+                        while !headers.ends_with(b"\r\n\r\n") {
+                            if socket.read_exact(&mut byte).is_err() {
+                                return;
+                            }
+                            headers.push(byte[0]);
+                        }
+                        let headers = String::from_utf8(headers).expect("HTTP text");
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().expect("body length"))
+                            })
+                            .unwrap_or(0);
+                        let mut body = vec![0; length];
+                        socket.read_exact(&mut body).expect("request body");
+                        let launch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let (status, extra, body) = respond(&launch);
+                        served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        write!(
+                            socket,
+                            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .expect("provider response");
+                    }
+                });
+            }
+        });
+    }
+    (endpoint, served)
+}
+
+fn loopback_provider(endpoint: String) -> telchar::microvm::Provider {
+    let config = aws_sdk_lambdamicrovms::Config::builder()
+        .behavior_version_latest()
+        .region(aws_sdk_lambdamicrovms::config::Region::new("us-west-2"))
+        .credentials_provider(aws_credential_types::Credentials::new(
+            "fixture-key",
+            "fixture-secret",
+            None,
+            None,
+            "test",
+        ))
+        .endpoint_url(endpoint)
+        .build();
+    telchar::microvm::Provider::new(config, Duration::from_secs(5)).expect("provider")
+}
+
+/// Claims build `number` and reserves its MicroVM launch against `capacity`.
+fn reserve_loopback_launch(
+    fixture: &telchar_test_support::postgres::PostgresFixture,
+    number: usize,
+    capacity: usize,
+) -> (telchar::persistence::MicrovmLaunchIntent, String) {
+    const NIX_BASE32: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let connector = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder";
+    let hash: String = std::iter::repeat_n('a', 30)
+        .chain([
+            NIX_BASE32[number / 32] as char,
+            NIX_BASE32[number % 32] as char,
+        ])
+        .collect();
+    let derivation = format!("/nix/store/{hash}-provider.drv");
+    let output = format!("/nix/store/{hash}-provider");
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        &derivation,
+        &[1; 32],
+        "provider-fixture",
+        telchar::backend::BackendKind::Local,
+        telchar::backend::BackendKind::Local.capabilities(),
+        None,
+        &[&output],
+    )
+    .expect("fixture build claims");
+    telchar::persistence::start_shared_build(fixture.url(), &derivation).expect("attempt starts");
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), &derivation)
+        .expect("attempt reads")
+        .expect("attempt exists");
+    let intent_id = format!("intent-{number}");
+    let capability = telchar::microvm::Capability::generate().unwrap();
+    let payload = capability
+        .launch_payload(
+            "wss://gateway.example/microvm",
+            "127.0.0.1:443".parse().unwrap(),
+            &intent_id,
+            600,
+        )
+        .unwrap();
+    let intent = telchar::persistence::MicrovmLaunchIntent {
+        intent_id: intent_id.clone(),
+        attempt_id: attempt.attempt_id,
+        backend_name: "provider-fixture".to_owned(),
+        account_id: "123456789012".to_owned(),
+        region: "us-west-2".to_owned(),
+        image_arn: "image-fixture".to_owned(),
+        image_version: "1".to_owned(),
+        vpc_egress_connector_arn: connector.to_owned(),
+        configuration_digest: [1; 32],
+        request_digest: telchar::microvm::launch_request_digest(
+            "image-fixture",
+            "1",
+            connector,
+            &intent_id,
+            &payload,
+            600,
+        ),
+        client_token: intent_id,
+        credential_verifier: capability.verifier(),
+        admission_cutoff: std::time::SystemTime::now() + Duration::from_secs(60),
+        maximum_duration_seconds: 600,
+    };
+    assert!(
+        telchar::persistence::reserve_microvm_launch(fixture.url(), &intent, capacity)
+            .expect("capacity reserves")
+    );
+    (intent, payload)
+}
