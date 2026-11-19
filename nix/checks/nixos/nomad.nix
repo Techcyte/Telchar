@@ -110,20 +110,24 @@
         # Direct ssh-ng store clients avoid local Nix coalescing before the gateway.
         keyed_failure = "HOME=/root NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 90 nix --extra-experimental-features nix-command build --no-link --print-build-logs --store ssh-ng://telchar-ingress@gateway '" + failed_drv + "^*'"
         for i in range(4):
-            stock_client.succeed("(" + keyed_failure + " > /tmp/failed-" + str(i) + ".log 2>&1; echo $? > /tmp/failed-" + str(i) + ".status) </dev/null >/dev/null 2>&1 &")
-        for i in range(4):
-            stock_client.wait_for_file("/tmp/failed-" + str(i) + ".status")
-            status = int(stock_client.succeed("cat /tmp/failed-" + str(i) + ".status").strip())
-            assert status not in (0, 124, 137), status
-            stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-" + str(i) + ".log")
-            stock_client.succeed("grep -Fq nomad-exit-three /tmp/failed-" + str(i) + ".log")
-            stock_client.fail("grep -E 'Nomad build transfer failed|unexpected end-of-file|Connection reset' /tmp/failed-" + str(i) + ".log")
-        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from request_attachments a join build_requests r on a.request_id = r.request_id where r.derivation_path = '" + failed_drv + "'\" | grep -qx 4")
-        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 1")
-        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select result_metadata->'nix_failure'->>'status' from shared_builds where derivation_path = '" + failed_drv + "'\" | grep -qx 3")
-        stock_client.fail(failed_build + " > /tmp/failed-retry.log 2>&1")
-        stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-retry.log")
-        gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 2")
+            # The driver enables errexit; capture expected failure before writing status.
+            stock_client.succeed("(status=0; " + keyed_failure + " > /tmp/failed-" + str(i) + ".log 2>&1 || status=$?; echo $status > /tmp/failed-" + str(i) + ".status) </dev/null >/dev/null 2>&1 &")
+        try:
+            for i in range(4):
+                stock_client.wait_for_file("/tmp/failed-" + str(i) + ".status")
+                status = int(stock_client.succeed("cat /tmp/failed-" + str(i) + ".status").strip())
+                assert status not in (0, 124, 137), status
+                stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-" + str(i) + ".log")
+                stock_client.succeed("grep -Fq nomad-exit-three /tmp/failed-" + str(i) + ".log")
+                stock_client.fail("grep -E 'Nomad build transfer failed|unexpected end-of-file|Connection reset' /tmp/failed-" + str(i) + ".log")
+            gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from request_attachments a join build_requests r on a.request_id = r.request_id where r.derivation_path = '" + failed_drv + "'\" | grep -qx 4")
+            gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 1")
+            gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select result_metadata->'nix_failure'->>'status' from shared_builds where derivation_path = '" + failed_drv + "'\" | grep -qx 3")
+            stock_client.fail(failed_build + " > /tmp/failed-retry.log 2>&1")
+            stock_client.succeed("grep -Fq 'exit code 3' /tmp/failed-retry.log")
+            gateway.succeed("sudo -u postgres psql -d telchar-ingress -Atc \"select count(*) from shared_build_attempts where derivation_path = '" + failed_drv + "'\" | grep -qx 2")
+        finally:
+            print(stock_client.succeed("for f in /tmp/failed-*.log /tmp/failed-*.status; do if test -f \"$f\"; then echo \"=== $f ===\"; cat \"$f\"; fi; done"))
         nomad_server.succeed("nomad job stop -namespace telchar -purge '" + job_id + "'")
         nomad_server.wait_until_fails("nomad job status -namespace telchar '" + job_id + "'", timeout=30)
       '';
