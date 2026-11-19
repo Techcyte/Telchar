@@ -264,6 +264,36 @@ pub struct Provider {
     #[cfg(test)]
     runtime_certificate: Option<reqwest::Certificate>,
     prices: std::sync::Arc<std::sync::Mutex<ComputeQuotes>>,
+    runtime: std::sync::Arc<ProviderRuntime>,
+}
+
+/// One runtime for every provider call. The SDK client pools HTTP connections
+/// whose driver tasks live on the runtime that opened them, so a runtime per
+/// call leaves dead connections in the pool for the next call.
+#[derive(Default)]
+struct ProviderRuntime(std::sync::OnceLock<tokio::runtime::Runtime>);
+
+impl ProviderRuntime {
+    fn get(&self) -> Result<&tokio::runtime::Runtime, ProviderError> {
+        if let Some(runtime) = self.0.get() {
+            return Ok(runtime);
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("telchar-microvm-provider")
+            .enable_all()
+            .build()
+            .map_err(|_| ProviderError)?;
+        Ok(self.0.get_or_init(|| runtime))
+    }
+}
+
+impl Drop for ProviderRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 type ComputeQuotes =
@@ -336,6 +366,11 @@ impl Provider {
         Ok(provider)
     }
 
+    /// Runs provider work on the shared provider runtime.
+    pub(crate) fn runtime(&self) -> Result<&tokio::runtime::Runtime, ProviderError> {
+        self.runtime.get()
+    }
+
     pub fn new(config: Config, timeout: Duration) -> Result<Self, ProviderError> {
         if timeout.is_zero() || timeout > Duration::from_secs(60) {
             return Err(ProviderError);
@@ -360,6 +395,7 @@ impl Provider {
             #[cfg(test)]
             runtime_certificate: None,
             prices: Default::default(),
+            runtime: Default::default(),
         })
     }
 
@@ -438,10 +474,7 @@ impl Provider {
         if !pending {
             return Ok(false);
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| ProviderError)?;
+        let runtime = self.runtime.get()?;
         let terminated = runtime.block_on(self.is_terminated(&cleanup.provider_id))?;
         owner.verify().map_err(|_| ProviderError)?;
         if !terminated {
@@ -519,10 +552,7 @@ impl Provider {
         let mut cache = self.prices.lock().map_err(|_| ProviderError)?;
         let now = std::time::SystemTime::now();
         if cache.get(&key).is_none_or(|(_, expires)| *expires <= now) {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|_| ProviderError)?;
+            let runtime = self.runtime.get()?;
             let image = runtime.block_on(self.image(&key.0, &key.1))?;
             if image.resources().len() != 1 {
                 return Err(ProviderError);
@@ -680,10 +710,7 @@ impl Provider {
             return Err(ProviderError);
         }
         let database = owner.database();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| ProviderError)?;
+        let runtime = self.runtime.get()?;
         let client = runtime.block_on(self.authorized_client())?;
         owner.wait_for_authority().map_err(|_| ProviderError)?;
         owner.verify().map_err(|_| ProviderError)?;

@@ -87,10 +87,7 @@ impl Provider {
         let image = connection.query_one("SELECT image_arn,image_version FROM microvm_launches WHERE intent_id=$1 AND provider_id=$2", &[&intent_id, &provider_id]).map_err(|_| ProviderError)?;
         let image_arn: String = image.get(0);
         let image_version: String = image.get(1);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| ProviderError)?;
+        let runtime = self.runtime()?;
         let started = std::time::Instant::now();
         let (endpoint, token) = runtime
             .block_on(async {
