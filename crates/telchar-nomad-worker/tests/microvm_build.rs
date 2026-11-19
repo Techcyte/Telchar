@@ -140,14 +140,14 @@ fn provider_server(
                         .unwrap()
                         .contains("Action=GetCallerIdentity")
                 );
-                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                 write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                 if std::env::var("MICROVM_TEST_CASE")
                     .is_ok_and(|case| case.starts_with("configured-daemon"))
                 {
                     image::serve_image(
                         &listener,
-                        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                        "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
                     );
                 }
                 continue;
@@ -195,7 +195,7 @@ fn provider_client(
                 config,
                 identity,
                 aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
-                "116392764028",
+                "123456789012",
                 Duration::from_secs(2),
             ))
             .unwrap()
@@ -670,17 +670,17 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
             intent_id: "build-intent".into(),
             attempt_id: attempt.attempt_id,
             backend_name: "build".into(),
-            account_id: "116392764028".into(),
+            account_id: "123456789012".into(),
             region: "us-west-2".into(),
             image_arn: "fixture".into(),
             image_version: "1".into(),
             vpc_egress_connector_arn:
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder".into(),
             configuration_digest: [1; 32],
             request_digest: telchar::microvm::launch_request_digest(
                 "fixture",
                 "1",
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder",
                 "build-token",
                 &payload,
                 60,
@@ -756,11 +756,11 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
                     r#"
 name = "build"
 system = "aarch64-linux"
-account_id = "116392764028"
+account_id = "123456789012"
 region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder"
+image_arn = "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder"
 image_version = "1"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50

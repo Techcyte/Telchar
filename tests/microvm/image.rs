@@ -37,7 +37,7 @@ pub fn serve_image(listener: &TcpListener, image_arn: &str) {
     let body = serde_json::json!({
         "imageArn": image_arn, "imageVersion": "1", "state": "SUCCESSFUL", "status": "ACTIVE",
         "baseImageArn": "arn:aws:lambda:us-west-2:aws:microvm-image:al2023-1",
-        "buildRoleArn": "arn:aws:iam::116392764028:role/fixture", "createdAt": 1,
+        "buildRoleArn": "arn:aws:iam::123456789012:role/fixture", "createdAt": 1,
         "cpuConfigurations": [{"architecture": "ARM_64"}],
         "resources": [{"minimumMemoryInMiB": 2048}]
     })

@@ -43,11 +43,11 @@ fn launch_intent(attempt_id: i64, intent_id: &str) -> telchar::persistence::Micr
         intent_id: intent_id.to_owned(),
         attempt_id,
         backend_name: "launch-fixture".to_owned(),
-        account_id: "116392764028".to_owned(),
+        account_id: "123456789012".to_owned(),
         region: "us-west-2".to_owned(),
-        image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".to_owned(),
+        image_arn: "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture".to_owned(),
         image_version: "1".to_owned(),
-        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
             .into(),
         configuration_digest: [1; 32],
         request_digest: [2; 32],
@@ -96,7 +96,7 @@ fn administrative_termination_commits_observation_and_audit_atomically() {
         let mut observation = telchar::persistence::MicrovmTerminationObservation {
             intent_id: "intent-one",
             provider_id: "microvm-exact",
-            account_id: "116392764028",
+            account_id: "123456789012",
             region: "us-west-2",
             actor_uid: 0,
             reason: "Exact provider termination verified",
@@ -204,9 +204,9 @@ fn administrative_attachment_preserves_release_and_denies_admission() {
         intent_id: "intent-one",
         provider_id: "microvm-exact",
         actor_uid: 0,
-        account_id: "116392764028",
+        account_id: "123456789012",
         region: "us-west-2",
-        image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+        image_arn: "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
         image_version: "1",
         reason: "Recovered exact launch response",
         evidence_reference: "incident:response",
@@ -293,9 +293,9 @@ fn concurrent_identity_attachment_keeps_one_cleanup_obligation() {
                 intent_id: "intent-one",
                 provider_id,
                 actor_uid: 0,
-                account_id: "116392764028",
+                account_id: "123456789012",
                 region: "us-west-2",
-                image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                image_arn: "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                 image_version: "1",
                 reason: "Recovered exact launch response",
                 evidence_reference: "incident:concurrent-response",
@@ -572,7 +572,7 @@ fn verified_termination_is_distinct_from_capacity_release() {
     assert!(!telchar::persistence::microvm_cleanup_is_configured(&database, &[]).unwrap());
     let pending = telchar::persistence::pending_microvm_cleanup(
         &database,
-        "116392764028",
+        "123456789012",
         "us-west-2",
         1,
         None,
@@ -673,7 +673,7 @@ fn cleanup_configuration_covers_unreleased_launches() {
     for identities in [
         vec![],
         vec![("000000000000", "us-west-2")],
-        vec![("116392764028", "us-east-1")],
+        vec![("123456789012", "us-east-1")],
     ] {
         assert!(
             !telchar::persistence::microvm_cleanup_is_configured(&database, &identities).unwrap()
@@ -682,7 +682,7 @@ fn cleanup_configuration_covers_unreleased_launches() {
     assert!(
         telchar::persistence::microvm_cleanup_is_configured(
             &database,
-            &[("116392764028", "us-west-2")]
+            &[("123456789012", "us-west-2")]
         )
         .unwrap()
     );
@@ -973,10 +973,10 @@ fn admission_rejects_inactive_expired_cancelled_and_fenced_launches() {
 #[test]
 fn capacity_reservation_serializes_competitors_and_counts_ambiguous_launches() {
     for (backend, account, region, expected) in [
-        ("launch-fixture", "116392764028", "us-west-2", 1),
-        ("alias", "116392764028", "us-west-2", 1),
+        ("launch-fixture", "123456789012", "us-west-2", 1),
+        ("alias", "123456789012", "us-west-2", 1),
         ("alias", "000000000000", "us-west-2", 2),
-        ("alias", "116392764028", "us-east-1", 2),
+        ("alias", "123456789012", "us-east-1", 2),
         ("launch-fixture", "000000000000", "us-east-1", 1),
     ] {
         reservation_competitors(backend, account, region, expected);
@@ -1130,7 +1130,7 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     assert!(
         telchar::persistence::pending_microvm_cleanup(
             &database,
-            "116392764028",
+            "123456789012",
             "us-west-2",
             10,
             None
@@ -1149,7 +1149,7 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     fixture.restart();
     let cleanup = telchar::persistence::pending_microvm_cleanup(
         &database,
-        "116392764028",
+        "123456789012",
         "us-west-2",
         10,
         None,
@@ -1158,9 +1158,9 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     assert_eq!(cleanup.len(), 1);
     assert_eq!(cleanup[0].intent_id, "intent-one");
     assert_eq!(cleanup[0].provider_id, "microvm-exact");
-    assert_eq!(cleanup[0].account_id, "116392764028");
+    assert_eq!(cleanup[0].account_id, "123456789012");
     assert_eq!(cleanup[0].region, "us-west-2");
-    for (account, region) in [("000000000000", "us-west-2"), ("116392764028", "us-east-1")] {
+    for (account, region) in [("000000000000", "us-west-2"), ("123456789012", "us-east-1")] {
         assert!(
             telchar::persistence::pending_microvm_cleanup(&database, account, region, 10, None,)
                 .unwrap()
@@ -1199,7 +1199,7 @@ fn cleanup_obligation_survives_terminal_build_and_releases_only_exact_identity()
     assert!(
         telchar::persistence::pending_microvm_cleanup(
             &database,
-            "116392764028",
+            "123456789012",
             "us-west-2",
             10,
             None
