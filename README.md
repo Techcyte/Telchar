@@ -134,7 +134,8 @@ nix build -L --no-link .#checks.x86_64-linux.format \
 ```
 
 The workspace check compiles with cached Crane dependencies, then runs every
-package's unit, integration, and documentation tests serially in a NixOS VM as a
+package's unit, integration, and documentation tests in a NixOS VM, with four
+concurrent test threads per binary by default, as a
 nonroot account. It requires a VM-capable Linux builder (KVM); no host Cargo target
 or host daemon state is used. Live dependency/advisory checks remain outside
 cached Nix results so each CI run checks current advisories and exception expiry.

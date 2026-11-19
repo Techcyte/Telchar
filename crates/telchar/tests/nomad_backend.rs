@@ -23,8 +23,6 @@ use telchar::nomad::backend::{
 };
 use telchar::service::config::ServiceConfig;
 
-static CONFIGURATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn gateway_store_endpoint() -> telchar::store::daemon::GatewayStoreEndpoint {
     telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",
@@ -167,16 +165,7 @@ command = "/bin/true"
     .expect("configuration writes");
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
-    config
+    ServiceConfig::load_with_environment(&config_path, |_| None).expect("configuration loads")
 }
 
 fn load_nomad_config(

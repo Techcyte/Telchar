@@ -46,6 +46,13 @@ impl Write for LogOutput {
 
 #[test]
 fn publisher_logs_bounded_stdout_and_stderr_at_debug() {
+    let name = "publisher_logs_bounded_stdout_and_stderr_at_debug";
+    if !telchar_test_support::process::is_child(name) {
+        telchar_test_support::process::assert_success(&mut telchar_test_support::process::command(
+            name,
+        ));
+        return;
+    }
     let output = LogOutput::default();
     let writer = output.clone();
     let subscriber = tracing_subscriber::fmt()

@@ -308,7 +308,14 @@ fn dedicated_worker_builds_and_returns_registered_output() {
 fn run_isolated_build(case: &str) {
     eprintln!("MicroVM build fixture case: {case}");
     let database = telchar_test_support::postgres::PostgresFixture::start();
-    let output = Command::new("bash")
+    let connected_collector = (case == "configured").then(collector::start_collector);
+    let mut command = Command::new("bash");
+    if let Some(collector) = &connected_collector {
+        command
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
+    let output = command
         .stderr(std::process::Stdio::inherit())
         .env("MICROVM_TEST_DATABASE", database.url())
         .env("MICROVM_TEST_CASE", case)
@@ -330,20 +337,24 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    if let Some(collector) = connected_collector {
+        let parents = collector.spans("telchar", "backend.execution");
+        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(workers.len(), 1);
+        collector::Collector::assert_child(&parents[0], &workers[0]);
+        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
+    }
 }
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
     // Exercise the real routing -> cancellation thread -> launch carrier, not just
     // the lower-level session fixture's manually entered backend span.
-    let connected_collector = (case == "configured").then(collector::start_collector);
-    let connected_telemetry = connected_collector.as_ref().map(|collector| {
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-            std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
-        }
-        telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap()
-    });
+    let connected_telemetry = (case == "configured")
+        .then(|| telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap());
     let multiple = matches!(
         case.as_str(),
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
@@ -952,9 +963,8 @@ chunk_bytes = 262144
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
     let collector = (case == "single").then(collector::start_collector);
     let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
-    let connected_endpoint = connected_collector
-        .as_ref()
-        .map(|collector| collector.endpoint());
+    let connected_endpoint =
+        (case == "configured").then(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap());
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
@@ -1341,15 +1351,6 @@ chunk_bytes = 262144
     assert_eq!(result.unwrap(), BuildOutcome::Built);
     if let Some(telemetry) = connected_telemetry {
         telemetry.shutdown();
-        let collector = connected_collector.as_ref().unwrap();
-        let parents = collector.spans("telchar", "backend.execution");
-        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
-        assert_eq!(parents.len(), 1);
-        assert_eq!(workers.len(), 1);
-        collector::Collector::assert_child(&parents[0], &workers[0]);
-        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
-            collector.write_trace_artifact(path);
-        }
     }
     if let Some(collector) = collector {
         for phase in [

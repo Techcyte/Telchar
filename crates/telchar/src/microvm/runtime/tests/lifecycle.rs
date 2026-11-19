@@ -59,18 +59,33 @@ mod collector;
 #[test]
 fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
     // Isolate the global exporter/subscriber and its environment from other tests.
-    if std::env::var_os("TELCHAR_RESET_TRACE_TEST").is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .env("TELCHAR_RESET_TRACE_TEST", "1")
-            .args(["--exact", "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment", "--nocapture", "--test-threads=1"])
-            .status().unwrap();
-        assert!(status.success());
+    let name = "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment";
+    if !telchar_test_support::process::is_child(name) {
+        let collector = collector::start_collector();
+        telchar_test_support::process::assert_success(
+            telchar_test_support::process::command(name)
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+        );
+        let parents = collector.spans("telchar", "backend.execution");
+        let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(confirmations.len(), 1);
+        collector::Collector::assert_child(&parents[0], &confirmations[0]);
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+        assert!(confirmations[0].attributes.iter().any(|attribute| {
+            attribute.key == "confirmed"
+                && attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                    == Some(&Value::BoolValue(true))
+        }));
+        collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
+        if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
         return;
-    }
-    let collector = collector::start_collector();
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
     let parent = tracing::info_span!(parent: None, "backend.execution");
@@ -449,22 +464,4 @@ with tempfile.TemporaryDirectory() as directory:
     drop(entered);
     drop(parent);
     telemetry.shutdown();
-    let parents = collector.spans("telchar", "backend.execution");
-    let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
-    assert_eq!(parents.len(), 1);
-    assert_eq!(confirmations.len(), 1);
-    collector::Collector::assert_child(&parents[0], &confirmations[0]);
-    use opentelemetry_proto::tonic::common::v1::any_value::Value;
-    assert!(confirmations[0].attributes.iter().any(|attribute| {
-        attribute.key == "confirmed"
-            && attribute
-                .value
-                .as_ref()
-                .and_then(|value| value.value.as_ref())
-                == Some(&Value::BoolValue(true))
-    }));
-    collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
-    if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
-        collector.write_trace_artifact(path);
-    }
 }

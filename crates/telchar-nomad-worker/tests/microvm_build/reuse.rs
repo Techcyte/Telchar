@@ -187,28 +187,180 @@ fn sequential_jobs_reuse_one_supervised_worker() {
 }
 
 fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
-    let collector = collector::start_collector();
     let trace_mode = std::env::var("MICROVM_TRACE_TEST_MODE").unwrap_or_default();
+    let thread = std::thread::current();
+    let name = thread.name().unwrap();
     // This fixture runs in its own test subprocess. Propagate the collector to the
     // real worker through both namespace/supervision subprocess boundaries.
-    unsafe {
-        std::env::set_var(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            if trace_mode == "unavailable" {
-                "http://127.0.0.1:1".to_owned()
-            } else {
-                collector.endpoint()
-            },
+    if !telchar_test_support::process::is_child(name) {
+        let collector = collector::start_collector();
+        let report = tempfile::tempdir().unwrap();
+        let report_path = report.path().join("trace.json");
+        let mut command = telchar_test_support::process::command(name);
+        command
+            .env("TELCHAR_TEST_TRACE_REPORT", &report_path)
+            .env(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                if trace_mode == "unavailable" {
+                    "http://127.0.0.1:1".to_owned()
+                } else {
+                    collector.endpoint()
+                },
+            )
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            .env(
+                "RUST_LOG",
+                if trace_mode == "disabled" {
+                    "off"
+                } else {
+                    "info"
+                },
+            );
+        if name == BENCHMARK {
+            command.arg("--ignored");
+        }
+        telchar_test_support::process::assert_success(&mut command);
+        if !trace_mode.is_empty() {
+            return;
+        }
+        let (expected_parents, private_bearers): (Vec<String>, Vec<String>) =
+            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+        let parents = collector.spans("telchar", "backend.execution");
+        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+        assert_eq!(parents.len(), jobs);
+        assert_eq!(workers.len(), jobs);
+        for expected in &expected_parents {
+            let trace_id = (3..35)
+                .step_by(2)
+                .map(|offset| u8::from_str_radix(&expected[offset..offset + 2], 16).unwrap())
+                .collect::<Vec<_>>();
+            let parent = parents
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            let worker = workers
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            collector::Collector::assert_child(parent, worker);
+            for phase in [
+                "connect",
+                "manifest",
+                "resolve-inputs",
+                "import-inputs",
+                "prepare-job",
+                "build",
+                "return-outputs",
+            ] {
+                let spans = collector.spans("telchar-microvm-worker", "microvm.worker.phase");
+                let child = spans
+                    .iter()
+                    .find(|span| {
+                        span.trace_id == trace_id
+                            && collector::Collector::has_attribute(&span.attributes, "phase", phase)
+                    })
+                    .unwrap();
+                collector::Collector::assert_child(worker, child);
+            }
+            let sessions = collector.spans("telchar", "microvm.gateway.session");
+            let session = sessions
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            collector::Collector::assert_child(parent, session);
+            let builds = collector.spans("telchar", "microvm.gateway.build_and_collect");
+            let build = builds
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            collector::Collector::assert_child(session, build);
+            let collections = collector.spans("telchar", "microvm.gateway.collect_outputs");
+            let collection = collections
+                .iter()
+                .find(|span| span.trace_id == trace_id)
+                .unwrap();
+            collector::Collector::assert_child(build, collection);
+            if expected == &expected_parents[0] {
+                let exports = collector.spans("telchar", "microvm.gateway.export_inputs");
+                let export = exports
+                    .iter()
+                    .find(|span| span.trace_id == trace_id)
+                    .unwrap();
+                collector::Collector::assert_child(session, export);
+            }
+            let summaries = session
+                .events
+                .iter()
+                .filter(|event| {
+                    collector::Collector::has_attribute(
+                        &event.attributes,
+                        "event",
+                        "microvm.authority.summary",
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                summaries.len(),
+                10,
+                "bounded stage/source summaries per assignment"
+            );
+            for stage in [
+                "load",
+                "ownership",
+                "request_connection",
+                "request_query",
+                "request_decode_validate",
+            ] {
+                let summary = summaries
+                    .iter()
+                    .find(|event| {
+                        collector::Collector::has_attribute(&event.attributes, "stage", stage)
+                            && collector::Collector::has_attribute(
+                                &event.attributes,
+                                "source",
+                                "transfer",
+                            )
+                    })
+                    .unwrap();
+                let number = |name: &str| {
+                    summary
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == name)
+                        .unwrap()
+                        .value
+                        .as_ref()
+                        .unwrap()
+                        .value
+                        .as_ref()
+                        .unwrap()
+                        .clone()
+                };
+                use opentelemetry_proto::tonic::common::v1::any_value::Value;
+                assert!(matches!(number("count"), Value::IntValue(value) if value > 0));
+                assert!(
+                    matches!(number("total_ms"), Value::DoubleValue(value) if value.is_finite() && value > 0.0)
+                );
+                assert!(
+                    matches!(number("maximum_ms"), Value::DoubleValue(value) if value.is_finite() && value > 0.0)
+                );
+            }
+        }
+        if jobs > 1 {
+            assert_ne!(workers[0].trace_id, workers[jobs - 1].trace_id);
+        }
+        collector.assert_no_private_markers(
+            &private_bearers
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once("shared-input\n"))
+                .collect::<Vec<_>>(),
         );
-        std::env::set_var(
-            "RUST_LOG",
-            if trace_mode == "disabled" {
-                "off"
-            } else {
-                "info"
-            },
-        );
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+        collector.assert_metric_attributes_are_bounded();
+        if let Some(path) = std::env::var_os("TELCHAR_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
+        return;
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
     let mut expected_parents = Vec::new();
@@ -606,140 +758,12 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
     if !trace_mode.is_empty() {
         return;
     }
-    let parents = collector.spans("telchar", "backend.execution");
-    let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
-    assert_eq!(parents.len(), jobs);
-    assert_eq!(workers.len(), jobs);
-    for expected in &expected_parents {
-        let trace_id = (3..35)
-            .step_by(2)
-            .map(|offset| u8::from_str_radix(&expected[offset..offset + 2], 16).unwrap())
-            .collect::<Vec<_>>();
-        let parent = parents
-            .iter()
-            .find(|span| span.trace_id == trace_id)
-            .unwrap();
-        let worker = workers
-            .iter()
-            .find(|span| span.trace_id == trace_id)
-            .unwrap();
-        collector::Collector::assert_child(parent, worker);
-        for phase in [
-            "connect",
-            "manifest",
-            "resolve-inputs",
-            "import-inputs",
-            "prepare-job",
-            "build",
-            "return-outputs",
-        ] {
-            let spans = collector.spans("telchar-microvm-worker", "microvm.worker.phase");
-            let child = spans
-                .iter()
-                .find(|span| {
-                    span.trace_id == trace_id
-                        && collector::Collector::has_attribute(&span.attributes, "phase", phase)
-                })
-                .unwrap();
-            collector::Collector::assert_child(worker, child);
-        }
-        let sessions = collector.spans("telchar", "microvm.gateway.session");
-        let session = sessions
-            .iter()
-            .find(|span| span.trace_id == trace_id)
-            .unwrap();
-        collector::Collector::assert_child(parent, session);
-        let builds = collector.spans("telchar", "microvm.gateway.build_and_collect");
-        let build = builds
-            .iter()
-            .find(|span| span.trace_id == trace_id)
-            .unwrap();
-        collector::Collector::assert_child(session, build);
-        let collections = collector.spans("telchar", "microvm.gateway.collect_outputs");
-        let collection = collections
-            .iter()
-            .find(|span| span.trace_id == trace_id)
-            .unwrap();
-        collector::Collector::assert_child(build, collection);
-        if expected == &expected_parents[0] {
-            let exports = collector.spans("telchar", "microvm.gateway.export_inputs");
-            let export = exports
-                .iter()
-                .find(|span| span.trace_id == trace_id)
-                .unwrap();
-            collector::Collector::assert_child(session, export);
-        }
-        let summaries = session
-            .events
-            .iter()
-            .filter(|event| {
-                collector::Collector::has_attribute(
-                    &event.attributes,
-                    "event",
-                    "microvm.authority.summary",
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            summaries.len(),
-            10,
-            "bounded stage/source summaries per assignment"
-        );
-        for stage in [
-            "load",
-            "ownership",
-            "request_connection",
-            "request_query",
-            "request_decode_validate",
-        ] {
-            let summary = summaries
-                .iter()
-                .find(|event| {
-                    collector::Collector::has_attribute(&event.attributes, "stage", stage)
-                        && collector::Collector::has_attribute(
-                            &event.attributes,
-                            "source",
-                            "transfer",
-                        )
-                })
-                .unwrap();
-            let number = |name: &str| {
-                summary
-                    .attributes
-                    .iter()
-                    .find(|attribute| attribute.key == name)
-                    .unwrap()
-                    .value
-                    .as_ref()
-                    .unwrap()
-                    .value
-                    .as_ref()
-                    .unwrap()
-            };
-            use opentelemetry_proto::tonic::common::v1::any_value::Value;
-            assert!(matches!(number("count"), Value::IntValue(value) if *value > 0));
-            assert!(
-                matches!(number("total_ms"), Value::DoubleValue(value) if value.is_finite() && *value > 0.0)
-            );
-            assert!(
-                matches!(number("maximum_ms"), Value::DoubleValue(value) if value.is_finite() && *value > 0.0)
-            );
-        }
-    }
-    if jobs > 1 {
-        assert_ne!(workers[0].trace_id, workers[jobs - 1].trace_id);
-    }
-    collector.assert_no_private_markers(
-        &private_bearers
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once("shared-input\n"))
-            .collect::<Vec<_>>(),
-    );
-    collector.assert_metric_attributes_are_bounded();
-    if let Some(path) = std::env::var_os("TELCHAR_TRACE_ARTIFACT") {
-        collector.write_trace_artifact(path);
-    }
+    let report_path = std::env::var_os("TELCHAR_TEST_TRACE_REPORT").unwrap();
+    std::fs::write(
+        report_path,
+        serde_json::to_vec(&(expected_parents, private_bearers)).unwrap(),
+    )
+    .unwrap();
 }
 
 #[derive(Default)]

@@ -661,10 +661,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
                 fs::set_permissions(&transport, fs::Permissions::from_mode(0o700)).unwrap();
                 let path = root.join("telchar.toml");
                 fs::write(&path, format!("[[backends.ssh]]\nssh_user = \"builder\"\nidentity_file = \"{}\"\nknown_hosts_file = \"{}\"\nssh_program = \"{}\"\n[backends.ssh.pool]\nsource = \"static\"\n[backends.ssh.pool.fixture]\naddress = \"fixture\"\n", identity.display(), hosts.display(), transport.display())).unwrap();
-                unsafe {
-                    std::env::set_var("TELCHAR_CONFIG", path);
-                }
-                let config = ServiceConfig::load().unwrap();
+                let config = ServiceConfig::load_with_environment(&path, |_| None).unwrap();
                 let request = admit(&build, BackendKind::StaticSsh);
                 let mut logs = Vec::new();
                 let result = StaticSshBackend::new(
@@ -716,7 +713,8 @@ print('# decline-permanently', file=sys.stderr, flush=True)
         let mut executor: Box<dyn BuildBackend> = if backend == "local" {
             Box::new(GatewayStoreExecutor::new(endpoint.clone()))
         } else {
-            let config = ServiceConfig::load().unwrap();
+            let config =
+                ServiceConfig::load_with_environment(&root.join("telchar.toml"), |_| None).unwrap();
             Box::new(StaticSshBackend::new(
                 config.static_ssh_backends()[0].clone(),
                 endpoint.clone(),

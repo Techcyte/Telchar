@@ -5,24 +5,13 @@ use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use telchar::backend::BackendKind;
 use telchar::service::config::ServiceConfig;
 
-static ENVIRONMENT: Mutex<()> = Mutex::new(());
-const VARIABLES: &[&str] = &[
-    "TELCHAR_CONFIG",
-    "TELCHAR_DATABASE_URL",
-    "TELCHAR_RUNNING_DISCONNECT_POLICY",
-    "TELCHAR_OUTPUT_RETENTION_SECONDS",
-    "TELCHAR_MAX_RETAINED_INPUT_BYTES",
-    "TELCHAR_IPC_SOCKET",
-    "TELCHAR_IPC_MAX_SESSIONS",
-    "TELCHAR_IDENTITY_MAPPINGS_FILE",
-];
+use telchar_test_support::environment::Environment;
 
 #[path = "service_config/core.rs"]
 mod core;
@@ -57,24 +46,8 @@ fn fixture_suffix(clock_nanoseconds: u128) -> u128 {
     clock_nanoseconds.wrapping_add(u128::from(SEQUENCE.fetch_add(1, Ordering::Relaxed)))
 }
 
-fn clear_environment() -> Vec<(&'static str, Option<OsString>)> {
-    VARIABLES
-        .iter()
-        .map(|name| {
-            let saved = std::env::var_os(name);
-            unsafe { std::env::remove_var(name) };
-            (*name, saved)
-        })
-        .collect()
-}
-
-fn restore_environment(saved: Vec<(&'static str, Option<OsString>)>) {
-    for (name, value) in saved {
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-    }
+fn load(environment: &Environment) -> std::io::Result<ServiceConfig> {
+    ServiceConfig::load_with_environment(Path::new("/definitely/absent/telchar.toml"), |name| {
+        environment.get(name)
+    })
 }
