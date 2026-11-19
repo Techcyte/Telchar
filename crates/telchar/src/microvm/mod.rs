@@ -786,7 +786,14 @@ impl Provider {
             .idle_policy(idle)
             .send()
             .await
-            .map_err(|_| ProviderError)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    event = "microvm.launch.run_failed",
+                    error = %aws_sdk_lambdamicrovms::error::DisplayErrorContext(&error),
+                    "RunMicrovm failed"
+                );
+                ProviderError
+            })?;
         let id = result.microvm_id();
         if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
             return Err(ProviderError);

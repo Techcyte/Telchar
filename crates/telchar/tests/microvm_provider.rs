@@ -31,7 +31,7 @@ fn exports_launch_outcomes_without_execution_identifiers() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_only_refused_launch_logged(&output);
     let names = collector.metric_names();
     assert!(names.contains("telchar.microvm.launches"), "{names:?}");
     assert!(
@@ -65,7 +65,7 @@ fn exports_rendezvous_timeout_without_claiming_execution_success() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_only_refused_launch_logged(&output);
     collector.assert_counter("telchar.microvm.rendezvous", "error", 1);
     assert!(
         collector
@@ -951,6 +951,73 @@ fn concurrent_launches_succeed_over_kept_alive_provider_connections() {
         served.load(std::sync::atomic::Ordering::SeqCst),
         LAUNCHES * ROUNDS
     );
+}
+
+/// A refused launch reaches operators with the provider's own explanation
+/// rather than only the gateway's opaque provider error.
+#[test]
+fn refused_launch_logs_provider_error_at_warn() {
+    let fixture = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let (endpoint, _) = keep_alive_provider(|_| {
+        (
+            "400 Bad Request",
+            "x-amzn-errortype: ValidationException\r\n",
+            serde_json::json!({ "message": "fixture refusal" }).to_string(),
+        )
+    });
+    let provider = loopback_provider(endpoint);
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("owner acquires");
+    let (intent, payload) = reserve_loopback_launch(&fixture, 0, 1);
+    let output = LogOutput::default();
+    let writer = output.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let result = tracing::subscriber::with_default(subscriber, || {
+        provider.launch_reserved(&owner, &intent, &payload)
+    });
+    assert!(result.is_err());
+    let bytes = output.0.lock().unwrap();
+    let logs = String::from_utf8_lossy(&bytes);
+    let line = logs
+        .lines()
+        .find(|line| line.contains("microvm.launch.run_failed"))
+        .unwrap_or_else(|| panic!("launch failure is logged: {logs}"));
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("ValidationException"), "{line}");
+    assert!(line.contains("fixture refusal"), "{line}");
+}
+
+/// Each fixture run refuses exactly one launch; that warning is the only
+/// stderr output the child may write.
+fn assert_only_refused_launch_logged(output: &std::process::Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines = stderr.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1, "{output:?}");
+    assert!(
+        lines[0].contains(" WARN ") && lines[0].contains("microvm.launch.run_failed"),
+        "{output:?}"
+    );
+}
+
+#[derive(Clone, Default)]
+struct LogOutput(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Write for LogOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Serves RunMicrovm on a loopback endpoint that keeps every connection open
