@@ -4,9 +4,6 @@ use super::*;
 
 #[test]
 fn cancellation_stops_only_the_exact_submitted_nomad_job() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -60,9 +57,6 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
 
 #[test]
 fn timeout_stops_only_the_exact_submitted_nomad_job() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -149,9 +143,6 @@ fn configured_backend_keeps_callback_infrastructure_failure_distinct() {
 }
 
 fn callback_recorded_failure(ordinary: bool) {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -275,9 +266,6 @@ fn callback_recorded_failure(ordinary: bool) {
 
 #[test]
 fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -363,9 +351,6 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
 
 #[test]
 fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -514,9 +499,6 @@ fn configured_backend_retries_missing_nomad_execution_with_distinct_identity() {
 
 #[test]
 fn configured_backend_submits_and_monitors_nomad_execution() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -650,9 +632,6 @@ fn configured_backend_submits_and_monitors_nomad_execution() {
 fn configured_backend_adopts_exact_nomad_execution() {
     use telchar::shared_build::recovery::{AdoptedExecution, RecoveryBackend};
 
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(

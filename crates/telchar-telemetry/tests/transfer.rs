@@ -18,10 +18,37 @@ impl Write for Rejected {
 
 #[test]
 fn exports_one_summary_per_stream_with_exact_bytes_and_failures() {
-    let collector = collector::start_collector();
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    let name = "exports_one_summary_per_stream_with_exact_bytes_and_failures";
+    if !telchar_test_support::process::is_child(name) {
+        let collector = collector::start_collector();
+        telchar_test_support::process::assert_success(
+            telchar_test_support::process::command(name)
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+        );
+        collector.assert_sum_attributes(
+            "telchar.transfer.io.bytes",
+            &[("side", "source"), ("outcome", "success")],
+            7,
+        );
+        collector.assert_sum_attributes(
+            "telchar.transfer.io.bytes",
+            &[("side", "destination"), ("outcome", "success")],
+            7,
+        );
+        collector.assert_sum_attributes(
+            "telchar.transfer.io.bytes",
+            &[("side", "destination"), ("outcome", "failure")],
+            0,
+        );
+        collector.assert_histogram_attributes(
+            "telchar.transfer.io.duration",
+            &[("side", "destination"), ("outcome", "failure")],
+            0.0,
+        );
+        collector.assert_no_private_markers(&["payload", "secret"]);
+        collector.assert_metric_attributes_are_bounded();
+        return;
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("transfer-test", "test").unwrap();
     let mut output = Vec::new();
@@ -42,26 +69,4 @@ fn exports_one_summary_per_stream_with_exact_bytes_and_failures() {
         );
     }
     telemetry.shutdown();
-    collector.assert_sum_attributes(
-        "telchar.transfer.io.bytes",
-        &[("side", "source"), ("outcome", "success")],
-        7,
-    );
-    collector.assert_sum_attributes(
-        "telchar.transfer.io.bytes",
-        &[("side", "destination"), ("outcome", "success")],
-        7,
-    );
-    collector.assert_sum_attributes(
-        "telchar.transfer.io.bytes",
-        &[("side", "destination"), ("outcome", "failure")],
-        0,
-    );
-    collector.assert_histogram_attributes(
-        "telchar.transfer.io.duration",
-        &[("side", "destination"), ("outcome", "failure")],
-        0.0,
-    );
-    collector.assert_no_private_markers(&["payload", "secret"]);
-    collector.assert_metric_attributes_are_bounded();
 }

@@ -46,11 +46,19 @@ pub(super) fn backend() -> GatewayStorePromotionBackend {
 }
 
 fn text_paths() -> Vec<PathBuf> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let drv = nix(
         "nix-instantiate",
         &[
             "--expr",
-            "derivation { name = \"telchar-text-ca\"; system = builtins.currentSystem; builder = \"/bin/sh\"; }",
+            &format!(
+                "derivation {{ name = \"telchar-text-ca-{suffix}\"; system = builtins.currentSystem; builder = \"/bin/sh\"; }}"
+            ),
         ],
     );
     let text = nix(
@@ -60,7 +68,9 @@ fn text_paths() -> Vec<PathBuf> {
             "--json",
             "--read-write-mode",
             "--expr",
-            "let ref = builtins.toFile \"telchar-text-reference\" \"reference contents\"; in builtins.toFile \"telchar-text-with-reference\" \"text referencing ${ref}\\n\"",
+            &format!(
+                "let ref = builtins.toFile \"telchar-text-reference-{suffix}\" \"reference contents\"; in builtins.toFile \"telchar-text-with-reference-{suffix}\" \"text referencing ${{ref}}\\n\""
+            ),
         ],
     );
     let text = serde_json::from_slice::<String>(&text)

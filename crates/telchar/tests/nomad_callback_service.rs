@@ -96,15 +96,8 @@ maximum_diagnostic_bytes = 1024
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
+    let config =
+        ServiceConfig::load_with_environment(&config_path, |_| None).expect("configuration loads");
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let address = listener.local_addr().expect("address reads");

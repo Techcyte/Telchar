@@ -29,6 +29,8 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
         "TELCHAR_GATEWAY_STORE_URI",
         "unix:///nix/var/nix/daemon-socket/socket",
     );
+    let stderr_file = fs::File::create(root.join("daemon.stderr")).unwrap();
+    command.stderr(stderr_file);
     let mut daemon = command.spawn().unwrap();
     wait_for_socket(&socket, &mut daemon);
     let path = format!(
@@ -119,8 +121,8 @@ fn uploads_report_acceptance_rejection_and_existing_paths() {
     }
     thread::sleep(Duration::from_millis(1200));
     daemon.kill().unwrap();
-    let output = daemon.wait_with_output().unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    daemon.wait().unwrap();
+    let stderr = fs::read_to_string(root.join("daemon.stderr")).unwrap();
     let events = super::audit::audit_events(&stderr);
     let uploads = events
         .iter()

@@ -6,20 +6,18 @@ use super::*;
 
 #[test]
 fn upload_audit_is_optional_and_strict() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("upload-audit");
     let config = root.join("telchar.toml");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config) };
+    environment.set("TELCHAR_CONFIG", &config);
     fs::write(&config, "").unwrap();
-    let default = ServiceConfig::load();
+    let default = load(&environment);
     fs::write(&config, "[audit]\nenabled = true\n").unwrap();
-    let enabled = ServiceConfig::load();
+    let enabled = load(&environment);
     fs::write(&config, "[audit]\nenabled = false\n").unwrap();
-    let disabled = ServiceConfig::load();
+    let disabled = load(&environment);
     fs::write(&config, "[audit]\nenabled = true\nunknown = true\n").unwrap();
-    let invalid = ServiceConfig::load();
-    restore_environment(saved);
+    let invalid = load(&environment);
     fs::remove_dir_all(root).unwrap();
     assert!(default.is_ok(), "default config: {default:?}");
     assert!(enabled.is_ok(), "audit config: {enabled:?}");
@@ -32,8 +30,7 @@ fn upload_audit_is_optional_and_strict() {
 
 #[test]
 fn rejects_database_url_file_with_unsafe_permissions() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("unsafe-database-url");
     let database_url_file = root.join("database-url");
     fs::write(&database_url_file, "postgresql://telchar@localhost/telchar")
@@ -49,19 +46,17 @@ fn rejects_database_url_file_with_unsafe_permissions() {
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let error = ServiceConfig::load().expect_err("unsafe database URL file rejects");
+    let error = load(&environment).expect_err("unsafe database URL file rejects");
 
     assert_eq!(error.to_string(), "database URL file is invalid");
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn database_credentials_follow_symlinks_and_validate_rotated_targets() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("linked-database-url");
     let target = root.join("credential");
     let link = root.join("database-url");
@@ -70,15 +65,14 @@ fn database_credentials_follow_symlinks_and_validate_rotated_targets() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let config = root.join("telchar.toml");
     fs::write(&config, format!("[database]\nurl_file = {:?}\n", link)).unwrap();
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config) };
-    let result = ServiceConfig::load();
+    environment.set("TELCHAR_CONFIG", &config);
+    let result = load(&environment);
     fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
-    let unsafe_target = ServiceConfig::load();
+    let unsafe_target = load(&environment);
     fs::remove_file(&target).unwrap();
-    let dangling = ServiceConfig::load();
+    let dangling = load(&environment);
     fs::create_dir(&target).unwrap();
-    let directory = ServiceConfig::load();
-    restore_environment(saved);
+    let directory = load(&environment);
     assert!(result.is_ok(), "protected symlink credential: {result:?}");
     assert!(unsafe_target.is_err(), "unsafe target permissions accepted");
     assert!(dangling.is_err(), "dangling credential accepted");
@@ -88,8 +82,7 @@ fn database_credentials_follow_symlinks_and_validate_rotated_targets() {
 
 #[test]
 fn loads_strict_toml_and_identity_mappings() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("toml");
     let database_url_file = root.join("database-url");
     fs::write(
@@ -147,9 +140,9 @@ selection_priority = 7
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
 
     assert_eq!(config.backend_targets().count(), 1);
     assert_eq!(
@@ -194,14 +187,12 @@ selection_priority = 7
     assert_eq!(second_mapping.audit_subject.as_deref(), Some("automation"));
     assert_eq!(second_mapping.quota_subject.as_deref(), Some("engineering"));
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn backend_names_are_unique_across_backend_kinds() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("duplicate-backend-name");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -266,27 +257,25 @@ command = "/opt/telchar/bin/nomad-worker"
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("duplicate backend name rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn explicit_config_is_required_and_unknown_fields_fail_closed() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", root.join("missing.toml")) };
+    environment.set("TELCHAR_CONFIG", root.join("missing.toml"));
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("explicit missing configuration rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
@@ -294,25 +283,22 @@ fn explicit_config_is_required_and_unknown_fields_fail_closed() {
 
     let config_path = root.join("unknown.toml");
     fs::write(&config_path, "unknown = true\n").expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("unknown field rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn absent_default_file_uses_policy_defaults_without_routing_targets() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let environment = Environment::default();
 
-    let config = ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))
-        .expect("absent default uses policy defaults");
+    let config = load(&environment).expect("absent default uses policy defaults");
     assert_eq!(config.backend_targets().count(), 0);
     assert_eq!(config.output_retention().seconds(), 3600);
     assert_eq!(config.maximum_ipc_sessions(), 256);
@@ -321,14 +307,11 @@ fn absent_default_file_uses_policy_defaults_without_routing_targets() {
         config.scheduling_limits("unknown-subject"),
         telchar::service::config::SchedulingLimits::new(65_536, 65_536).expect("limits are valid")
     );
-
-    restore_environment(saved);
 }
 
 #[test]
 fn invalid_scheduling_limits_fail_closed() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-scheduling");
     let config_path = root.join("telchar.toml");
 
@@ -339,23 +322,21 @@ fn invalid_scheduling_limits_fail_closed() {
         "[scheduling.subjects.alice]\nmaximum_queued_builds = 1\nmaximum_active_builds = 65537\n",
     ] {
         fs::write(&config_path, scheduling).expect("configuration writes");
-        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        environment.set("TELCHAR_CONFIG", &config_path);
         assert_eq!(
-            ServiceConfig::load()
+            load(&environment)
                 .expect_err("invalid scheduling limit rejects")
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
     }
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn invalid_database_ownership_durations_fail_closed() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-ownership-duration");
     let config_path = root.join("telchar.toml");
 
@@ -364,23 +345,21 @@ fn invalid_database_ownership_durations_fail_closed() {
         "ownership_renewal_seconds = 5\nownership_lease_seconds = 14",
     ] {
         fs::write(&config_path, format!("[database]\n{database}\n")).expect("configuration writes");
-        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+        environment.set("TELCHAR_CONFIG", &config_path);
         assert_eq!(
-            ServiceConfig::load()
+            load(&environment)
                 .expect_err("invalid ownership duration rejects")
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
     }
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn invalid_environment_and_mapping_values_fail_closed() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-values");
     let mapping_path = root.join("identity.toml");
     fs::write(
@@ -388,39 +367,34 @@ fn invalid_environment_and_mapping_values_fail_closed() {
         "[credentials.\"unsupported\"]\naudit_subject = \"owner\"\n",
     )
     .expect("mapping file writes");
-    unsafe { std::env::set_var("TELCHAR_IDENTITY_MAPPINGS_FILE", &mapping_path) };
+    environment.set("TELCHAR_IDENTITY_MAPPINGS_FILE", &mapping_path);
     assert_eq!(
-        ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))
+        load(&environment)
             .expect_err("unsupported credential rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    unsafe {
-        std::env::remove_var("TELCHAR_IDENTITY_MAPPINGS_FILE");
-        std::env::set_var("TELCHAR_IPC_MAX_SESSIONS", "0");
-    }
+    environment.remove("TELCHAR_IDENTITY_MAPPINGS_FILE");
+    environment.set("TELCHAR_IPC_MAX_SESSIONS", "0");
     assert_eq!(
-        ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))
+        load(&environment)
             .expect_err("zero session limit rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    unsafe {
-        std::env::remove_var("TELCHAR_IPC_MAX_SESSIONS");
-        std::env::set_var(
-            "TELCHAR_RUNNING_DISCONNECT_POLICY",
-            OsString::from_vec(vec![b'x', 0x80]),
-        );
-    }
+    environment.remove("TELCHAR_IPC_MAX_SESSIONS");
+    environment.set(
+        "TELCHAR_RUNNING_DISCONNECT_POLICY",
+        OsString::from_vec(vec![b'x', 0x80]),
+    );
     assert_eq!(
-        ServiceConfig::load_from_default(Path::new("/definitely/absent/telchar.toml"))
+        load(&environment)
             .expect_err("non-Unicode override rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
