@@ -245,6 +245,7 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
 
 #[test]
 fn missing_expected_output_fails_before_result_and_releases_request_state() {
+    let collector = collector::start_collector();
     let root = std::env::temp_dir().join(format!(
         "telchar-operation-missing-output-{}-{}",
         std::process::id(),
@@ -265,7 +266,11 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
     let mut fixture = FrontendFixture::spawn_with_store(
         None,
         "unix:///fixed-gateway.sock",
-        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+        [
+            ("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string()),
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint()),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc".to_owned()),
+        ],
     );
     let child = &mut fixture.frontend;
     let mut input = child.stdin.take().expect("server input");
@@ -321,6 +326,24 @@ fn missing_expected_output_fails_before_result_and_releases_request_state() {
             .get::<_, i64>(0),
         0,
         "missing output left active request leases"
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while fixture
+        .daemon
+        .try_wait()
+        .expect("daemon status reads")
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "daemon telemetry shutdown timed out"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    collector.assert_histogram_attributes(
+        "telchar.build.phase.duration",
+        &[("phase", "execute"), ("outcome", "failure")],
+        0.0,
     );
     let stderr = fixture.finish();
     assert!(

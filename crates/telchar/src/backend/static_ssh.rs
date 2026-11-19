@@ -502,7 +502,9 @@ fn copy_gateway_path_to_remote(
         let mut nar = create_staging_file()?;
         gateway.nar_from_path(path.store_path.as_bytes(), path.nar_size, &mut nar)?;
         nar.rewind()?;
-        remote.add_to_store_nar(&metadata, &mut nar, false, true)
+        let mut source =
+            telchar_telemetry::TransferIo::new(&mut nar, telchar_telemetry::TransferSide::Source);
+        remote.add_to_store_nar(&metadata, &mut source, false, true)
     })();
     match &result {
         Ok(()) => crate::service::metrics::transfer_finished(
@@ -565,7 +567,13 @@ fn copy_remote_path_to_gateway(
     crate::service::metrics::transfer_started("inbound", "build_output", "static_ssh");
     let result = (|| {
         let mut nar = create_staging_file()?;
-        remote.nar_from_path(path, metadata.nar_size(), &mut nar)?;
+        {
+            let mut sink = telchar_telemetry::TransferIo::new(
+                &mut nar,
+                telchar_telemetry::TransferSide::Destination,
+            );
+            remote.nar_from_path(path, metadata.nar_size(), &mut sink)?;
+        }
         nar.rewind()?;
         let mut destination = GatewayStoreConnection::connect(gateway)?;
         destination
