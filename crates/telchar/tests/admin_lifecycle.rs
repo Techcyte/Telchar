@@ -29,11 +29,11 @@ microvm_bind = "{address}"
 [[backends.microvm]]
 name = "arm"
 system = "aarch64-linux"
-account_id = "116392764028"
+account_id = "123456789012"
 region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
+image_arn = "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture"
 image_version = "1"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
@@ -57,7 +57,7 @@ chunk_bytes = 1024
             if !identity {
                 image::serve_image(
                     &listener,
-                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                    "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                 );
             }
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -101,7 +101,7 @@ chunk_bytes = 1024
                         .unwrap()
                         .contains("Action=GetCallerIdentity")
                 );
-                ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
+                ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
             } else {
                 assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
                 if let Some(started) = &lookup_started {
@@ -109,7 +109,7 @@ chunk_bytes = 1024
                     std::thread::sleep(Duration::from_secs(3));
                     continue;
                 }
-                (serde_json::json!({"microvmId":"microvm-exact", "state":if terminal { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+                (serde_json::json!({"microvmId":"microvm-exact", "state":if terminal { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture", "imageVersion":"1", "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
@@ -360,12 +360,12 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
                 intent_id: "admin-intent".into(),
                 attempt_id: attempt.attempt_id,
                 backend_name: "local".into(),
-                account_id: "116392764028".into(),
+                account_id: "123456789012".into(),
                 region: "us-west-2".into(),
-                image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
+                image_arn: "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture".into(),
                 image_version: "1".into(),
                 vpc_egress_connector_arn:
-                    "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                    "arn:aws:lambda:us-west-2:123456789012:network-connector:builder".into(),
                 configuration_digest: [1; 32],
                 request_digest: [2; 32],
                 client_token: "admin-intent".into(),

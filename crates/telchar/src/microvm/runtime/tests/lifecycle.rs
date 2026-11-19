@@ -122,7 +122,7 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
         intent_id: "runtime-intent".into(),
         attempt_id: attempt,
         backend_name: "arm".into(),
-        account_id: "116392764028".into(),
+        account_id: "123456789012".into(),
         region: "us-west-2".into(),
         image_arn: "image-fixture".into(),
         image_version: "1".into(),
@@ -320,7 +320,7 @@ with tempfile.TemporaryDirectory() as directory:
             let incoming = request(&mut stream);
             assert!(incoming.to_ascii_lowercase().contains("authorization:"));
             let body = if index == 0 {
-                "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned()
+                "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned()
             } else if index % 2 == 1 {
                 serde_json::json!({"microvmId":"microvm-exact","state":"RUNNING","endpoint":runtime_endpoint,"imageArn":"image-fixture","imageVersion":"1","maximumDurationInSeconds":600,"startedAt":1}).to_string()
             } else {
@@ -356,7 +356,7 @@ with tempfile.TemporaryDirectory() as directory:
             provider_config,
             identity,
             aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
-            "116392764028",
+            "123456789012",
             Duration::from_secs(3),
         ))
         .unwrap();
@@ -364,7 +364,7 @@ with tempfile.TemporaryDirectory() as directory:
     let mut maintenance = crate::service::daemon_services::MicrovmCleanupService::start(
         owner.clone(),
         provider.clone(),
-        "116392764028".into(),
+        "123456789012".into(),
         "us-west-2".into(),
         Duration::from_millis(25),
         10,

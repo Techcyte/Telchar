@@ -147,7 +147,7 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
                         .unwrap()
                         .contains("Action=GetCallerIdentity")
                 );
-                ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
+                ("<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned(), "text/xml")
             } else {
                 assert!(headers.starts_with("get /2025-09-09/microvms/microvm-exact "));
                 if case == "terminal-cleanup" {
@@ -173,7 +173,7 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
                         replacement = Some(acquired);
                     }
                 }
-                (serde_json::json!({"microvmId":"microvm-exact", "state": if matches!(case, "terminal-success" | "terminal-cleanup") || (case == "fenced" && termination_fence) { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
+                (serde_json::json!({"microvmId":"microvm-exact", "state": if matches!(case, "terminal-success" | "terminal-cleanup") || (case == "fenced" && termination_fence) { "TERMINATED" } else { "RUNNING" }, "endpoint":"https://unused.invalid", "imageArn":"arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture", "imageVersion": if case == "mismatch" { "2" } else { "1" }, "maximumDurationInSeconds":600, "startedAt":1}).to_string(), "application/json")
             };
             if matches!(case, "slow" | "budget" | "refresh") {
                 std::thread::sleep(Duration::from_secs(3));
@@ -206,7 +206,7 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
                 .endpoint_url(&endpoint)
                 .build(),
             aws_credential_types::provider::SharedCredentialsProvider::new(source.clone()),
-            "116392764028",
+            "123456789012",
             Duration::from_secs(10),
         ))
         .unwrap();
@@ -215,11 +215,11 @@ fn exercise(url: &str, replace_owner: bool, termination_fence: bool) {
         r#"
 name = "arm"
 system = "aarch64-linux"
-account_id = "116392764028"
+account_id = "123456789012"
 region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
+image_arn = "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture"
 image_version = "1"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 maximum_concurrent_builds = 8
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
@@ -292,12 +292,12 @@ chunk_bytes = 1024
             intent_id: case.into(),
             attempt_id: attempt.attempt_id,
             backend_name: "arm".into(),
-            account_id: "116392764028".into(),
+            account_id: "123456789012".into(),
             region: "us-west-2".into(),
-            image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
+            image_arn: "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture".into(),
             image_version: "1".into(),
             vpc_egress_connector_arn:
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder".into(),
             configuration_digest: [1; 32],
             request_digest: [2; 32],
             client_token: case.into(),

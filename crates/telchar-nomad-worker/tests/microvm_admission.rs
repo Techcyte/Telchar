@@ -30,11 +30,11 @@ fn wss_worker_reaches_exact_fenced_gateway_admission_once() {
         intent_id: "tls-intent".into(),
         attempt_id: attempt.attempt_id,
         backend_name: "tls".into(),
-        account_id: "116392764028".into(),
+        account_id: "123456789012".into(),
         region: "us-west-2".into(),
         image_arn: "fixture".into(),
         image_version: "1".into(),
-        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
             .into(),
         configuration_digest: [1; 32],
         request_digest: [2; 32],

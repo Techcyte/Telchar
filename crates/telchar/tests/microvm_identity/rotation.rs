@@ -52,7 +52,7 @@ impl aws_credential_types::provider::ProvideCredentials for Credentials {
 #[test]
 fn provider_reattests_rotated_credentials_before_cleanup() {
     for operation in ["get", "delete"] {
-        rotation("116392764028", "none", operation);
+        rotation("123456789012", "none", operation);
         rotation("999999999999", "none", operation);
     }
 }
@@ -61,7 +61,7 @@ fn provider_reattests_rotated_credentials_before_cleanup() {
 fn credential_failure_never_falls_back_to_attested_snapshot() {
     for fault in ["unavailable", "timeout", "expired"] {
         for operation in ["get", "delete"] {
-            rotation("116392764028", fault, operation);
+            rotation("123456789012", fault, operation);
         }
     }
 }
@@ -70,7 +70,7 @@ fn credential_failure_never_falls_back_to_attested_snapshot() {
 fn failed_reattestation_never_authorizes_provider_operation() {
     for fault in ["identity-unavailable", "identity-timeout"] {
         for operation in ["get", "delete"] {
-            rotation("116392764028", fault, operation);
+            rotation("123456789012", fault, operation);
         }
     }
 }
@@ -132,9 +132,9 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
                         .unwrap()
                         .contains("Action=GetCallerIdentity")
                 );
-                let response = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned();
+                let response = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned();
                 if headers.contains("credential=rotated-key/") {
-                    response.replace("116392764028", account)
+                    response.replace("123456789012", account)
                 } else {
                     response
                 }
@@ -189,7 +189,7 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
             config,
             identity,
             credentials,
-            "116392764028",
+            "123456789012",
             Duration::from_secs(1),
         ))
         .unwrap();
@@ -222,7 +222,7 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
         }
         return;
     }
-    if account == "116392764028" {
+    if account == "123456789012" {
         assert!(result.unwrap());
     } else {
         assert!(
@@ -233,13 +233,13 @@ fn rotation(account: &'static str, fault: &'static str, operation: &'static str)
     let requests = server.join().unwrap();
     assert_eq!(
         requests.len(),
-        if account == "116392764028" { 3 } else { 2 },
+        if account == "123456789012" { 3 } else { 2 },
         "only matching rotated authority permits provider operation"
     );
     assert!(requests[0].contains("credential=initial-key/"));
     assert!(requests[1].starts_with("post "));
     assert!(requests[1].contains("credential=rotated-key/"));
-    if account == "116392764028" {
+    if account == "123456789012" {
         assert!(requests[2].starts_with(&format!("{operation} ")));
         assert!(requests[2].contains("credential=rotated-key/"));
     }
