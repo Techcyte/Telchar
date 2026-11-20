@@ -155,6 +155,12 @@ impl GatewayStoreExecutor {
                 std::thread::sleep(Duration::from_millis(5));
             }
         })?;
+        if let WorkerBuildStatus::Failed(status) = result.status() {
+            return BuildResult::failed(crate::backend::BuildFailure {
+                status,
+                message: result.message().to_owned(),
+            });
+        }
         let mut actual_outputs = result.outputs().to_vec();
         actual_outputs.sort();
         let mut expected_outputs = build.expected_outputs().to_vec();
@@ -178,6 +184,9 @@ impl GatewayStoreExecutor {
             match result.status() {
                 WorkerBuildStatus::Built => BuildStatus::Built,
                 WorkerBuildStatus::AlreadyValid => BuildStatus::AlreadyValid,
+                WorkerBuildStatus::Failed(_) => {
+                    unreachable!("failure returned before output validation")
+                }
             },
             build.expected_outputs().to_vec(),
             OutputTrust::TrustedExecutor,

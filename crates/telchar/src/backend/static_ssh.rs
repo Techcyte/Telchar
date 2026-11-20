@@ -404,6 +404,12 @@ fn execute_remote_build(
         duration_ms = build_started.elapsed().as_millis(),
         "static SSH worker protocol operation completed"
     );
+    if let WorkerBuildStatus::Failed(status) = remote_result.status() {
+        return BuildResult::failed(crate::backend::BuildFailure {
+            status,
+            message: remote_result.message().to_owned(),
+        });
+    }
     let mut actual_outputs = remote_result.outputs().to_vec();
     actual_outputs.sort();
     let mut expected_outputs = build.expected_outputs().to_vec();
@@ -437,6 +443,9 @@ fn execute_remote_build(
         match remote_result.status() {
             WorkerBuildStatus::Built => BuildStatus::Built,
             WorkerBuildStatus::AlreadyValid => BuildStatus::AlreadyValid,
+            WorkerBuildStatus::Failed(_) => {
+                unreachable!("failure returned before output validation")
+            }
         },
         build.expected_outputs().to_vec(),
         OutputTrust::TrustedExecutor,

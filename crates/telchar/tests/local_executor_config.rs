@@ -1,36 +1,37 @@
 //! Tests local executor config contracts and failure boundaries, including deployment environment selects the gateway executor.
 
-use std::ffi::OsString;
-use std::sync::Mutex;
+use telchar_test_support::process;
 
 use telchar::backend::{BuildBackend, BuildExecution};
 
-static ENVIRONMENT: Mutex<()> = Mutex::new(());
-
 #[test]
 fn deployment_environment_selects_the_gateway_executor() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
-    unsafe {
-        std::env::remove_var("TELCHAR_TEST_BUILD_HELPER");
-        std::env::set_var(
-            "TELCHAR_GATEWAY_STORE_URI",
-            "unix:///nix/var/nix/daemon-socket/socket",
+    let name = "deployment_environment_selects_the_gateway_executor";
+    if !process::is_child(name) {
+        process::assert_success(
+            process::command(name)
+                .env_remove("TELCHAR_TEST_BUILD_HELPER")
+                .env(
+                    "TELCHAR_GATEWAY_STORE_URI",
+                    "unix:///nix/var/nix/daemon-socket/socket",
+                ),
         );
+        return;
     }
 
     let executor =
         telchar::backend::local::executor_from_environment().expect("configured executor creates");
 
     let _backend: &dyn BuildBackend = executor.as_ref();
-    restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
 #[test]
 fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
-    unsafe { std::env::remove_var("TELCHAR_GATEWAY_STORE_URI") };
+    let name = "explicit_gateway_endpoint_constructs_store_clients_without_environment";
+    if !process::is_child(name) {
+        process::assert_success(process::command(name).env_remove("TELCHAR_GATEWAY_STORE_URI"));
+        return;
+    }
     let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///nix/var/nix/daemon-socket/socket",
     )
@@ -42,8 +43,6 @@ fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
     let _outputs =
         telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(endpoint.clone());
     let _executor = telchar::backend::local::GatewayStoreExecutor::new(endpoint);
-
-    restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
 #[test]
@@ -73,20 +72,20 @@ fn configured_executor_rejects_an_inaccessible_gateway_store() {
 
 #[test]
 fn absent_gateway_selects_execution_unavailable_without_store_fallback() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved_helper = std::env::var_os("TELCHAR_TEST_BUILD_HELPER");
-    let saved_store = std::env::var_os("TELCHAR_GATEWAY_STORE_URI");
-    unsafe {
-        std::env::remove_var("TELCHAR_TEST_BUILD_HELPER");
-        std::env::remove_var("TELCHAR_GATEWAY_STORE_URI");
+    let name = "absent_gateway_selects_execution_unavailable_without_store_fallback";
+    if !process::is_child(name) {
+        process::assert_success(
+            process::command(name)
+                .env_remove("TELCHAR_TEST_BUILD_HELPER")
+                .env_remove("TELCHAR_GATEWAY_STORE_URI"),
+        );
+        return;
     }
 
     let executor =
         telchar::backend::local::executor_from_environment().expect("unavailable executor creates");
 
     let _backend: &dyn BuildBackend = executor.as_ref();
-    restore("TELCHAR_TEST_BUILD_HELPER", saved_helper);
-    restore("TELCHAR_GATEWAY_STORE_URI", saved_store);
 }
 
 fn admitted_request() -> telchar::build::BuildRequest {
@@ -156,13 +155,4 @@ fn write_string(output: &mut Vec<u8>, value: &[u8]) {
     write_integer(output, value.len() as u64);
     output.extend_from_slice(value);
     output.extend_from_slice(&[0; 7][..(8 - value.len() % 8) % 8]);
-}
-
-fn restore(name: &str, value: Option<OsString>) {
-    unsafe {
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
-    }
 }

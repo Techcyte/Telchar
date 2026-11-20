@@ -4,8 +4,7 @@ use super::*;
 
 #[test]
 fn rejects_nomad_callback_without_nomad_backend() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad-callback");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -24,23 +23,21 @@ maximum_retained_nonces = 4096
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("orphaned Nomad callback rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn nomad_transfer_limits_default_and_allow_partial_backend_overrides() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad-transfer-limit-defaults");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -98,9 +95,9 @@ output_collection_timeout_seconds = 900
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let primary = config
         .nomad_backends()
         .iter()
@@ -121,14 +118,12 @@ output_collection_timeout_seconds = 900
     assert_eq!(secondary.stream_buffer_bytes(), 131_072);
     assert_eq!(secondary.output_collection_timeout().as_secs(), 900);
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn nomad_backend_uses_callback_public_url_when_endpoint_is_omitted() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad-callback-default");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -190,22 +185,20 @@ maximum_diagnostic_bytes = 65536
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     assert_eq!(
         config.nomad_backends()[0].transfer_endpoint(),
         "ws://gateway.internal:17443/build-callback"
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn rejects_invalid_nomad_callback_service_configuration() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-nomad-callback");
     let config_path = root.join("telchar.toml");
 
@@ -225,18 +218,16 @@ fn rejects_invalid_nomad_callback_service_configuration() {
             format!("[backends.nomad_callback]\n{callback}\n"),
         )
         .expect("configuration writes");
-        unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-        assert!(ServiceConfig::load().is_err(), "accepted {callback}");
+        environment.set("TELCHAR_CONFIG", &config_path);
+        assert!(load(&environment).is_err(), "accepted {callback}");
     }
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn rejects_nomad_retry_count_above_limit() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad-retry-limit");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -296,23 +287,21 @@ maximum_diagnostic_bytes = 65536
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("excessive retry count rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn loads_fungible_nomad_backends_with_operator_controlled_drivers() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad");
     let token_file = root.join("nomad-token");
     let ca_certificate_file = root.join("nomad-ca.pem");
@@ -453,9 +442,9 @@ args = ["--stdio"]
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let backends = config.nomad_backends();
     assert_eq!(backends.len(), 2);
     assert_eq!(backends[0].target().name(), "nomad-docker");
@@ -522,14 +511,12 @@ args = ["--stdio"]
         ]
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn rejects_ordered_nomad_backend_leaf_syntax() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("ordered-nomad-backend");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -548,23 +535,21 @@ runtime_limit_seconds = 60
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("ordered Nomad backend syntax rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn loads_nomad_transfer_configuration() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("nomad-transfer");
     let workload_ca_file = root.join("workload-ca.pem");
     fs::write(&workload_ca_file, "certificate\n").expect("workload CA writes");
@@ -650,9 +635,9 @@ args = ["/alloc/data/nix"]
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let backend = &config.nomad_backends()[0];
     assert_eq!(backend.transfer_endpoint(), "ws://127.0.0.1:17443/callback");
     let connect = backend.callback_connect().expect("Connect configures");
@@ -679,8 +664,7 @@ args = ["/alloc/data/nix"]
             configured.replace("unix:///nix/var/nix/daemon-socket/socket", uri),
         )
         .unwrap();
-        let error =
-            ServiceConfig::load().expect_err("invalid worker endpoint rejected before launch");
+        let error = load(&environment).expect_err("invalid worker endpoint rejected before launch");
         assert_eq!(
             error.to_string(),
             "Nomad store URI must be unix:///absolute/socket without query or fragment"
@@ -720,7 +704,7 @@ args = ["/alloc/data/nix"]
         )
         .unwrap();
         assert_eq!(
-            ServiceConfig::load().unwrap_err().to_string(),
+            load(&environment).unwrap_err().to_string(),
             "Nomad constraint attribute must be a literal or a supported ${...} reference"
         );
     }
@@ -745,11 +729,11 @@ args = ["/alloc/data/nix"]
             configured.replace("job_name_scope = \"prod\"", &constraints),
         )
         .unwrap();
-        ServiceConfig::load().expect("supported Nomad target accepted");
+        load(&environment).expect("supported Nomad target accepted");
     }
     fs::write(&config_path, configured.replace("[[backends.nomad]]", "")).unwrap();
     assert!(
-        ServiceConfig::load().is_err(),
+        load(&environment).is_err(),
         "backend groups must be an array"
     );
     fs::write(
@@ -757,7 +741,7 @@ args = ["/alloc/data/nix"]
         configured.replace("local_bind_port = 17443", "local_bind_port = 0"),
     )
     .expect("invalid Connect configuration writes");
-    assert!(ServiceConfig::load().is_err());
+    assert!(load(&environment).is_err());
     fs::write(&config_path, &configured).expect("configuration restores");
 
     let authentication = backend.transfer_authentication();
@@ -798,19 +782,17 @@ args = ["/alloc/data/nix"]
         ),
     )
     .expect("issuer configuration writes");
-    let config = ServiceConfig::load().expect("issuer configuration loads");
+    let config = load(&environment).expect("issuer configuration loads");
     let authentication = config.nomad_backends()[0].transfer_authentication();
     assert_eq!(authentication.issuer(), Some("https://nomad.example:4646"));
     assert!(authentication.verify_issuer());
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn nomad_transfer_rejects_unprotected_hmac_secret_and_unknown_limits() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-nomad-transfer");
     let secret_file = root.join("transfer-key");
     fs::write(&secret_file, "secret\n").expect("secret writes");
@@ -880,9 +862,9 @@ maximum_diagnostic_bytes = 65536
         .expect("configuration writes");
     };
     write_config("");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("unsafe HMAC secret rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
@@ -892,20 +874,18 @@ maximum_diagnostic_bytes = 65536
         .expect("secret permissions corrected");
     write_config("unknown_limit = 1");
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("unknown transfer limit rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn nomad_backend_rejects_memory_maximum_below_reserved_memory() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-nomad-memory-maximum");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -965,23 +945,21 @@ maximum_diagnostic_bytes = 65536
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("memory maximum below reservation rejects")
             .to_string(),
         "Nomad resources are invalid"
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn nomad_backend_rejects_unsafe_credentials_and_unbounded_driver_config() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-nomad");
     let token_file = root.join("nomad-token");
     fs::write(&token_file, "secret-token\n").expect("token writes");
@@ -1049,11 +1027,9 @@ image = "builder"
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
     assert_eq!(
-        ServiceConfig::load()
-            .expect_err("unsafe token rejects")
-            .kind(),
+        load(&environment).expect_err("unsafe token rejects").kind(),
         std::io::ErrorKind::InvalidInput
     );
 
@@ -1121,12 +1097,11 @@ image = "{}"
     )
     .expect("configuration rewrites");
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("oversized driver configuration rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }

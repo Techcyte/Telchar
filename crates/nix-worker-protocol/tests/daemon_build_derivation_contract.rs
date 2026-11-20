@@ -125,13 +125,12 @@ fn failed_build_consumes_result_before_next_operation() {
         hash: b"",
     }];
     let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
-    let error = client
+    let result = client
         .build_derivation(&request(&outputs), &mut |_| Ok(()))
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Nix daemon BuildDerivation failed with status 5 category hash-mismatch"
-    );
+        .expect("ordinary Nix failure is a complete build result");
+    assert!(result.outputs().is_empty());
+    assert_eq!(result.status(), WorkerBuildStatus::Failed(5));
+    assert_eq!(result.message(), "hash mismatch");
     assert!(client.is_valid_path(OUTPUT).unwrap());
 }
 
@@ -540,25 +539,13 @@ fn daemon_rejection_preserves_bounded_build_diagnostic() {
 }
 
 #[test]
-fn terminal_build_failure_exposes_only_allowlisted_reason() {
-    for (message, expected) in [
-        (
-            "builder for '/nix/store/secret-build.drv' failed with exit code 1",
-            "Nix daemon BuildDerivation failed with status 3 category builder-exited",
-        ),
-        (
-            "cannot build derivation because required input is missing",
-            "Nix daemon BuildDerivation failed with status 3 category missing-input",
-        ),
-        (
-            "sensitive arbitrary daemon details",
-            "Nix daemon BuildDerivation failed with status 3 category unknown",
-        ),
-    ] {
+fn terminal_build_failure_preserves_bounded_message_and_status() {
+    for status in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14] {
+        let message = "builder failed with exit code 3";
         let mut input = Vec::new();
         handshake(&mut input, 1);
         integer(&mut input, STDERR_LAST);
-        integer(&mut input, 3); // PermanentFailure
+        integer(&mut input, status);
         string(&mut input, message.as_bytes());
         for value in [1, 0, 10, 20, 0, 0, 0] {
             integer(&mut input, value);
@@ -570,24 +557,24 @@ fn terminal_build_failure_exposes_only_allowlisted_reason() {
             hash: b"",
         }];
         let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
-
-        let error = client
+        let result = client
             .build_derivation(&request(&outputs), &mut |_| Ok(()))
-            .unwrap_err();
-
-        assert_eq!(error.to_string(), expected);
-        assert!(!error.to_string().contains("secret"));
-        assert!(!error.to_string().contains("sensitive"));
+            .unwrap();
+        assert_eq!(result.status(), WorkerBuildStatus::Failed(status));
+        assert_eq!(result.message(), message);
     }
 }
 
 #[test]
-fn terminal_build_status_is_preserved_without_daemon_message() {
+fn terminal_build_message_is_truncated_at_a_utf8_boundary() {
+    // Lossy decoding can expand a bounded non-UTF-8 peer string.
+    let bytes = vec![0xff; nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES];
+    let message = String::from_utf8_lossy(&bytes);
     let mut input = Vec::new();
     handshake(&mut input, 1);
     integer(&mut input, STDERR_LAST);
-    integer(&mut input, 6); // TimedOut
-    string(&mut input, b"sensitive daemon message");
+    integer(&mut input, 6);
+    string(&mut input, &bytes);
     for value in [1, 0, 10, 20, 0, 0, 0] {
         integer(&mut input, value);
     }
@@ -598,16 +585,13 @@ fn terminal_build_status_is_preserved_without_daemon_message() {
         hash: b"",
     }];
     let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
-
-    let error = client
+    let result = client
         .build_derivation(&request(&outputs), &mut |_| Ok(()))
-        .unwrap_err();
-
-    assert_eq!(
-        error.to_string(),
-        "Nix daemon BuildDerivation failed with status 6 category unknown"
-    );
-    assert!(!error.to_string().contains("sensitive"));
+        .unwrap();
+    assert_eq!(result.status(), WorkerBuildStatus::Failed(6));
+    assert!(result.message().len() <= nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES);
+    assert!(result.message().len() >= nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES - 2);
+    assert!(message.starts_with(result.message()));
 }
 
 #[test]
@@ -647,4 +631,64 @@ fn malformed_result_and_log_writer_failure_are_redacted() {
         );
         assert!(!error.to_string().contains("sensitive"));
     }
+}
+
+#[test]
+fn failed_keyed_build_consumes_all_results_before_next_operation() {
+    let second = b"/nix/store/11111111111111111111111111111111-second.drv";
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 2);
+    for (target, status, message) in [
+        (DRV, 4, b"builder failed with exit code 3".as_slice()),
+        (second.as_slice(), 0, b"".as_slice()),
+    ] {
+        string(&mut input, target);
+        integer(&mut input, status);
+        string(&mut input, message);
+        for _ in 0..7 {
+            integer(&mut input, 0);
+        }
+    }
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 1);
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+    let error = client
+        .build_paths_with_results(&[DRV.to_vec(), second.to_vec()])
+        .unwrap_err();
+    assert_eq!(
+        nix_worker_protocol::build_paths_failure_result(&error)
+            .unwrap()
+            .status,
+        4
+    );
+    assert!(client.is_valid_path(OUTPUT).unwrap());
+}
+
+#[test]
+fn terminal_diagnostic_omits_nix_embedded_log_excerpt() {
+    let mut input = Vec::new();
+    handshake(&mut input, 1);
+    integer(&mut input, STDERR_LAST);
+    integer(&mut input, 3);
+    string(&mut input, b"Cannot build derivation.\nReason: builder failed with exit code 3.\nLast 25 log lines:\n> private-log-marker\nFor full logs, run nix-store -l");
+    for _ in 0..7 {
+        integer(&mut input, 0);
+    }
+    let outputs = [BuildDerivationOutputRequest {
+        name: b"out",
+        path: OUTPUT,
+        hash_algorithm: b"",
+        hash: b"",
+    }];
+    let mut client = WorkerClient::connect(ScriptedStream::new(input)).unwrap();
+    let result = client
+        .build_derivation(&request(&outputs), &mut |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        result.message(),
+        "Cannot build derivation.\nReason: builder failed with exit code 3.\n"
+    );
+    assert_eq!(result.status(), WorkerBuildStatus::Failed(3));
 }

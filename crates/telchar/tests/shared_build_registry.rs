@@ -389,3 +389,40 @@ fn successful_result() -> Result<BuildResult, SharedBuildTerminalFailure> {
     )
     .map_err(|_| SharedBuildTerminalFailure::Internal)
 }
+
+#[test]
+fn ordinary_nix_failure_and_final_logs_survive_a_new_attempt() {
+    let registry = SharedBuildRegistry::new();
+    let SharedBuildAccess::Leader(leader) = registry.acquire("ordinary-failure") else {
+        panic!("leader");
+    };
+    let SharedBuildAccess::Follower(follower) = registry.acquire("ordinary-failure") else {
+        panic!("follower");
+    };
+    let mut logs = follower.subscribe_logs(1024);
+    registry.publish_log("ordinary-failure", b"builder log\n");
+    let result = BuildResult::failed(telchar::backend::BuildFailure {
+        status: 3,
+        message: "builder failed with exit code 3".to_owned(),
+    })
+    .unwrap();
+    leader.complete(Ok(result.clone())).unwrap();
+    // A retry starts before the old follower reads. It must not steal its result.
+    let SharedBuildAccess::Leader(retry) = registry.acquire("ordinary-failure") else {
+        panic!("retry leads");
+    };
+    let mut received = Vec::new();
+    let terminal = follower
+        .wait_timeout_with_logs(Duration::from_secs(1), &mut logs, |chunk| {
+            received.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal, result);
+    assert_eq!(received, b"builder log\n");
+    assert_eq!(registry.active_build_count(), 1);
+    drop(retry);
+    assert_eq!(registry.active_build_count(), 0);
+}

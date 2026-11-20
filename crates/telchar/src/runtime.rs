@@ -144,6 +144,11 @@ fn run_executor() -> io::Result<()> {
                             &mut |_| Ok(()),
                             &mut || Ok(false),
                         ) {
+                            Ok(result) if result.failure().is_some() => Some((
+                                telchar::persistence::LocalBackendExecutionState::Failed,
+                                "build-failure",
+                                serde_json::json!({"nix_failure": result.failure()}),
+                            )),
                             Ok(result) => {
                                 let outputs = result
                                     .outputs()
@@ -164,6 +169,7 @@ fn run_executor() -> io::Result<()> {
                                             "status": match result.status() {
                                                 telchar::backend::BuildStatus::Built => "built",
                                                 telchar::backend::BuildStatus::AlreadyValid => "already-valid",
+                                                telchar::backend::BuildStatus::Failed(_) => unreachable!("failure handled before success"),
                                             },
                                             "outputs": outputs,
                                         }),

@@ -42,6 +42,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
             .finish(&BuildResultMetadata {
                 outcome: BuildOutcome::Built,
                 diagnostic: None,
+                nix_failure: None,
             })
             .is_err()
     );
@@ -74,6 +75,7 @@ fn completes_only_after_every_exact_output_is_received_and_accepted() {
         .finish(&BuildResultMetadata {
             outcome: BuildOutcome::Built,
             diagnostic: None,
+            nix_failure: None,
         })
         .expect("exact terminal success accepts");
     assert!(session.is_complete());
@@ -179,6 +181,7 @@ fn permits_bounded_terminal_failure_without_outputs() {
         .finish(&BuildResultMetadata {
             outcome: BuildOutcome::Failed,
             diagnostic: Some("builder failed".to_owned()),
+            nix_failure: None,
         })
         .expect("bounded failure accepts");
     assert!(session.is_complete());
@@ -190,7 +193,51 @@ fn permits_bounded_terminal_failure_without_outputs() {
             .finish(&BuildResultMetadata {
                 outcome: BuildOutcome::Failed,
                 diagnostic: Some("x".repeat(17)),
+                nix_failure: None,
             })
             .is_err()
     );
+}
+
+#[test]
+fn typed_nix_failure_is_bounded_and_cannot_be_a_success_or_infrastructure_diagnostic() {
+    let failure = telchar::backend::BuildFailure {
+        status: 4,
+        message: "exit code 3".to_owned(),
+    };
+    let valid = BuildResultMetadata {
+        outcome: BuildOutcome::Failed,
+        diagnostic: None,
+        nix_failure: Some(failure),
+    };
+    let mut session = OutputTransferSession::new(vec![output("expected")], 8, 16, 16, 16).unwrap();
+    session.finish(&valid).unwrap();
+    for invalid in [
+        BuildResultMetadata {
+            outcome: BuildOutcome::Built,
+            ..valid.clone()
+        },
+        BuildResultMetadata {
+            diagnostic: Some("infrastructure".to_owned()),
+            ..valid.clone()
+        },
+        BuildResultMetadata {
+            nix_failure: Some(telchar::backend::BuildFailure {
+                status: 0,
+                message: "bad".to_owned(),
+            }),
+            ..valid.clone()
+        },
+        BuildResultMetadata {
+            nix_failure: Some(telchar::backend::BuildFailure {
+                status: 4,
+                message: "x".repeat(17),
+            }),
+            ..valid.clone()
+        },
+    ] {
+        let mut session =
+            OutputTransferSession::new(vec![output("expected")], 8, 16, 16, 16).unwrap();
+        assert!(session.finish(&invalid).is_err());
+    }
 }

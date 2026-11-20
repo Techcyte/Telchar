@@ -14,20 +14,78 @@ const TEST: &str = "nomad_trace::rendered_environment_connects_real_worker_and_c
 fn rendered_environment_connects_real_worker_and_callback() {
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
         let database = telchar_test_support::postgres::PostgresFixture::start();
+        let collector = collector::start_collector();
         let status = Command::new("bash")
             .env("MICROVM_TEST_DATABASE", database.url())
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
             .arg(FIXTURE)
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
             .status()
             .unwrap();
         assert!(status.success());
+        let parent = collector.spans("telchar", "backend.execution");
+        let execution = collector.spans("telchar-nomad-worker", "worker.execution");
+        assert_eq!(parent.len(), 1);
+        assert_eq!(execution.len(), 1);
+        collector::Collector::assert_child(&parent[0], &execution[0]);
+        let phases = collector.spans("telchar-nomad-worker", "worker.phase");
+        for name in [
+            "manifest",
+            "resolve-inputs",
+            "import-inputs",
+            "build",
+            "return-outputs",
+        ] {
+            let phase = phases
+                .iter()
+                .find(|span| collector::Collector::has_attribute(&span.attributes, "phase", name))
+                .unwrap();
+            collector::Collector::assert_child(&execution[0], phase);
+        }
+        let manifest = phases
+            .iter()
+            .find(|span| collector::Collector::has_attribute(&span.attributes, "phase", "manifest"))
+            .unwrap();
+        let callbacks = collector.spans("telchar", "nomad.callback.execution");
+        assert_eq!(callbacks.len(), 1);
+        collector::Collector::assert_child(manifest, &callbacks[0]);
+        let exports = collector.spans("telchar", "nomad.gateway.export_inputs");
+        let builds = collector.spans("telchar", "nomad.gateway.build_and_collect");
+        let collections = collector.spans("telchar", "nomad.gateway.collect_outputs");
+        assert_eq!(exports.len(), 1);
+        assert_eq!(builds.len(), 1);
+        assert_eq!(collections.len(), 1);
+        collector::Collector::assert_child(&callbacks[0], &exports[0]);
+        collector::Collector::assert_child(&callbacks[0], &builds[0]);
+        collector::Collector::assert_child(&builds[0], &collections[0]);
+        for operation in [
+            "connect",
+            "handshake",
+            "query_path_info",
+            "nar_from_path",
+            "add_to_store_nar",
+        ] {
+            collector.assert_histogram_attributes(
+                "telchar.store.operation.duration",
+                &[("operation", operation), ("outcome", "success")],
+                0.0,
+            );
+        }
+        for side in ["source", "destination"] {
+            collector.assert_histogram_attributes(
+                "telchar.transfer.io.duration",
+                &[("side", side), ("outcome", "success")],
+                0.0,
+            );
+        }
+        collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
+        collector.assert_metric_attributes_are_bounded();
+        if let Some(path) = std::env::var_os("TELCHAR_NOMAD_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
         return;
-    }
-    let collector = collector::start_collector();
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
     let root = std::path::PathBuf::from(std::env::var_os("MICROVM_STORE_ROOT").unwrap());
@@ -223,64 +281,4 @@ uri = "{worker_store_uri}"
     drop(entered);
     drop(parent);
     telemetry.shutdown();
-    let parent = collector.spans("telchar", "backend.execution");
-    let execution = collector.spans("telchar-nomad-worker", "worker.execution");
-    assert_eq!(parent.len(), 1);
-    assert_eq!(execution.len(), 1);
-    collector::Collector::assert_child(&parent[0], &execution[0]);
-    let phases = collector.spans("telchar-nomad-worker", "worker.phase");
-    for name in [
-        "manifest",
-        "resolve-inputs",
-        "import-inputs",
-        "build",
-        "return-outputs",
-    ] {
-        let phase = phases
-            .iter()
-            .find(|span| collector::Collector::has_attribute(&span.attributes, "phase", name))
-            .unwrap();
-        collector::Collector::assert_child(&execution[0], phase);
-    }
-    let manifest = phases
-        .iter()
-        .find(|span| collector::Collector::has_attribute(&span.attributes, "phase", "manifest"))
-        .unwrap();
-    let callbacks = collector.spans("telchar", "nomad.callback.execution");
-    assert_eq!(callbacks.len(), 1);
-    collector::Collector::assert_child(manifest, &callbacks[0]);
-    let exports = collector.spans("telchar", "nomad.gateway.export_inputs");
-    let builds = collector.spans("telchar", "nomad.gateway.build_and_collect");
-    let collections = collector.spans("telchar", "nomad.gateway.collect_outputs");
-    assert_eq!(exports.len(), 1);
-    assert_eq!(builds.len(), 1);
-    assert_eq!(collections.len(), 1);
-    collector::Collector::assert_child(&callbacks[0], &exports[0]);
-    collector::Collector::assert_child(&callbacks[0], &builds[0]);
-    collector::Collector::assert_child(&builds[0], &collections[0]);
-    for operation in [
-        "connect",
-        "handshake",
-        "query_path_info",
-        "nar_from_path",
-        "add_to_store_nar",
-    ] {
-        collector.assert_histogram_attributes(
-            "telchar.store.operation.duration",
-            &[("operation", operation), ("outcome", "success")],
-            0.0,
-        );
-    }
-    for side in ["source", "destination"] {
-        collector.assert_histogram_attributes(
-            "telchar.transfer.io.duration",
-            &[("side", side), ("outcome", "success")],
-            0.0,
-        );
-    }
-    collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
-    collector.assert_metric_attributes_are_bounded();
-    if let Some(path) = std::env::var_os("TELCHAR_NOMAD_TRACE_ARTIFACT") {
-        collector.write_trace_artifact(path);
-    }
 }

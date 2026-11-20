@@ -42,8 +42,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert self.headers["X-Amz-Security-Token"] == "fixture-token"
         self.respond(
             '<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
-            '<GetCallerIdentityResult><Account>116392764028</Account>'
-            '<Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId>'
+            '<GetCallerIdentityResult><Account>123456789012</Account>'
+            '<Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId>'
             '</GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId>'
             '</ResponseMetadata></GetCallerIdentityResponse>',
             "text/xml",
@@ -68,10 +68,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert "Credential=fixture-key/" in self.headers["Authorization"]
         assert self.headers["X-Amz-Security-Token"] == "fixture-token"
         self.respond(json.dumps({
-            "imageArn": "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+            "imageArn": "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
             "imageVersion": "1", "state": "SUCCESSFUL", "status": "ACTIVE",
             "baseImageArn": "arn:aws:lambda:us-west-2:aws:microvm-image:al2023-1",
-            "buildRoleArn": "arn:aws:iam::116392764028:role/fixture", "createdAt": 1,
+            "buildRoleArn": "arn:aws:iam::123456789012:role/fixture", "createdAt": 1,
             "cpuConfigurations": [{"architecture": "ARM_64"}],
             "resources": [{"minimumMemoryInMiB": 2048}],
         }), "application/json")

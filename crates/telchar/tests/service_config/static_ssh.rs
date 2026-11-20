@@ -4,8 +4,7 @@ use super::*;
 
 #[test]
 fn loads_multiple_named_ssh_pools_with_cascading_static_host_overrides() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("cascading-static-ssh");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -56,9 +55,9 @@ address = "builder-3.example"
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let backends = config.static_ssh_backends();
     assert_eq!(backends.len(), 3);
     assert_eq!(backends[0].target().name(), "consul.host_1");
@@ -74,14 +73,12 @@ address = "builder-3.example"
     assert_eq!(backends[1].target().selection_priority(), 1);
     assert_eq!(backends[2].target().name(), "other.host");
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn rejects_ssh_pool_that_mixes_consul_source_with_static_hosts() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("mixed-ssh-source");
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -99,23 +96,21 @@ address = "builder.example"
 "#,
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("mixed inventory rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn loads_static_ssh_backend_with_fixed_credentials_and_pinned_host_keys() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("static-ssh");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -155,9 +150,9 @@ address = "builder.example"
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let backend = config
         .static_ssh_backends()
         .first()
@@ -175,14 +170,12 @@ address = "builder.example"
     assert_eq!(backend.known_hosts_file(), known_hosts_file);
     assert_eq!(backend.ssh_program(), ssh_program);
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn reload_accepts_static_ssh_inventory_additions_and_removals() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("static-ssh-reload");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -204,15 +197,15 @@ fn reload_accepts_static_ssh_inventory_additions_and_removals() {
         )
     };
     fs::write(&config_path, backend("builder-a", 1)).expect("initial configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let original = ServiceConfig::load().expect("initial configuration loads");
+    environment.set("TELCHAR_CONFIG", &config_path);
+    let original = load(&environment).expect("initial configuration loads");
 
     fs::write(
         &config_path,
         format!("{}{}", backend("builder-a", 1), backend("builder-b", 2)),
     )
     .expect("additive configuration writes");
-    let additive = ServiceConfig::load().expect("additive configuration loads");
+    let additive = load(&environment).expect("additive configuration loads");
     assert_eq!(
         original
             .validate_static_ssh_reload(&additive)
@@ -224,11 +217,11 @@ fn reload_accepts_static_ssh_inventory_additions_and_removals() {
     );
 
     fs::write(&config_path, backend("builder-a", 2)).expect("changed configuration writes");
-    let changed = ServiceConfig::load().expect("changed configuration loads");
+    let changed = load(&environment).expect("changed configuration loads");
     assert!(original.validate_static_ssh_reload(&changed).is_err());
 
     fs::write(&config_path, "").expect("removed configuration writes");
-    let removed = ServiceConfig::load().expect("removed configuration loads");
+    let removed = load(&environment).expect("removed configuration loads");
     assert_eq!(
         original
             .validate_static_ssh_reload(&removed)
@@ -239,14 +232,12 @@ fn reload_accepts_static_ssh_inventory_additions_and_removals() {
         }
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn static_ssh_backend_defaults_health_check_intervals() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("static-ssh-health-defaults");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -269,22 +260,20 @@ fn static_ssh_backend_defaults_health_check_intervals() {
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     let backend = &config.static_ssh_backends()[0];
     assert_eq!(backend.ready_check_interval().as_secs(), 300);
     assert_eq!(backend.unavailable_check_interval().as_secs(), 60);
     assert_eq!(backend.check_timeout().as_secs(), 10);
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn static_ssh_backend_rejects_unpinned_or_unsafe_credentials() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("invalid-static-ssh");
     let identity_file = root.join("builder-key");
     fs::write(&identity_file, "private-key").expect("identity writes");
@@ -309,23 +298,21 @@ address = "builder.example"
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("unsafe SSH backend rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn static_ssh_backend_rejects_duplicate_names_and_missing_host_keys() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("ambiguous-static-ssh");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -350,10 +337,10 @@ address = "builder.example"
         known_hosts_file.display()
     );
     fs::write(&config_path, format!("{backend}{backend}")).expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("ambiguous SSH backend rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
@@ -361,7 +348,7 @@ address = "builder.example"
 
     fs::write(&config_path, &backend).expect("configuration rewrites");
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("known-hosts file without a key rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
@@ -372,12 +359,11 @@ address = "builder.example"
     fs::set_permissions(&known_hosts_file, fs::Permissions::from_mode(0o666))
         .expect("known hosts permissions set");
     assert_eq!(
-        ServiceConfig::load()
+        load(&environment)
             .expect_err("writable known-hosts file rejects")
             .kind(),
         std::io::ErrorKind::InvalidInput
     );
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }

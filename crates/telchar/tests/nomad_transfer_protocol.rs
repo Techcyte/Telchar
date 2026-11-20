@@ -229,6 +229,7 @@ fn round_trips_exact_transfer_metadata_contracts() {
     let result = BuildResultMetadata {
         outcome: BuildOutcome::Built,
         diagnostic: None,
+        nix_failure: None,
     };
 
     for metadata in [

@@ -136,7 +136,15 @@ impl SharedBuildFollower {
                 forward(&chunk)?;
             }
             if let Some(result) = self.result() {
-                wait_guard.outcome = if result.is_ok() {
+                // Completion can race the first drain; all logs published before
+                // the terminal result must be forwarded before returning it.
+                for chunk in logs.drain() {
+                    forward(&chunk)?;
+                }
+                wait_guard.outcome = if result
+                    .as_ref()
+                    .is_ok_and(|result| result.failure().is_none())
+                {
                     "succeeded"
                 } else {
                     "failed"
@@ -211,7 +219,10 @@ impl SharedBuildFollower {
                     }
                 }
                 ActiveBuildState::Completed(result) => {
-                    wait_guard.outcome = if result.is_ok() {
+                    wait_guard.outcome = if result
+                        .as_ref()
+                        .is_ok_and(|result| result.failure().is_none())
+                    {
                         "succeeded"
                     } else {
                         "failed"

@@ -140,14 +140,14 @@ fn provider_server(
                         .unwrap()
                         .contains("Action=GetCallerIdentity")
                 );
-                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                 write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                 if std::env::var("MICROVM_TEST_CASE")
                     .is_ok_and(|case| case.starts_with("configured-daemon"))
                 {
                     image::serve_image(
                         &listener,
-                        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                        "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
                     );
                 }
                 continue;
@@ -195,7 +195,7 @@ fn provider_client(
                 config,
                 identity,
                 aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
-                "116392764028",
+                "123456789012",
                 Duration::from_secs(2),
             ))
             .unwrap()
@@ -308,7 +308,15 @@ fn dedicated_worker_builds_and_returns_registered_output() {
 fn run_isolated_build(case: &str) {
     eprintln!("MicroVM build fixture case: {case}");
     let database = telchar_test_support::postgres::PostgresFixture::start();
-    let output = Command::new("bash")
+    let connected_collector = (case == "configured").then(collector::start_collector);
+    let mut command = Command::new("bash");
+    if let Some(collector) = &connected_collector {
+        command
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+    }
+    let output = command
+        .stderr(std::process::Stdio::inherit())
         .env("MICROVM_TEST_DATABASE", database.url())
         .env("MICROVM_TEST_CASE", case)
         .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
@@ -329,20 +337,24 @@ fn run_isolated_build(case: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    if let Some(collector) = connected_collector {
+        let parents = collector.spans("telchar", "backend.execution");
+        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(workers.len(), 1);
+        collector::Collector::assert_child(&parents[0], &workers[0]);
+        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
+    }
 }
 
 fn run_build() {
     let case = std::env::var("MICROVM_TEST_CASE").unwrap();
     // Exercise the real routing -> cancellation thread -> launch carrier, not just
     // the lower-level session fixture's manually entered backend span.
-    let connected_collector = (case == "configured").then(collector::start_collector);
-    let connected_telemetry = connected_collector.as_ref().map(|collector| {
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-            std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
-        }
-        telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap()
-    });
+    let connected_telemetry = (case == "configured")
+        .then(|| telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap());
     let multiple = matches!(
         case.as_str(),
         "multiple" | "configured-multiple" | "configured-daemon-multiple"
@@ -670,17 +682,17 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
             intent_id: "build-intent".into(),
             attempt_id: attempt.attempt_id,
             backend_name: "build".into(),
-            account_id: "116392764028".into(),
+            account_id: "123456789012".into(),
             region: "us-west-2".into(),
             image_arn: "fixture".into(),
             image_version: "1".into(),
             vpc_egress_connector_arn:
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder".into(),
             configuration_digest: [1; 32],
             request_digest: telchar::microvm::launch_request_digest(
                 "fixture",
                 "1",
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder",
                 "build-token",
                 &payload,
                 60,
@@ -756,11 +768,11 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
                     r#"
 name = "build"
 system = "aarch64-linux"
-account_id = "116392764028"
+account_id = "123456789012"
 region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder"
+image_arn = "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder"
 image_version = "1"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 60
 execution_timeout_seconds = 50
@@ -832,9 +844,22 @@ chunk_bytes = 262144
                     shutdown.unwrap();
                 }
                 result.map(|result| {
-                    assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
-                    assert_eq!(result.outputs(), request.expected_outputs());
-                    BuildOutcome::Built
+                    if build_failure {
+                        let failure = result.failure().expect("ordinary Nix failure metadata");
+                        assert_eq!(result.status(), telchar::backend::BuildStatus::Failed(3));
+                        assert_eq!(failure.status, 3);
+                        assert!(
+                            failure.message.contains("exit code 42"),
+                            "{}",
+                            failure.message
+                        );
+                        assert!(result.outputs().is_empty());
+                        BuildOutcome::Failed
+                    } else {
+                        assert_eq!(result.status(), telchar::backend::BuildStatus::Built);
+                        assert_eq!(result.outputs(), request.expected_outputs());
+                        BuildOutcome::Built
+                    }
                 })
             } else {
                 execution
@@ -938,9 +963,8 @@ chunk_bytes = 262144
     std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600)).unwrap();
     let collector = (case == "single").then(collector::start_collector);
     let telemetry_endpoint = collector.as_ref().map(|collector| collector.endpoint());
-    let connected_endpoint = connected_collector
-        .as_ref()
-        .map(|collector| collector.endpoint());
+    let connected_endpoint =
+        (case == "configured").then(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap());
     let packaged_runtime = runtime.is_some();
     let mut worker = if let Some(runtime) = runtime {
         Command::new(runtime)
@@ -1254,7 +1278,9 @@ chunk_bytes = 262144
             "packaged worker must execute builder"
         );
     }
+    eprintln!("MicroVM fixture {case}: joining gateway");
     let result = gateway_thread.join().unwrap();
+    eprintln!("MicroVM fixture {case}: gateway joined");
     if corrupt_output {
         drop(upstream);
         drop(socket);
@@ -1268,28 +1294,40 @@ chunk_bytes = 262144
         )
         .unwrap()
     );
+    eprintln!("MicroVM fixture {case}: collecting worker output");
     let worker = worker.wait_with_output().unwrap();
+    eprintln!("MicroVM fixture {case}: worker exited");
     if build_failure || corrupt_output {
-        assert!(!worker.status.success());
         assert!(worker.stdout.is_empty());
         let diagnostic = String::from_utf8(worker.stderr).unwrap();
-        assert!(
-            diagnostic.contains("MicroVM worker failed\n"),
-            "{diagnostic}"
-        );
-        assert!(
-            diagnostic.contains("Canonical store fixture retained: "),
-            "{diagnostic}"
-        );
+        if build_failure {
+            assert!(worker.status.success(), "{diagnostic}");
+            assert!(
+                !diagnostic.contains("MicroVM worker failed"),
+                "{diagnostic}"
+            );
+        } else {
+            assert!(!worker.status.success());
+            assert!(
+                diagnostic.contains("MicroVM worker failed\n"),
+                "{diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("Canonical store fixture retained: "),
+                "{diagnostic}"
+            );
+        }
         assert!(
             !diagnostic.contains(worker_binding["bearer"].as_str().unwrap()),
             "worker diagnostic exposed bearer"
         );
-        let error = result.unwrap_err();
-        if case.starts_with("configured-daemon") {
-            assert_eq!(error.to_string(), "BuildDerivation execution failed");
-        } else if build_failure {
-            assert_eq!(error.to_string(), "MicroVM build failed");
+        if build_failure {
+            assert_eq!(result.unwrap(), BuildOutcome::Failed);
+        } else {
+            let error = result.unwrap_err();
+            if case.starts_with("configured-daemon") {
+                assert_eq!(error.to_string(), "BuildDerivation execution failed");
+            }
         }
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
         let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
@@ -1313,15 +1351,6 @@ chunk_bytes = 262144
     assert_eq!(result.unwrap(), BuildOutcome::Built);
     if let Some(telemetry) = connected_telemetry {
         telemetry.shutdown();
-        let collector = connected_collector.as_ref().unwrap();
-        let parents = collector.spans("telchar", "backend.execution");
-        let workers = collector.spans("telchar-microvm-worker", "microvm.worker.execution");
-        assert_eq!(parents.len(), 1);
-        assert_eq!(workers.len(), 1);
-        collector::Collector::assert_child(&parents[0], &workers[0]);
-        if let Some(path) = std::env::var_os("TELCHAR_CONFIGURED_TRACE_ARTIFACT") {
-            collector.write_trace_artifact(path);
-        }
     }
     if let Some(collector) = collector {
         for phase in [

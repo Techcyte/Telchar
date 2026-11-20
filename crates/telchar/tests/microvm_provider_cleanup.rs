@@ -156,7 +156,7 @@ fn exchange(
                 index
             };
             let response = if operation == "credentials-expired-cleanup" && index == 0 {
-                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -233,7 +233,7 @@ fn exchange(
         .expect("attempt reads")
         .expect("attempt exists");
     fixture.connect().execute(
-        "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id) VALUES ('cleanup-intent', $1, 'cleanup-fixture', '116392764028', 'us-west-2', 'image-fixture', '1', $2, $2, 'cleanup-token', $2, clock_timestamp() + interval '1 minute', 600, 'closed', 'microvm-exact')",
+        "INSERT INTO microvm_launches (intent_id, attempt_id, backend_name, account_id, region, image_arn, image_version, configuration_digest, request_digest, client_token, credential_verifier, admission_cutoff, maximum_duration_seconds, phase, provider_id) VALUES ('cleanup-intent', $1, 'cleanup-fixture', '123456789012', 'us-west-2', 'image-fixture', '1', $2, $2, 'cleanup-token', $2, clock_timestamp() + interval '1 minute', 600, 'closed', 'microvm-exact')",
         &[&attempt.attempt_id, &&[1_u8; 32][..]],
     ).expect("cleanup obligation persists");
     if operation.starts_with("maintenance") {
@@ -328,7 +328,7 @@ fn exchange(
                 config,
                 identity,
                 credentials,
-                "116392764028",
+                "123456789012",
                 Duration::from_secs(1),
             ))
             .expect("account verifies")
@@ -342,7 +342,7 @@ fn exchange(
         let mut service = telchar::service::daemon_services::MicrovmCleanupService::start(
             std::sync::Arc::new(owner),
             provider,
-            "116392764028".to_owned(),
+            "123456789012".to_owned(),
             "us-west-2".to_owned(),
             Duration::from_millis(25),
             1,
@@ -354,7 +354,7 @@ fn exchange(
             service.check().expect("cleanup service healthy");
             let pending = telchar::persistence::pending_microvm_cleanup(
                 &database,
-                "116392764028",
+                "123456789012",
                 if operation == "maintenance-uncertain" {
                     "us-west-2"
                 } else {
@@ -371,7 +371,7 @@ fn exchange(
             );
             if telchar::persistence::pending_microvm_cleanup(
                 &database,
-                "116392764028",
+                "123456789012",
                 "us-west-2",
                 10,
                 None,
@@ -401,7 +401,7 @@ fn exchange(
     } else if operation.ends_with("cleanup") {
         let cleanup = telchar::persistence::pending_microvm_cleanup(
             &database,
-            "116392764028",
+            "123456789012",
             "us-west-2",
             1,
             None,
@@ -416,7 +416,7 @@ fn exchange(
             assert!(!released);
             let pending = telchar::persistence::pending_microvm_cleanup(
                 owner.database(),
-                "116392764028",
+                "123456789012",
                 "us-west-2",
                 1,
                 None,
@@ -431,7 +431,7 @@ fn exchange(
             assert!(
                 telchar::persistence::pending_microvm_cleanup(
                     owner.database(),
-                    "116392764028",
+                    "123456789012",
                     "us-west-2",
                     1,
                     None
@@ -473,7 +473,7 @@ fn maintenance_reset_uncertainty_closes_worker_and_preserves_exact_cleanup() {
 fn observation(id: &str, state: &str) -> String {
     serde_json::json!({
         "microvmId": id, "state": state, "endpoint": "https://unused.invalid",
-        "imageArn": "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+        "imageArn": "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
         "imageVersion": "1", "maximumDurationInSeconds": 600, "startedAt": 1,
         "terminatedAt": 2,
     })

@@ -167,6 +167,9 @@ impl Execution<'_> {
             ));
         }
         let result = self.run_until(config, attempt.attempt_id, deadline, stopped, log)?;
+        if let Some(failure) = result.nix_failure {
+            return crate::backend::BuildResult::failed(failure);
+        }
         if result.outcome != crate::nomad::protocol::BuildOutcome::Built {
             return Err(io::Error::other("MicroVM build failed"));
         }

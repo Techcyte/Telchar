@@ -1186,6 +1186,39 @@ mod client;
 use client::validate_store_path;
 pub use client::*;
 
+/// Terminal diagnostics are bounded independently of live build logs.
+pub const MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES: usize = 16 * 1024;
+
+pub fn validate_build_failure(status: u64, message: &str) -> io::Result<()> {
+    if !matches!(status, 3..=12 | 14) || message.len() > MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Nix build failure",
+        ));
+    }
+    Ok(())
+}
+
+pub fn write_build_failure_response(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    target: Option<&[u8]>,
+    status: u64,
+    message: &str,
+) -> io::Result<()> {
+    validate_build_failure(status, message)?;
+    if let Some(target) = target {
+        validate_derived_path(target)?;
+    }
+    write_worker_integer_to(output, STDERR_LAST)?;
+    if let Some(target) = target {
+        write_worker_integer_to(output, 1)?;
+        write_worker_byte_string_to(output, target)?;
+    }
+    write_build_result(output, version, status, message.as_bytes(), &[])?;
+    output.flush()
+}
+
 pub fn write_build_paths_with_results_success_response<'a>(
     output: &mut impl Write,
     version: WorkerVersion,
@@ -1234,8 +1267,24 @@ fn write_build_result_success(
     already_valid: bool,
     outputs: &[BuildOutput],
 ) -> io::Result<()> {
-    write_worker_integer_to(output, if already_valid { 2 } else { 0 })?;
-    write_worker_byte_string_to(output, b"")?;
+    write_build_result(
+        output,
+        version,
+        if already_valid { 2 } else { 0 },
+        b"",
+        outputs,
+    )
+}
+
+fn write_build_result(
+    output: &mut impl Write,
+    version: WorkerVersion,
+    status: u64,
+    message: &[u8],
+    outputs: &[BuildOutput],
+) -> io::Result<()> {
+    write_worker_integer_to(output, status)?;
+    write_worker_byte_string_to(output, message)?;
     if version >= WorkerVersion::new(1, 29) {
         for value in [0_u64; 4] {
             write_worker_integer_to(output, value)?;

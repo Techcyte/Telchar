@@ -59,18 +59,33 @@ mod collector;
 #[test]
 fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
     // Isolate the global exporter/subscriber and its environment from other tests.
-    if std::env::var_os("TELCHAR_RESET_TRACE_TEST").is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .env("TELCHAR_RESET_TRACE_TEST", "1")
-            .args(["--exact", "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment", "--nocapture", "--test-threads=1"])
-            .status().unwrap();
-        assert!(status.success());
+    let name = "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment";
+    if !telchar_test_support::process::is_child(name) {
+        let collector = collector::start_collector();
+        telchar_test_support::process::assert_success(
+            telchar_test_support::process::command(name)
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
+                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+        );
+        let parents = collector.spans("telchar", "backend.execution");
+        let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(confirmations.len(), 1);
+        collector::Collector::assert_child(&parents[0], &confirmations[0]);
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+        assert!(confirmations[0].attributes.iter().any(|attribute| {
+            attribute.key == "confirmed"
+                && attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                    == Some(&Value::BoolValue(true))
+        }));
+        collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
+        if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
+            collector.write_trace_artifact(path);
+        }
         return;
-    }
-    let collector = collector::start_collector();
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
     }
     let telemetry = telchar_telemetry::Telemetry::initialize("telchar", "test").unwrap();
     let parent = tracing::info_span!(parent: None, "backend.execution");
@@ -122,7 +137,7 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
         intent_id: "runtime-intent".into(),
         attempt_id: attempt,
         backend_name: "arm".into(),
-        account_id: "116392764028".into(),
+        account_id: "123456789012".into(),
         region: "us-west-2".into(),
         image_arn: "image-fixture".into(),
         image_version: "1".into(),
@@ -320,7 +335,7 @@ with tempfile.TemporaryDirectory() as directory:
             let incoming = request(&mut stream);
             assert!(incoming.to_ascii_lowercase().contains("authorization:"));
             let body = if index == 0 {
-                "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned()
+                "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned()
             } else if index % 2 == 1 {
                 serde_json::json!({"microvmId":"microvm-exact","state":"RUNNING","endpoint":runtime_endpoint,"imageArn":"image-fixture","imageVersion":"1","maximumDurationInSeconds":600,"startedAt":1}).to_string()
             } else {
@@ -356,7 +371,7 @@ with tempfile.TemporaryDirectory() as directory:
             provider_config,
             identity,
             aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
-            "116392764028",
+            "123456789012",
             Duration::from_secs(3),
         ))
         .unwrap();
@@ -364,7 +379,7 @@ with tempfile.TemporaryDirectory() as directory:
     let mut maintenance = crate::service::daemon_services::MicrovmCleanupService::start(
         owner.clone(),
         provider.clone(),
-        "116392764028".into(),
+        "123456789012".into(),
         "us-west-2".into(),
         Duration::from_millis(25),
         10,
@@ -449,22 +464,4 @@ with tempfile.TemporaryDirectory() as directory:
     drop(entered);
     drop(parent);
     telemetry.shutdown();
-    let parents = collector.spans("telchar", "backend.execution");
-    let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
-    assert_eq!(parents.len(), 1);
-    assert_eq!(confirmations.len(), 1);
-    collector::Collector::assert_child(&parents[0], &confirmations[0]);
-    use opentelemetry_proto::tonic::common::v1::any_value::Value;
-    assert!(confirmations[0].attributes.iter().any(|attribute| {
-        attribute.key == "confirmed"
-            && attribute
-                .value
-                .as_ref()
-                .and_then(|value| value.value.as_ref())
-                == Some(&Value::BoolValue(true))
-    }));
-    collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
-    if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
-        collector.write_trace_artifact(path);
-    }
 }

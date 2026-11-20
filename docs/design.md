@@ -70,6 +70,8 @@ Requester disconnect behavior is operator configuration:
 
 Client bytes cannot select the policy. A disconnected requester cannot resume its original protocol stream. A later equivalent request may join active work or reuse completed outputs, but receives neither earlier logs nor the old byte stream.
 
+An ordinary Nix build failure carries the bounded Nix status and error message, not build logs, through the executor and durable shared result. Every attached requester receives a normal failed `BuildResult`; its worker-protocol connection remains usable. Transport, callback, output validation, and infrastructure faults remain execution errors rather than fabricated Nix results.
+
 A failed shared build is terminal. Telchar does not automatically retry it. A later independent request may create replacement work after checking the gateway store.
 
 ## Durable state and recovery

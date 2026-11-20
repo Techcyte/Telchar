@@ -329,17 +329,17 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         intent_id: "intent-fixture".to_owned(),
         attempt_id: attempt.attempt_id,
         backend_name: "provider-fixture".to_owned(),
-        account_id: "116392764028".to_owned(),
+        account_id: "123456789012".to_owned(),
         region: "us-west-2".to_owned(),
         image_arn: "image-fixture".to_owned(),
         image_version: "1".to_owned(),
-        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+        vpc_egress_connector_arn: "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
             .into(),
         configuration_digest: [1; 32],
         request_digest: telchar::microvm::launch_request_digest(
             "image-fixture",
             "1",
-            "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+            "arn:aws:lambda:us-west-2:123456789012:network-connector:builder",
             "intent-fixture",
             &payload,
             600,
@@ -359,7 +359,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
         "connector-missing" => intent.vpc_egress_connector_arn.clear(),
         "connector-mismatch" | "connector-digest" => {
             intent.vpc_egress_connector_arn =
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:isolated".into();
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:isolated".into();
             if ownership == "connector-digest" {
                 intent.request_digest = telchar::microvm::launch_request_digest(
                     &intent.image_arn,
@@ -419,13 +419,13 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     let mut body = vec![0; length];
                     socket.read_exact(&mut body).expect("request body");
                     if ownership.starts_with("credentials-") && headers.starts_with("POST / HTTP") {
-                        let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
+                        let body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>";
                         write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                         continue;
                     }
                     if ownership == "configured-usd" && headers.starts_with("GET ") {
                         let body = serde_json::json!({
-                            "baseImageArn":"base", "buildRoleArn":"role", "imageArn":"arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                            "baseImageArn":"base", "buildRoleArn":"role", "imageArn":"arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                             "imageVersion":"1.0", "state":"SUCCESSFUL", "status":"ACTIVE", "createdAt":1,
                             "cpuConfigurations":[{"architecture":"ARM_64"}], "resources":[{"minimumMemoryInMiB":2048}]
                         }).to_string();
@@ -436,7 +436,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     assert_eq!(
                         launch["egressNetworkConnectors"],
                         serde_json::json!([
-                            "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+                            "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
                         ])
                     );
                     requests.push((headers, body));
@@ -516,7 +516,7 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     config,
                     identity,
                     credentials,
-                    "116392764028",
+                    "123456789012",
                     Duration::from_secs(1),
                 ))
                 .unwrap()
@@ -552,11 +552,11 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                 let deployment = r#"
 name = "provider-fixture"
 system = "aarch64-linux"
-account_id = "116392764028"
+account_id = "123456789012"
 region = "us-west-2"
-image_arn = "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture"
+image_arn = "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture"
 image_version = "1.0"
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 maximum_concurrent_builds = 1
 maximum_duration_seconds = 600
 execution_timeout_seconds = 540

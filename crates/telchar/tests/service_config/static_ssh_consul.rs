@@ -4,8 +4,7 @@ use super::*;
 
 #[test]
 fn loads_optional_consul_static_ssh_discovery_without_static_inventory() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
-    let saved = clear_environment();
+    let mut environment = Environment::default();
     let root = fixture_root("static-ssh-consul");
     let identity_file = root.join("builder-key");
     let known_hosts_file = root.join("known-hosts");
@@ -59,9 +58,9 @@ ca_certificate_file = "{}"
         ),
     )
     .expect("configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
+    environment.set("TELCHAR_CONFIG", &config_path);
 
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config = load(&environment).expect("configuration loads");
     assert!(config.static_ssh_backends().is_empty());
     let discovery = &config.static_ssh_consul()[0];
     assert_eq!(discovery.name(), "spot-builders");
@@ -78,6 +77,5 @@ ca_certificate_file = "{}"
     assert_eq!(discovery.request_timeout().as_secs(), 5);
     assert_eq!(discovery.ssh_user(), "telchar");
 
-    restore_environment(saved);
     fs::remove_dir_all(root).expect("fixture removes");
 }

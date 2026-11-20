@@ -7,17 +7,8 @@ fn configured_job(root: &std::path::Path, extra: &str) -> std::io::Result<Value>
     let path = root.join("client.toml");
     let configured = fs::read_to_string(&path).unwrap();
     fs::write(&path, format!("{configured}\n{extra}")).unwrap();
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &path) };
-    let result = ServiceConfig::load()
-        .and_then(|config| render_job(&config.nomad_backends()[0], b"sidecar-build"));
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
-    result
+    ServiceConfig::load_with_environment(&path, |_| None)
+        .and_then(|config| render_job(&config.nomad_backends()[0], b"sidecar-build"))
 }
 
 const SIDECAR: &str = r#"
@@ -49,7 +40,6 @@ data = "receivers: {}\n"
 
 #[test]
 fn renders_optional_sidecars_and_worker_environment() {
-    let _guard = CONFIGURATION_TESTS.lock().unwrap();
     let root = fixture_root();
     let job = configured_job(&root, SIDECAR).expect("operator tasks configure");
     let group = &job["Job"]["TaskGroups"][0];
@@ -99,7 +89,6 @@ fn renders_optional_sidecars_and_worker_environment() {
 
 #[test]
 fn rejects_invalid_sidecars_and_protected_worker_environment() {
-    let _guard = CONFIGURATION_TESTS.lock().unwrap();
     let root = fixture_root();
     for extra in [
         SIDECAR.replace("name = \"telemetry\"", "name = \"build\""),

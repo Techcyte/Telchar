@@ -133,3 +133,68 @@ fn read_string<'a>(input: &mut &'a [u8]) -> &'a [u8] {
     *input = &rest[padding..];
     value
 }
+
+#[test]
+fn writes_normal_failed_results_with_exact_versioned_trailers() {
+    let target = b"/nix/store/00000000000000000000000000000000-contract.drv!*";
+    for minor in [27, 28, 29, 36, 37, 38] {
+        for keyed in [false, true] {
+            let mut output = Vec::new();
+            nix_worker_protocol::write_build_failure_response(
+                &mut output,
+                WorkerVersion::new(1, minor),
+                keyed.then_some(target.as_slice()),
+                4,
+                "builder failed with exit code 3",
+            )
+            .unwrap();
+            let mut input = output.as_slice();
+            assert_eq!(read_integer(&mut input), nix_worker_protocol::STDERR_LAST);
+            if keyed {
+                assert_eq!(read_integer(&mut input), 1);
+                assert_eq!(read_string(&mut input), target);
+            }
+            assert_eq!(read_integer(&mut input), 4);
+            assert_eq!(read_string(&mut input), b"builder failed with exit code 3");
+            if minor >= 29 {
+                for _ in 0..4 {
+                    assert_eq!(read_integer(&mut input), 0);
+                }
+            }
+            if minor >= 37 {
+                for _ in 0..2 {
+                    assert_eq!(read_integer(&mut input), 0);
+                }
+            }
+            if minor >= 28 {
+                assert_eq!(read_integer(&mut input), 0);
+            }
+            assert!(input.is_empty());
+        }
+    }
+}
+
+#[test]
+fn rejects_invalid_or_oversized_failure_before_writing() {
+    for (status, message) in [
+        (0, "bad".to_owned()),
+        (15, "bad".to_owned()),
+        (
+            4,
+            "x".repeat(nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES + 1),
+        ),
+    ] {
+        let mut output = Vec::new();
+        assert!(
+            nix_worker_protocol::write_build_failure_response(
+                &mut output,
+                WorkerVersion::new(1, 38),
+                None,
+                status,
+                &message
+            )
+            .is_err()
+        );
+        assert!(output.is_empty());
+    }
+}

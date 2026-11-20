@@ -131,16 +131,24 @@ pub(super) fn read_secret(path: PathBuf) -> io::Result<String> {
     nonempty(value.trim().to_owned(), "database URL is invalid")
 }
 
-pub(super) fn environment_string(name: &'static str) -> io::Result<Option<String>> {
-    match std::env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(invalid("environment override is invalid")),
-    }
+pub(super) fn environment_string(
+    environment: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    name: &'static str,
+) -> io::Result<Option<String>> {
+    environment(name)
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| invalid("environment override is invalid"))
+        })
+        .transpose()
 }
 
-pub(super) fn environment_path(name: &'static str) -> io::Result<Option<PathBuf>> {
-    match std::env::var_os(name) {
+pub(super) fn environment_path(
+    environment: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    name: &'static str,
+) -> io::Result<Option<PathBuf>> {
+    match environment(name) {
         Some(value) => {
             let path = PathBuf::from(value);
             if path.as_os_str().is_empty() {
