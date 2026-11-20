@@ -8,27 +8,56 @@ use std::time::Duration;
 use telchar::service::post_build_hook::PostBuildHook;
 
 #[test]
-fn configuration_accepts_hook_names_and_rejects_duplicate_sections() {
+fn configuration_accepts_post_build_hook_and_rejects_cache_section() {
     use telchar::service::config::ServiceConfig;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("telchar.toml");
     let section = "executable = \"/bin/sh\"\narguments = [\"-c\", \"cat >/dev/null\"]\ntimeout_seconds = 5\nmaximum_input_bytes = 1024\n";
-    let mut hooks = Vec::new();
-    for name in ["post_build_hook", "cache_publication"] {
-        fs::write(&path, format!("[{name}]\n{section}")).unwrap();
-        let config = ServiceConfig::load_from_default(&path).unwrap();
-        let hook = config.post_build_hook().unwrap().clone();
-        hook.run(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".into()])
-            .unwrap();
-        hooks.push(hook);
-    }
-    assert_eq!(hooks[0], hooks[1]);
+    fs::write(&path, format!("[post_build_hook]\n{section}")).unwrap();
+    let config = ServiceConfig::load_from_default(&path).unwrap();
+    config
+        .post_build_hook()
+        .unwrap()
+        .run(&["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".into()])
+        .unwrap();
     fs::write(
         &path,
         format!("[post_build_hook]\n{section}[cache_publication]\n{section}"),
     )
     .unwrap();
     assert!(ServiceConfig::load_from_default(&path).is_err());
+}
+
+#[test]
+fn hook_delivery_configuration_validates_worker_and_retry_bounds() {
+    use telchar::service::config::ServiceConfig;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("telchar.toml");
+    fs::write(&path, "[post_build_hook]\nexecutable = \"/bin/true\"\nconcurrency = 2\nmaximum_attempts = 4\nmaximum_age_seconds = 600\ninitial_backoff_seconds = 2\nmaximum_backoff_seconds = 30\n").unwrap();
+    let config = ServiceConfig::load_from_default(&path).unwrap();
+    let policy = config.hook_delivery_policy();
+    assert_eq!(policy.concurrency, 2);
+    assert_eq!(policy.maximum_attempts, 4);
+    assert_eq!(policy.maximum_age, Duration::from_secs(600));
+    assert_eq!(policy.initial_backoff, Duration::from_secs(2));
+    assert_eq!(policy.maximum_backoff, Duration::from_secs(30));
+    for setting in [
+        "concurrency = 0",
+        "maximum_attempts = 0",
+        "maximum_age_seconds = 0",
+        "initial_backoff_seconds = 0",
+        "maximum_backoff_seconds = 1",
+    ] {
+        fs::write(
+            &path,
+            format!("[post_build_hook]\nexecutable = \"/bin/true\"\n{setting}\n"),
+        )
+        .unwrap();
+        assert!(
+            ServiceConfig::load_from_default(&path).is_err(),
+            "{setting}"
+        );
+    }
 }
 
 #[derive(Clone, Default)]
@@ -112,7 +141,7 @@ fn publisher_passes_validated_outputs_through_stdin() {
             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-one".to_owned(),
             "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-two".to_owned(),
         ])
-        .expect("publication succeeds");
+        .expect("hook delivery succeeds");
 
     assert_eq!(
         fs::read_to_string(input).expect("publisher input reads"),

@@ -11,21 +11,40 @@ const MAXIMUM_ACTIVE_SHARED_BUILDS: usize = 256;
 
 pub trait SharedBuildOutputStore {
     fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool>;
+
+    fn protect_hook_delivery(
+        &mut self,
+        database: &dyn crate::persistence::DatabaseSource,
+        build: &SharedBuild,
+    ) -> io::Result<()>;
 }
 
 pub struct GatewaySharedBuildOutputStore {
     endpoint: Option<GatewayStoreEndpoint>,
+    hook_delivery_retention: Option<Box<dyn crate::store::retention::StoreRetentionBackend>>,
 }
 
 impl GatewaySharedBuildOutputStore {
     pub fn new(endpoint: GatewayStoreEndpoint) -> Self {
         Self {
             endpoint: Some(endpoint),
+            hook_delivery_retention: None,
         }
     }
 
     pub fn with_endpoint(endpoint: Option<GatewayStoreEndpoint>) -> Self {
-        Self { endpoint }
+        Self {
+            endpoint,
+            hook_delivery_retention: None,
+        }
+    }
+
+    pub fn hook_delivery_retention(
+        mut self,
+        retention: Box<dyn crate::store::retention::StoreRetentionBackend>,
+    ) -> Self {
+        self.hook_delivery_retention = Some(retention);
+        self
     }
 
     pub fn from_environment() -> io::Result<Self> {
@@ -41,6 +60,41 @@ impl GatewaySharedBuildOutputStore {
 }
 
 impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
+    fn protect_hook_delivery(
+        &mut self,
+        database: &dyn crate::persistence::DatabaseSource,
+        build: &SharedBuild,
+    ) -> io::Result<()> {
+        if !database
+            .database()
+            .map_err(io::Error::other)?
+            .post_build_hooks_enabled()
+        {
+            return Ok(());
+        }
+        let retention = self
+            .hook_delivery_retention
+            .as_mut()
+            .ok_or_else(|| io::Error::other("hook delivery retention is unavailable"))?;
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))?;
+        let mut protection = GatewayStoreConnection::connect(endpoint)?;
+        for output in &build.expected_outputs {
+            protection.add_temporary_root(output.as_bytes())?;
+            if !protection.is_valid_path(output.as_bytes())? {
+                return Err(io::Error::other("hook delivery output is missing"));
+            }
+        }
+        crate::service::hook_delivery::prepare_outputs(
+            database,
+            &build.derivation_path,
+            retention.as_mut(),
+            &build.expected_outputs,
+        )
+    }
+
     fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool> {
         if outputs.is_empty() {
             return Ok(true);
@@ -130,7 +184,7 @@ pub fn reconcile_shared_builds(
     let mut outcome = ReconciliationOutcome::default();
     for build in active {
         if outputs.contains_all(&build.expected_outputs)? {
-            complete_recovered_success(database, &build, retention)?;
+            complete_recovered_success(database, &build, retention, outputs)?;
             outcome.succeeded += 1;
             continue;
         }
@@ -166,7 +220,7 @@ pub fn reconcile_shared_builds(
                     }
                 };
                 if recovered {
-                    complete_recovered_success(database, &build, retention)?;
+                    complete_recovered_success(database, &build, retention, outputs)?;
                     outcome.succeeded += 1;
                 } else {
                     complete_recovery_failure(database, &build, retention)?;
@@ -188,7 +242,7 @@ pub fn reconcile_shared_builds(
                     }
                     Ok(AdoptedExecution::Succeeded) => {
                         if outputs.contains_all(&build.expected_outputs)? {
-                            complete_recovered_success(database, &build, retention)?;
+                            complete_recovered_success(database, &build, retention, outputs)?;
                             outcome.succeeded += 1;
                         } else {
                             complete_recovery_failure(database, &build, retention)?;
@@ -210,8 +264,11 @@ fn complete_recovered_success(
     database: &(impl crate::persistence::DatabaseSource + ?Sized),
     build: &SharedBuild,
     retention: Duration,
+    outputs: &mut dyn SharedBuildOutputStore,
 ) -> io::Result<()> {
     advance_to_collecting(database, build)?;
+    let hook_delivery_database = database.database().map_err(io::Error::other)?;
+    outputs.protect_hook_delivery(&hook_delivery_database, build)?;
     persistence::complete_shared_build_success(
         database,
         &build.derivation_path,

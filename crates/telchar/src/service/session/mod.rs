@@ -54,7 +54,6 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_builds,
         shared_build_scheduler,
         scheduling_limits,
-        post_build_hook,
     } = context;
     let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
@@ -1197,6 +1196,20 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         });
                 if durable_execution_owned.get()
                     && !build_already_succeeded
+                    && database.post_build_hooks_enabled()
+                {
+                    if let Err(error) = crate::service::hook_delivery::prepare_outputs(
+                        database, derivation_path, store_retention, &output_paths,
+                    ) {
+                        crate::persistence::complete_shared_build_failure(
+                            database, derivation_path, "hook_delivery-retention-failure",
+                            &serde_json::json!({"stage": "hook_delivery-retention"}), output_retention.duration(),
+                        ).map_err(|failure| io::Error::other(shared_build_error_message(&failure)))?;
+                        return reject(&mut output, "gateway-store-retention", &error.to_string());
+                    }
+                }
+                if durable_execution_owned.get()
+                    && !build_already_succeeded
                     && let Err(error) = crate::persistence::complete_shared_build_success(
                         database,
                         derivation_path,
@@ -1221,38 +1234,6 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "shared-build-state",
                         &format!("shared build completion failed: {:?}", error.failure()),
                     );
-                }
-                if durable_execution_owned.get()
-                    && let Some(hook) = post_build_hook.cloned()
-                {
-                    let hook_outputs = output_paths.clone();
-                    std::thread::spawn(move || {
-                        let started = std::time::Instant::now();
-                        match hook.run(&hook_outputs) {
-                            Ok(()) => {
-                                crate::service::metrics::post_build_hook_finished(
-                                    started.elapsed(),
-                                    "succeeded",
-                                );
-                                tracing::info!(
-                                    event = "worker.build_derivation.post_build_hook_completed",
-                                    output_count = hook_outputs.len(),
-                                    "BuildDerivation post-build hook completed"
-                                )
-                            }
-                            Err(_) => {
-                                crate::service::metrics::post_build_hook_finished(
-                                    started.elapsed(),
-                                    "failed",
-                                );
-                                tracing::warn!(
-                                    event = "worker.build_derivation.post_build_hook_failed",
-                                    output_count = hook_outputs.len(),
-                                    "BuildDerivation post-build hook failed"
-                                )
-                            }
-                        }
-                    });
                 }
                 if let Some(build_audit) = build_audit.as_ref() {
                     build_audit.completed("succeeded", admitted.expected_outputs().iter()

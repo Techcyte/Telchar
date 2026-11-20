@@ -103,6 +103,7 @@ pub struct ServiceConfig {
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
+    hook_delivery_policy: crate::service::hook_delivery::HookDeliveryPolicy,
     database_url: Option<String>,
     ownership_renewal_interval: Duration,
     ownership_lease_duration: Duration,
@@ -167,6 +168,10 @@ impl ServiceConfig {
 
     pub fn post_build_hook(&self) -> Option<&crate::service::post_build_hook::PostBuildHook> {
         self.post_build_hook.as_ref()
+    }
+
+    pub fn hook_delivery_policy(&self) -> crate::service::hook_delivery::HookDeliveryPolicy {
+        self.hook_delivery_policy
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -264,6 +269,7 @@ impl ServiceConfig {
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
+            || self.hook_delivery_policy != replacement.hook_delivery_policy
             || self.database_url != replacement.database_url
             || self.ownership_renewal_interval != replacement.ownership_renewal_interval
             || self.ownership_lease_duration != replacement.ownership_lease_duration
@@ -393,6 +399,31 @@ impl ServiceConfig {
             return Err(invalid("retained input byte limit is invalid"));
         }
 
+        let mut hook_delivery_policy = crate::service::hook_delivery::HookDeliveryPolicy::default();
+        if let Some(section) = &raw.post_build_hook {
+            hook_delivery_policy.concurrency = section
+                .concurrency
+                .unwrap_or(hook_delivery_policy.concurrency);
+            hook_delivery_policy.maximum_attempts = section
+                .maximum_attempts
+                .unwrap_or(hook_delivery_policy.maximum_attempts);
+            hook_delivery_policy.maximum_age = Duration::from_secs(
+                section
+                    .maximum_age_seconds
+                    .unwrap_or(hook_delivery_policy.maximum_age.as_secs()),
+            );
+            hook_delivery_policy.initial_backoff = Duration::from_secs(
+                section
+                    .initial_backoff_seconds
+                    .unwrap_or(hook_delivery_policy.initial_backoff.as_secs()),
+            );
+            hook_delivery_policy.maximum_backoff = Duration::from_secs(
+                section
+                    .maximum_backoff_seconds
+                    .unwrap_or(hook_delivery_policy.maximum_backoff.as_secs()),
+            );
+        }
+        let hook_delivery_policy = hook_delivery_policy.validate()?;
         let post_build_hook = raw
             .post_build_hook
             .map(|config| {
@@ -547,6 +578,7 @@ impl ServiceConfig {
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,
+            hook_delivery_policy,
             database_url,
             ownership_renewal_interval: Duration::from_secs(ownership_renewal_seconds),
             ownership_lease_duration: Duration::from_secs(ownership_lease_seconds),

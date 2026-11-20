@@ -500,8 +500,27 @@ fn run_daemon() -> io::Result<()> {
     let database = singleton_ownership
         .database()
         .clone()
-        .with_ownership(&singleton_ownership);
+        .with_ownership(&singleton_ownership)
+        .with_post_build_hooks(config.post_build_hook().is_some());
+    if config.post_build_hook().is_none() {
+        let abandoned = telchar::persistence::abandon_disabled_post_build_hooks(&database)
+            .map_err(io::Error::other)?;
+        for _ in 0..abandoned {
+            telchar::service::metrics::hook_delivery_abandoned("hook-disabled");
+        }
+    }
     let mut store_retention = gateway_store.retention()?;
+    let mut hook_delivery_query = gateway_store.query();
+    telchar::service::hook_delivery::reconcile_pending_roots(
+        &database,
+        store_retention.as_mut(),
+        if gateway_store.build_helper().is_some() {
+            None
+        } else {
+            Some(&mut hook_delivery_query)
+        },
+    )?;
+    telchar::service::hook_delivery::reconcile_released_roots(&database, store_retention.as_mut())?;
     telchar::store::retention::reconcile_startup_retention(
         &database,
         store_retention.as_mut(),
@@ -585,7 +604,8 @@ fn run_daemon() -> io::Result<()> {
         let mut shared_build_outputs =
             telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
                 gateway_store.endpoint().cloned(),
-            );
+            )
+            .hook_delivery_retention(gateway_store.retention()?);
         telchar::shared_build::recovery::reconcile_shared_builds(
             &database,
             output_retention.duration(),
@@ -640,7 +660,7 @@ fn run_daemon() -> io::Result<()> {
         let database = database.clone();
         let backends = backends.clone();
         let retention = output_retention.duration();
-        let gateway_store = gateway_store.endpoint().cloned();
+        let gateway_store = gateway_store.clone();
         recovery_services.push(
             telchar::service::daemon_services::RecoveryMonitorService::start_with_ownership(
                 Duration::from_millis(100),
@@ -649,8 +669,8 @@ fn run_daemon() -> io::Result<()> {
                     let mut configured_backends = backends.snapshot();
                     let mut outputs =
                         telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
-                            gateway_store.clone(),
-                        );
+                            gateway_store.endpoint().cloned(),
+                        ).hook_delivery_retention(gateway_store.retention()?);
                     let outcome = telchar::shared_build::recovery::reconcile_adopted_shared_builds(
                         &database,
                         retention,
@@ -707,6 +727,7 @@ fn run_daemon() -> io::Result<()> {
                     .ok_or_else(|| invalid("gateway store endpoint is not configured"))?,
                 output_retention.duration(),
                 Arc::clone(&shared_builds),
+                Some(gateway_store.clone()),
             )?,
         )
     } else {
@@ -761,6 +782,10 @@ fn run_daemon() -> io::Result<()> {
             Arc::clone(&singleton_ownership),
             move || {
                 let mut backend = maintenance_gateway_store.retention()?;
+                telchar::service::hook_delivery::reconcile_released_roots(
+                    &maintenance_database,
+                    backend.as_mut(),
+                )?;
                 telchar::store::retention::reconcile_output_retention(
                     &maintenance_database,
                     backend.as_mut(),
@@ -768,6 +793,13 @@ fn run_daemon() -> io::Result<()> {
                 )
             },
         )?;
+    let mut hook_delivery_service = telchar::service::daemon_services::HookDeliveryService::start(
+        Arc::clone(&singleton_ownership),
+        database.clone(),
+        config.post_build_hook().cloned(),
+        config.hook_delivery_policy(),
+        gateway_store.clone(),
+    )?;
     let ownership_check_interval = config.ownership_renewal_interval();
     listener.set_nonblocking(true)?;
     let maximum_sessions = config.maximum_ipc_sessions();
@@ -785,6 +817,7 @@ fn run_daemon() -> io::Result<()> {
                     shutdown_daemon_services(
                         &mut callback_service,
                         &mut maintenance_service,
+                        &mut hook_delivery_service,
                         &mut static_ssh_health_service,
                         &mut static_ssh_consul_service,
                         &mut recovery_services,
@@ -800,10 +833,12 @@ fn run_daemon() -> io::Result<()> {
         if let Some(service) = admin_service.as_mut() {
             service.check()?;
         }
+        hook_delivery_service.check()?;
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
+                &mut hook_delivery_service,
                 &mut static_ssh_health_service,
                 &mut static_ssh_consul_service,
                 &mut recovery_services,
@@ -908,6 +943,7 @@ fn run_daemon() -> io::Result<()> {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
+                &mut hook_delivery_service,
                 &mut static_ssh_health_service,
                 &mut static_ssh_consul_service,
                 &mut recovery_services,
@@ -924,6 +960,7 @@ fn run_daemon() -> io::Result<()> {
             shutdown_daemon_services(
                 &mut callback_service,
                 &mut maintenance_service,
+                &mut hook_delivery_service,
                 &mut static_ssh_health_service,
                 &mut static_ssh_consul_service,
                 &mut recovery_services,
@@ -947,6 +984,7 @@ fn run_daemon() -> io::Result<()> {
                     shutdown_daemon_services(
                         &mut callback_service,
                         &mut maintenance_service,
+                        &mut hook_delivery_service,
                         &mut static_ssh_health_service,
                         &mut static_ssh_consul_service,
                         &mut recovery_services,

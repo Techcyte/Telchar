@@ -160,6 +160,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "microvm_idle_deadline",
         sql: include_str!("../../migrations/0029_microvm_idle_deadline.sql"),
     },
+    Migration {
+        version: 30,
+        name: "post_build_hooks_outbox",
+        sql: include_str!("../../migrations/0030_post_build_hooks_outbox.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

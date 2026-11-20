@@ -25,6 +25,7 @@ impl Drop for MicrovmShutdown<'_> {
 pub(super) fn shutdown_daemon_services(
     callback: &mut Option<telchar::nomad::callback_service::NomadCallbackService>,
     maintenance: &mut telchar::service::daemon_services::MaintenanceService,
+    hook_delivery: &mut telchar::service::daemon_services::HookDeliveryService,
     static_ssh_health: &mut telchar::service::daemon_services::StaticSshHealthService,
     static_ssh_consul: &mut Option<telchar::service::static_ssh_consul::ConsulSshDiscoveryService>,
     recovery: &mut [telchar::service::daemon_services::RecoveryMonitorService],
@@ -32,6 +33,7 @@ pub(super) fn shutdown_daemon_services(
     if let Some(service) = callback.as_mut() {
         service.shutdown()?;
     }
+    hook_delivery.shutdown()?;
     maintenance.shutdown()?;
     static_ssh_health.shutdown()?;
     if let Some(service) = static_ssh_consul.as_mut() {
@@ -156,7 +158,6 @@ pub(super) fn serve_accepted_connection(
         .audit(audit.as_ref())
         .transfer_admission(transfer_limits, object_admission, rate_admission)
         .disk_admission(disk_reserve, disk_probe)
-        .post_build_hook(service_config.post_build_hook())
         .shared_builds(
             shared_builds,
             shared_build_scheduler,

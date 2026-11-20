@@ -44,6 +44,10 @@ impl PostBuildHook {
         })
     }
 
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     pub fn run(&self, outputs: &[String]) -> io::Result<()> {
         let input = serde_json::to_vec(outputs).map_err(|_| invalid())?;
         let input_length = input.len().checked_add(1).ok_or_else(invalid)?;

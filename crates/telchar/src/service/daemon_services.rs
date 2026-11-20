@@ -243,6 +243,68 @@ impl MicrovmCleanupService {
     }
 }
 
+pub struct HookDeliveryService(Vec<BackgroundService>);
+
+impl HookDeliveryService {
+    pub fn start(
+        owner: std::sync::Arc<crate::service::singleton_ownership::SingletonOwnership>,
+        database: crate::persistence::Database,
+        hook: Option<crate::service::post_build_hook::PostBuildHook>,
+        policy: crate::service::hook_delivery::HookDeliveryPolicy,
+        store: crate::store::runtime::GatewayStoreRuntime,
+    ) -> io::Result<Self> {
+        let policy = policy.validate()?;
+        let mut workers = Vec::new();
+        if let Some(hook) = hook {
+            for _ in 0..policy.concurrency {
+                let owner = std::sync::Arc::clone(&owner);
+                let database = database.clone();
+                let hook = hook.clone();
+                let store = store.clone();
+                workers.push(BackgroundService::start(Duration::from_millis(100), "hook delivery worker failed", move || {
+                    if !owner.verify_available().map_err(io::Error::other)? {
+                        return Ok(true);
+                    }
+                    let mut query = store.query();
+                    let result = crate::service::hook_delivery::run_attempt(
+                        &database, &hook, hook.timeout().saturating_add(Duration::from_secs(60)), policy,
+                        if store.build_helper().is_some() { None } else { Some(&mut query) },
+                    );
+                    if let Err(error) = result {
+                        tracing::warn!(event = "post_build_hooks.worker_interrupted", diagnostic = %error,
+                            "hook delivery remains durable for a later pass");
+                    }
+                    if owner.verify_available().map_err(io::Error::other)? {
+                        let mut retention = store.retention()?;
+                        if let Err(error) = crate::service::hook_delivery::reconcile_released_roots(&database, retention.as_mut()) {
+                            tracing::warn!(event = "post_build_hooks.cleanup_pending", diagnostic = %error,
+                                "hook delivery root cleanup remains pending");
+                        }
+                        let (pending, oldest) = crate::persistence::post_build_hooks_backlog(&database).map_err(io::Error::other)?;
+                        crate::service::metrics::hook_delivery_backlog(pending, oldest);
+                    }
+                    Ok(true)
+                })?);
+            }
+        }
+        Ok(Self(workers))
+    }
+
+    pub fn check(&mut self) -> io::Result<()> {
+        for worker in &mut self.0 {
+            worker.check()?;
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        for worker in &mut self.0 {
+            worker.shutdown()?;
+        }
+        Ok(())
+    }
+}
+
 pub struct MaintenanceService(BackgroundService);
 
 impl MaintenanceService {

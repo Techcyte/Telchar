@@ -64,6 +64,82 @@ fn existing_exact_root_is_idempotent_but_conflicts_do_not_clobber() {
 }
 
 #[test]
+fn pending_hook_delivery_survives_gc_and_releases_after_acknowledgment() {
+    use telchar::{backend::BackendKind, persistence};
+    let fixture = NixFixture::create().unwrap();
+    let mut daemon = fixture.start_daemon(TrustMode::Trusted).unwrap();
+    let output = build_fixture_path(&fixture, &daemon, "hook_delivery-retained", "published");
+    let control = build_fixture_path(&fixture, &daemon, "hook_delivery-control", "control");
+    let root_directory = fixture.root().join("hook_delivery-roots");
+    fs::create_dir(&root_directory).unwrap();
+    fs::set_permissions(&root_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_fixture = PostgresFixture::start();
+    persistence::migrate(database_fixture.url()).unwrap();
+    let database = persistence::Database::connect(database_fixture.url())
+        .unwrap()
+        .with_post_build_hooks(true);
+    let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hook_delivery-retention.drv";
+    persistence::claim_shared_build(
+        &database,
+        drv,
+        &[1; 32],
+        "local",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &[output.to_str().unwrap()],
+    )
+    .unwrap();
+    persistence::start_shared_build(&database, drv).unwrap();
+    persistence::collect_shared_build(&database, drv).unwrap();
+    let mut retention = NixStoreRetentionBackend::new_with_store_directory(
+        daemon.store_url(),
+        daemon.store_dir(),
+        &root_directory,
+    )
+    .unwrap();
+    telchar::service::hook_delivery::prepare_outputs(
+        &database,
+        drv,
+        &mut retention,
+        &[output.to_str().unwrap().to_owned()],
+    )
+    .unwrap();
+    persistence::complete_shared_build_success(
+        &database,
+        drv,
+        &serde_json::json!({}),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    daemon.collect_garbage().unwrap();
+    assert!(daemon.is_valid_path(&output).unwrap());
+    assert!(!daemon.is_valid_path(&control).unwrap());
+    daemon.stop().unwrap();
+    let mut restarted = fixture.start_daemon(TrustMode::Trusted).unwrap();
+    let mut retention = NixStoreRetentionBackend::new_with_store_directory(
+        restarted.store_url(),
+        restarted.store_dir(),
+        &root_directory,
+    )
+    .unwrap();
+    telchar::service::hook_delivery::reconcile_pending_roots(&database, &mut retention, None)
+        .unwrap();
+    restarted.collect_garbage().unwrap();
+    assert!(restarted.is_valid_path(&output).unwrap());
+    let hook_delivery =
+        persistence::claim_post_build_hooks(&database, "published", Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+    assert!(persistence::acknowledge_post_build_hooks(&database, &hook_delivery).unwrap());
+    telchar::service::hook_delivery::reconcile_released_roots(&database, &mut retention).unwrap();
+    restarted.collect_garbage().unwrap();
+    assert!(!restarted.is_valid_path(&output).unwrap());
+    restarted.stop().unwrap();
+    fixture.cleanup().unwrap();
+}
+
+#[test]
 fn permanent_root_survives_daemon_restart_and_second_private_gc() {
     let fixture = NixFixture::create().expect("fixture creates");
     let mut daemon = fixture

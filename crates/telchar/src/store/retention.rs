@@ -51,6 +51,7 @@ impl ReleasedRetentionEntry {
 }
 
 pub trait StoreRetentionBackend: Send {
+    fn hook_delivery_lock(&self) -> io::Result<fs::File>;
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>>;
     fn rollback(&mut self, retained: &[RetainedPath]) -> io::Result<()>;
     fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()>;
@@ -224,6 +225,10 @@ impl FilesystemStoreRetentionBackend {
 
 #[cfg(debug_assertions)]
 impl StoreRetentionBackend for FilesystemStoreRetentionBackend {
+    fn hook_delivery_lock(&self) -> io::Result<fs::File> {
+        hook_delivery_lock(&self.root_directory)
+    }
+
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         validate_entries(entries, &self.root_directory)?;
         let mut retained = Vec::with_capacity(entries.len());
@@ -252,6 +257,10 @@ impl StoreRetentionBackend for FilesystemStoreRetentionBackend {
 struct UnavailableStoreRetentionBackend;
 
 impl StoreRetentionBackend for UnavailableStoreRetentionBackend {
+    fn hook_delivery_lock(&self) -> io::Result<fs::File> {
+        Err(retention_error())
+    }
+
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         if entries.is_empty() {
             Ok(Vec::new())
@@ -399,6 +408,10 @@ impl NixStoreRetentionBackend {
 }
 
 impl StoreRetentionBackend for NixStoreRetentionBackend {
+    fn hook_delivery_lock(&self) -> io::Result<fs::File> {
+        hook_delivery_lock(&self.root_directory)
+    }
+
     fn retain(&mut self, entries: &[RetentionEntry]) -> io::Result<Vec<RetainedPath>> {
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -479,6 +492,20 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
         }
     }
     Ok(())
+}
+
+fn hook_delivery_lock(directory: &Path) -> io::Result<fs::File> {
+    let lock = fs::OpenOptions::new().read(true).open(directory)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(lock),
+            Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
 }
 
 fn create_root(root_path: &Path, store_path: &str) -> io::Result<bool> {

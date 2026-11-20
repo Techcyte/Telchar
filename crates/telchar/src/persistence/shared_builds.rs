@@ -1234,6 +1234,10 @@ fn complete_shared_build(
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
+    let database = database
+        .database()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let hook_delivery_enabled = database.post_build_hooks_enabled();
     let state = match terminal_state {
         SharedBuildState::Succeeded => "succeeded",
         SharedBuildState::Failed => "failed",
@@ -1244,7 +1248,7 @@ fn complete_shared_build(
             .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?,
     );
     let mut client =
-        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+        connect(&database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
     let mut transaction = client
         .transaction()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
@@ -1286,6 +1290,7 @@ fn complete_shared_build(
             ],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    let mut hook_delivery_backlog_full = false;
     if current_state != "claimed" {
         let classification = failure_classification.unwrap_or("succeeded");
         let attempt_id: i64 = transaction
@@ -1308,6 +1313,55 @@ fn complete_shared_build(
                 &[&attempt_id, &classification, &result_metadata_text],
             )
             .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+        if terminal_state == SharedBuildState::Succeeded && hook_delivery_enabled {
+            let expected_outputs: Vec<String> = row
+                .try_get("expected_outputs")
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+            let retained_paths = transaction
+                .query(
+                    "SELECT store_path FROM post_build_hook_roots
+                     WHERE attempt_id = $1 AND retained AND released_at IS NULL
+                     ORDER BY output_index",
+                    &[&attempt_id],
+                )
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+                .iter()
+                .map(|row| row.try_get::<_, String>(0))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+            if retained_paths != expected_outputs {
+                return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+            }
+            transaction
+                .query_one("SELECT pg_advisory_xact_lock(741235901)", &[])
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+            let pending: i64 = transaction
+                .query_one(
+                    "SELECT count(*) FROM post_build_hooks_outbox WHERE state = 'pending'",
+                    &[],
+                )
+                .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+                .get(0);
+            if pending >= 1024 {
+                transaction
+                    .execute(
+                        "INSERT INTO post_build_hooks_outbox
+                         (attempt_id, output_paths, state, completed_at, last_failure_class)
+                     VALUES ($1, $2, 'abandoned', clock_timestamp(), 'backlog-full')",
+                        &[&attempt_id, &expected_outputs],
+                    )
+                    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+                hook_delivery_backlog_full = true;
+            } else {
+                transaction
+                    .execute(
+                        "INSERT INTO post_build_hooks_outbox (attempt_id, output_paths)
+                     VALUES ($1, $2) ON CONFLICT (attempt_id) DO NOTHING",
+                        &[&attempt_id, &expected_outputs],
+                    )
+                    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+            }
+        }
     }
     let previous_state = match current_state.as_str() {
         "running" => SharedBuildState::Running,
@@ -1319,6 +1373,9 @@ fn complete_shared_build(
         .commit()
         .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
     crate::service::metrics::shared_build_finished(previous_state);
+    if hook_delivery_backlog_full {
+        crate::service::metrics::hook_delivery_abandoned("backlog-full");
+    }
     Ok(build)
 }
 

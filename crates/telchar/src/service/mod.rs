@@ -9,6 +9,7 @@ pub mod daemon_services;
 pub mod deployment;
 pub mod disk_reserve;
 pub mod executor_service;
+pub mod hook_delivery;
 pub mod identity;
 pub mod identity_details;
 pub mod ipc;

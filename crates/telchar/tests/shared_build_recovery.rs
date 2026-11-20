@@ -22,6 +22,21 @@ struct OutputStore {
 }
 
 impl SharedBuildOutputStore for OutputStore {
+    fn protect_hook_delivery(
+        &mut self,
+        database: &dyn telchar::persistence::DatabaseSource,
+        build: &SharedBuild,
+    ) -> io::Result<()> {
+        for root in
+            telchar::persistence::prepare_post_build_hook_roots(database, &build.derivation_path)
+                .map_err(io::Error::other)?
+        {
+            telchar::persistence::retain_post_build_hook_root(database, &root)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
     fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool> {
         self.checked.extend(outputs.iter().cloned());
         Ok(outputs.iter().all(|output| self.valid.contains(output)))
@@ -143,14 +158,24 @@ fn complete_expected_outputs_win_before_backend_recovery() {
         ..OutputStore::default()
     };
     let mut backends = Backends::default();
-
+    let database = telchar::persistence::Database::connect(fixture.url())
+        .unwrap()
+        .with_post_build_hooks(true);
     let outcome = reconcile_active_shared_builds(
-        fixture.url(),
+        &database,
         Duration::from_secs(3_600),
         &mut outputs,
         &mut backends,
     )
     .expect("reconciliation succeeds");
+    let hook_delivery = telchar::persistence::claim_post_build_hooks(
+        &database,
+        "recovery",
+        Duration::from_secs(30),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(hook_delivery.output_paths, [OUTPUT]);
 
     assert_eq!(outcome.succeeded, 1);
     assert_eq!(outcome.failed, 0);
