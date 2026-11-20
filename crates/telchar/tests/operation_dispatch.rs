@@ -686,7 +686,11 @@ fn wait_for_path_state_for(
     }
 }
 
-fn read_build_success(mut output: impl Read) -> Result<(), String> {
+fn read_build_success(output: impl Read) -> Result<(), String> {
+    read_build_status(output, 0)
+}
+
+fn read_build_status(mut output: impl Read, expected_status: u64) -> Result<(), String> {
     loop {
         let frame = try_read_integer(&mut output)?;
         if frame == STDERR_LAST {
@@ -698,7 +702,7 @@ fn read_build_success(mut output: impl Read) -> Result<(), String> {
         try_read_string(&mut output)?;
     }
     let status = try_read_integer(&mut output)?;
-    if status != 0 {
+    if status != expected_status {
         return Err(format!("unexpected build status {status}"));
     }
     let error_message = try_read_string(&mut output)?;
