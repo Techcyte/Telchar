@@ -82,6 +82,7 @@ fn receipts_require_authoritative_registration() {
     };
     let endpoint = GatewayStoreEndpoint::parse(&uri).unwrap();
     let staging = tempfile::tempdir().unwrap();
+    let contents = b"microvm-output".repeat(8192);
     let mut nar = Vec::new();
     for value in [
         b"nix-archive-1".as_slice(),
@@ -89,7 +90,7 @@ fn receipts_require_authoritative_registration() {
         b"type",
         b"regular",
         b"contents",
-        b"microvm-output",
+        contents.as_slice(),
         b")",
     ] {
         nar.extend_from_slice(&(value.len() as u64).to_le_bytes());
@@ -120,8 +121,8 @@ fn receipts_require_authoritative_registration() {
             vec![path.into()],
             endpoint.clone(),
             staging.path().into(),
-            1024,
-            2048,
+            131072,
+            262144,
         )
         .unwrap();
         outputs.declare(metadata.clone()).unwrap();
@@ -180,7 +181,7 @@ fn gateway_session(
     let drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-session.drv";
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let limits = ProtocolLimits::new(8192, 256);
+    let limits = ProtocolLimits::new(8192, 65536);
     let mut output_info = input.clone();
     output_info.path = output.into();
     match rejection {
@@ -238,6 +239,10 @@ fn gateway_session(
                 assert_eq!(frame.kind(), FrameKind::InputNar);
                 let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
                 assert_eq!(chunk.offset, transferred.len() as u64);
+                assert_eq!(
+                    frame.payload().len(),
+                    (nar.len() - transferred.len()).min(65536)
+                );
                 transferred.extend_from_slice(frame.payload());
                 if chunk.final_chunk {
                     break;
@@ -275,22 +280,25 @@ fn gateway_session(
                 );
                 return;
             }
-            send(
-                &mut socket,
-                FrameKind::OutputNar,
-                encode_metadata(
-                    &NarMetadata {
-                        path: output.into(),
-                        nar_hash: output_info.nar_hash,
-                        nar_size: nar.len() as u64,
-                        offset: 0,
-                        final_chunk: true,
-                    },
-                    8192,
-                )
-                .unwrap(),
-                nar.to_vec(),
-            );
+            for (index, payload) in nar.chunks(65536).enumerate() {
+                let offset = index * 65536;
+                send(
+                    &mut socket,
+                    FrameKind::OutputNar,
+                    encode_metadata(
+                        &NarMetadata {
+                            path: output.into(),
+                            nar_hash: output_info.nar_hash.clone(),
+                            nar_size: nar.len() as u64,
+                            offset: offset as u64,
+                            final_chunk: offset + payload.len() == nar.len(),
+                        },
+                        8192,
+                    )
+                    .unwrap(),
+                    payload.to_vec(),
+                );
+            }
             let receipt = read(&mut socket);
             assert_eq!(receipt.kind(), FrameKind::OutputReceipt);
             let receipt: OutputReceipt = decode_metadata(receipt.metadata(), 8192).unwrap();
@@ -342,10 +350,10 @@ fn gateway_session(
             staging.into(),
             Limits {
                 maximum_paths: 10,
-                maximum_nar_bytes: 1024,
-                maximum_total_bytes: 2048,
+                maximum_nar_bytes: 131072,
+                maximum_total_bytes: 262144,
                 metadata_bytes: 8192,
-                chunk_bytes: 256,
+                chunk_bytes: 65536,
             },
         )
         .unwrap()

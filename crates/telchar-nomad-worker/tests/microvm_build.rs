@@ -280,6 +280,9 @@ fn dedicated_worker_builds_and_returns_registered_output() {
             "configured-multiple",
             "configured-failure",
             "configured-cancelled",
+            "configured-input-cancelled",
+            "configured-input-fenced",
+            "configured-input-reassigned",
             "configured-building-cancelled",
             "configured-building-deadline",
             "configured-fenced",
@@ -388,7 +391,16 @@ fn run_build() {
     let endpoint =
         GatewayStoreEndpoint::parse(&std::env::var("MICROVM_TEST_STORE_URI").unwrap()).unwrap();
     let source = root.join("input");
-    std::fs::write(&source, b"dedicated-worker-success\n").unwrap();
+    let mid_input = matches!(
+        case.as_str(),
+        "configured-input-cancelled" | "configured-input-fenced" | "configured-input-reassigned"
+    );
+    let contents = if mid_input {
+        vec![b'x'; 32 * 1024 * 1024]
+    } else {
+        b"dedicated-worker-success\n".to_vec()
+    };
+    std::fs::write(&source, contents).unwrap();
     let added = Command::new("nix-store")
         .args(["--store", "local", "--add"])
         .arg(&source)
@@ -635,7 +647,10 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
     let gateway = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gateway_address = gateway.local_addr().unwrap();
     let capability = telchar::microvm::Capability::generate().unwrap();
-    let ownership_lost = matches!(case.as_str(), "fenced" | "configured-fenced");
+    let ownership_lost = matches!(
+        case.as_str(),
+        "fenced" | "configured-fenced" | "configured-input-fenced"
+    );
     let (binding_sender, binding_receiver) = std::sync::mpsc::sync_channel(1);
     let gateway_thread = if case.starts_with("configured-daemon") {
         drop(gateway);
@@ -764,6 +779,12 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
                 limits,
             };
             let result = if configured {
+                let maximum_nar_bytes = if mid_input {
+                    64 * 1024 * 1024
+                } else {
+                    1024 * 1024
+                };
+                let maximum_total_bytes = maximum_nar_bytes * 2;
                 let deployment = format!(
                     r#"
 name = "build"
@@ -783,8 +804,8 @@ callback_url = "wss://localhost:{}/microvm"
 callback_host = "localhost"
 staging_directory = "{}"
 maximum_paths = 10
-maximum_nar_bytes = 1048576
-maximum_total_bytes = 2097152
+maximum_nar_bytes = {maximum_nar_bytes}
+maximum_total_bytes = {maximum_total_bytes}
 metadata_bytes = 8192
 chunk_bytes = 262144
 "#,
@@ -1037,6 +1058,9 @@ chunk_bytes = 262144
         "telchar-microvm-v1".parse().unwrap(),
     );
     let connection = std::net::TcpStream::connect(gateway_address).unwrap();
+    if mid_input {
+        rustix::net::sockopt::set_socket_recv_buffer_size(&connection, 8192).unwrap();
+    }
     connection
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
@@ -1055,10 +1079,58 @@ chunk_bytes = 262144
     socket.send(manifest).unwrap();
     if matches!(
         case.as_str(),
-        "cancelled" | "fenced" | "configured-cancelled" | "configured-fenced"
+        "cancelled"
+            | "fenced"
+            | "configured-cancelled"
+            | "configured-fenced"
+            | "configured-input-cancelled"
+            | "configured-input-fenced"
+            | "configured-input-reassigned"
     ) {
+        if mid_input {
+            for expected in [FrameKind::ValidPaths, FrameKind::InputRequest] {
+                let message = socket.read().unwrap();
+                let frame = read_frame(
+                    &mut message.clone().into_data().as_ref(),
+                    ProtocolLimits::new(8192, 256 * 1024),
+                )
+                .unwrap();
+                assert_eq!(frame.kind(), expected);
+                upstream.send(message).unwrap();
+            }
+            loop {
+                let message = upstream.read().unwrap();
+                let frame = read_frame(
+                    &mut message.clone().into_data().as_ref(),
+                    ProtocolLimits::new(8192, 256 * 1024),
+                )
+                .unwrap();
+                assert_eq!(frame.kind(), FrameKind::InputNar);
+                let chunk: NarMetadata = decode_metadata(frame.metadata(), 8192).unwrap();
+                socket.send(message).unwrap();
+                if chunk.path == input {
+                    assert!(!frame.payload().is_empty());
+                    assert!(!chunk.final_chunk);
+                    break;
+                }
+            }
+        }
+        if mid_input {
+            std::thread::sleep(Duration::from_millis(250));
+            assert!(
+                !gateway_thread.is_finished(),
+                "input transfer must still be active"
+            );
+        }
         let started = std::time::Instant::now();
-        if !ownership_lost {
+        let reassigned = case == "configured-input-reassigned";
+        if reassigned {
+            let mut control = postgres::Client::connect(&database, postgres::NoTls).unwrap();
+            assert_eq!(control.execute(
+                "UPDATE microvm_assignments SET assignment_epoch = assignment_epoch + 1 WHERE intent_id = $1",
+                &[&intent_id],
+            ).unwrap(), 1);
+        } else if !ownership_lost {
             assert!(telchar::persistence::cancel_microvm_launch(&database, &intent_id).unwrap());
         } else {
             let mut database = postgres::Client::connect(&database, postgres::NoTls).unwrap();
@@ -1078,7 +1150,7 @@ chunk_bytes = 262144
         assert!(result.is_err());
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "{case} idle session did not stop promptly"
+            "{case} session did not stop promptly"
         );
         assert!(!store.is_valid_path(output.as_bytes()).unwrap());
         if configured {
