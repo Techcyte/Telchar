@@ -29,7 +29,10 @@ const MAXIMUM_INPUT_NAR_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAXIMUM_NAR_CHUNK_BYTES: usize = 1024 * 1024;
 
 pub fn failure_diagnostic(error: &io::Error, maximum_bytes: usize) -> String {
-    let mut diagnostic = error.to_string();
+    bounded_diagnostic(error.to_string(), maximum_bytes)
+}
+
+fn bounded_diagnostic(mut diagnostic: String, maximum_bytes: usize) -> String {
     let mut end = maximum_bytes.min(diagnostic.len());
     while !diagnostic.is_char_boundary(end) {
         end -= 1;
@@ -47,6 +50,7 @@ pub struct WorkerSession {
     protocol: ProtocolSession,
     inputs: InputTransferSession,
     transfer_chunk_bytes: usize,
+    maximum_failure_message_bytes: usize,
     connection_deadline: Instant,
     deadline_monitor: Option<microvm::SessionDeadline>,
 }
@@ -204,6 +208,7 @@ impl WorkerSession {
             &BuildResultMetadata {
                 outcome: BuildOutcome::Failed,
                 diagnostic: Some(diagnostic),
+                nix_failure: None,
             },
         )
     }
@@ -214,6 +219,22 @@ impl WorkerSession {
         result: &nix_worker_protocol::WorkerBuildResult,
     ) -> io::Result<()> {
         self.ensure_connection_active()?;
+        if let nix_worker_protocol::WorkerBuildStatus::Failed(status) = result.status() {
+            return self.send_metadata(
+                FrameKind::BuildResult,
+                &BuildResultMetadata {
+                    outcome: BuildOutcome::Failed,
+                    diagnostic: None,
+                    nix_failure: Some(telchar::backend::BuildFailure {
+                        status,
+                        message: bounded_diagnostic(
+                            result.message().to_owned(),
+                            self.maximum_failure_message_bytes,
+                        ),
+                    }),
+                },
+            );
+        }
         let mut actual_outputs = result.outputs().to_vec();
         actual_outputs.sort();
         let mut expected_outputs = self
@@ -309,6 +330,7 @@ impl WorkerSession {
             &BuildResultMetadata {
                 outcome: BuildOutcome::Built,
                 diagnostic: None,
+                nix_failure: None,
             },
         )
     }
@@ -931,12 +953,16 @@ fn read_transfer_frame(
 
 pub fn receive_manifest(config: &WorkerConfig) -> io::Result<WorkerSession> {
     let socket = connect(config).map_err(|error| startup_error("connect", error))?;
-    receive_authenticated_manifest(
+    let mut session = receive_authenticated_manifest(
         socket,
         config.maximum_manifest_bytes(),
         config.transfer_chunk_bytes(),
         config.maximum_connection_lifetime(),
-    )
+    )?;
+    session.maximum_failure_message_bytes = config
+        .maximum_diagnostic_bytes()
+        .min(nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES);
+    Ok(session)
 }
 
 /// Receives the admitted build after the caller authenticates the execution connection.
@@ -998,6 +1024,7 @@ pub fn receive_authenticated_manifest(
         protocol,
         inputs,
         transfer_chunk_bytes,
+        maximum_failure_message_bytes: nix_worker_protocol::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES,
         deadline_monitor: None,
         connection_deadline: Instant::now()
             .checked_add(maximum_connection_lifetime)

@@ -582,7 +582,10 @@ impl NomadClient {
                 "Nomad execution failed"
             );
         }
-        let result_name = if result.is_ok() {
+        let result_name = if result
+            .as_ref()
+            .is_ok_and(|result| result.failure().is_none())
+        {
             "succeeded"
         } else {
             "failed"
@@ -725,6 +728,15 @@ impl NomadClient {
                         "Nomad shared build is unavailable",
                     ))
                 })?;
+                if matches!(
+                    build.state,
+                    crate::persistence::SharedBuildState::Succeeded
+                        | crate::persistence::SharedBuildState::Failed
+                ) {
+                    for chunk in live_logs.drain() {
+                        logs(&chunk).map_err(NomadAttemptFailure::Terminal)?;
+                    }
+                }
                 match build.state {
                     crate::persistence::SharedBuildState::Succeeded => {
                         return BuildResult::new(
@@ -735,6 +747,21 @@ impl NomadClient {
                         .map_err(NomadAttemptFailure::Terminal);
                     }
                     crate::persistence::SharedBuildState::Failed => {
+                        if let Some(failure) = build
+                            .result_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("nix_failure"))
+                            .filter(|value| !value.is_null())
+                        {
+                            let failure =
+                                serde_json::from_value(failure.clone()).map_err(|_| {
+                                    NomadAttemptFailure::Terminal(io::Error::other(
+                                        "invalid Nix build failure",
+                                    ))
+                                })?;
+                            return BuildResult::failed(failure)
+                                .map_err(NomadAttemptFailure::Terminal);
+                        }
                         let message = build
                             .result_metadata
                             .as_ref()

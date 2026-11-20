@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -20,11 +20,8 @@ mod build_request_support;
 
 use build_request_support::admitted_request;
 
-static ENVIRONMENT: Mutex<()> = Mutex::new(());
-
 #[test]
 fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snapshots() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
     let root = tempfile::tempdir().expect("fixture creates");
     let identity = root.path().join("identity");
     let known_hosts = root.path().join("known-hosts");
@@ -48,14 +45,13 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
             ssh.display()
         )
     };
-    let saved = std::env::var_os("TELCHAR_CONFIG");
     fs::write(
         &config_path,
         format!("{}{}", backend("builder-a"), backend("builder-b")),
     )
     .expect("initial configuration writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let mut current = ServiceConfig::load().expect("initial configuration loads");
+    let mut current = ServiceConfig::load_with_environment(&config_path, |_| None)
+        .expect("initial configuration loads");
     let health = StaticSshHealth::from_states(
         current.static_ssh_backends(),
         [
@@ -86,7 +82,8 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
         format!("{}{}", backend("builder-b"), backend("builder-c")),
     )
     .expect("replacement configuration writes");
-    let replacement = ServiceConfig::load().expect("replacement configuration loads");
+    let replacement = ServiceConfig::load_with_environment(&config_path, |_| None)
+        .expect("replacement configuration loads");
     let reload =
         BackendReload::prepare_config(&current, replacement, None, None, Duration::from_secs(60))
             .expect("reload prepares");
@@ -131,17 +128,10 @@ fn reload_publishes_inventory_generation_and_disables_removed_hosts_in_old_snaps
     health_service
         .shutdown()
         .expect("health service shuts down");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
 }
 
 #[test]
 fn reload_preserves_discovered_inventory_while_replacing_static_leaves() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
     let root = tempfile::tempdir().expect("fixture creates");
     let identity = root.path().join("identity");
     let known_hosts = root.path().join("known-hosts");
@@ -161,10 +151,9 @@ fn reload_preserves_discovered_inventory_while_replacing_static_leaves() {
             ssh.display()
         )
     };
-    let saved = std::env::var_os("TELCHAR_CONFIG");
     fs::write(&config_path, config("first")).expect("initial config writes");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let current = ServiceConfig::load().expect("initial config loads");
+    let current =
+        ServiceConfig::load_with_environment(&config_path, |_| None).expect("initial config loads");
     let discovered = telchar::service::static_ssh_consul::map_members(
         &current.static_ssh_consul()[0],
         &serde_json::json!([{
@@ -178,7 +167,8 @@ fn reload_preserves_discovered_inventory_while_replacing_static_leaves() {
     )
     .expect("discovered inventory maps");
     fs::write(&config_path, config("second")).expect("replacement config writes");
-    let replacement = ServiceConfig::load().expect("replacement config loads");
+    let replacement = ServiceConfig::load_with_environment(&config_path, |_| None)
+        .expect("replacement config loads");
 
     let reload = BackendReload::prepare_config_with_inventory(
         &current,
@@ -192,18 +182,10 @@ fn reload_preserves_discovered_inventory_while_replacing_static_leaves() {
     let names = reload.target_names();
     assert!(names.contains(&"pool.second".to_owned()));
     assert!(names.iter().any(|name| name.starts_with("dynamic-")));
-
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
 }
 
 #[test]
 fn reload_refreshes_nomad_token_file_contents() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
     let root = tempfile::tempdir().expect("fixture creates");
     let token_file = root.path().join("nomad.token");
     fs::write(&token_file, "first-token\n").expect("initial token writes");
@@ -215,9 +197,8 @@ fn reload_refreshes_nomad_token_file_contents() {
     fs::write(&config_path, nomad_config(&endpoint, &token_file)).expect("configuration writes");
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let mut current = ServiceConfig::load().expect("initial configuration loads");
+    let mut current = ServiceConfig::load_with_environment(&config_path, |_| None)
+        .expect("initial configuration loads");
     let initial = ConfiguredBackends::new(&current, None).expect("initial backends configure");
     let reloadable = ReloadableBackends::new(initial);
     let health = StaticSshHealth::from_states(&[], []);
@@ -225,7 +206,8 @@ fn reload_refreshes_nomad_token_file_contents() {
         .expect("health service starts");
 
     fs::write(&token_file, "replacement-token\n").expect("replacement token writes");
-    let replacement = ServiceConfig::load().expect("replacement configuration loads");
+    let replacement = ServiceConfig::load_with_environment(&config_path, |_| None)
+        .expect("replacement configuration loads");
     BackendReload::prepare_config(&current, replacement, None, None, Duration::from_secs(60))
         .expect("reload prepares")
         .apply(&mut current, &reloadable, &mut health_service)
@@ -270,12 +252,6 @@ fn reload_refreshes_nomad_token_file_contents() {
     health_service
         .shutdown()
         .expect("health service shuts down");
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
 }
 
 fn nomad_config(endpoint: &str, token_file: &std::path::Path) -> String {

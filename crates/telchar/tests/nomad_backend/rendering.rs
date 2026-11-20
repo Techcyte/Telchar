@@ -4,9 +4,18 @@ use super::*;
 
 #[test]
 fn renders_operator_selected_driver_and_stable_backend_bound_job() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
+    let name = "rendering::renders_operator_selected_driver_and_stable_backend_bound_job";
+    if !telchar_test_support::process::is_child(name) {
+        telchar_test_support::process::assert_success(
+            telchar_test_support::process::command(name)
+                .env(
+                    "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "https://otel-http.example.test",
+                )
+                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+        );
+        return;
+    }
     let root = fixture_root();
     let config_path = root.join("telchar.toml");
     fs::write(
@@ -132,18 +141,8 @@ args = ["--stdio"]
     .expect("configuration writes");
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    let saved_otlp_endpoint = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT");
-    let saved_otlp_protocol = std::env::var_os("OTEL_EXPORTER_OTLP_PROTOCOL");
-    unsafe {
-        std::env::set_var("TELCHAR_CONFIG", &config_path);
-        std::env::set_var(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "https://otel-http.example.test",
-        );
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
-    }
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config =
+        ServiceConfig::load_with_environment(&config_path, |_| None).expect("configuration loads");
     let backend = &config.nomad_backends()[0];
 
     let first = deterministic_job_name(backend, b"shared-build-key");
@@ -372,31 +371,16 @@ args = ["--stdio"]
     ] {
         fs::write(&config_path, invalid_config).expect("invalid configuration writes");
         assert!(
-            ServiceConfig::load().is_err(),
+            ServiceConfig::load_with_environment(&config_path, |_| None).is_err(),
             "invalid resource profile configuration must fail"
         );
     }
 
-    unsafe {
-        for (name, value) in [
-            ("TELCHAR_CONFIG", saved),
-            ("OTEL_EXPORTER_OTLP_ENDPOINT", saved_otlp_endpoint),
-            ("OTEL_EXPORTER_OTLP_PROTOCOL", saved_otlp_protocol),
-        ] {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-    }
     fs::remove_dir_all(root).expect("fixture removes");
 }
 
 #[test]
 fn renders_short_lived_hmac_capability_without_backend_secret() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let secret_path = root.join("transfer.key");
     fs::write(&secret_path, "backend-signing-secret\n").expect("secret writes");
@@ -462,9 +446,8 @@ command = "/opt/telchar/bin/worker"
     .expect("configuration writes");
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load().expect("configuration loads");
+    let config =
+        ServiceConfig::load_with_environment(&config_path, |_| None).expect("configuration loads");
 
     let job =
         render_job(&config.nomad_backends()[0], b"shared-build-key").expect("HMAC job renders");
@@ -522,11 +505,5 @@ command = "/opt/telchar/bin/worker"
     assert!(!capability.contains("backend-signing-secret"));
     assert!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Identity"].is_null());
 
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     fs::remove_dir_all(root).expect("fixture removes");
 }

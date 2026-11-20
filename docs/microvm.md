@@ -350,7 +350,7 @@ Every `[[backends.microvm]]` policy requires an operator-owned
 `vpc_egress_connector_arn` in the configured AWS account and region:
 
 ```toml
-vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:116392764028:network-connector:builder"
+vpc_egress_connector_arn = "arn:aws:lambda:us-west-2:123456789012:network-connector:builder"
 ```
 
 Telchar explicitly sends this connector in `RunMicrovm.egressNetworkConnectors`.

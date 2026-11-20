@@ -130,14 +130,23 @@ pub struct StaticSshReloadChanges {
 
 impl ServiceConfig {
     pub fn load() -> io::Result<Self> {
-        match std::env::var_os("TELCHAR_CONFIG") {
-            Some(path) => Self::load_path(Path::new(&path), true),
-            None => Self::load_from_default(Path::new(DEFAULT_CONFIG_PATH)),
-        }
+        Self::load_with_environment(Path::new(DEFAULT_CONFIG_PATH), |name| {
+            std::env::var_os(name)
+        })
     }
 
     pub fn load_from_default(path: &Path) -> io::Result<Self> {
-        Self::load_path(path, false)
+        Self::load_path(path, false, &|name| std::env::var_os(name))
+    }
+
+    pub fn load_with_environment(
+        default_path: &Path,
+        environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<Self> {
+        match environment("TELCHAR_CONFIG") {
+            Some(path) => Self::load_path(Path::new(&path), true, &environment),
+            None => Self::load_path(default_path, false, &environment),
+        }
     }
 
     pub fn running_disconnect_policy(&self) -> RunningDisconnectPolicy {
@@ -335,7 +344,11 @@ impl ServiceConfig {
         systems
     }
 
-    fn load_path(path: &Path, required: bool) -> io::Result<Self> {
+    fn load_path(
+        path: &Path,
+        required: bool,
+        environment: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<Self> {
         let raw = match fs::read_to_string(path) {
             Ok(raw) => RawServiceConfig::parse(&raw)?,
             Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
@@ -343,11 +356,15 @@ impl ServiceConfig {
             }
             Err(_) => return Err(invalid("service configuration could not be read")),
         };
-        Self::build(raw)
+        Self::build(raw, environment)
     }
 
-    fn build(mut raw: RawServiceConfig) -> io::Result<Self> {
-        let replacement_mapping_file = environment_path("TELCHAR_IDENTITY_MAPPINGS_FILE")?;
+    fn build(
+        mut raw: RawServiceConfig,
+        environment: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<Self> {
+        let replacement_mapping_file =
+            environment_path(environment, "TELCHAR_IDENTITY_MAPPINGS_FILE")?;
         if let Some(path) = replacement_mapping_file {
             let contents = fs::read_to_string(path)
                 .map_err(|_| invalid("identity mapping file could not be read"))?;
@@ -356,16 +373,17 @@ impl ServiceConfig {
             });
         }
 
-        let output_retention = match environment_string("TELCHAR_OUTPUT_RETENTION_SECONDS")? {
-            Some(value) => parse_retention(&value)?,
-            None => raw
-                .output_retention_seconds
-                .map(|seconds| parse_retention(&seconds.to_string()))
-                .transpose()?
-                .unwrap_or_default(),
-        };
+        let output_retention =
+            match environment_string(environment, "TELCHAR_OUTPUT_RETENTION_SECONDS")? {
+                Some(value) => parse_retention(&value)?,
+                None => raw
+                    .output_retention_seconds
+                    .map(|seconds| parse_retention(&seconds.to_string()))
+                    .transpose()?
+                    .unwrap_or_default(),
+            };
         let maximum_retained_input_bytes =
-            match environment_string("TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
+            match environment_string(environment, "TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
                 Some(value) => parse_positive_u64(&value, "retained input byte limit is invalid")?,
                 None => raw
                     .maximum_retained_input_bytes
@@ -387,14 +405,15 @@ impl ServiceConfig {
             })
             .transpose()?;
 
-        let running_disconnect_policy = environment_string("TELCHAR_RUNNING_DISCONNECT_POLICY")?
-            .or(raw.running_disconnect_policy)
-            .map(|value| RunningDisconnectPolicy::parse(&value))
-            .transpose()?
-            .unwrap_or_default();
+        let running_disconnect_policy =
+            environment_string(environment, "TELCHAR_RUNNING_DISCONNECT_POLICY")?
+                .or(raw.running_disconnect_policy)
+                .map(|value| RunningDisconnectPolicy::parse(&value))
+                .transpose()?
+                .unwrap_or_default();
 
         let database = raw.database;
-        let database_url = match environment_string("TELCHAR_DATABASE_URL")? {
+        let database_url = match environment_string(environment, "TELCHAR_DATABASE_URL")? {
             Some(value) => Some(nonempty(value, "database URL is invalid")?),
             None => database
                 .as_ref()
@@ -416,18 +435,19 @@ impl ServiceConfig {
         {
             return Err(invalid("database ownership durations are invalid"));
         }
-        let ipc_socket = environment_path("TELCHAR_IPC_SOCKET")?
+        let ipc_socket = environment_path(environment, "TELCHAR_IPC_SOCKET")?
             .or_else(|| raw.ipc.as_ref().and_then(|ipc| ipc.socket.clone()));
         if ipc_socket.as_ref().is_some_and(|path| !path.is_absolute()) {
             return Err(invalid("IPC socket path is invalid"));
         }
-        let maximum_ipc_sessions = match environment_string("TELCHAR_IPC_MAX_SESSIONS")? {
-            Some(value) => parse_positive_usize(&value, "IPC session limit is invalid")?,
-            None => raw
-                .ipc
-                .and_then(|ipc| ipc.maximum_sessions)
-                .unwrap_or(DEFAULT_MAXIMUM_IPC_SESSIONS),
-        };
+        let maximum_ipc_sessions =
+            match environment_string(environment, "TELCHAR_IPC_MAX_SESSIONS")? {
+                Some(value) => parse_positive_usize(&value, "IPC session limit is invalid")?,
+                None => raw
+                    .ipc
+                    .and_then(|ipc| ipc.maximum_sessions)
+                    .unwrap_or(DEFAULT_MAXIMUM_IPC_SESSIONS),
+            };
         if maximum_ipc_sessions > MAXIMUM_IPC_SESSIONS {
             return Err(invalid("IPC session limit is invalid"));
         }

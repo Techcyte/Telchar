@@ -126,6 +126,7 @@ pub struct BuildDerivationClientRequest<'a> {
 pub enum WorkerBuildStatus {
     Built,
     AlreadyValid,
+    Failed(u64),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -217,9 +218,14 @@ pub struct WorkerMissingPaths {
 pub struct WorkerBuildResult {
     status: WorkerBuildStatus,
     outputs: Vec<(Vec<u8>, Vec<u8>)>,
+    message: String,
 }
 
 impl WorkerBuildResult {
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn status(&self) -> WorkerBuildStatus {
         self.status
     }
@@ -517,16 +523,8 @@ impl<S: Read + Write> WorkerClient<S> {
                 }
             },
         )?;
-        read_worker_build_result(&mut self.stream, self.profile.version).map_err(|error| {
-            if error
-                .to_string()
-                .starts_with("Nix daemon BuildDerivation failed with status ")
-            {
-                error
-            } else {
-                io::Error::other("Nix daemon BuildDerivation result failed")
-            }
-        })
+        read_worker_build_result(&mut self.stream, self.profile.version)
+            .map_err(|_| io::Error::other("Nix daemon BuildDerivation result failed"))
     }
 
     pub fn nar_from_path(
@@ -647,6 +645,7 @@ impl<S: Read + Write> WorkerClient<S> {
         if count != targets.len() {
             return Err(build_paths_error(BuildPathsFailurePhase::Target));
         }
+        let mut failure = None;
         for expected in targets {
             let actual =
                 read_worker_byte_string_from(&mut self.stream, MAXIMUM_WORKER_STORE_PATH_BYTES)
@@ -654,23 +653,19 @@ impl<S: Read + Write> WorkerClient<S> {
             if &actual != expected {
                 return Err(build_paths_error(BuildPathsFailurePhase::Target));
             }
-            let result = read_worker_build_result(&mut self.stream, self.profile.version).map_err(
-                |error| {
-                    worker_build_failure(&error)
-                        .map(|failure| {
-                            build_paths_result_error(expected, failure.status, failure.category)
-                        })
-                        .unwrap_or_else(|| build_paths_error(BuildPathsFailurePhase::Result))
-                },
-            )?;
-            if !matches!(
-                result.status(),
-                WorkerBuildStatus::Built | WorkerBuildStatus::AlreadyValid
-            ) {
-                return Err(build_paths_error(BuildPathsFailurePhase::Result));
+            let result = read_worker_build_result(&mut self.stream, self.profile.version)
+                .map_err(|_| build_paths_error(BuildPathsFailurePhase::Result))?;
+            if let WorkerBuildStatus::Failed(status) = result.status() {
+                failure.get_or_insert_with(|| {
+                    build_paths_result_error(
+                        expected,
+                        status,
+                        build_failure_category(result.message().as_bytes()),
+                    )
+                });
             }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     pub fn ensure_path(&mut self, store_path: &[u8]) -> io::Result<()> {
@@ -848,34 +843,6 @@ fn read_build_operation_frames(
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct WorkerBuildFailure {
-    status: u64,
-    category: &'static str,
-}
-
-#[derive(Debug)]
-struct WorkerBuildFailureError(WorkerBuildFailure);
-
-impl std::fmt::Display for WorkerBuildFailureError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "Nix daemon BuildDerivation failed with status {} category {}",
-            self.0.status, self.0.category
-        )
-    }
-}
-
-impl std::error::Error for WorkerBuildFailureError {}
-
-fn worker_build_failure(error: &io::Error) -> Option<WorkerBuildFailure> {
-    error
-        .get_ref()
-        .and_then(|error| error.downcast_ref::<WorkerBuildFailureError>())
-        .map(|error| error.0)
-}
-
 fn read_worker_build_result(
     input: &mut impl Read,
     version: WorkerVersion,
@@ -883,9 +850,9 @@ fn read_worker_build_result(
     let raw_status = read_worker_integer_from(input)?;
     let message = read_worker_byte_string_from(input, MAXIMUM_STRUCTURED_FRAME_MESSAGE_BYTES)?;
     let status = match raw_status {
-        0 | 1 => Some(WorkerBuildStatus::Built),
-        2 | 13 => Some(WorkerBuildStatus::AlreadyValid),
-        3..=12 | 14 => None,
+        0 | 1 => WorkerBuildStatus::Built,
+        2 | 13 => WorkerBuildStatus::AlreadyValid,
+        3..=12 | 14 => WorkerBuildStatus::Failed(raw_status),
         _ => return Err(protocol_client_error()),
     };
     if version >= WorkerVersion::new(1, 29) {
@@ -910,16 +877,38 @@ fn read_worker_build_result(
     } else {
         Vec::new()
     };
-    let status = status.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            WorkerBuildFailureError(WorkerBuildFailure {
-                status: raw_status,
-                category: build_failure_category(&message),
-            }),
-        )
-    })?;
-    Ok(WorkerBuildResult { status, outputs })
+    let mut message = String::from_utf8_lossy(&message).into_owned();
+    // Nix appends a log excerpt to its error text. Logs remain live-only and
+    // must not become durable terminal metadata at the gateway.
+    if matches!(status, WorkerBuildStatus::Failed(_)) {
+        let mut offset = 0;
+        for line in message.split_inclusive('\n') {
+            if line
+                .trim_end()
+                .strip_prefix("Last ")
+                .and_then(|line| line.strip_suffix(" log lines:"))
+                .is_some_and(|count| {
+                    !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                message.truncate(offset);
+                break;
+            }
+            offset += line.len();
+        }
+    }
+    let mut end = message
+        .len()
+        .min(crate::MAXIMUM_BUILD_FAILURE_MESSAGE_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    Ok(WorkerBuildResult {
+        status,
+        outputs,
+        message,
+    })
 }
 
 fn build_failure_category(message: &[u8]) -> &'static str {

@@ -4,9 +4,6 @@ use super::*;
 
 #[test]
 fn monitors_only_the_exact_backend_bound_job() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -52,9 +49,6 @@ fn monitors_only_the_exact_backend_bound_job() {
 
 #[test]
 fn verifies_exact_callback_allocation_identity() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let endpoint = format!(
@@ -85,9 +79,6 @@ fn verifies_exact_callback_allocation_identity() {
 
 #[test]
 fn verifies_exact_callback_allocation_during_task_startup() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let endpoint = format!(
@@ -115,9 +106,6 @@ fn verifies_exact_callback_allocation_during_task_startup() {
 
 #[test]
 fn rejects_foreign_or_terminal_callback_allocation_identity() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     for (name, body) in [
         (
             "foreign-job",
@@ -158,9 +146,6 @@ fn rejects_foreign_or_terminal_callback_allocation_identity() {
 
 #[test]
 fn configured_backend_exposes_deterministic_execution_identity_before_submission() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let config = load_service_config(&root, "http://127.0.0.1:4646", None);
     let backend = config.nomad_backends()[0].clone();

@@ -21,6 +21,7 @@ libc = "0.2"
 futures-executor = "0.3"
 
 [dev-dependencies]
+telchar-test-support = { path = "../telchar-test-support" }
 opentelemetry-proto.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true

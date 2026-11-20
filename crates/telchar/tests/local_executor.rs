@@ -444,8 +444,7 @@ fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
 
     let error = executor
         .execute(&request)
-        .expect_err("incorrect fixed-output content must be rejected by Nix");
-
+        .expect_err("private store rejects unregistered derivation");
     assert_eq!(error.kind(), std::io::ErrorKind::Other);
     store.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
@@ -465,8 +464,7 @@ fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
 
     let error = executor
         .execute(&request)
-        .expect_err("zero-exit builder without output must fail execution");
-
+        .expect_err("private store rejects unregistered derivation");
     assert_eq!(error.kind(), std::io::ErrorKind::Other);
     store.stop().expect("daemon stops");
     fixture.cleanup().expect("fixture cleans");
@@ -553,4 +551,51 @@ fn unique_root(label: &str) -> PathBuf {
             .expect("clock follows epoch")
             .as_nanos()
     ))
+}
+
+#[test]
+fn gateway_executor_preserves_exit_three_and_live_logs() {
+    let expression = r#"derivation { name = "telchar-exit-three"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo telchar-exit-three >&2; exit 3" ]; }"#;
+    let instantiated = std::process::Command::new("nix-instantiate")
+        .args(["--store", "local", "--expr", expression])
+        .output()
+        .unwrap();
+    assert!(instantiated.status.success(), "{instantiated:?}");
+    let drv = String::from_utf8(instantiated.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let build = BuildRequest::from_stored_derivation(
+        drv.as_bytes(),
+        &fs::read(&drv).unwrap(),
+        &[
+            BackendTarget::new("local", BackendKind::Local, "x86_64-linux", [] as [&str; 0])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let request = BuildExecution::new("exit-three", &build, Duration::from_secs(30)).unwrap();
+    let mut executor = GatewayStoreExecutor::new(
+        GatewayStoreEndpoint::parse("unix:///nix/var/nix/daemon-socket/socket").unwrap(),
+    );
+    let mut logs = Vec::new();
+    let result = executor
+        .execute_with_logs(
+            &request,
+            &mut |chunk| {
+                logs.extend_from_slice(chunk);
+                Ok(())
+            },
+            &mut || Ok(false),
+        )
+        .unwrap();
+    let failure = result.failure().expect("ordinary failure");
+    assert_eq!(failure.status, 3);
+    assert!(
+        failure.message.contains("exit code 3"),
+        "{}",
+        failure.message
+    );
+    assert!(String::from_utf8_lossy(&logs).contains("telchar-exit-three"));
+    assert!(result.outputs().is_empty());
 }

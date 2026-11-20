@@ -412,7 +412,7 @@ Run the curated release verification:
 ./scripts/check-release.sh
 ```
 
-The script runs formatting, workspace checks, Clippy, serial integration tests, package builds, and selected NixOS workload and recovery contracts. `NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build` is useful as an evaluation-only check; it does not build or execute the release suite.
+The script runs formatting, workspace checks, Clippy, isolated integration tests, package builds, and selected NixOS workload and recovery contracts. `NIXPKGS_ALLOW_UNFREE=1 nix flake check --impure --no-build` is useful as an evaluation-only check; it does not build or execute the release suite.
 
 ## Unsupported expectations
 

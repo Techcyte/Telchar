@@ -128,7 +128,18 @@ impl Fixture {
 fn wait_for_socket(path: &Path, daemon: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !path.exists() {
-        assert!(Instant::now() < deadline, "daemon socket was not created");
+        if Instant::now() >= deadline {
+            daemon.kill().expect("stalled daemon stops");
+            daemon.wait().expect("stalled daemon exits");
+            let mut stderr = String::new();
+            daemon
+                .stderr
+                .as_mut()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("daemon socket was not created: {stderr}");
+        }
         if let Some(status) = daemon.try_wait().expect("daemon status") {
             let mut stderr = String::new();
             std::io::Read::read_to_string(

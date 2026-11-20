@@ -120,12 +120,12 @@ fn durable_commands_report_empty_authoritative_state() {
                 intent_id: "operator-intent".into(),
                 attempt_id: attempt.attempt_id,
                 backend_name: "local-main".into(),
-                account_id: "116392764028".into(),
+                account_id: "123456789012".into(),
                 region: "us-west-2".into(),
                 image_arn: "fixture-image".into(),
                 image_version: "1".into(),
                 vpc_egress_connector_arn:
-                    "arn:aws:lambda:us-west-2:116392764028:network-connector:builder".into(),
+                    "arn:aws:lambda:us-west-2:123456789012:network-connector:builder".into(),
                 configuration_digest: [1; 32],
                 request_digest: [2; 32],
                 client_token: "private-client-token".into(),
@@ -153,7 +153,7 @@ fn durable_commands_report_empty_authoritative_state() {
     );
     let expected = serde_json::json!({
         "intent_id": "operator-intent", "backend_name": "local-main",
-        "account_id": "116392764028", "region": "us-west-2",
+        "account_id": "123456789012", "region": "us-west-2",
         "provider_id": "microvm-exact", "phase": "closed",
         "capacity_reserved": true, "cleanup_pending": true,
         "worker_state": "draining", "assignment_epoch": 1, "completed_jobs": 0

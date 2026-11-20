@@ -2,18 +2,15 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telchar::backend::static_ssh::{StaticSshHealth, StaticSshHealthState};
 use telchar::service::config::ServiceConfig;
 
-static ENVIRONMENT: Mutex<()> = Mutex::new(());
-
 #[test]
 fn immediate_probe_classifies_ready_and_unavailable_hosts() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
     let ready = fixture("ready", "#!/bin/sh\nexec nix-daemon --stdio\n");
     let unavailable = fixture("unavailable", "#!/bin/sh\nexit 255\n");
     let unreachable = fixture("unreachable", "#!/bin/sh\nsleep 30\n");
@@ -39,7 +36,6 @@ fn immediate_probe_classifies_ready_and_unavailable_hosts() {
 
 #[test]
 fn periodic_checks_use_state_specific_intervals_and_restore_readiness() {
-    let _guard = ENVIRONMENT.lock().expect("environment lock");
     let fixture = fixture("builder", "#!/bin/sh\nexit 255\n");
     let config = fixture.config.clone();
     let health = StaticSshHealth::from_states(
@@ -110,18 +106,10 @@ fn fixture(name: &str, script: &str) -> Fixture {
         ),
     )
     .expect("configuration writes");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load()
+    let config = ServiceConfig::load_with_environment(&config_path, |_| None)
         .expect("configuration loads")
         .static_ssh_backends()[0]
         .clone();
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     Fixture {
         _root: root,
         config,

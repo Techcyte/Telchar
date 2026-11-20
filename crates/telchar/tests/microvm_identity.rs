@@ -7,7 +7,7 @@ mod rotation;
 
 #[test]
 fn provider_requires_matching_signed_account_identity() {
-    for account in ["116392764028", "999999999999"] {
+    for account in ["123456789012", "999999999999"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -57,7 +57,7 @@ fn provider_requires_matching_signed_account_identity() {
             );
             write!(socket, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
             drop(socket);
-            if account == "116392764028" {
+            if account == "123456789012" {
                 for returned in [
                     "exact",
                     "wrong-id",
@@ -104,7 +104,7 @@ fn provider_requires_matching_signed_account_identity() {
                         "microvmId": if returned == "wrong-id" { "microvm-other" } else { "microvm-exact" },
                         "state": if returned == "running" { "RUNNING" } else { "TERMINATED" },
                         "endpoint": "https://unused.invalid",
-                        "imageArn": if returned == "wrong-image" { "other-image" } else { "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture" },
+                        "imageArn": if returned == "wrong-image" { "other-image" } else { "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture" },
                         "imageVersion": if returned == "wrong-version" { "2" } else { "1" },
                         "maximumDurationInSeconds": 600,
                         "startedAt": 1, "terminatedAt": 2,
@@ -143,9 +143,9 @@ fn provider_requires_matching_signed_account_identity() {
             runtime
                 .block_on(unattested.verify_identity(
                     "microvm-exact",
-                    "116392764028",
+                    "123456789012",
                     "us-west-2",
-                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                    "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                     "1",
                 ))
                 .is_err()
@@ -154,7 +154,7 @@ fn provider_requires_matching_signed_account_identity() {
             runtime
                 .block_on(unattested.verify_termination(
                     "microvm-exact",
-                    "116392764028",
+                    "123456789012",
                     "us-west-2"
                 ))
                 .is_err()
@@ -163,14 +163,14 @@ fn provider_requires_matching_signed_account_identity() {
             config,
             identity,
             aws_credential_types::provider::SharedCredentialsProvider::new(credentials),
-            "116392764028",
+            "123456789012",
             Duration::from_secs(2),
         ));
-        assert_eq!(result.is_ok(), account == "116392764028");
+        assert_eq!(result.is_ok(), account == "123456789012");
         drop(runtime);
         if let Ok(provider) = result {
             for (expected_account, region) in
-                [("999999999999", "us-west-2"), ("116392764028", "us-east-1")]
+                [("999999999999", "us-west-2"), ("123456789012", "us-east-1")]
             {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -191,7 +191,7 @@ fn provider_requires_matching_signed_account_identity() {
                             "microvm-exact",
                             expected_account,
                             region,
-                            "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                            "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                             "1",
                         ))
                         .is_err()
@@ -208,9 +208,9 @@ fn provider_requires_matching_signed_account_identity() {
                         runtime
                             .block_on(provider.verify_identity(
                                 "microvm-exact",
-                                "116392764028",
+                                "123456789012",
                                 "us-west-2",
-                                "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture",
+                                "arn:aws:lambda:us-west-2:123456789012:microvm-image:fixture",
                                 "1",
                             ))
                             .is_ok(),
@@ -229,7 +229,7 @@ fn provider_requires_matching_signed_account_identity() {
                     runtime
                         .block_on(provider.verify_termination(
                             "microvm-exact",
-                            "116392764028",
+                            "123456789012",
                             "us-west-2"
                         ))
                         .is_ok(),

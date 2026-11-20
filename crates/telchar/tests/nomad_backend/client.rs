@@ -6,9 +6,6 @@ use super::*;
 fn preserves_nomad_request_failure_causes() {
     use std::error::Error;
 
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     for (status, body, operation, expected) in [
         (503, "{}", "submit", "503"),
         (200, "{", "submit", "EOF"),
@@ -44,9 +41,6 @@ fn preserves_nomad_request_failure_causes() {
 
 #[test]
 fn submits_one_deterministic_job_with_operator_authentication() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let token_root = fixture_root();
     let token_path = token_root.join("nomad.token");
     fs::write(&token_path, "fixture-token\n").expect("token writes");
@@ -111,9 +105,6 @@ fn submits_one_deterministic_job_with_operator_authentication() {
 
 #[test]
 fn submits_distinct_job_identity_for_each_attempt() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -158,9 +149,6 @@ fn submits_distinct_job_identity_for_each_attempt() {
 
 #[test]
 fn rejects_invalid_configured_tls_material() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let ca_path = root.join("ca.pem");
     fs::write(&ca_path, "not a certificate\n").expect("CA writes");
@@ -228,18 +216,10 @@ command = "/bin/true"
     .expect("configuration writes");
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
         .expect("configuration permissions set");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", &config_path) };
-    let config = ServiceConfig::load()
+    let config = ServiceConfig::load_with_environment(&config_path, |_| None)
         .expect("configuration loads")
         .nomad_backends()[0]
         .clone();
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
     let error = NomadClient::new(config).err().expect("invalid CA rejects");
     assert_eq!(error.to_string(), "Nomad client configuration failed");
     fs::remove_dir_all(root).expect("fixture removes");
@@ -247,9 +227,6 @@ command = "/bin/true"
 
 #[test]
 fn maps_allocation_terminal_states_and_missing_jobs() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     for (status, expected) in [
         ("pending", NomadExecutionState::Placed),
         ("running", NomadExecutionState::Placed),
@@ -382,9 +359,6 @@ fn maps_allocation_terminal_states_and_missing_jobs() {
 
 #[test]
 fn rejects_foreign_job_at_deterministic_identity() {
-    let _guard = CONFIGURATION_TESTS
-        .lock()
-        .expect("configuration lock holds");
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(

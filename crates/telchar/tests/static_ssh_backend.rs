@@ -22,8 +22,6 @@ mod build_request_support;
 
 use build_request_support::admitted_request;
 
-static CONFIG_ENVIRONMENT: Mutex<()> = Mutex::new(());
-
 #[derive(Clone, Default)]
 struct EventCapture(Arc<Mutex<Vec<(tracing::Level, String)>>>);
 
@@ -56,19 +54,7 @@ impl Visit for EventFields {
 }
 
 fn load_config<T>(path: &Path, select: impl FnOnce(ServiceConfig) -> T) -> T {
-    let _guard = CONFIG_ENVIRONMENT
-        .lock()
-        .expect("configuration environment lock");
-    let saved = std::env::var_os("TELCHAR_CONFIG");
-    unsafe { std::env::set_var("TELCHAR_CONFIG", path) };
-    let config = select(ServiceConfig::load().expect("configuration loads"));
-    unsafe {
-        match saved {
-            Some(value) => std::env::set_var("TELCHAR_CONFIG", value),
-            None => std::env::remove_var("TELCHAR_CONFIG"),
-        }
-    }
-    config
+    select(ServiceConfig::load_with_environment(path, |_| None).expect("configuration loads"))
 }
 
 #[test]
@@ -120,6 +106,13 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
 
 #[test]
 fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
+    let name = "hostile_transport_diagnostics_do_not_expose_credentials_or_destination";
+    if !telchar_test_support::process::is_child(name) {
+        telchar_test_support::process::assert_success(&mut telchar_test_support::process::command(
+            name,
+        ));
+        return;
+    }
     let root = std::env::temp_dir().join(format!(
         "telchar-static-ssh-redaction-{}-{}",
         std::process::id(),

@@ -104,7 +104,7 @@ fn configured_provider(test: &str, protected_profile: bool) {
             if image && protected_profile {
                 image::serve_image(
                     &listener,
-                    "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                    "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
                 );
                 continue;
             }
@@ -143,7 +143,7 @@ fn configured_provider(test: &str, protected_profile: bool) {
                 assert!(headers.starts_with("get "));
                 stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
             } else {
-                let body = "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>116392764028</Account><Arn>arn:aws:iam::116392764028:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>";
+                let body = "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>";
                 write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/xml\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         }
@@ -511,7 +511,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
         let account = if exit == DaemonExit::AccountMismatch {
             "000000000000"
         } else {
-            "116392764028"
+            "123456789012"
         };
         let body = format!(
             "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>{account}</Account><Arn>arn:aws:iam::{account}:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>"
@@ -520,7 +520,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
         if exit != DaemonExit::AccountMismatch {
             image::serve_image(
                 &listener,
-                "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
+                "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
             );
         }
         if exit == DaemonExit::Terminated {
@@ -861,7 +861,7 @@ fn daemon_lifecycle(exit: DaemonExit) {
 fn deployment_requires_vpc_egress_connector() {
     let configured = CONFIG;
     let missing = configured.replace(
-        "vpc_egress_connector_arn = \"arn:aws:lambda:us-west-2:116392764028:network-connector:builder\"\n",
+        "vpc_egress_connector_arn = \"arn:aws:lambda:us-west-2:123456789012:network-connector:builder\"\n",
         "",
     );
     assert!(MicrovmBackendConfig::parse(&missing).is_err());
@@ -878,17 +878,17 @@ fn deployment_requires_vpc_egress_connector() {
     );
     for connector in [
         "",
-        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:0",
-        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:01",
-        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder:1:2",
-        "arn:aws:lambda:us-east-1:116392764028:network-connector:builder",
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:builder:0",
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:builder:01",
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:builder:1:2",
+        "arn:aws:lambda:us-east-1:123456789012:network-connector:builder",
         "arn:aws:lambda:us-west-2:999999999999:network-connector:builder",
-        "arn:aws:lambda:us-west-2:116392764028:microvm-image:builder",
-        "arn:aws:lambda:us-west-2:116392764028:network-connector:builder/other",
+        "arn:aws:lambda:us-west-2:123456789012:microvm-image:builder",
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:builder/other",
     ] {
         assert!(
             MicrovmBackendConfig::parse(&configured.replace(
-                "arn:aws:lambda:us-west-2:116392764028:network-connector:builder",
+                "arn:aws:lambda:us-west-2:123456789012:network-connector:builder",
                 connector,
             ))
             .is_err(),
@@ -946,7 +946,7 @@ fn rejects_untrusted_or_unbounded_deployment_configuration() {
     for (from, to) in [
         ("aarch64-linux", "x86_64-linux"),
         (
-            "account_id = \"116392764028\"",
+            "account_id = \"123456789012\"",
             "account_id = \"999999999999\"",
         ),
         ("region = \"us-west-2\"", "region = \"us-east-1\""),

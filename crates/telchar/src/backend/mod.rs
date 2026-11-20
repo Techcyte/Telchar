@@ -703,6 +703,7 @@ impl<'a> BuildExecution<'a> {
 pub enum BuildStatus {
     Built,
     AlreadyValid,
+    Failed(u64),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -715,15 +716,43 @@ pub struct BuildResult {
     status: BuildStatus,
     outputs: Vec<(Vec<u8>, Vec<u8>)>,
     output_trust: OutputTrust,
+    failure: Option<BuildFailure>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildFailure {
+    pub status: u64,
+    pub message: String,
+}
+
+impl BuildFailure {
+    pub fn validate(&self) -> io::Result<()> {
+        nix_worker_protocol::validate_build_failure(self.status, &self.message)
+    }
 }
 
 impl BuildResult {
+    pub fn failed(failure: BuildFailure) -> io::Result<Self> {
+        failure.validate()?;
+        Ok(Self {
+            status: BuildStatus::Failed(failure.status),
+            outputs: Vec::new(),
+            output_trust: OutputTrust::TrustedExecutor,
+            failure: Some(failure),
+        })
+    }
+
+    pub fn failure(&self) -> Option<&BuildFailure> {
+        self.failure.as_ref()
+    }
+
     pub fn new(
         status: BuildStatus,
         outputs: Vec<(Vec<u8>, Vec<u8>)>,
         output_trust: OutputTrust,
     ) -> io::Result<Self> {
-        if outputs.is_empty() {
+        if outputs.is_empty() || matches!(status, BuildStatus::Failed(_)) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "build result has no outputs",
@@ -733,6 +762,7 @@ impl BuildResult {
             status,
             outputs,
             output_trust,
+            failure: None,
         })
     }
 

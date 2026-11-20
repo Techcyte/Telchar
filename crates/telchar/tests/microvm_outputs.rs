@@ -47,7 +47,8 @@ fn disk_reserve_rejects_output_before_staging() {
         outputs
             .finish(&BuildResultMetadata {
                 outcome: BuildOutcome::Built,
-                diagnostic: None
+                diagnostic: None,
+                nix_failure: None,
             })
             .is_err()
     );
@@ -110,6 +111,7 @@ fn receipts_require_authoritative_registration() {
     let result = BuildResultMetadata {
         outcome: BuildOutcome::Built,
         diagnostic: None,
+        nix_failure: None,
     };
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(!store.is_valid_path(path.as_bytes()).unwrap());
@@ -301,6 +303,7 @@ fn gateway_session(
                     &BuildResultMetadata {
                         outcome: BuildOutcome::Built,
                         diagnostic: None,
+                        nix_failure: None,
                     },
                     8192,
                 )

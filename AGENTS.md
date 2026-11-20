@@ -100,10 +100,10 @@ For a feature or bugfix: write a failing behavioral test, run it to confirm the 
 nix develop -c cargo test --locked -p nix-worker-protocol --lib
 
 # Example integration suite; substitute the owning test target
-nix develop -c cargo test --locked -p telchar --test shared_build_recovery -- --test-threads=1
+nix develop -c cargo test --locked -p telchar --test shared_build_recovery
 
 # Allocation worker
-nix develop -c cargo test --locked -p telchar-nomad-worker -- --test-threads=1
+nix develop -c cargo test --locked -p telchar-nomad-worker
 ```
 
 Most gateway integration suites live in `crates/telchar/tests/` and are named after their behavior. Large suites such as `operation_dispatch`, `service_config`, `nomad_backend`, and `ipc_frontend` have root `.rs` targets plus focused subdirectories. Shared PostgreSQL fixtures live in `crates/telchar-test-support/`; admitted-request helpers live in `tests/support/` inside the gateway crate. Exporter tests live in `crates/telchar-telemetry/tests/`; gateway and worker process telemetry tests live in their respective crates' `tests/telemetry.rs`. Their shared OTLP receiver lives in repository-root `tests/telemetry/collector.rs`. Real-Nix fixtures live in `crates/telchar/src/fixture/`; protocol contracts in `crates/nix-worker-protocol/tests/`; worker tests in `crates/telchar-nomad-worker/tests/`.
@@ -126,7 +126,7 @@ Run available language-server diagnostics before builds. Inspect all test output
 
 Important distinctions:
 
-- Full process/PostgreSQL integration authority is `checks.x86_64-linux.workspace-tests`. `nix/checks/workspace.nix` compiles once using cached Crane dependencies, restores the original Cargo source/target paths in a NixOS VM, then runs `tests/workspace.sh` as a nonroot NSS user. All packages (including doctests) run serially, with the gateway's canonical-store boundary separate from worker-owned stores; see `tests/canonical-store.md`. A VM-capable Linux builder with KVM is required. `library-tests` remains a sandbox-compatible subset, not a replacement for the workspace check.
+- Full process/PostgreSQL integration authority is `checks.x86_64-linux.workspace-tests`. `nix/checks/workspace.nix` compiles once using cached Crane dependencies, restores the original Cargo source/target paths in a NixOS VM, then runs `tests/workspace.sh` as a nonroot NSS user. Packages (including doctests) retain separate execution groups, with four test threads per binary by default (`RUST_TEST_THREADS` overrides this). Environment-sensitive contracts use explicit configuration or exact-test subprocesses; never mutate the test process environment. The gateway's canonical-store boundary remains separate from worker-owned stores; see `tests/canonical-store.md`. A VM-capable Linux builder with KVM is required. `library-tests` remains a sandbox-compatible subset, not a replacement for the workspace check.
 - Run real-Nix/PostgreSQL fixtures as a non-root user with process/socket permissions. Helpers start isolated stores and databases; do not redirect them at production state. Nix fixtures also hold a cross-process lock; waiting on another test process is not necessarily a hung test. Do not bypass fixture locking to force parallelism.
 - Some tests are deliberately ignored for private-store namespace or helper-process reasons. Reasons live beside the tests. Do not blanket-enable, add ignores, or remove tests to get green output.
 - VM checks require a VM-capable Nix builder and can be expensive. Pick checks from `nix/checks/nixos.nix` and its imported modules for the changed boundary.

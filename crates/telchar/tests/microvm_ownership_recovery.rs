@@ -286,6 +286,7 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
                 let result = telchar::nomad::protocol::BuildResultMetadata {
                     outcome: telchar::nomad::protocol::BuildOutcome::Failed,
                     diagnostic: Some("fixture completed after ownership recovery".into()),
+                    nix_failure: None,
                 };
                 send_metadata(
                     &mut client,
