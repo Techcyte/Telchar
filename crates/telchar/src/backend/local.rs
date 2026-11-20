@@ -122,7 +122,7 @@ impl GatewayStoreExecutor {
             });
             let result = (|| {
                 loop {
-                    forward_logs(&log_receiver, logs)?;
+                    let logs_pending = forward_logs(&log_receiver, logs)?;
                     if let Ok(result) = result_receiver.try_recv() {
                         forward_logs(&log_receiver, logs)?;
                         return result;
@@ -136,7 +136,9 @@ impl GatewayStoreExecutor {
                     if Instant::now() >= deadline {
                         return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
                     }
-                    std::thread::sleep(Duration::from_millis(5));
+                    if !logs_pending {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             })();
             let _ = shutdown.shutdown(std::net::Shutdown::Both);
@@ -298,13 +300,16 @@ impl NixStoreExecutor {
                 let _ = join_log_reader(stderr_reader);
                 return Err(error);
             }
-            if let Err(error) = forward_logs(&log_receiver, logs) {
-                child.kill_and_reap();
-                drop(log_receiver);
-                let _ = join_reader(stdout_reader, "stdout");
-                let _ = join_log_reader(stderr_reader);
-                return Err(error);
-            }
+            let logs_pending = match forward_logs(&log_receiver, logs) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    child.kill_and_reap();
+                    drop(log_receiver);
+                    let _ = join_reader(stdout_reader, "stdout");
+                    let _ = join_log_reader(stderr_reader);
+                    return Err(error);
+                }
+            };
             if cancelled()? {
                 child.kill_and_reap();
                 drop(log_receiver);
@@ -334,7 +339,8 @@ impl NixStoreExecutor {
                         "build helper timed out",
                     ));
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(None) if !logs_pending => std::thread::sleep(Duration::from_millis(5)),
+                Ok(None) => {}
             }
         };
         let stdout = join_reader(stdout_reader, "stdout")?;
@@ -640,11 +646,14 @@ fn spawn_log_reader(
 fn forward_logs(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
     logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-) -> io::Result<()> {
-    while let Ok(chunk) = receiver.try_recv() {
+) -> io::Result<bool> {
+    for _ in 0..MAXIMUM_QUEUED_BUILD_LOG_CHUNKS {
+        let Ok(chunk) = receiver.try_recv() else {
+            return Ok(false);
+        };
         logs(&chunk)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn finish_logs(
@@ -731,6 +740,23 @@ mod tests {
                 .expect("test receives source progress");
             Ok(buffer.len())
         }
+    }
+
+    #[test]
+    fn log_delivery_yields_when_producer_replenishes_queue() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        sender.send(vec![1]).unwrap();
+        let mut forwarded = 0;
+        super::forward_logs(&receiver, &mut |_| {
+            forwarded += 1;
+            if forwarded < 100 {
+                sender.try_send(vec![1]).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(forwarded, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        assert!(receiver.try_recv().is_ok());
     }
 
     #[test]

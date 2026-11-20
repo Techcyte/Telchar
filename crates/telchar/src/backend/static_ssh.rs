@@ -258,7 +258,7 @@ impl StaticSshBackend {
             });
             let result = (|| {
                 loop {
-                    forward_logs(&log_receiver, logs)?;
+                    let logs_pending = forward_logs(&log_receiver, logs)?;
                     if let Ok(error) = error_receiver.try_recv() {
                         return Err(error);
                     }
@@ -275,7 +275,9 @@ impl StaticSshBackend {
                     if Instant::now() >= deadline {
                         return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
                     }
-                    std::thread::sleep(Duration::from_millis(5));
+                    if !logs_pending {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             })();
             child.kill_and_reap();
@@ -676,11 +678,14 @@ fn send_logs(sender: &std::sync::mpsc::SyncSender<Vec<u8>>, message: &[u8]) -> i
 fn forward_logs(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
     logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-) -> io::Result<()> {
-    while let Ok(chunk) = receiver.try_recv() {
+) -> io::Result<bool> {
+    for _ in 0..MAXIMUM_QUEUED_BUILD_LOG_CHUNKS {
+        let Ok(chunk) = receiver.try_recv() else {
+            return Ok(false);
+        };
         logs(&chunk)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 struct WorkerStream {
@@ -896,6 +901,23 @@ mod tests {
         .expect("logs forward");
 
         assert_eq!(forwarded, b"first\nlast\n");
+    }
+
+    #[test]
+    fn log_delivery_yields_when_producer_replenishes_queue() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        sender.send(vec![1]).unwrap();
+        let mut forwarded = 0;
+        forward_logs(&receiver, &mut |_| {
+            forwarded += 1;
+            if forwarded < 100 {
+                sender.try_send(vec![1]).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(forwarded, MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        assert!(receiver.try_recv().is_ok());
     }
 
     #[test]
