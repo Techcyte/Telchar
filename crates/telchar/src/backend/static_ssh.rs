@@ -483,7 +483,12 @@ fn select_missing_inputs(
             "remote missing input set contains an unexpected path",
         ));
     }
-    Ok(selected)
+    order_by_references(
+        selected,
+        |path| &path.store_path,
+        |path| &path.references,
+        "static SSH build inputs contain a reference cycle",
+    )
 }
 
 fn copy_gateway_path_to_remote(
@@ -541,29 +546,40 @@ type RemoteBuildOutput = (Vec<u8>, WorkerPathInfo);
 fn order_remote_outputs_by_references(
     outputs: Vec<RemoteBuildOutput>,
 ) -> io::Result<Vec<RemoteBuildOutput>> {
-    let expected_paths = outputs
+    order_by_references(
+        outputs,
+        |(path, _)| path,
+        |(_, info)| info.references(),
+        "static SSH build outputs contain a reference cycle",
+    )
+}
+
+fn order_by_references<T, P: Ord + Clone>(
+    paths: Vec<T>,
+    path: impl Fn(&T) -> &P,
+    references: impl Fn(&T) -> &[P],
+    cycle_error: &'static str,
+) -> io::Result<Vec<T>> {
+    let expected_paths = paths
         .iter()
-        .map(|(path, _)| path.clone())
+        .map(|entry| path(entry).clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut pending = outputs;
+    let mut pending = paths;
     let mut ordered = Vec::with_capacity(pending.len());
     let mut imported = std::collections::BTreeSet::new();
     while !pending.is_empty() {
-        let Some(index) = pending.iter().position(|(path, info)| {
-            info.references().iter().all(|reference| {
-                reference == path
+        let Some(index) = pending.iter().position(|entry| {
+            references(entry).iter().all(|reference| {
+                reference == path(entry)
                     || !expected_paths.contains(reference)
                     || imported.contains(reference)
             })
         }) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "static SSH build outputs contain a reference cycle",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, cycle_error));
         };
-        let output = pending.remove(index);
-        imported.insert(output.0.clone());
-        ordered.push(output);
+        let entry = pending.remove(index);
+        imported.insert(path(&entry).clone());
+        ordered.push(entry);
     }
     Ok(ordered)
 }
@@ -880,6 +896,53 @@ mod tests {
 
         assert_eq!(ordered[0].0, dependency);
         assert_eq!(ordered[1].0, output);
+    }
+
+    #[test]
+    fn stages_missing_dependencies_before_referrers() {
+        let parent = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parent";
+        let dependency = "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-dependency";
+        let present = "/nix/store/11111111111111111111111111111111-present";
+        let mut parent_path = closure_path(parent);
+        parent_path.references = vec![parent.into(), dependency.into(), present.into()];
+        let remote = WorkerMissingPaths {
+            will_build: Vec::new(),
+            will_substitute: Vec::new(),
+            unknown: vec![parent.as_bytes().to_vec(), dependency.as_bytes().to_vec()],
+            download_size: 0,
+            nar_size: 0,
+        };
+        let selected = select_missing_inputs(
+            vec![parent_path, closure_path(present), closure_path(dependency)],
+            &remote,
+        )
+        .expect("missing input order resolves");
+        assert_eq!(selected[0].store_path, dependency);
+        assert_eq!(selected[1].store_path, parent);
+    }
+
+    #[test]
+    fn rejects_missing_input_reference_cycles() {
+        let first = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-first";
+        let second = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-second";
+        let mut first_path = closure_path(first);
+        first_path.references = vec![second.into()];
+        let mut second_path = closure_path(second);
+        second_path.references = vec![first.into()];
+        let remote = WorkerMissingPaths {
+            will_build: Vec::new(),
+            will_substitute: Vec::new(),
+            unknown: vec![first.as_bytes().to_vec(), second.as_bytes().to_vec()],
+            download_size: 0,
+            nar_size: 0,
+        };
+        let error = select_missing_inputs(vec![first_path, second_path], &remote)
+            .expect_err("cyclic missing inputs reject before transfer");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "static SSH build inputs contain a reference cycle"
+        );
     }
 
     #[test]
