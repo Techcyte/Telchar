@@ -153,13 +153,34 @@ impl Telemetry {
         service_name: &'static str,
         service_version: &'static str,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::initialize_for_process(service_name, service_version, None)
+    }
+
+    pub fn initialize_frontend(
+        service_name: &'static str,
+        service_version: &'static str,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::initialize_for_process(service_name, service_version, Some(1))
+    }
+
+    fn initialize_for_process(
+        service_name: &'static str,
+        service_version: &'static str,
+        worker_threads: Option<usize>,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let transport = OtlpTransport::from_environment()?;
         let endpoint =
             std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| match transport {
                 OtlpTransport::Grpc => "http://127.0.0.1:4317".to_owned(),
                 OtlpTransport::HttpProtobuf => "http://127.0.0.1:4318".to_owned(),
             });
-        Self::initialize_with_endpoint(endpoint, transport, service_name, service_version)
+        Self::initialize_with_endpoint(
+            endpoint,
+            transport,
+            service_name,
+            service_version,
+            worker_threads,
+        )
     }
 
     fn initialize_with_endpoint(
@@ -167,8 +188,14 @@ impl Telemetry {
         transport: OtlpTransport,
         service_name: &'static str,
         service_version: &'static str,
+        worker_threads: Option<usize>,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let runtime = tokio::runtime::Runtime::new()?;
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        if let Some(worker_threads) = worker_threads {
+            builder.worker_threads(worker_threads);
+        }
+        let runtime = builder.build()?;
         let resource = Resource::builder()
             .with_service_name(service_name)
             .with_attributes([KeyValue::new("service.version", service_version)])
@@ -347,7 +374,23 @@ impl Telemetry {
 
 #[cfg(test)]
 mod tests {
-    use super::OtlpTransport;
+    use super::{OtlpTransport, Telemetry};
+
+    #[test]
+    fn frontend_runtime_has_one_background_worker() {
+        let telemetry = Telemetry::initialize_frontend("frontend-runtime-test", "test")
+            .expect("frontend telemetry initializes");
+        assert_eq!(telemetry.runtime.metrics().num_workers(), 1);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        telemetry.runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            sender.send(()).expect("runtime progress reports");
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("frontend runtime progresses without block_on");
+        telemetry.shutdown();
+    }
     #[test]
     fn selects_supported_otlp_transports() {
         assert_eq!(

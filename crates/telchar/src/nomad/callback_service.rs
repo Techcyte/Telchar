@@ -48,7 +48,7 @@ impl NomadCallbackService {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
         let connections = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-        let workers = Arc::new(Mutex::new(Vec::new()));
+        let workers = Arc::new(Mutex::new(Vec::<std::thread::JoinHandle<()>>::new()));
         let listener_shutdown = Arc::clone(&shutdown);
         let listener_connections = Arc::clone(&connections);
         let listener_workers = Arc::clone(&workers);
@@ -57,6 +57,22 @@ impl NomadCallbackService {
         let drain_timeout = callback.shutdown_drain_timeout();
         let listener = std::thread::spawn(move || {
             while !listener_shutdown.load(Ordering::Acquire) {
+                {
+                    let mut workers = listener_workers
+                        .lock()
+                        .map_err(|_| io::Error::other("Nomad callback worker lock failed"))?;
+                    let mut index = 0;
+                    while index < workers.len() {
+                        if workers[index].is_finished() {
+                            workers
+                                .swap_remove(index)
+                                .join()
+                                .map_err(|_| io::Error::other("Nomad callback worker panicked"))?;
+                        } else {
+                            index += 1;
+                        }
+                    }
+                }
                 let mut connection = match listener.accept() {
                     Ok((connection, _)) => connection,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -1288,6 +1304,115 @@ mod tests {
     use tracing::field::{Field, Visit};
     use tracing_subscriber::layer::{Context, Layer};
     use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn health_requests_release_completed_workers() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("secret");
+        std::fs::write(&secret, "callback-secret").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let path = directory.path().join("service.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[backends.nomad_callback]
+maximum_connections = 2
+[[backends.nomad]]
+[backends.nomad.primary]
+system = "x86_64-linux"
+maximum_concurrent_builds = 1
+endpoint = "http://127.0.0.1:4646"
+namespace = "telchar"
+job_name_scope = "telchar"
+poll_interval_seconds = 1
+runtime_limit_seconds = 60
+driver = "raw_exec"
+[backends.nomad.primary.driver_config]
+command = "/bin/true"
+[backends.nomad.primary.resources]
+cpu_mhz = 100
+memory_mb = 128
+disk_mb = 128
+[backends.nomad.primary.transfer_authentication]
+mode = "hmac"
+key_id = "health"
+secret_file = "{}"
+[backends.nomad.primary.store]
+mode = "daemon"
+uri = "unix:///missing-worker.sock"
+[backends.nomad.primary.transfer_limits]
+maximum_manifest_paths = 1
+maximum_manifest_bytes = 1024
+maximum_input_nar_bytes = 1024
+maximum_total_input_bytes = 1024
+maximum_output_nar_bytes = 1024
+maximum_total_output_bytes = 1024
+maximum_frame_metadata_bytes = 1024
+stream_buffer_bytes = 1024
+maximum_live_log_chunk_bytes = 1024
+live_log_queue_bytes = 1024
+transfer_idle_timeout_seconds = 60
+setup_timeout_seconds = 60
+output_collection_timeout_seconds = 60
+maximum_connection_lifetime_seconds = 3600
+authentication_lifetime_seconds = 60
+clock_skew_seconds = 5
+nonce_retention_seconds = 120
+reconnect_timeout_seconds = 60
+maximum_diagnostic_bytes = 1024
+"#,
+                secret.display()
+            ),
+        )
+        .unwrap();
+        let config = crate::service::config::ServiceConfig::load_from_default(&path).unwrap();
+        let database = telchar_test_support::postgres::PostgresFixture::start();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut service = super::NomadCallbackService::start(
+            listener,
+            config.nomad_callback().unwrap().clone(),
+            crate::persistence::Database::connect(database.url()).unwrap(),
+            config.nomad_backends().to_vec(),
+            crate::store::daemon::GatewayStoreEndpoint::parse("unix:///missing-gateway.sock")
+                .unwrap(),
+            Duration::from_secs(60),
+            Arc::new(crate::shared_build::SharedBuildRegistry::new()),
+            None,
+        )
+        .unwrap();
+        for _ in 0..32 {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client
+                .write_all(b"GET /healthz HTTP/1.1\r\nHost: gateway\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let retained = service.workers.lock().unwrap().len();
+            if retained == 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "retained {retained} completed callback workers"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(service.active_connections().unwrap(), 0);
+        service.shutdown().unwrap();
+    }
 
     #[derive(Clone, Default)]
     struct EventCapture(Arc<Mutex<Vec<(tracing::Level, String)>>>);
