@@ -164,9 +164,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-lambdamicrovms"
-version = "1.18.0"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85241fa82416aa8091c133070546800055c97347c304032e1b3a229334c8e2b4"
+checksum = "1744da95aece2cb2f1bfcdebd072817ac79e73d91997ccc890eaf4b837aff5d4"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
