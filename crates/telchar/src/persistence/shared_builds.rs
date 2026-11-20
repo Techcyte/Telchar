@@ -713,8 +713,17 @@ pub fn read_active_shared_builds(
     database: &(impl DatabaseSource + ?Sized),
     limit: usize,
 ) -> Result<Vec<SharedBuild>, SharedBuildError> {
+    read_active_shared_builds_after(database, None, limit)
+}
+
+pub fn read_active_shared_builds_after(
+    database: &(impl DatabaseSource + ?Sized),
+    after: Option<(SystemTime, &str)>,
+    limit: usize,
+) -> Result<Vec<SharedBuild>, SharedBuildError> {
     let _database_operation =
         telemetry::DatabaseOperation::start(stringify!(read_active_shared_builds));
+    let (after_created_at, after_path) = after.unzip();
     if !database.is_configured() || limit == 0 || limit > 256 {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
@@ -731,9 +740,10 @@ pub fn read_active_shared_builds(
                     completed_at, expires_at
              FROM shared_builds
              WHERE state IN ('claimed', 'running', 'collecting')
+               AND ($2::timestamptz IS NULL OR (created_at, derivation_path) > ($2, $3::text))
              ORDER BY created_at, derivation_path
              LIMIT $1",
-            &[&limit],
+            &[&limit, &after_created_at, &after_path],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .into_iter()

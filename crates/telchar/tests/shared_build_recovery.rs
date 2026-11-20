@@ -97,6 +97,46 @@ fn claim(
 }
 
 #[test]
+fn recovery_traverses_monitoring_records_beyond_first_page() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    for index in 0..257 {
+        let path = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-recovery-{index:03}.drv");
+        telchar::persistence::claim_shared_build(
+            fixture.url(),
+            &path,
+            &[1; 32],
+            "nomad",
+            BackendKind::Nomad,
+            BackendKind::Nomad.capabilities(),
+            Some(&format!("job-{index}")),
+            &[OUTPUT],
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(fixture.url(), &path).unwrap();
+        if index % 2 == 0 {
+            telchar::persistence::collect_shared_build(fixture.url(), &path).unwrap();
+        }
+    }
+    let mut outputs = OutputStore::default();
+    let mut backends = Backends::default();
+    backends.capabilities.insert(
+        "nomad".into(),
+        (BackendKind::Nomad, BackendKind::Nomad.capabilities()),
+    );
+    let outcome = reconcile_active_shared_builds(
+        fixture.url(),
+        Duration::from_secs(60),
+        &mut outputs,
+        &mut backends,
+    )
+    .unwrap();
+    assert_eq!(outcome.monitoring, 257);
+    assert_eq!(backends.adopted.len(), 257);
+    assert_eq!(backends.adopted.iter().collect::<BTreeSet<_>>().len(), 257);
+}
+
+#[test]
 fn microvm_restart_uses_gateway_outputs_without_adoption() {
     for available in [false, true] {
         let fixture = PostgresFixture::start();
