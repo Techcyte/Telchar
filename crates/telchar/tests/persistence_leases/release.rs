@@ -4,6 +4,15 @@ use super::*;
 
 #[test]
 fn request_lease_release_accepts_input_and_output_leases_without_derivation() {
+    request_input_release(false);
+}
+
+#[test]
+fn unresolved_nomad_execution_retains_request_inputs_on_detach() {
+    request_input_release(true);
+}
+
+fn request_input_release(obligation: bool) {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.database()).expect("migration succeeds");
     let requester = "f3d3e3c63821a33f175cbe0dc4288e6e906ec8fe000df17c91d6ae616cc4ab1e";
@@ -54,6 +63,27 @@ fn request_lease_release_accepts_input_and_output_leases_without_derivation() {
         .expect("lease persists");
     }
 
+    if obligation {
+        let derivation = "/nix/store/11111111111111111111111111111111-release-no-derivation.drv";
+        telchar::persistence::claim_shared_build(
+            fixture.database(),
+            derivation,
+            &[4; 32],
+            "nomad",
+            telchar::backend::BackendKind::Nomad,
+            telchar::backend::BackendKind::Nomad.capabilities(),
+            Some("input-retention-job"),
+            &["/nix/store/33333333333333333333333333333333-release-no-derivation-output"],
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(fixture.database(), derivation).unwrap();
+        telchar::persistence::retain_nomad_execution_obligation(
+            fixture.database(),
+            derivation,
+            "input-retention-job",
+        )
+        .unwrap();
+    }
     let released = telchar::persistence::detach_request_and_release_leases(
         fixture.database(),
         "release-no-derivation-session",
@@ -61,11 +91,79 @@ fn request_lease_release_accepts_input_and_output_leases_without_derivation() {
     )
     .expect("request detaches and input lease releases");
 
-    assert_eq!(released.leases.len(), 1);
+    assert_eq!(released.leases.len(), if obligation { 0 } else { 1 });
+    let input =
+        telchar::persistence::read_store_lease(fixture.database(), "release-no-derivation-input")
+            .unwrap()
+            .unwrap();
     assert_eq!(
-        released.leases[0].purpose,
-        telchar::persistence::StoreLeasePurpose::Input
+        input.state,
+        if obligation {
+            telchar::persistence::StoreLeaseState::Active
+        } else {
+            telchar::persistence::StoreLeaseState::Released
+        }
     );
+    if !obligation {
+        let derivation = "/nix/store/11111111111111111111111111111111-release-no-derivation.drv";
+        let kind = telchar::backend::BackendKind::Nomad;
+        telchar::persistence::claim_shared_build(
+            fixture.database(),
+            derivation,
+            &[4; 32],
+            "nomad",
+            kind,
+            kind.capabilities(),
+            Some("released-input-job"),
+            &["/nix/store/33333333333333333333333333333333-release-no-derivation-output"],
+        )
+        .unwrap();
+        telchar::persistence::start_shared_build(fixture.database(), derivation).unwrap();
+        assert!(
+            telchar::persistence::retain_nomad_execution_obligation(
+                fixture.database(),
+                derivation,
+                "released-input-job"
+            )
+            .is_err(),
+            "submission must not outlive released inputs"
+        );
+    }
+    if obligation {
+        let attempt = telchar::persistence::read_shared_build_attempt(
+            fixture.database(),
+            "/nix/store/11111111111111111111111111111111-release-no-derivation.drv",
+        )
+        .unwrap()
+        .unwrap();
+        telchar::persistence::close_protocol_session(
+            fixture.database(),
+            "release-no-derivation-session",
+        )
+        .unwrap();
+        assert!(
+            telchar::persistence::release_abandoned_request_leases(fixture.database(), 64)
+                .unwrap()
+                .is_empty()
+        );
+        telchar::persistence::resolve_nomad_execution_obligation(
+            fixture.database(),
+            attempt.attempt_id,
+        )
+        .unwrap();
+        let reconciled =
+            telchar::persistence::release_abandoned_request_leases(fixture.database(), 64).unwrap();
+        assert_eq!(
+            reconciled.len(),
+            1,
+            "detached retained inputs release after liability resolves"
+        );
+        assert!(
+            telchar::persistence::release_abandoned_request_leases(fixture.database(), 64)
+                .unwrap()
+                .is_empty()
+        );
+    }
     assert_eq!(
         telchar::persistence::read_store_lease(fixture.database(), "release-no-derivation-output")
             .expect("output lease reads")

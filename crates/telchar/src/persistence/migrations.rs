@@ -170,6 +170,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "store_lease_admission_indexes",
         sql: include_str!("../../migrations/0031_store_lease_admission_indexes.sql"),
     },
+    Migration {
+        version: 32,
+        name: "nomad_execution_obligations",
+        sql: include_str!("../../migrations/0032_nomad_execution_obligations.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

@@ -613,7 +613,8 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
     fixture
         .connect()
         .batch_execute(
-            "DROP TABLE post_build_hook_roots;
+            "DROP TABLE nomad_execution_obligations;
+         DROP TABLE post_build_hook_roots;
          DROP TABLE post_build_hooks_outbox;
          DROP TRIGGER microvm_assignment_lifecycle ON microvm_workers;
          DROP FUNCTION track_microvm_assignment();
@@ -635,7 +636,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        11
+        12
     );
     fixture.restart();
     let row = fixture.connect().query_one(
