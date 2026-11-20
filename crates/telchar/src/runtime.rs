@@ -810,6 +810,8 @@ fn run_daemon() -> io::Result<()> {
     let mut ec2_static_ssh = Vec::new();
     let (once_result, completed_session) = std::sync::mpsc::channel();
     let mut once_started = false;
+    let mut reload_preparation: Option<std::thread::JoinHandle<_>> = None;
+    let mut reload_started = std::time::Instant::now();
     loop {
         if once_started {
             match completed_session.try_recv() {
@@ -862,23 +864,53 @@ fn run_daemon() -> io::Result<()> {
         for service in &microvm_services {
             service.check()?;
         }
-        if reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            let reload_started = std::time::Instant::now();
+        if reload_preparation.is_none()
+            && static_ssh_health_service.can_replace()?
+            && reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            reload_started = std::time::Instant::now();
             tracing::info!(
                 event = "configuration.reload.requested",
                 "configuration reload requested"
             );
-            match telchar::service::config_reload::BackendReload::prepare(
-                &config,
-                &discovered_static_ssh,
-                gateway_store.endpoint().cloned(),
-                gateway_store
-                    .build_helper()
-                    .map(std::path::Path::to_path_buf),
-                Duration::from_secs(1),
-            )
-            .and_then(|reload| reload.apply(&mut config, &backends, &mut static_ssh_health_service))
-            {
+            let current = config.clone();
+            let discovered = discovered_static_ssh.clone();
+            let endpoint = gateway_store.endpoint().cloned();
+            let helper = gateway_store
+                .build_helper()
+                .map(std::path::Path::to_path_buf);
+            reload_preparation = Some(
+                std::thread::Builder::new()
+                    .name("backend-reload".into())
+                    .spawn(move || {
+                        telchar::service::config_reload::BackendReload::prepare(
+                            &current,
+                            &discovered,
+                            endpoint,
+                            helper,
+                            Duration::from_secs(1),
+                        )
+                        .map(|reload| (reload, None))
+                    })?,
+            );
+        }
+        if reload_preparation
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+        {
+            let prepared = reload_preparation
+                .take()
+                .expect("finished reload exists")
+                .join()
+                .map_err(|_| invalid("backend reload worker failed"))?;
+            match prepared.and_then(|(reload, discovered)| {
+                let changes =
+                    reload.apply(&mut config, &backends, &mut static_ssh_health_service)?;
+                if let Some(discovered) = discovered {
+                    discovered_static_ssh = discovered;
+                }
+                Ok(changes)
+            }) {
                 Ok(changes) => {
                     telchar::service::metrics::configuration_reload(
                         reload_started.elapsed(),
@@ -910,13 +942,17 @@ fn run_daemon() -> io::Result<()> {
             }
         }
         let mut discovery_changed = false;
-        if let Some(service) = static_ssh_consul_service.as_mut()
+        if reload_preparation.is_none()
+            && static_ssh_health_service.can_replace()?
+            && let Some(service) = static_ssh_consul_service.as_mut()
             && let Some(discovered) = service.check()?
         {
             consul_static_ssh = discovered;
             discovery_changed = true;
         }
-        if let Some(service) = static_ssh_ec2_service.as_mut()
+        if reload_preparation.is_none()
+            && static_ssh_health_service.can_replace()?
+            && let Some(service) = static_ssh_ec2_service.as_mut()
             && let Some(discovered) = service.check()?
         {
             ec2_static_ssh = discovered;
@@ -928,16 +964,17 @@ fn run_daemon() -> io::Result<()> {
                 .chain(&ec2_static_ssh)
                 .cloned()
                 .collect::<Vec<_>>();
-            telchar::service::static_ssh_consul::publish_inventory(
-                &config,
-                &discovered,
-                &backends,
-                gateway_store.endpoint().cloned(),
-                gateway_store
-                    .build_helper()
-                    .map(std::path::Path::to_path_buf),
-            )?;
-            discovered_static_ssh = discovered;
+            let current = config.clone();
+            let endpoint = gateway_store.endpoint().cloned();
+            let helper = gateway_store
+                .build_helper()
+                .map(std::path::Path::to_path_buf);
+            reload_started = std::time::Instant::now();
+            reload_preparation = Some(std::thread::Builder::new().name("backend-inventory".into()).spawn(move || {
+                telchar::service::config_reload::BackendReload::prepare_config_with_inventory(
+                    &current, current.clone(), &discovered, endpoint, helper, Duration::from_secs(1),
+                ).map(|reload| (reload, Some(discovered)))
+            })?);
         }
         if let Err(error) = static_ssh_health_service.check() {
             shutdown_daemon_services(

@@ -96,7 +96,10 @@ impl Drop for BackgroundService {
     }
 }
 
-pub struct StaticSshHealthService(Option<BackgroundService>);
+pub struct StaticSshHealthService {
+    active: Option<BackgroundService>,
+    retiring: Option<BackgroundService>,
+}
 
 impl StaticSshHealthService {
     pub fn start(
@@ -107,25 +110,50 @@ impl StaticSshHealthService {
             health.check_due(std::time::Instant::now());
             Ok(true)
         })
-        .map(Some)
-        .map(Self)
+        .map(|service| Self {
+            active: Some(service),
+            retiring: None,
+        })
     }
 
     pub fn check(&mut self) -> io::Result<()> {
-        match self.0.as_mut() {
+        if let Some(service) = self.retiring.as_mut()
+            && !service.check()?
+        {
+            self.retiring.take();
+        }
+        match self.active.as_mut() {
             Some(service) => service.check().map(|_| ()),
             None => Ok(()),
         }
     }
 
-    pub fn replace(&mut self, replacement: Self) -> io::Result<()> {
-        self.shutdown()?;
-        self.0 = replacement.0;
+    pub fn can_replace(&mut self) -> io::Result<bool> {
+        self.check()?;
+        Ok(self.retiring.is_none())
+    }
+
+    pub fn replace(&mut self, mut replacement: Self) -> io::Result<()> {
+        self.check()?;
+        if self.retiring.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "SSH health monitor retirement pending",
+            ));
+        }
+        self.retiring = self.active.take();
+        if let Some(service) = self.retiring.as_mut() {
+            service.stop.take();
+        }
+        self.active = replacement.active.take();
         Ok(())
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
-        match self.0.as_mut() {
+        if let Some(service) = self.retiring.as_mut() {
+            service.shutdown()?;
+        }
+        match self.active.as_mut() {
             Some(service) => service.shutdown(),
             None => Ok(()),
         }

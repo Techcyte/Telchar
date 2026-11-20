@@ -105,8 +105,8 @@ impl BackendReload {
         let replacement = self
             .backends
             .retain_microvm_services(&self.config, &backends.snapshot())?;
-        backends.disable_static_ssh_not_in(&self.desired_static_ssh);
         health_service.replace(self.health_service)?;
+        backends.disable_static_ssh_not_in(&self.desired_static_ssh);
         backends.replace(replacement);
         *current = self.config;
         Ok(self.changes)
