@@ -138,7 +138,12 @@ package's unit, integration, and documentation tests in a NixOS VM, with four
 concurrent test threads per binary by default, as a
 nonroot account. It requires a VM-capable Linux builder (KVM); no host Cargo target
 or host daemon state is used. Live dependency/advisory checks remain outside
-cached Nix results so each CI run checks current advisories and exception expiry.
+cached Nix results so each full qualification checks current advisories and exception expiry.
+Pull requests run formatting and flake evaluation only. Required ARM and Nix jobs
+report skipped on pull requests; the required Rust job owns these lightweight
+checks. Merge groups, main pushes, and manual runs execute full qualification.
+Main pushes also populate caches and publish images. Queue admission is not
+build qualification; merge-group checks must pass before merging.
 For focused development, stock-client tests that require a shared canonical store can run through the
 [isolated canonical-store command runner](tests/canonical-store.md), without
 using the host Nix daemon or changing its store registration.

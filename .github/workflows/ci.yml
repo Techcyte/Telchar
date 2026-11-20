@@ -18,6 +18,7 @@ concurrency:
 jobs:
   microvm:
     name: ARM64 MicroVM image
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 60
     permissions:
@@ -113,11 +114,22 @@ jobs:
             ${{ github.event_name == 'push' &&
             github.ref == 'refs/heads/main' }}
           gc-max-store-size: 3G
+        if: github.event_name != 'pull_request'
+
+      - name: Check pull request formatting and configuration
+        if: github.event_name == 'pull_request'
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+        run: |
+          nix develop -c cargo fmt --all -- --check
+          nix flake check --impure --no-build
 
       - name: Check VM acceleration
+        if: github.event_name != 'pull_request'
         run: test -r /dev/kvm && test -w /dev/kvm
 
       - name: Build Rust checks and full workspace integration result
+        if: github.event_name != 'pull_request'
         run: |
           nix build -L --no-link \
             .#checks.x86_64-linux.format \
@@ -126,17 +138,20 @@ jobs:
             .#checks.x86_64-linux.workspace-tests
 
       - name: Run release tooling tests
+        if: github.event_name != 'pull_request'
         run: nix build -L --no-link .#checks.x86_64-linux.release-tooling
 
       # Live security policy intentionally stays outside cached Nix results:
-      # advisory freshness and exception expiry must be checked on every run.
+      # Check advisory freshness and exception expiry during qualification.
       - name: Check Rust dependencies and licenses
+        if: github.event_name != 'pull_request'
         run: |
           nix develop -c scripts/check-advisory-exceptions.py
           nix develop -c cargo deny check advisories licenses sources
 
   nix:
     name: Nix build and evaluation
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
