@@ -112,11 +112,22 @@ pub fn run_admitted(
                     }
                 }
             })?;
-        let result = session.run(
+        let mut checked_at = None;
+        let result = session.run_verified(
             socket,
-            || {
-                if load(false)? != request {
-                    return Err(io::Error::other("MicroVM execution authority changed"));
+            |boundary| {
+                while !owner.verify_available().map_err(io::Error::other)? {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                if boundary
+                    || checked_at.is_none_or(|checked: std::time::Instant| {
+                        checked.elapsed() >= std::time::Duration::from_millis(100)
+                    })
+                {
+                    if load(false)? != request {
+                        return Err(io::Error::other("MicroVM execution authority changed"));
+                    }
+                    checked_at = Some(std::time::Instant::now());
                 }
                 Ok(())
             },
@@ -210,12 +221,21 @@ impl Session {
 
     /// The caller supplies transport deadlines and a cancellation/ownership fence.
     pub fn run<S: Read + Write>(
+        self,
+        socket: WebSocket<S>,
+        mut verify: impl FnMut() -> io::Result<()>,
+        log: impl FnMut(&[u8]),
+    ) -> io::Result<BuildResultMetadata> {
+        self.run_verified(socket, |_| verify(), log)
+    }
+
+    fn run_verified<S: Read + Write>(
         mut self,
         mut socket: WebSocket<S>,
-        mut verify: impl FnMut() -> io::Result<()>,
+        mut verify: impl FnMut(bool) -> io::Result<()>,
         mut log: impl FnMut(&[u8]),
     ) -> io::Result<BuildResultMetadata> {
-        verify()?;
+        verify(true)?;
         let maximum = self.limits.metadata_bytes + self.limits.chunk_bytes + 16;
         socket.set_config(|config| {
             config.max_message_size = Some(maximum);
@@ -231,9 +251,9 @@ impl Session {
             self.limits,
         )?;
         for expected in [FrameKind::ValidPaths, FrameKind::InputRequest] {
-            verify()?;
+            verify(true)?;
             let frame = receive(&mut socket, self.limits)?;
-            verify()?;
+            verify(true)?;
             if frame.kind() != expected {
                 return Err(io::Error::other("MicroVM input resolution is out of order"));
             }
@@ -247,7 +267,7 @@ impl Session {
                     let _entered = span.enter();
                     let mut store = GatewayStoreConnection::connect(&self.store)?;
                     for path in requested.paths {
-                        verify()?;
+                        verify(true)?;
                         let entry = self
                             .manifest
                             .paths
@@ -259,10 +279,12 @@ impl Session {
                             transfer: &mut self.transfer,
                             entry,
                             offset: 0,
+                            pending: Vec::new(),
                             limits: self.limits,
-                            verify: &mut verify,
+                            verify: &mut || verify(false),
                         };
                         store.nar_from_path(path.as_bytes(), entry.nar_size, &mut sink)?;
+                        sink.flush()?;
                         if sink.offset != entry.nar_size {
                             return Err(io::Error::other("MicroVM input NAR is incomplete"));
                         }
@@ -274,9 +296,9 @@ impl Session {
         let _entered = span.enter();
         let mut collection = None;
         loop {
-            verify()?;
+            verify(true)?;
             let frame = receive(&mut socket, self.limits)?;
-            verify()?;
+            verify(true)?;
             self.transfer
                 .accept(Direction::WorkerToGateway, frame.clone())?;
             match frame.kind() {
@@ -324,7 +346,7 @@ impl Session {
                         decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
                     let receipt = self.outputs.receive(&chunk, frame.payload())?;
                     if let Some(receipt) = receipt {
-                        verify()?;
+                        verify(true)?;
                         let receipt = Frame::new(
                             FrameKind::OutputReceipt,
                             encode_metadata(&receipt, self.limits.metadata_bytes)?,
@@ -338,7 +360,7 @@ impl Session {
                 FrameKind::BuildResult => {
                     let result = decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
                     self.outputs.finish(&result)?;
-                    verify()?;
+                    verify(true)?;
                     return Ok(result);
                 }
                 _ => return Err(io::Error::other("MicroVM execution frame is out of order")),
@@ -387,39 +409,55 @@ struct InputSink<'a, S: Read + Write, F: FnMut() -> io::Result<()>> {
     transfer: &'a mut TransferSession,
     entry: &'a PathManifestEntry,
     offset: u64,
+    pending: Vec<u8>,
     limits: Limits,
     verify: &'a mut F,
 }
 
 impl<S: Read + Write, F: FnMut() -> io::Result<()>> Write for InputSink<'_, S, F> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for chunk in bytes.chunks(self.limits.chunk_bytes) {
-            (self.verify)()?;
-            let end = self
-                .offset
-                .checked_add(chunk.len() as u64)
-                .filter(|end| *end <= self.entry.nar_size)
-                .ok_or_else(|| io::Error::other("MicroVM input exceeds declaration"))?;
-            let metadata = NarMetadata {
-                path: self.entry.path.clone(),
-                nar_hash: self.entry.nar_hash.clone(),
-                nar_size: self.entry.nar_size,
-                offset: self.offset,
-                final_chunk: end == self.entry.nar_size,
-            };
-            let frame = Frame::new(
-                FrameKind::InputNar,
-                encode_metadata(&metadata, self.limits.metadata_bytes)?,
-                chunk.to_vec(),
-            );
-            self.transfer
-                .accept(Direction::GatewayToWorker, frame.clone())?;
-            send(self.socket, &frame, self.limits)?;
-            self.offset = end;
+        (self.verify)()?;
+        self.offset
+            .checked_add(self.pending.len() as u64)
+            .and_then(|size| size.checked_add(bytes.len() as u64))
+            .filter(|end| *end <= self.entry.nar_size)
+            .ok_or_else(|| io::Error::other("MicroVM input exceeds declaration"))?;
+        let capacity = self.limits.chunk_bytes.min(64 * 1024);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let length = remaining.len().min(capacity - self.pending.len());
+            self.pending.extend_from_slice(&remaining[..length]);
+            remaining = &remaining[length..];
+            if self.pending.len() == capacity {
+                self.flush()?;
+            }
         }
         Ok(bytes.len())
     }
+
     fn flush(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        (self.verify)()?;
+        let end = self.offset + self.pending.len() as u64;
+        let metadata = NarMetadata {
+            path: self.entry.path.clone(),
+            nar_hash: self.entry.nar_hash.clone(),
+            nar_size: self.entry.nar_size,
+            offset: self.offset,
+            final_chunk: end == self.entry.nar_size,
+        };
+        let frame = Frame::new(
+            FrameKind::InputNar,
+            encode_metadata(&metadata, self.limits.metadata_bytes)?,
+            self.pending.clone(),
+        );
+        self.transfer
+            .accept(Direction::GatewayToWorker, frame.clone())?;
+        send(self.socket, &frame, self.limits)?;
+        self.offset = end;
+        self.pending.clear();
         Ok(())
     }
 }

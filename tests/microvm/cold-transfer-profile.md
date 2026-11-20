@@ -156,14 +156,58 @@ The full workspace/VM/deployment/ARM/AWS gates were intentionally not run. LSP
 extension diagnostics were unavailable to this worker's tool allowlist; focused
 compiler/Clippy checks supplied type diagnostics instead.
 
-## Next minimal experiment (not implemented)
+## Bounded input transfer comparison
 
-If approved, first split the verifier timer into ownership availability, database
-checkout/query, persisted-request decode/validation and comparison on the same
-32 MiB connected path; capture calls and timings without changing fencing. This
-isolates which repeated authority work dominates before selecting an optimization.
-A subsequent candidate is bounded export-frame coalescing to reduce verifier calls
-while retaining a verification immediately before every emitted frame, but that is
-an unapproved behavioral/performance change requiring cancellation/ownership-loss
-latency tests. Do not cache/bypass authority, hashes or store validation based on
-these results. No production tuning was retained in this pass.
+The input sink coalesces writes into frames no larger than 64 KiB or the configured
+chunk limit, whichever is smaller. Each input write and emitted frame checks
+ownership availability. Durable request reads during input streaming are amortized
+over 100 ms; an independent 100 ms monitor interrupts the transport on changed
+execution authority. Control and output boundaries perform fresh durable reads.
+NAR hashes, declared sizes, offsets and authoritative output registration remain
+validated. The pending input buffer is bounded by 64 KiB; serialization and
+transfer validation also hold bounded frame copies.
+
+A local debug comparison used `3174b9c3` and `caa85e03`, separate Cargo target
+directories, three fresh-worker cold jobs, one excluded seed and three warm jobs
+per revision. Both commands passed. Every cold/seed job transferred 46,888,392 NAR
+bytes in seven paths; warm jobs transferred zero. Each job verified its distinct
+output and production reset. The 32 MiB path used 4,097 frames with an 8 KiB maximum
+at the comparison revision and 513 frames with a 64 KiB maximum at the optimized
+revision.
+
+| Measurement | Comparison | Optimized |
+| --- | --- | --- |
+| Cold input transfer, ms | 4626.842, 4658.152, 4706.235 | 707.145, 595.146, 689.210 |
+| Cold input transfer median, ms | 4658.152 | 689.210 |
+| Cold job/reset, ms | 5425.047, 5351.346, 5415.835 | 1549.760, 1344.740, 1341.183 |
+| Cold transfer-side durable loads | 5752, 5751, 5752 | 28, 27, 28 |
+| Warm input NAR bytes, each job | 0 | 0 |
+
+The cold-transfer median decreased about 85.2% in these samples. This is not a
+provider-network benchmark or a throughput guarantee: host caches were not
+flushed, path order varied, compilation and a workspace VM overlapped some runs,
+and provider delivery/TLS termination used the local simulated relay. Rust worker,
+Nix, PostgreSQL, TLS, output verification and reset were real. Three samples do not
+establish a stable latency distribution. Profiling timers overlap and their sums
+are not independent critical-path contributions.
+
+Rerun from each checkout using the same command, with separate `CARGO_TARGET_DIR`
+and `MICROVM_TRANSFER_PROFILE` paths:
+
+```sh
+CARGO_BUILD_JOBS=2 MICROVM_BENCH_SAMPLES=3 MICROVM_BENCH_INPUT_MIB=32 \
+  nix --option eval-cache false develop -c cargo test --locked \
+  -p telchar-nomad-worker --test microvm_build \
+  microvm_reuse::cold_warm_connected_benchmark \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+Retained evidence lives under `$HOME/.local/state/telchar-reviewfixes/`:
+`microvm-before-repeated.jsonl`, `microvm-after-repeated.jsonl`, the
+`microvm-transfer-comparison` checkout and `microvm-comparison-target` build
+artifacts. Recorded command terminals retain gateway verifier component timings,
+relay frame counts and full test output. Connected interruption cases cancel,
+expire ownership or change the persisted assignment after the first nonfinal
+shared-input chunk, before dropping either relay connection; gateway execution
+fails, no output is registered and the unresolved reservation remains held.
+The full workspace gate is separate from these focused measurements.
