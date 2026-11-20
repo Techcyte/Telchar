@@ -20,6 +20,12 @@ fn rendered_environment_connects_real_worker_and_callback() {
             .env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint())
             .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
             .arg(FIXTURE)
+            .args([
+                "/bin/sh",
+                "-c",
+                "export TELCHAR_GATEWAY_STORE_URI=\"$MICROVM_TEST_STORE_URI\" TELCHAR_GATEWAY_GC_ROOT_DIRECTORY=\"$MICROVM_STORE_ROOT/hook_delivery-roots\"; exec \"$@\"",
+                "hook-trace",
+            ])
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
             .status()
@@ -80,6 +86,25 @@ fn rendered_environment_connects_real_worker_and_callback() {
                 0.0,
             );
         }
+        for name in [
+            "telchar.post_build_hook.pending",
+            "telchar.post_build_hook.oldest_age",
+        ] {
+            assert!(
+                collector.metric_names().contains(name),
+                "missing metric {name}"
+            );
+        }
+        collector.assert_counter_attribute(
+            "telchar.post_build_hook.abandoned",
+            "failure_class",
+            "retry-exhausted",
+            1,
+        );
+        collector.assert_gauge("telchar.post_build_hook.pending", 0.0);
+        collector.assert_gauge("telchar.post_build_hook.oldest_age", 0.0);
+        collector.assert_counter("telchar.post_build_hook.runs", "succeeded", 1);
+        collector.assert_histogram_sample("telchar.post_build_hook.duration", "succeeded", 0.0);
         collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
         collector.assert_metric_attributes_are_bounded();
         if let Some(path) = std::env::var_os("TELCHAR_NOMAD_TRACE_ARTIFACT") {
@@ -228,14 +253,23 @@ uri = "{worker_store_uri}"
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
     let endpoint = GatewayStoreEndpoint::parse(&store_uri).unwrap();
+    let hook_delivery_roots = root.join("hook_delivery-roots");
+    std::fs::create_dir(&hook_delivery_roots).unwrap();
+    std::fs::set_permissions(&hook_delivery_roots, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let hook_delivery_store =
+        telchar::store::runtime::GatewayStoreRuntime::from_environment().unwrap();
+    let hook_delivery_database = db::Database::connect(&database)
+        .unwrap()
+        .with_post_build_hooks(true);
     let mut callback_service = telchar::nomad::callback_service::NomadCallbackService::start(
         callback,
         config.nomad_callback().unwrap().clone(),
-        db::Database::connect(&database).unwrap(),
+        hook_delivery_database.clone(),
         config.nomad_backends().to_vec(),
         endpoint.clone(),
         Duration::from_secs(60),
         Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
+        Some(hook_delivery_store.clone()),
     )
     .unwrap();
     let env = job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]
@@ -273,6 +307,111 @@ uri = "{worker_store_uri}"
     assert_eq!(std::fs::read(output).unwrap(), b"connected-nomad");
     assert_eq!(
         db::read_shared_build(&database, drv)
+            .unwrap()
+            .unwrap()
+            .state,
+        db::SharedBuildState::Succeeded
+    );
+    assert_eq!(
+        db::post_build_hooks_backlog(&hook_delivery_database)
+            .unwrap()
+            .0,
+        1
+    );
+    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 1);
+    let uploaded = root.join("published-outputs");
+    let hook = telchar::service::post_build_hook::PostBuildHook::new(
+        "/bin/sh",
+        ["-c", "cat > \"$1\"", "publish", uploaded.to_str().unwrap()],
+        Duration::from_secs(5),
+        1024,
+    )
+    .unwrap();
+    let owner = Arc::new(
+        telchar::service::singleton_ownership::SingletonOwnership::acquire(
+            &database,
+            Duration::from_secs(30),
+        )
+        .unwrap(),
+    );
+    let owned_database = hook_delivery_database.with_ownership(&owner);
+    let mut publisher = telchar::service::daemon_services::HookDeliveryService::start(
+        Arc::clone(&owner),
+        owned_database.clone(),
+        Some(hook),
+        Default::default(),
+        hook_delivery_store.clone(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while db::post_build_hooks_backlog(&owned_database).unwrap().0 != 0
+        || std::fs::read_dir(&hook_delivery_roots).unwrap().count() != 0
+    {
+        publisher.check().unwrap();
+        assert!(Instant::now() < deadline, "owned publisher did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    publisher.shutdown().unwrap();
+    let outputs: Vec<String> = serde_json::from_slice(&std::fs::read(uploaded).unwrap()).unwrap();
+    assert_eq!(outputs, [output]);
+
+    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 0);
+    assert_eq!(db::post_build_hooks_backlog(&owned_database).unwrap().0, 0);
+    let expired_drv = "/nix/store/11111111111111111111111111111111-hook_delivery-expired.drv";
+    db::claim_shared_build(
+        &owned_database,
+        expired_drv,
+        &[2; 32],
+        "local",
+        BackendKind::Local,
+        BackendKind::Local.capabilities(),
+        None,
+        &[output],
+    )
+    .unwrap();
+    db::start_shared_build(&owned_database, expired_drv).unwrap();
+    db::collect_shared_build(&owned_database, expired_drv).unwrap();
+    telchar::service::hook_delivery::prepare_outputs(
+        &owned_database,
+        expired_drv,
+        hook_delivery_store.retention().unwrap().as_mut(),
+        &[output.to_owned()],
+    )
+    .unwrap();
+    db::complete_shared_build_success(
+        &owned_database,
+        expired_drv,
+        &serde_json::json!({}),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let hook = telchar::service::post_build_hook::PostBuildHook::new(
+        "/bin/false",
+        [] as [&str; 0],
+        Duration::from_secs(1),
+        1024,
+    )
+    .unwrap();
+    assert!(
+        telchar::service::hook_delivery::run_attempt(
+            &owned_database,
+            &hook,
+            Duration::from_secs(30),
+            telchar::service::hook_delivery::HookDeliveryPolicy {
+                maximum_age: Duration::from_nanos(1),
+                ..Default::default()
+            },
+            None
+        )
+        .unwrap()
+    );
+    telchar::service::hook_delivery::reconcile_released_roots(
+        &owned_database,
+        hook_delivery_store.retention().unwrap().as_mut(),
+    )
+    .unwrap();
+    assert_eq!(
+        db::read_shared_build(&owned_database, expired_drv)
             .unwrap()
             .unwrap()
             .state,

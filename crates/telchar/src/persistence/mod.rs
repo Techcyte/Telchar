@@ -35,6 +35,7 @@ mod attachments;
 mod build_requests;
 mod callback_nonces;
 mod connection;
+mod post_build_hooks;
 pub(crate) use connection::{DEFAULT_CONNECTION_WAIT, connect, validate as validate_connection};
 pub use connection::{
     Database, DatabaseConnection, DatabaseError, DatabaseSource, DatabaseTransaction,
@@ -59,5 +60,6 @@ pub use microvm_launches::*;
 pub use microvm_quotas::*;
 pub use microvm_workers::*;
 pub use migrations::*;
+pub use post_build_hooks::*;
 pub use sessions::*;
 pub use shared_builds::*;

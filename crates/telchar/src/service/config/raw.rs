@@ -6,7 +6,6 @@ pub(super) struct RawServiceConfig {
     pub(super) running_disconnect_policy: Option<String>,
     pub(super) output_retention_seconds: Option<u64>,
     pub(super) maximum_retained_input_bytes: Option<u64>,
-    #[serde(alias = "cache_publication")]
     pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) audit: Option<AuditSection>,
     pub(super) database: Option<DatabaseSection>,
@@ -31,6 +30,11 @@ pub(super) struct PostBuildHookSection {
     pub(super) arguments: Vec<String>,
     pub(super) timeout_seconds: Option<u64>,
     pub(super) maximum_input_bytes: Option<usize>,
+    pub(super) concurrency: Option<usize>,
+    pub(super) maximum_attempts: Option<i32>,
+    pub(super) maximum_age_seconds: Option<u64>,
+    pub(super) initial_backoff_seconds: Option<u64>,
+    pub(super) maximum_backoff_seconds: Option<u64>,
 }
 
 impl RawServiceConfig {

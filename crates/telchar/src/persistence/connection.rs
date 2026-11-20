@@ -27,6 +27,7 @@ pub struct Database {
     pool: Pool<Manager>,
     request: Option<RequestBudget>,
     ownership: Option<crate::service::singleton_ownership::OwnershipObserver>,
+    post_build_hooks_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -62,7 +63,17 @@ impl Database {
             pool: build_pool(Manager { config, security })?,
             request: None,
             ownership: None,
+            post_build_hooks_enabled: false,
         })
+    }
+
+    pub fn with_post_build_hooks(mut self, enabled: bool) -> Self {
+        self.post_build_hooks_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn post_build_hooks_enabled(&self) -> bool {
+        self.post_build_hooks_enabled
     }
 
     /// Carry the process admission/dispatch gate without changing write semantics.
@@ -101,6 +112,7 @@ impl Database {
                 cancelled,
             }),
             ownership: self.ownership.clone(),
+            post_build_hooks_enabled: self.post_build_hooks_enabled,
         }
     }
 

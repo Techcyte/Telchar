@@ -105,7 +105,7 @@ Transfers are streamed with bounded memory. Store leases and GC roots keep paths
 
 Classic input-addressed output validation proves transport and store consistency with a trusted executor. Fixed-output validation additionally requires the registered Nix content address to match the admitted method, algorithm, and digest. It is not cryptographic proof that the executor built honestly.
 
-After durable shared-build leadership and subject admission, Telchar may ask the gateway Nix daemon to `EnsurePath` expected outputs before acquiring backend capacity. Complete hits use the same validation and retention path; misses fall through to execution. Optional post-build hook runs only after durable success and cannot change the Nix result.
+After durable shared-build leadership and subject admission, Telchar may ask the gateway Nix daemon to `EnsurePath` expected outputs before acquiring backend capacity. Complete hits use the same validation and retention path; misses fall through to execution. When configured, every durable shared-build success transaction records an attempt-scoped post-build hook delivery obligation with immutable expected outputs. A bounded daemon hook worker invokes the post-build hook after success, with restart-safe claims and capped retry backoff. Dedicated GC roots protect pending hook outputs independently of requester retention. Hook execution is at least once and cannot change the Nix result or shared-build terminal state.
 
 ## Backends
 

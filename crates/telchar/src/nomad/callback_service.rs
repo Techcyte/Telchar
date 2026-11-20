@@ -34,6 +34,7 @@ pub struct NomadCallbackService {
 }
 
 impl NomadCallbackService {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         listener: TcpListener,
         callback: NomadCallbackConfig,
@@ -42,6 +43,7 @@ impl NomadCallbackService {
         gateway_store: GatewayStoreEndpoint,
         output_retention: std::time::Duration,
         shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
+        hook_delivery_store: Option<crate::store::runtime::GatewayStoreRuntime>,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -85,6 +87,7 @@ impl NomadCallbackService {
                 let connections = Arc::clone(&listener_connections);
                 let gateway_store = gateway_store.clone();
                 let shared_builds = Arc::clone(&shared_builds);
+                let hook_delivery_store = hook_delivery_store.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     crate::service::metrics::nomad_callback_started();
@@ -96,6 +99,7 @@ impl NomadCallbackService {
                         &gateway_store,
                         output_retention,
                         &shared_builds,
+                        hook_delivery_store.as_ref(),
                     );
                     match result {
                         Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
@@ -189,6 +193,7 @@ impl Drop for NomadCallbackService {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve_connection(
     connection: &mut TcpStream,
     callback: &NomadCallbackConfig,
@@ -197,6 +202,7 @@ pub fn serve_connection(
     gateway_store: &GatewayStoreEndpoint,
     output_retention: std::time::Duration,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
+    hook_delivery_store: Option<&crate::store::runtime::GatewayStoreRuntime>,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -462,6 +468,7 @@ pub fn serve_connection(
         connection_deadline,
         shared_builds,
         &build_request.shared_build_key(),
+        hook_delivery_store,
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -634,6 +641,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     connection_deadline: Instant,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
     shared_build_key: &str,
+    hook_delivery_store: Option<&crate::store::runtime::GatewayStoreRuntime>,
 ) -> io::Result<BuildCollectionOutcome> {
     let span = tracing::info_span!("nomad.gateway.build_and_collect");
     let _entered = span.enter();
@@ -715,6 +723,19 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 session.accept(Direction::WorkerToGateway, frame)?;
                 if metadata.final_chunk {
                     let receipt = import.finish()?;
+                    if database.post_build_hooks_enabled() {
+                        let mut retention = hook_delivery_store
+                            .ok_or_else(|| {
+                                io::Error::other("hook delivery retention is unavailable")
+                            })?
+                            .retention()?;
+                        crate::service::hook_delivery::prepare_outputs(
+                            database,
+                            derivation_path,
+                            retention.as_mut(),
+                            std::slice::from_ref(&receipt.path),
+                        )?;
+                    }
                     let receipt_frame = Frame::new(
                         FrameKind::OutputReceipt,
                         encode_metadata(&receipt, limits.maximum_frame_metadata_bytes())?,
@@ -1126,6 +1147,8 @@ impl OutputImport {
             signatures: &[],
             content_address: self.metadata.content_address.as_deref().map(str::as_bytes),
         };
+        self.store
+            .add_temporary_root(self.metadata.path.as_bytes())?;
         self.store
             .add_to_store_nar(&info, &mut self.temporary, false, true)?;
         if !self.store.is_valid_path(self.metadata.path.as_bytes())? {

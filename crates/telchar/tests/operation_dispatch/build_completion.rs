@@ -118,8 +118,24 @@ fn build_request_attachment_precedes_helper_and_detaches_after_response() {
     let derivation_path =
         "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
     telchar::persistence::collect_shared_build(fixture.database.url(), derivation_path).unwrap();
+    let hook_delivery_database = telchar::persistence::Database::connect(fixture.database.url())
+        .unwrap()
+        .with_post_build_hooks(true);
+    for root in telchar::persistence::prepare_post_build_hook_roots(
+        &hook_delivery_database,
+        derivation_path,
+    )
+    .unwrap()
+    {
+        std::os::unix::fs::symlink(
+            &root.store_path,
+            fixture.root.join("gc-roots").join(root.lease_id()),
+        )
+        .unwrap();
+        telchar::persistence::retain_post_build_hook_root(&hook_delivery_database, &root).unwrap();
+    }
     telchar::persistence::complete_shared_build_success(
-        fixture.database.url(), derivation_path,
+        &hook_delivery_database, derivation_path,
         &serde_json::json!({"status":"built","outputs":[{"name":"out","path":"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"}]}),
         Duration::from_secs(60),
     ).unwrap();

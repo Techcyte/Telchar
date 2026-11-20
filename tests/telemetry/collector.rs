@@ -140,7 +140,37 @@ impl Collector {
             .collect()
     }
 
+    pub fn assert_gauge(&self, name: &str, expected: f64) {
+        use opentelemetry_proto::tonic::metrics::v1::{metric::Data, number_data_point::Value};
+        let requests = self.metric_requests.lock().expect("metric requests");
+        let point = requests
+            .iter()
+            .rev()
+            .flat_map(|request| &request.resource_metrics)
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .filter(|metric| metric.name == name)
+            .filter_map(|metric| match &metric.data {
+                Some(Data::Gauge(gauge)) => Some(gauge),
+                _ => None,
+            })
+            .flat_map(|gauge| &gauge.data_points)
+            .next()
+            .expect("gauge exported");
+        let value = match point.value {
+            Some(Value::AsInt(value)) => value as f64,
+            Some(Value::AsDouble(value)) => value,
+            None => panic!("gauge value missing"),
+        };
+        assert_eq!(value, expected);
+        assert!(point.attributes.is_empty(), "unexpected gauge labels");
+    }
+
     pub fn assert_counter(&self, name: &str, outcome: &str, expected: i64) {
+        self.assert_counter_attribute(name, "outcome", outcome, expected);
+    }
+
+    pub fn assert_counter_attribute(&self, name: &str, key: &str, value: &str, expected: i64) {
         use opentelemetry_proto::tonic::metrics::v1::{metric::Data, number_data_point::Value};
         let requests = self.metric_requests.lock().expect("metric requests");
         let value = requests
@@ -155,7 +185,7 @@ impl Collector {
                 _ => None,
             })
             .flat_map(|sum| &sum.data_points)
-            .find(|point| Self::has_attribute(&point.attributes, "outcome", outcome))
+            .find(|point| Self::has_attribute(&point.attributes, key, value))
             .expect("counter outcome exported");
         assert_eq!(value.value, Some(Value::AsInt(expected)));
         assert_eq!(value.attributes.len(), 1, "unexpected counter labels");

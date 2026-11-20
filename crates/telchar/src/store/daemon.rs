@@ -128,6 +128,12 @@ impl GatewayStoreConnection {
         self.client.profile()
     }
 
+    pub fn add_temporary_root(&mut self, path: &[u8]) -> io::Result<()> {
+        self.client
+            .add_temporary_root(path)
+            .map_err(|_| connection_error())
+    }
+
     pub fn is_valid_path(&mut self, path: &[u8]) -> io::Result<bool> {
         super::telemetry::run("is_valid_path", || {
             self.client

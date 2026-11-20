@@ -219,15 +219,30 @@ An optional command runs after successful builds and is configured in strict TOM
 
 ```toml
 [post_build_hook]
-executable = "/run/current-system/sw/bin/nix"
-arguments = ["copy", "--to", "https://cache.example"]
+executable = "/run/current-system/sw/bin/publish-validated-outputs"
+arguments = []
 timeout_seconds = 300
 maximum_input_bytes = 65536
+concurrency = 1
+maximum_attempts = 32
+maximum_age_seconds = 86400
+initial_backoff_seconds = 5
+maximum_backoff_seconds = 3600
 ```
 
-Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded. Up to 4096 bytes from each subprocess output stream are logged at DEBUG under `post_build_hook.output` when the command finishes or times out, with `stream` and `truncated` fields. Enable `telchar::service::post_build_hook=debug` in the server logging filter to inspect these diagnostics. Command output is operator-controlled and may contain sensitive data; publication scripts must not print credentials. Publication is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
+Telchar invokes the absolute executable directly without a shell and sends a JSON array of validated output paths on standard input. Arguments, input size, and runtime are bounded. Up to 4096 bytes from each subprocess output stream are logged at DEBUG under `post_build_hook.output` when the command finishes or times out, with `stream` and `truncated` fields. Enable `telchar::service::post_build_hook=debug` in the server logging filter to inspect these diagnostics. Command output is operator-controlled and may contain sensitive data; hook delivery scripts must not print credentials. Hook delivery is asynchronous and best effort: failure emits telemetry but cannot change a successful `BuildResult`. Credentials and cache trust policy belong to operator process configuration, never client bytes.
 
-`cache_publication` is accepted as an alias for the configuration section. Specifying both section names is rejected.
+The command must consume the JSON array and translate paths into its cache client's arguments. Passing `nix copy` directly does not implement this input contract. For example, an operator-owned script can parse standard input with a JSON parser, validate that it is an array of strings, and invoke `nix copy --to <cache> <paths...>` without shell interpolation.
+
+Every successful shared-build transition, including restart recovery and sessionless Nomad callback completion, records hook delivery in the same database transaction. Dedicated attempt-scoped GC roots protect pending outputs independently of requester output retention. The daemon uses bounded concurrency and database-time claim expiry; restart resumes pending work. Failures retry with capped exponential backoff until the configured attempt or age bound, then abandon hook delivery without changing the successful build. Missing outputs are abandoned as `missing-path`.
+
+Pending hook delivery is limited to 1024 attempts. When full, successful completion records `backlog-full` abandonment instead of adding pending work; the build result remains successful. Terminal hook delivery rows are pruned after root cleanup in bounded batches. Restarting without a configured hook abandons pending work as `hook-disabled` and releases its hook delivery roots. Changing the hook uses the currently configured command for pending outputs; executable arguments and credentials are not persisted with hook delivery rows.
+
+Execution is at least once: a crash after upload but before durable acknowledgment can invoke the hook again for the same outputs. Hooks must tolerate duplicates; `nix copy` is suitable, arbitrary side effects may not be. Durability requires persistent PostgreSQL, gateway store, and GC-root directory. It does not protect against permanent loss of the gateway store before upload completes. Hook delivery retries are not build retries.
+
+When multiple gateways share a cache, configure `narinfo-cache-negative-ttl = 0` (or a short value) on each gateway's Nix daemon. A cached miss can otherwise hide another gateway's cache publication until its negative cache entry expires.
+
+Only `[post_build_hook]` configures this feature. Hooks must tolerate duplicate execution; cache publication is one use case, not a built-in cache protocol.
 
 ## Read-only operator CLI
 

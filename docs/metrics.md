@@ -123,6 +123,9 @@ Reload metrics never contain configuration paths, backend names, destinations, c
 | `telchar.cache.substitution.duration` | histogram | `s` | Complete substitution attempt duration. |
 | `telchar.post_build_hook.runs` | counter | `{attempt}` | Post-build hook attempts by outcome. |
 | `telchar.post_build_hook.duration` | histogram | `s` | Post-build hook runtime. |
+| `telchar.post_build_hook.pending` | gauge | `{hook}` | Durable pending hook delivery rows, including claimed work and delayed retries. |
+| `telchar.post_build_hook.oldest_age` | gauge | `s` | Age of oldest pending hook delivery, zero when backlog is empty. |
+| `telchar.post_build_hook.abandoned` | counter | `{hook}` | Hook delivery abandoned by bounded `failure_class`, including `retry-exhausted`, `missing-path`, `backlog-full`, and `hook-disabled`. |
 | `telchar.store.validations` | counter | `{validation}` | Output validation attempts by outcome and authority kind. |
 | `telchar.store.validation.duration` | histogram | `s` | Output validation duration. |
 

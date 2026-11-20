@@ -67,7 +67,7 @@ Rust paths below are relative to `crates/telchar/src/`; `deploy/` is repository-
 | Nomad job rendering/submission/adoption | `nomad/backend.rs` |
 | Nomad callback security and transfer | `nomad/{callback_http,callback,authentication,protocol,callback_service}.rs` |
 | Read-only operator commands | `operator.rs`, `operator/report.rs` |
-| Tracing/OTLP composition and metric instruments | `crates/telchar-telemetry/src/` (repository-root-relative), `service/metrics.rs`, `service/activity.rs`; gateway exporter tests in `../tests/telemetry.rs`, cache publication in `service/cache_publication.rs` |
+| Tracing/OTLP composition and metric instruments | `crates/telchar-telemetry/src/` (repository-root-relative), `service/metrics.rs`, `service/activity.rs`; gateway exporter tests in `../tests/telemetry.rs`, post-build hook delivery in `service/hook_delivery.rs` |
 
 `telchar executor` is a separate IPC service composed in `runtime.rs`, with `service/executor_service.rs` and durable `persistence/executor.rs` records. Do not confuse it with the daemon's directly constructed local backend.
 
@@ -142,6 +142,6 @@ Important distinctions:
 - SIGHUP supports transactional static SSH inventory changes and contents-only rotation of existing Nomad token files, not arbitrary configuration hot reload. Existing executions retain exact selected targets.
 - `telchar operator` is read-only, but not uniformly offline: `config-check` needs no database, other commands need an existing schema, and `backends` actively probes SSH/Nix readiness. Do not use daemon startup as an inspection command; it migrates and acquires ownership.
 - `nix/packages.nix` defines packages and four x86 OCI archives: gateway, Nix-daemon sidecar, Nomad worker, SSH ingress. `nix/microvm-execution.nix` defines the ARM64 microVM execution archive; native ARM CI/release jobs build, scan and publish it. Keep runtime UID/GID, credential and volume ownership, and frontend authorization aligned.
-- Versions use `YYYY.M.PATCH`. `scripts/prepare-release.py` coordinates the four crate manifests, workspace and fuzz lockfiles, and `nix/packages.nix`; do not bump only one authority. Publication is manually approved and exact-version-only, with no moving `latest` tag. Do not publish or run version-changing release tooling for routine development.
+- Versions use `YYYY.M.PATCH`. `scripts/prepare-release.py` coordinates the four crate manifests, workspace and fuzz lockfiles, and `nix/packages.nix`; do not bump only one authority. Hook delivery is manually approved and exact-version-only, with no moving `latest` tag. Do not publish or run version-changing release tooling for routine development.
 
 Keep this guide focused on stable boundaries and verified commands. Update it when those change; keep detailed designs, configuration examples, and compatibility matrices in their owning documents.

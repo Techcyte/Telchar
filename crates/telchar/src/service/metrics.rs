@@ -48,6 +48,9 @@ struct Instruments {
     cache_substitution_duration: Histogram<f64>,
     post_build_hook_runs: Counter<u64>,
     post_build_hook_duration: Histogram<f64>,
+    hook_delivery_pending: Gauge<u64>,
+    hook_delivery_oldest_age: Gauge<f64>,
+    hook_delivery_abandoned: Counter<u64>,
     store_validations: Counter<u64>,
     store_validation_duration: Histogram<f64>,
     transfer_active: Gauge<u64>,
@@ -368,6 +371,18 @@ fn instruments() -> &'static Instruments {
             post_build_hook_duration: meter
                 .f64_histogram("telchar.post_build_hook.duration")
                 .with_unit("s")
+                .build(),
+            hook_delivery_pending: meter
+                .u64_gauge("telchar.post_build_hook.pending")
+                .with_unit("{hook}")
+                .build(),
+            hook_delivery_oldest_age: meter
+                .f64_gauge("telchar.post_build_hook.oldest_age")
+                .with_unit("s")
+                .build(),
+            hook_delivery_abandoned: meter
+                .u64_counter("telchar.post_build_hook.abandoned")
+                .with_unit("{hook}")
                 .build(),
             store_validations: meter
                 .u64_counter("telchar.store.validations")
@@ -909,6 +924,19 @@ pub fn post_build_hook_finished(duration: Duration, outcome: &str) {
     instruments()
         .post_build_hook_duration
         .record(seconds(duration), &attributes);
+}
+
+pub fn hook_delivery_backlog(pending: u64, oldest_age: f64) {
+    instruments().hook_delivery_pending.record(pending, &[]);
+    instruments()
+        .hook_delivery_oldest_age
+        .record(oldest_age, &[]);
+}
+
+pub fn hook_delivery_abandoned(failure_class: &'static str) {
+    instruments()
+        .hook_delivery_abandoned
+        .add(1, &[KeyValue::new("failure_class", failure_class)]);
 }
 
 pub fn store_validation_finished(duration: Duration, outcome: &str, authority: &str) {
