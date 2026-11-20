@@ -23,6 +23,8 @@ mod upload_audit;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[path = "ipc_frontend/cleanup.rs"]
+mod cleanup;
 #[path = "ipc_frontend/discovery.rs"]
 mod discovery;
 #[path = "ipc_frontend/handshake.rs"]
