@@ -94,6 +94,13 @@ pub fn reconcile_startup_retention(
     now: SystemTime,
 ) -> io::Result<()> {
     crate::persistence::close_open_protocol_sessions(database).map_err(|_| retention_error())?;
+    reconcile_output_retention(database, backend, now)
+}
+
+fn reconcile_abandoned_request_leases(
+    database: &(impl crate::persistence::DatabaseSource + ?Sized),
+    backend: &mut dyn StoreRetentionBackend,
+) -> io::Result<()> {
     loop {
         let released = crate::persistence::release_abandoned_request_leases(
             database,
@@ -115,7 +122,7 @@ pub fn reconcile_startup_retention(
         crate::persistence::reconcile_store_leases(database, &lease_ids)
             .map_err(|_| retention_error())?;
     }
-    reconcile_output_retention(database, backend, now)
+    Ok(())
 }
 
 pub fn reconcile_output_retention(
@@ -124,6 +131,7 @@ pub fn reconcile_output_retention(
     now: SystemTime,
 ) -> io::Result<()> {
     let result = (|| {
+        reconcile_abandoned_request_leases(database, backend)?;
         reconcile_released_request_leases(database, backend)?;
         let mut after_lease_id = None;
         loop {
