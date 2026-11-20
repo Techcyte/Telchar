@@ -79,6 +79,69 @@ fn connection_failure_trace_is_bounded() {
 }
 
 #[test]
+fn relay_failure_reports_io_phase_without_error_payload() {
+    struct FailedReader {
+        fail: bool,
+        input: &'static [u8],
+    }
+    impl io::Read for FailedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.fail {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "sensitive-error-marker",
+                ))
+            } else {
+                self.input.read(buffer)
+            }
+        }
+    }
+    struct FailedWriter {
+        phase: &'static str,
+    }
+    impl Write for FailedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.phase == "write" {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "sensitive-error-marker",
+                ))
+            } else {
+                Ok(bytes.len())
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "sensitive-error-marker",
+            ))
+        }
+    }
+    for phase in ["read", "write", "flush"] {
+        let expected_kind = if phase == "read" {
+            io::ErrorKind::ConnectionReset
+        } else {
+            io::ErrorKind::BrokenPipe
+        };
+        let trace = capture(tracing::Level::WARN, || {
+            let error = telchar::service::ipc::copy_bounded(
+                FailedReader {
+                    fail: phase == "read",
+                    input: b"sensitive-wire-marker",
+                },
+                FailedWriter { phase },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), expected_kind);
+        });
+        assert!(trace.contains("ipc.relay.failed"), "{trace}");
+        assert!(trace.contains(&format!("phase=\"{phase}\"")), "{trace}");
+        assert!(trace.contains(&format!("{expected_kind:?}")), "{trace}");
+        assert!(!trace.contains("sensitive-"), "{trace}");
+    }
+}
+
+#[test]
 fn real_relay_trace_marks_boundaries_not_payload_or_each_buffer() {
     let input = vec![42; telchar::service::ipc::MAX_FRONTEND_BUFFER_BYTES * 3];
     let mut output = Vec::new();

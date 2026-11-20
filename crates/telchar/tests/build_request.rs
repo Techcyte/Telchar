@@ -35,6 +35,81 @@ fn loads_classic_stored_derivation_into_build_request() {
 }
 
 #[test]
+fn stored_request_realizes_dependencies_in_gateway_store() {
+    let Ok(uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+        let output = std::process::Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/microvm/canonical-store.sh"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "stored_request_realizes_dependencies_in_gateway_store",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+        return;
+    };
+    let expression = r#"
+        let
+          dependency = derivation {
+            name = "telchar-stored-dependency";
+            system = builtins.currentSystem;
+            builder = "/bin/sh";
+            args = [ "-c" "printf dependency > $out" ];
+          };
+        in derivation {
+          name = "telchar-stored-root";
+          system = builtins.currentSystem;
+          builder = "/bin/sh";
+          args = [ "-c" "cat $dependency > $out" ];
+          inherit dependency;
+        }
+    "#;
+    let root = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("nix-instantiate")
+        .arg("--add-root")
+        .arg(root.path().join("derivation"))
+        .args(["--store", &uri, "--builders", "", "--expr", expression])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let derivation = std::fs::canonicalize(root.path().join("derivation")).unwrap();
+    let endpoint = telchar::store::GatewayStoreEndpoint::parse(&uri).unwrap();
+    let mut backend = telchar::store::export::GatewayStoreExportBackend::new(endpoint);
+    let request = BuildRequest::load_stored(
+        &derivation,
+        &mut backend,
+        &backends(&format!("{}-linux", std::env::consts::ARCH), &[]),
+    )
+    .unwrap();
+    let dependency = request
+        .input_sources()
+        .iter()
+        .find(|path| path.ends_with(b"-telchar-stored-dependency"))
+        .expect("dependency output is retained as a root input");
+    assert_eq!(
+        std::fs::read(std::str::from_utf8(dependency).unwrap()).unwrap(),
+        b"dependency"
+    );
+    assert!(
+        request.expected_outputs().iter().all(|(_, path)| {
+            !std::path::Path::new(std::str::from_utf8(path).unwrap()).exists()
+        })
+    );
+}
+
+#[test]
 fn rejects_extended_input_derivation_tuples() {
     let derivation = br#"Derive([("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract","","")],[("/nix/store/33333333333333333333333333333333-dependency.drv",["out"],"unknown-extension")],[],"x86_64-linux","/bin/sh",[],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract"),("system","x86_64-linux")])"#;
     let error = BuildRequest::from_stored_derivation(

@@ -753,6 +753,8 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         requester_detached.set(true);
                                         tracing::info!(
                                             event = "worker.build_derivation.requester_detached",
+                                            phase = "response-write",
+                                            error_kind = ?_error.kind(),
                                             running_disconnect_policy = running_disconnect_policy.as_str(),
                                             "running build detached from requester"
                                         );
@@ -767,7 +769,14 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     && running_disconnect_policy
                                         == crate::service::deployment::RunningDisconnectPolicy::DetachAndFinish
                                 {
-                                    requester_detached.set(true);
+                                    if !requester_detached.replace(true) {
+                                        tracing::info!(
+                                            event = "worker.build_derivation.requester_detached",
+                                            phase = "request-read",
+                                            running_disconnect_policy = running_disconnect_policy.as_str(),
+                                            "running build detached from requester"
+                                        );
+                                    }
                                     return Ok(false);
                                 }
                                 Ok(disconnected)
@@ -873,6 +882,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                                 == crate::service::deployment::RunningDisconnectPolicy::DetachAndFinish =>
                                         {
                                             requester_detached.set(true);
+                                            tracing::info!(
+                                                event = "worker.build_derivation.requester_detached",
+                                                phase = "response-write",
+                                                error_kind = ?_error.kind(),
+                                                running_disconnect_policy = running_disconnect_policy.as_str(),
+                                                "running build detached from requester"
+                                            );
                                             Ok(())
                                         }
                                         Err(error) => Err(error),
@@ -1391,11 +1407,16 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     Ok(request) if request.build_mode() == 0 && request.targets().len() == 1 => {
                         request
                     }
-                    Ok(_) => {
+                    Ok(request) => {
+                        let message = if request.targets().len() != 1 {
+                            "BuildPathsWithResults requires one target; use a local Nix daemon with --builders ssh-ng://telchar for multiple targets"
+                        } else {
+                            "unsupported BuildPathsWithResults request"
+                        };
                         return reject(
                             &mut output,
                             "unsupported-build-paths-with-results",
-                            "unsupported BuildPathsWithResults request",
+                            message,
                         );
                     }
                     Err(_) => {
