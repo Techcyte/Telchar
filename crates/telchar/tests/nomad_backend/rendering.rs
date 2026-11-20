@@ -505,5 +505,38 @@ command = "/opt/telchar/bin/worker"
     assert!(!capability.contains("backend-signing-secret"));
     assert!(job["Job"]["TaskGroups"][0]["Tasks"][0]["Identity"].is_null());
 
+    let retry_job = telchar::nomad::backend::render_job_for_features_at_attempt(
+        &config.nomad_backends()[0],
+        b"shared-build-key",
+        &[] as &[&str],
+        2,
+    )
+    .expect("retry HMAC job renders");
+    let retry_capability =
+        retry_job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]["TELCHAR_TRANSFER_CAPABILITY"]
+            .as_str()
+            .expect("retry capability is rendered");
+    let (retry_claims, retry_signature) = retry_capability
+        .split_once('.')
+        .expect("retry capability has claims and signature");
+    let mut verifier = Hmac::<Sha256>::new_from_slice(b"backend-signing-secret\n")
+        .expect("fixture signing key is valid");
+    verifier.update(retry_claims.as_bytes());
+    verifier
+        .verify_slice(
+            &URL_SAFE_NO_PAD
+                .decode(retry_signature)
+                .expect("retry signature decodes"),
+        )
+        .expect("retry capability signature verifies");
+    let retry_claims: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(retry_claims)
+            .expect("retry claims decode"),
+    )
+    .expect("retry claims parse");
+    assert_eq!(retry_claims["job_id"], retry_job["Job"]["ID"]);
+    assert_ne!(retry_claims["nonce"], claims["nonce"]);
+
     fs::remove_dir_all(root).expect("fixture removes");
 }

@@ -458,6 +458,158 @@ fn shared_build_claim_rejects_digest_conflict_and_requires_adoptable_identity() 
 }
 
 #[test]
+fn predecessor_callback_cannot_complete_successor_attempt() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation = "/nix/store/77777777777777777777777777777777-fenced.drv";
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4_u8; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("attempt-1"),
+        &["/nix/store/88888888888888888888888888888888-fenced"],
+    )
+    .expect("claim succeeds");
+    telchar::persistence::start_shared_build(fixture.url(), derivation).expect("build starts");
+    let predecessor = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .expect("attempt reads")
+        .expect("attempt exists");
+    let successor_attempt = telchar::persistence::retry_shared_build(
+        fixture.url(),
+        derivation,
+        "attempt-1",
+        "attempt-2",
+        "nomad-infrastructure-lost",
+        &serde_json::json!({"reason": "predecessor terminated"}),
+    )
+    .expect("successor starts");
+    let successor = telchar::persistence::read_shared_build(fixture.url(), derivation)
+        .expect("build reads")
+        .expect("build exists");
+    assert!(
+        telchar::persistence::complete_shared_build_execution(
+            fixture.url(),
+            derivation,
+            predecessor.attempt_id,
+            Some("nomad-transfer-failure"),
+            &serde_json::json!({"execution_id": "attempt-1"}),
+            Duration::from_secs(3_600),
+        )
+        .is_err(),
+        "predecessor callback cannot fail successor"
+    );
+    assert!(
+        telchar::persistence::collect_shared_build_execution(
+            fixture.url(),
+            derivation,
+            predecessor.attempt_id,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation)
+            .expect("build reads")
+            .expect("build exists"),
+        successor
+    );
+    thread::scope(|scope| {
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut callbacks = Vec::new();
+        for index in 0..8 {
+            let barrier = barrier.clone();
+            let database = fixture.url();
+            let attempt_id = predecessor.attempt_id;
+            callbacks.push(scope.spawn(move || {
+                barrier.wait();
+                if index % 2 == 0 {
+                    telchar::persistence::collect_shared_build_execution(
+                        database, derivation, attempt_id,
+                    )
+                    .is_err()
+                } else {
+                    telchar::persistence::complete_shared_build_execution(
+                        database,
+                        derivation,
+                        attempt_id,
+                        Some("nomad-transfer-failure"),
+                        &serde_json::json!({}),
+                        Duration::from_secs(3_600),
+                    )
+                    .is_err()
+                }
+            }));
+        }
+        for callback in callbacks {
+            assert!(callback.join().expect("stale callback exits"));
+        }
+    });
+    assert_eq!(
+        telchar::persistence::read_shared_build(fixture.url(), derivation)
+            .expect("successor reads after concurrent callbacks")
+            .expect("successor exists"),
+        successor
+    );
+    telchar::persistence::collect_shared_build_execution(
+        fixture.url(),
+        derivation,
+        successor_attempt.attempt_id,
+    )
+    .expect("successor collects");
+    assert!(
+        telchar::persistence::complete_shared_build_execution(
+            fixture.url(),
+            derivation,
+            predecessor.attempt_id,
+            None,
+            &serde_json::json!({"status": "built"}),
+            Duration::from_secs(3_600),
+        )
+        .is_err()
+    );
+    telchar::persistence::complete_shared_build_execution(
+        fixture.url(),
+        derivation,
+        successor_attempt.attempt_id,
+        None,
+        &serde_json::json!({"status": "built"}),
+        Duration::from_secs(3_600),
+    )
+    .expect("successor completes");
+    fixture.connect().execute(
+        "UPDATE shared_builds SET created_at = created_at - interval '2 hours', started_at = started_at - interval '2 hours', collecting_at = collecting_at - interval '2 hours', completed_at = completed_at - interval '2 hours', expires_at = expires_at - interval '2 hours' WHERE derivation_path = $1",
+        &[&derivation],
+    ).expect("terminal result expires");
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4_u8; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("attempt-1"),
+        &["/nix/store/88888888888888888888888888888888-fenced"],
+    )
+    .expect("later request claims reused job identity");
+    telchar::persistence::start_shared_build(fixture.url(), derivation)
+        .expect("later request starts");
+    assert!(
+        telchar::persistence::complete_shared_build_execution(
+            fixture.url(),
+            derivation,
+            predecessor.attempt_id,
+            Some("nomad-transfer-failure"),
+            &serde_json::json!({}),
+            Duration::from_secs(3_600),
+        )
+        .is_err(),
+        "attempt identity fences callbacks even when job name is reused"
+    );
+}
+
+#[test]
 fn shared_build_lifecycle_persists_immutable_terminal_success() {
     let mut fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
