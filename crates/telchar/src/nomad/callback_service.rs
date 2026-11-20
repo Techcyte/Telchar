@@ -321,6 +321,9 @@ pub fn serve_connection(
     let derivation_path = execution
         .derivation_path()
         .ok_or_else(|| io::Error::other("Nomad callback derivation identity is unavailable"))?;
+    let attempt_id = execution
+        .attempt_id()
+        .ok_or_else(|| io::Error::other("Nomad callback attempt identity is unavailable"))?;
     let build_request = execution
         .build_request()
         .ok_or_else(|| io::Error::other("Nomad callback build specification is unavailable"))?;
@@ -469,13 +472,15 @@ pub fn serve_connection(
         shared_builds,
         &build_request.shared_build_key(),
         hook_delivery_store,
+        attempt_id,
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
-            let _ = crate::persistence::complete_shared_build_failure(
+            let _ = crate::persistence::complete_shared_build_execution(
                 database,
                 derivation_path,
-                "nomad-transfer-failure",
+                attempt_id,
+                Some("nomad-transfer-failure"),
                 &serde_json::json!({"stage": "output-collection"}),
                 output_retention,
             );
@@ -494,19 +499,22 @@ pub fn serve_connection(
         nix_failure,
     } = outcome
     {
-        crate::persistence::complete_shared_build_failure(
+        crate::persistence::complete_shared_build_execution(
             database,
             derivation_path,
-            "nomad-build-failure",
+            attempt_id,
+            Some("nomad-build-failure"),
             &serde_json::json!({"diagnostic": diagnostic, "nix_failure": nix_failure}),
             output_retention,
         )
         .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
         return Ok(());
     }
-    crate::persistence::complete_shared_build_success(
+    crate::persistence::complete_shared_build_execution(
         database,
         derivation_path,
+        attempt_id,
+        None,
         &serde_json::json!({
             "status": "built",
             "outputs": build_request.expected_outputs().iter().map(|(name, path)| {
@@ -642,6 +650,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     shared_builds: &crate::shared_build::SharedBuildRegistry,
     shared_build_key: &str,
     hook_delivery_store: Option<&crate::store::runtime::GatewayStoreRuntime>,
+    attempt_id: i64,
 ) -> io::Result<BuildCollectionOutcome> {
     let span = tracing::info_span!("nomad.gateway.build_and_collect");
     let _entered = span.enter();
@@ -690,9 +699,12 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 if !collecting {
                     _collection =
                         Some(tracing::info_span!("nomad.gateway.collect_outputs").entered());
-                    crate::persistence::collect_shared_build(database, derivation_path).map_err(
-                        |_| io::Error::other("Nomad output collection transition failed"),
-                    )?;
+                    crate::persistence::collect_shared_build_execution(
+                        database,
+                        derivation_path,
+                        attempt_id,
+                    )
+                    .map_err(|_| io::Error::other("Nomad output collection transition failed"))?;
                     collecting = true;
                     tracing::info!(
                         event = "nomad.callback.outputs.collecting",

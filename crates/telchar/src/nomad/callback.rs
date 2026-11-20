@@ -25,6 +25,7 @@ pub struct CallbackExecution {
     shared_build_digest: String,
     task: String,
     derivation_path: Option<String>,
+    attempt_id: Option<i64>,
     build_request: Option<crate::build::BuildRequest>,
     trace_context: telchar_telemetry::TraceContext,
 }
@@ -52,6 +53,7 @@ impl CallbackExecution {
             shared_build_digest,
             task,
             derivation_path: None,
+            attempt_id: None,
             build_request: None,
             trace_context: telchar_telemetry::TraceContext::default(),
         })
@@ -59,6 +61,10 @@ impl CallbackExecution {
 
     pub fn derivation_path(&self) -> Option<&str> {
         self.derivation_path.as_deref()
+    }
+
+    pub fn attempt_id(&self) -> Option<i64> {
+        self.attempt_id
     }
 
     pub fn build_request(&self) -> Option<&crate::build::BuildRequest> {
@@ -217,6 +223,7 @@ impl CallbackExecutionResolver for PostgresCallbackExecutionResolver {
             );
             return reject("job does not match current attempt");
         }
+        execution.attempt_id = Some(attempt.attempt_id);
         execution.trace_context = attempt.trace_context;
         execution.derivation_path = Some(build.derivation_path);
         execution.build_request = build.build_request;

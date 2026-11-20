@@ -960,6 +960,22 @@ pub fn collect_shared_build(
     database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
 ) -> Result<SharedBuild, SharedBuildError> {
+    collect_shared_build_inner(database, derivation_path, None)
+}
+
+pub fn collect_shared_build_execution(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    attempt_id: i64,
+) -> Result<SharedBuild, SharedBuildError> {
+    collect_shared_build_inner(database, derivation_path, Some(attempt_id))
+}
+
+fn collect_shared_build_inner(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    attempt_id: Option<i64>,
+) -> Result<SharedBuild, SharedBuildError> {
     let _database_operation = telemetry::DatabaseOperation::start(stringify!(collect_shared_build));
     validate_shared_build_identity(database, derivation_path)?;
     let mut client =
@@ -972,12 +988,18 @@ pub fn collect_shared_build(
             "UPDATE shared_builds
              SET state = 'collecting', collecting_at = transaction_timestamp()
              WHERE derivation_path = $1 AND state = 'running'
+               AND ($2::bigint IS NULL OR EXISTS (
+                   SELECT 1 FROM shared_build_attempts a
+                   WHERE a.derivation_path = shared_builds.derivation_path
+                     AND a.attempt_id = $2 AND a.state = 'running'
+                     AND a.backend_execution_id = shared_builds.backend_execution_id
+               ))
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
                        backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
                        failure_classification, created_at, started_at, collecting_at,
                        completed_at, expires_at",
-            &[&derivation_path],
+            &[&derivation_path, &attempt_id],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
         .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
@@ -1013,6 +1035,7 @@ pub fn complete_shared_build_success(
         derivation_path,
         SharedBuildState::Succeeded,
         None,
+        None,
         result_metadata,
         retention,
     )
@@ -1032,6 +1055,30 @@ pub fn complete_shared_build_failure(
         derivation_path,
         SharedBuildState::Failed,
         Some(failure_classification),
+        None,
+        result_metadata,
+        retention,
+    )
+}
+
+pub fn complete_shared_build_execution(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    attempt_id: i64,
+    failure_classification: Option<&str>,
+    result_metadata: &serde_json::Value,
+    retention: Duration,
+) -> Result<SharedBuild, SharedBuildError> {
+    complete_shared_build(
+        database,
+        derivation_path,
+        if failure_classification.is_some() {
+            SharedBuildState::Failed
+        } else {
+            SharedBuildState::Succeeded
+        },
+        failure_classification,
+        Some(attempt_id),
         result_metadata,
         retention,
     )
@@ -1206,11 +1253,13 @@ fn decode_shared_build_attempt_outcome(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn complete_shared_build(
     database: &(impl DatabaseSource + ?Sized),
     derivation_path: &str,
     terminal_state: SharedBuildState,
     failure_classification: Option<&str>,
+    attempt_id: Option<i64>,
     result_metadata: &serde_json::Value,
     retention: Duration,
 ) -> Result<SharedBuild, SharedBuildError> {
@@ -1258,6 +1307,19 @@ fn complete_shared_build(
         .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?
         .try_get::<_, String>(0)
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+    if let Some(attempt_id) = attempt_id {
+        transaction
+            .query_opt(
+                "SELECT 1 FROM shared_build_attempts a
+                 JOIN shared_builds b USING (derivation_path)
+                 WHERE a.derivation_path = $1 AND a.attempt_id = $2
+                   AND a.state IN ('running', 'collecting')
+                   AND a.backend_execution_id = b.backend_execution_id",
+                &[&derivation_path, &attempt_id],
+            )
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+            .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    }
     if (terminal_state == SharedBuildState::Succeeded && current_state != "collecting")
         || (terminal_state == SharedBuildState::Failed
             && !matches!(current_state.as_str(), "claimed" | "running" | "collecting"))

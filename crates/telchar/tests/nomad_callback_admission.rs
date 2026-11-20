@@ -262,6 +262,34 @@ fn postgres_resolver_requires_exact_active_nomad_execution() {
             .expect("foreign execution resolves")
             .is_none()
     );
+    let admitted_attempt = execution.attempt_id().expect("admitted attempt exists");
+    telchar::persistence::retry_shared_build(
+        database.url(),
+        derivation_path,
+        "job-1",
+        "job-2",
+        "nomad-infrastructure-lost",
+        &json!({"reason": "predecessor terminated"}),
+    )
+    .expect("execution rotates");
+    assert!(
+        telchar::persistence::complete_shared_build_execution(
+            database.url(),
+            derivation_path,
+            admitted_attempt,
+            Some("nomad-transfer-failure"),
+            &json!({"stage": "output-collection"}),
+            Duration::from_secs(60),
+        )
+        .is_err(),
+        "already admitted callback cannot fail successor"
+    );
+    assert!(
+        resolver
+            .resolve(&exact)
+            .expect("predecessor lookup succeeds")
+            .is_none()
+    );
 }
 
 #[test]

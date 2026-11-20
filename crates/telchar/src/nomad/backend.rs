@@ -1116,7 +1116,7 @@ pub fn render_job_for_features_at_attempt<S: AsRef<str>>(
     )
 }
 
-fn render_job_for_features_with_trace_context_at_attempt<S: AsRef<str>>(
+pub fn render_job_for_features_with_trace_context_at_attempt<S: AsRef<str>>(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
     required_features: &[S],
@@ -1229,6 +1229,7 @@ fn render_job_at<S: AsRef<str>>(
             task["Env"]["TELCHAR_TRANSFER_CAPABILITY"] = Value::from(hmac_capability(
                 config,
                 shared_build_key,
+                &job_id,
                 key_id,
                 secret_file,
                 issued_at,
@@ -1358,6 +1359,7 @@ fn render_constraint(constraint: &NomadConstraint) -> Value {
 fn hmac_capability(
     config: &NomadBackendConfig,
     shared_build_key: &[u8],
+    job_id: &str,
     key_id: &str,
     secret_file: &std::path::Path,
     issued_at: SystemTime,
@@ -1377,6 +1379,7 @@ fn hmac_capability(
             shared_build_key,
             config.target().name().as_bytes(),
             config.namespace().as_bytes(),
+            job_id.as_bytes(),
             &issued_at.to_be_bytes(),
         ]
         .concat(),
@@ -1387,7 +1390,7 @@ fn hmac_capability(
         "key_id": key_id,
         "backend": config.target().name(),
         "namespace": config.namespace(),
-        "job_id": deterministic_job_name(config, shared_build_key),
+        "job_id": job_id,
         "shared_build_digest": URL_SAFE_NO_PAD.encode(shared_build_digest),
         "issued_at": issued_at,
         "expires_at": expires_at,

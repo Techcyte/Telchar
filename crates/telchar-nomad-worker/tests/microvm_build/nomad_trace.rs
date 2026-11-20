@@ -4,7 +4,9 @@ use super::*;
 use std::io::{Read, Write};
 use std::time::Instant;
 use telchar::backend::{BackendKind, BackendTarget};
-use telchar::nomad::backend::render_job_with_trace_context;
+use telchar::nomad::backend::{
+    deterministic_job_name, render_job_for_features_with_trace_context_at_attempt,
+};
 use telchar::persistence as db;
 use telchar::service::config::ServiceConfig;
 
@@ -12,6 +14,21 @@ const TEST: &str = "nomad_trace::rendered_environment_connects_real_worker_and_c
 
 #[test]
 fn rendered_environment_connects_real_worker_and_callback() {
+    connected_callback(None);
+}
+
+#[test]
+fn admitted_predecessor_output_cannot_complete_successor() {
+    connected_callback(Some(false));
+}
+
+#[test]
+fn admitted_predecessor_failure_cannot_fail_successor() {
+    connected_callback(Some(true));
+}
+
+fn connected_callback(failed_build: Option<bool>) {
+    let stale = failed_build.is_some();
     if std::env::var_os("MICROVM_TEST_STORE_URI").is_none() {
         let database = telchar_test_support::postgres::PostgresFixture::start();
         let collector = collector::start_collector();
@@ -27,10 +44,29 @@ fn rendered_environment_connects_real_worker_and_callback() {
                 "hook-trace",
             ])
             .arg(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                match failed_build {
+                    Some(true) => "nomad_trace::admitted_predecessor_failure_cannot_fail_successor",
+                    Some(false) => {
+                        "nomad_trace::admitted_predecessor_output_cannot_complete_successor"
+                    }
+                    None => TEST,
+                },
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .status()
             .unwrap();
         assert!(status.success());
+        if stale {
+            assert!(collector.has_log_event("nomad.callback.connection_failed"));
+            if failed_build == Some(true) {
+                assert!(collector.has_log_event("nomad.callback.output_collection.completed"));
+            }
+            collector.assert_no_private_markers(&["private-nomad-trace-secret"]);
+            return;
+        }
         let parent = collector.spans("telchar", "backend.execution");
         let execution = collector.spans("telchar-nomad-worker", "worker.execution");
         assert_eq!(parent.len(), 1);
@@ -180,8 +216,31 @@ uri = "{worker_store_uri}"
         .unwrap();
     assert!(added.status.success());
     let input = String::from_utf8(added.stdout).unwrap().trim().to_owned();
+    let started = root.join("build-started");
+    let release = root.join("build-release");
+    let script = if stale {
+        assert!(
+            Command::new("mkfifo")
+                .arg(&release)
+                .status()
+                .unwrap()
+                .success()
+        );
+        format!(
+            "> {}; read release < {}; {}",
+            started.display(),
+            release.display(),
+            if failed_build == Some(true) {
+                "exit 1"
+            } else {
+                "printf connected-nomad > $out"
+            },
+        )
+    } else {
+        "printf connected-nomad > $out".to_owned()
+    };
     let derivation = format!(
-        r#"Derive([("out","{output}","","")],[],["{input}"],"x86_64-linux","/bin/sh",["-e","-c","printf connected-nomad > $out"],[("out","{output}"),("system","x86_64-linux"),("builder","/bin/sh"),("name","nomad-trace")])"#
+        r#"Derive([("out","{output}","","")],[],["{input}"],"x86_64-linux","/bin/sh",["-e","-c","{script}"],[("out","{output}"),("system","x86_64-linux"),("builder","/bin/sh"),("name","nomad-trace")])"#
     );
     let request = telchar::build::BuildRequest::from_stored_derivation(
         drv.as_bytes(),
@@ -198,10 +257,16 @@ uri = "{worker_store_uri}"
     let parent = tracing::info_span!(parent: None, "backend.execution");
     let entered = parent.enter();
     let context = telchar_telemetry::TraceContext::capture_current();
-    let job =
-        render_job_with_trace_context(backend, request.shared_build_key().as_bytes(), &context)
-            .unwrap();
+    let job = render_job_for_features_with_trace_context_at_attempt(
+        backend,
+        request.shared_build_key().as_bytes(),
+        &[] as &[&str],
+        2,
+        &context,
+    )
+    .unwrap();
     let job_id = job["Job"]["ID"].as_str().unwrap().to_owned();
+    let predecessor_job = deterministic_job_name(backend, request.shared_build_key().as_bytes());
     db::claim_shared_build_with_request(
         &database,
         drv,
@@ -209,12 +274,21 @@ uri = "{worker_store_uri}"
         "trace-test",
         BackendKind::Nomad,
         BackendKind::Nomad.capabilities(),
-        Some(&job_id),
+        Some(&predecessor_job),
         &[output],
         &request,
     )
     .unwrap();
     db::start_shared_build(&database, drv).unwrap();
+    db::retry_shared_build(
+        &database,
+        drv,
+        &predecessor_job,
+        &job_id,
+        "nomad-infrastructure-lost",
+        &serde_json::json!({"reason": "predecessor terminated"}),
+    )
+    .unwrap();
     db::record_shared_build_attempt_trace_context(&database, drv, &job_id, &context).unwrap();
     let scheduler_job = job_id.clone();
     let scheduler_thread = std::thread::spawn(move || {
@@ -294,7 +368,87 @@ uri = "{worker_store_uri}"
         .env("NOMAD_JOB_ID", &job_id)
         .env("NOMAD_NAMESPACE", "telchar")
         .env("NOMAD_TASK_NAME", "build");
-    let result = worker.output().unwrap();
+    worker
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut release_pipe = stale.then(|| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&release)
+            .unwrap()
+    });
+    let mut child = worker.spawn().unwrap();
+    let successor = if stale {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !started.exists() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "worker build marker deadline: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        db::retry_shared_build(
+            &database,
+            drv,
+            &job_id,
+            "successor-job",
+            "nomad-infrastructure-lost",
+            &serde_json::json!({"reason": "fixture rotation"}),
+        )
+        .unwrap();
+        let successor = db::read_shared_build(&database, drv).unwrap().unwrap();
+        release_pipe
+            .as_mut()
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
+        Some(successor)
+    } else {
+        None
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "worker exit deadline: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().unwrap();
+    if let Some(successor) = successor {
+        if failed_build == Some(true) {
+            assert!(
+                result.status.success(),
+                "normal Nix failure completes worker transport"
+            );
+        } else {
+            assert!(
+                !result.status.success(),
+                "stale worker must not receive successful output receipt"
+            );
+        }
+        scheduler_thread.join().unwrap();
+        callback_service.shutdown().unwrap();
+        assert_eq!(
+            db::read_shared_build(&database, drv).unwrap().unwrap(),
+            successor
+        );
+        let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
+        assert!(!store.is_valid_path(output.as_bytes()).unwrap());
+        drop(entered);
+        drop(parent);
+        telemetry.shutdown();
+        return;
+    }
     assert!(
         result.status.success(),
         "{}",
