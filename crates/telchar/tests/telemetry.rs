@@ -96,6 +96,119 @@ fn assert_grpc_signals(collector: &Collector, stderr: &str) {
 }
 
 #[test]
+fn frontend_exports_correlation_without_changing_protocol_bytes() {
+    frontend_relay(false);
+}
+
+#[test]
+fn frontend_collector_outage_preserves_relay_and_bounded_exit() {
+    frontend_relay(true);
+}
+
+fn frontend_relay(outage: bool) {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::process::Stdio;
+
+    let collector = start_collector();
+    let root = std::env::temp_dir().join(format!("telchar-front-{}-{outage}", std::process::id()));
+    std::fs::create_dir(&root).expect("isolated frontend directory creates");
+    let socket = root.join("ipc");
+    let config = root.join("service.toml");
+    std::fs::write(&config, "").unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_telchar"))
+        .arg("serve-stdio")
+        .env("TELCHAR_CONFIG", &config)
+        .env("TELCHAR_IPC_SOCKET", &socket)
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .env(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            if outage {
+                "http://127.0.0.1:9".to_owned()
+            } else {
+                collector.endpoint()
+            },
+        )
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .env("RUST_LOG", "trace")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(connection) => break connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    let output = child.wait_with_output().unwrap();
+                    panic!(
+                        "frontend connect deadline: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("frontend IPC accept: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut length = [0; 4];
+    stream.read_exact(&mut length).unwrap();
+    let length = u32::from_le_bytes(length) as usize;
+    assert!(length < 65536);
+    let mut envelope = vec![0; length];
+    stream.read_exact(&mut envelope).unwrap();
+    let envelope = telchar::service::ipc::IpcEnvelope::decode(&envelope).unwrap();
+    assert!(envelope.trace_context.trace_id().is_some());
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"request-bytes")
+        .unwrap();
+    let mut request = Vec::new();
+    stream.read_to_end(&mut request).unwrap();
+    assert_eq!(request, b"request-bytes");
+    stream.write_all(b"response-bytes").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let shutdown = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if shutdown.elapsed() >= Duration::from_secs(5) {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "frontend shutdown deadline: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"response-bytes");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("ipc.frontend.envelope_sent"));
+    if outage {
+        assert!(collector.spans("telchar", "ipc.frontend").is_empty());
+    } else {
+        assert!(collector.has_log_event("ipc.frontend.envelope_sent"));
+        assert!(!collector.spans("telchar", "ipc.frontend").is_empty());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exports_otlp_signals_before_application_work() {
     let collector = start_collector();
     let output = run_smoke(collector.endpoint(), "grpc");

@@ -256,7 +256,7 @@ pub(crate) fn smoke() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let telemetry = Telemetry::initialize("telchar", env!("CARGO_PKG_VERSION"))?;
+    let telemetry = Telemetry::initialize_frontend("telchar", env!("CARGO_PKG_VERSION"))?;
     let frontend = tracing::info_span!("ipc.frontend");
     let _entered = frontend.enter();
     let result = run_frontend();
@@ -267,6 +267,8 @@ pub(crate) fn serve_stdio() -> Result<(), Box<dyn std::error::Error + Send + Syn
             "stdio frontend failed"
         );
     }
+    drop(_entered);
+    drop(frontend);
     telemetry.shutdown();
     result.map_err(Into::into)
 }

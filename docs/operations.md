@@ -291,6 +291,22 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
 
 Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail startup. Telchar exposes no Prometheus endpoint. Telemetry is bounded and omits protocol bodies, NAR contents, secrets, raw authentication material, request identities, derivation paths, and execution identities from metric attributes.
 
+### Frontend telemetry limits
+
+Each `serve-stdio` process uses one telemetry runtime worker, independent of host
+CPU count. Daemon and allocation-worker runtime policies are separate. Trace and
+log export queues hold at most 256 records each, with batches of at most 64;
+exports have a one-second timeout. Telemetry shutdown waits at most three seconds.
+Collector availability does not control protocol relay or local diagnostics.
+Completed callback service workers are joined and removed during normal acceptance.
+
+An isolated 32-CPU-host probe measured seven threads, 11,496 KiB RSS and eight file
+descriptors per idle frontend; four concurrent frontends used 28 threads. These are
+observations, not configured resource ceilings. The IPC peer was simulated and the
+collector unavailable; these measurements do not establish SSH or active-build
+capacity. Connected frontend/daemon/PostgreSQL and collector tests separately
+verify protocol-only stdout and shared trace correlation.
+
 ### Worker telemetry
 
 The gateway and allocation worker link `telchar-telemetry`. Their resource service names
@@ -368,8 +384,8 @@ idle time; daemon query duration includes any requested substitution; response
 flush duration is cumulative since response writing began. Console timestamps have
 second resolution; use journal timestamps plus duration fields rather than
 subtracting console timestamps. The frontend envelope event supplies `session_id`
-to correlate with the daemon session. Frontend and daemon OTLP trace IDs are
-separate: the IPC envelope does not propagate an OpenTelemetry parent context.
+to correlate with the daemon session. The IPC envelope propagates the frontend
+OpenTelemetry context; frontend and daemon session spans share a trace ID.
 
 The same spans export through the configured OTLP endpoint. An operator-owned
 OpenTelemetry Collector can route `traces` to its `debug` exporter for console
