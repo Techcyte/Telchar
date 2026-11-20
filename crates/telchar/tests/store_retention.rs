@@ -13,6 +13,8 @@ use telchar::store::retention::{
     NixStoreRetentionBackend, ReleasedRetentionEntry, RetentionEntry, StoreRetentionBackend,
 };
 
+#[path = "store_retention/cleanup.rs"]
+mod cleanup;
 #[path = "store_retention/durability.rs"]
 mod durability;
 #[path = "store_retention/reconciliation.rs"]
