@@ -24,6 +24,65 @@ fn claim(fixture: &PostgresFixture, derivation_path: &str, digest: u8) {
 }
 
 #[test]
+fn saturated_waiters_share_bounded_subject_examinations() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let active = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-active.drv";
+    claim(&fixture, active, 1);
+    telchar::persistence::enqueue_shared_build(fixture.url(), active, "alice", 16).unwrap();
+    telchar::persistence::start_queued_shared_build(fixture.url(), active, 1).unwrap();
+    let paths = (0..8)
+        .map(|index| {
+            let path = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-waiter-{index}.drv");
+            claim(&fixture, &path, 2);
+            telchar::persistence::enqueue_shared_build(fixture.url(), &path, "alice", 16).unwrap();
+            path
+        })
+        .collect::<Vec<_>>();
+    let examined = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&examined);
+    let scheduler = Arc::new(
+        telchar::shared_build::scheduler::SharedBuildScheduler::new(
+            telchar::persistence::Database::connect(fixture.url()).unwrap(),
+            move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                SchedulingLimits::new(16, 1).unwrap()
+            },
+        )
+        .unwrap(),
+    );
+    let waiters = paths
+        .iter()
+        .map(|path| {
+            let scheduler = Arc::clone(&scheduler);
+            let path = path.clone();
+            thread::spawn(move || scheduler.wait_for_admission(&path))
+        })
+        .collect::<Vec<_>>();
+    thread::sleep(Duration::from_millis(600));
+    let count = examined.load(std::sync::atomic::Ordering::Relaxed);
+    for path in &paths {
+        telchar::persistence::complete_shared_build_failure(
+            fixture.url(),
+            path,
+            "fixture-stop",
+            &serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    }
+    scheduler.capacity_changed();
+    for waiter in waiters {
+        assert!(waiter.join().unwrap().is_err());
+    }
+    eprintln!("eight saturated waiters, 600ms: {count} subject examinations");
+    assert!(
+        count <= 16,
+        "blocked waiters repeat scheduling scans: {count}"
+    );
+}
+
+#[test]
 fn scheduler_construction_fails_when_durable_rotation_cannot_be_read() {
     assert!(
         telchar::shared_build::scheduler::SharedBuildScheduler::new(
@@ -37,6 +96,15 @@ fn scheduler_construction_fails_when_durable_rotation_cannot_be_read() {
 
 #[test]
 fn waiting_build_starts_after_subject_capacity_is_released() {
+    capacity_release(true);
+}
+
+#[test]
+fn periodic_recheck_admits_after_missed_capacity_notification() {
+    capacity_release(false);
+}
+
+fn capacity_release(notify: bool) {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
     let first = "/nix/store/11111111111111111111111111111111-first.drv";
@@ -79,7 +147,9 @@ fn waiting_build_starts_after_subject_capacity_is_released() {
         Duration::from_secs(60),
     )
     .expect("first build completes");
-    scheduler.capacity_changed();
+    if notify {
+        scheduler.capacity_changed();
+    }
 
     assert_eq!(
         waiting.join().expect("waiting thread joins").state,
@@ -173,6 +243,60 @@ fn concurrent_waiters_for_one_subject_are_admitted() {
             .expect("waiter does not panic")
             .expect("build is admitted");
     }
+}
+
+#[test]
+fn saturated_subject_page_does_not_exclude_later_subject() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for index in 0..257 {
+        let path = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-waiting-{index:03}.drv");
+        claim(&fixture, &path, 1);
+        telchar::persistence::enqueue_shared_build(
+            fixture.url(),
+            &path,
+            &format!("subject-{index:03}"),
+            2,
+        )
+        .unwrap();
+        if index < 256 {
+            let active =
+                format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-active-{index:03}.drv");
+            claim(&fixture, &active, 2);
+            telchar::persistence::enqueue_shared_build(
+                fixture.url(),
+                &active,
+                &format!("subject-{index:03}"),
+                2,
+            )
+            .unwrap();
+            telchar::persistence::start_queued_shared_build(fixture.url(), &active, 1).unwrap();
+        }
+    }
+    let scheduler = telchar::shared_build::scheduler::SharedBuildScheduler::new(
+        telchar::persistence::Database::connect(fixture.url()).unwrap(),
+        |_| SchedulingLimits::new(2, 1).unwrap(),
+    )
+    .unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let waiter =
+        thread::spawn(move || {
+            sender
+                .send(scheduler.wait_for_admission(
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-waiting-256.drv",
+                ))
+                .unwrap();
+        });
+    let result = receiver.recv_timeout(Duration::from_secs(10));
+    assert!(
+        result.is_ok(),
+        "later subject starved behind saturated page"
+    );
+    assert_eq!(
+        result.unwrap().unwrap().derivation_path,
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-waiting-256.drv"
+    );
+    waiter.join().unwrap();
 }
 
 #[test]

@@ -656,6 +656,7 @@ fn run_daemon() -> io::Result<()> {
         let backends = backends.clone();
         let retention = output_retention.duration();
         let gateway_store = gateway_store.clone();
+        let recovery_scheduler = Arc::clone(&shared_build_scheduler);
         recovery_services.push(
             telchar::service::daemon_services::RecoveryMonitorService::start_with_ownership(
                 Duration::from_millis(100),
@@ -673,6 +674,9 @@ fn run_daemon() -> io::Result<()> {
                         &mut outputs,
                         &mut configured_backends,
                     )?;
+                    if outcome.monitoring == 0 {
+                        recovery_scheduler.capacity_changed();
+                    }
                     Ok(outcome.monitoring == 1)
                 },
             )
