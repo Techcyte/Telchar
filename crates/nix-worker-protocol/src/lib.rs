@@ -212,14 +212,27 @@ impl<R: WorkerInput> WorkerReader<R> {
                 )
             })?;
             validate_store_path(&path)?;
-            if paths.iter().any(|existing| existing == &path) {
+            paths.push(path);
+            value_charges.push(charge);
+        }
+        {
+            let _membership_charge = self
+                .budget
+                .charge(count * std::mem::size_of::<&[u8]>())
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid QueryValidPaths request",
+                    )
+                })?;
+            let mut ordered = paths.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            ordered.sort_unstable();
+            if ordered.windows(2).any(|pair| pair[0] == pair[1]) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "invalid QueryValidPaths request",
                 ));
             }
-            paths.push(path);
-            value_charges.push(charge);
         }
         let substitute = if version >= WorkerVersion::new(1, 27) {
             match self.read_integer()? {
@@ -351,14 +364,22 @@ impl<R: WorkerInput> WorkerReader<R> {
                 &self.budget,
             )?;
             validate_derived_path(&target)?;
-            if targets.iter().any(|existing| existing == &target) {
+            targets.push(target);
+            value_charges.push(charge);
+        }
+        {
+            let _membership_charge = self
+                .budget
+                .charge(count * std::mem::size_of::<&[u8]>())
+                .map_err(|_| invalid_query_missing_request())?;
+            let mut ordered = targets.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            ordered.sort_unstable();
+            if ordered.windows(2).any(|pair| pair[0] == pair[1]) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "duplicate QueryMissing target",
                 ));
             }
-            targets.push(target);
-            value_charges.push(charge);
         }
         Ok(QueryMissingRequest {
             targets,
