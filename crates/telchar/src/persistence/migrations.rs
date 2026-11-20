@@ -165,6 +165,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "post_build_hooks_outbox",
         sql: include_str!("../../migrations/0030_post_build_hooks_outbox.sql"),
     },
+    Migration {
+        version: 31,
+        name: "store_lease_admission_indexes",
+        sql: include_str!("../../migrations/0031_store_lease_admission_indexes.sql"),
+    },
+    Migration {
+        version: 32,
+        name: "nomad_execution_obligations",
+        sql: include_str!("../../migrations/0032_nomad_execution_obligations.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
