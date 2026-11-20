@@ -20,6 +20,7 @@ static OUTPUT_LEASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 mod builder;
 mod input;
+mod output;
 
 pub use builder::SessionBuilder;
 use builder::SessionContext;
@@ -28,7 +29,7 @@ use input::{SessionInput, requester_disconnected};
 fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
     let SessionContext {
         input,
-        mut output,
+        output,
         limits,
         backend_targets,
         running_disconnect_policy,
@@ -55,6 +56,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
         shared_build_scheduler,
         scheduling_limits,
     } = context;
+    let mut output = output::SessionOutput::new(output);
     let store_directory = crate::service::disk_reserve::gateway_store_directory()?;
     let mut inbound_budget = crate::service::transfer_limits::TransferBudget::new(
         transfer_limits.maximum_inbound_session_bytes,
@@ -736,13 +738,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 if requester_detached.get() {
                                     return Ok(());
                                 }
-                                match nix_worker_protocol::write_stderr_frame(
-                                    &mut output,
-                                    nix_worker_protocol::StderrFrame::Next {
-                                        message: chunk.to_vec(),
-                                    },
-                                )
-                                .and_then(|_| output.flush())
+                                match output.log(chunk)
                                 {
                                     Ok(()) => Ok(()),
                                     Err(_error)
@@ -867,13 +863,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     if requester_detached.get() {
                                         return Ok(());
                                     }
-                                    match nix_worker_protocol::write_stderr_frame(
-                                        &mut output,
-                                        nix_worker_protocol::StderrFrame::Next {
-                                            message: chunk.to_vec(),
-                                        },
-                                    )
-                                    .and_then(|_| output.flush())
+                                    match output.log(chunk)
                                     {
                                         Ok(()) => Ok(()),
                                         Err(_error)
