@@ -349,7 +349,17 @@ impl MaintenanceService {
                 return Ok(());
             }
             let uncertainty_sequence = owner.uncertainty_sequence();
-            background_result(&owner, maintain(), (), uncertainty_sequence)
+            let result = background_result(&owner, maintain(), (), uncertainty_sequence);
+            match result {
+                Err(error) if crate::store::retention::cleanup_retryable(&error) => {
+                    tracing::warn!(
+                        event = "gateway.root_cleanup.deferred",
+                        "root cleanup remains pending until the next maintenance pass"
+                    );
+                    Ok(())
+                }
+                result => result,
+            }
         })
     }
 
