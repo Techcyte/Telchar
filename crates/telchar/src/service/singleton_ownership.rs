@@ -424,7 +424,7 @@ impl Drop for SingletonOwnership {
             return;
         };
         let _ = connection.execute(
-            "DELETE FROM singleton_ownership WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3",
+            "UPDATE singleton_ownership SET lease_expires_at = clock_timestamp(), updated_at = clock_timestamp() WHERE owner_kind = $1 AND owner_token = $2 AND generation = $3",
             &[&self.owner_kind, &self.owner_token, &self.generation],
         );
     }
