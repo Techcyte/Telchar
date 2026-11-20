@@ -649,6 +649,21 @@ impl NomadClient {
                 ))
             })?;
         }
+        let derivation_path =
+            std::str::from_utf8(execution.build().derivation_path()).map_err(|_| {
+                NomadAttemptFailure::Terminal(io::Error::other("Nomad derivation path is invalid"))
+            })?;
+        let obligation = crate::persistence::retain_nomad_execution_obligation(
+            database,
+            derivation_path,
+            &execution_id,
+        )
+        .map_err(|error| {
+            NomadAttemptFailure::Terminal(super::diagnostics::failure(
+                "Nomad execution obligation could not be retained",
+                error,
+            ))
+        })?;
         let submission = self
             .submit_for_features_with_trace_context_at_attempt(
                 shared_build_key,
@@ -656,7 +671,7 @@ impl NomadClient {
                 attempt_ordinal,
                 execution.trace_context(),
             )
-            .map_err(NomadAttemptFailure::Retryable);
+            .map_err(NomadAttemptFailure::Terminal);
         crate::service::metrics::nomad_submission_finished(
             self.config.target().name(),
             profile.name(),
@@ -801,6 +816,17 @@ impl NomadClient {
                             }
                         }
                         NomadExecutionState::Failed | NomadExecutionState::Missing => {
+                            if status.state == NomadExecutionState::Missing {
+                                crate::persistence::resolve_nomad_execution_obligation(
+                                    database, obligation,
+                                )
+                                .map_err(|error| {
+                                    NomadAttemptFailure::Terminal(super::diagnostics::failure(
+                                        "Nomad execution obligation could not be resolved",
+                                        error,
+                                    ))
+                                })?;
+                            }
                             tracing::warn!(
                                 event = "nomad.job.unavailable",
                                 job_id = submission.job_id(),

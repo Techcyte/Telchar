@@ -563,9 +563,14 @@ fn claim_shared_build_inner(
                  collecting_at = NULL,
                  completed_at = NULL,
                  expires_at = NULL
-             WHERE shared_builds.state = 'failed'
+             WHERE (shared_builds.state = 'failed'
                 OR (shared_builds.state = 'succeeded'
-                    AND shared_builds.expires_at <= transaction_timestamp())
+                    AND shared_builds.expires_at <= transaction_timestamp()))
+               AND NOT EXISTS (
+                   SELECT 1 FROM nomad_execution_obligations AS obligation
+                   JOIN shared_build_attempts AS attempt USING (attempt_id)
+                   WHERE attempt.derivation_path = $1 AND obligation.resolved_at IS NULL
+               )
              RETURNING derivation_path",
             &[
                 &derivation_path,
@@ -820,6 +825,11 @@ pub fn reassign_running_shared_build(
                  log_recovery = $6,
                  backend_execution_id = $7
              WHERE derivation_path = $1 AND state = 'running'
+               AND NOT EXISTS (
+                   SELECT 1 FROM nomad_execution_obligations AS obligation
+                   JOIN shared_build_attempts AS attempt USING (attempt_id)
+                   WHERE attempt.derivation_path = $1 AND obligation.resolved_at IS NULL
+               )
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
                        backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
@@ -898,6 +908,12 @@ pub fn retry_shared_build(
              WHERE derivation_path = $1
                AND backend_execution_id = $2
                AND state = 'running'
+               AND NOT EXISTS (
+                   SELECT 1 FROM nomad_execution_obligations AS obligation
+                   JOIN shared_build_attempts AS attempt USING (attempt_id)
+                   WHERE attempt.derivation_path = $1
+                     AND obligation.resolved_at IS NULL
+               )
              RETURNING derivation_path, request_digest, state, backend_name, backend_kind,
                        execution_recovery, cancellation, log_recovery,
                        backend_execution_id, expected_outputs, build_request::text, result_metadata::text,
@@ -1159,6 +1175,104 @@ pub fn record_shared_build_attempt_trace_context(
     if updated != 1 {
         return Err(SharedBuildError(SharedBuildFailure::InvalidState));
     }
+    Ok(())
+}
+
+pub fn retain_nomad_execution_obligation(
+    database: &(impl DatabaseSource + ?Sized),
+    derivation_path: &str,
+    execution_id: &str,
+) -> Result<i64, SharedBuildError> {
+    let _operation =
+        telemetry::DatabaseOperation::start(stringify!(retain_nomad_execution_obligation));
+    validate_shared_build_identity(database, derivation_path)?;
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    let shared = transaction.query_opt(
+        "SELECT build_request::text FROM shared_builds WHERE derivation_path = $1 AND backend_kind = 'nomad' AND backend_execution_id = $2 AND state = 'running' FOR UPDATE",
+        &[&derivation_path, &execution_id],
+    ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    let encoded_request: Option<String> = shared.get(0);
+    if let Some(encoded_request) = encoded_request {
+        let request: crate::build::BuildRequest = serde_json::from_str(&encoded_request)
+            .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
+        let required = request
+            .input_sources()
+            .iter()
+            .map(|path| {
+                std::str::from_utf8(path)
+                    .map(str::to_owned)
+                    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !required.is_empty() {
+            let retained: bool = transaction.query_one(
+                "SELECT EXISTS (SELECT 1 FROM build_requests AS request
+                 WHERE request.derivation_path = $1 AND NOT EXISTS (
+                     SELECT 1 FROM unnest($2::text[]) AS required(path) WHERE NOT EXISTS (
+                         SELECT 1 FROM store_leases AS lease WHERE lease.owner_kind = 'request'
+                         AND lease.owner_id = request.request_id AND lease.store_path = required.path
+                         AND lease.purpose = 'input' AND lease.state = 'active'
+                     )
+                 ))", &[&derivation_path, &required],
+            ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?.get(0);
+            if !retained {
+                return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+            }
+        }
+    }
+    let inputs_released: bool = transaction.query_one(
+        "SELECT EXISTS (
+             SELECT 1 FROM build_requests AS request JOIN store_leases AS lease
+             ON lease.owner_kind = 'request' AND lease.owner_id = request.request_id
+             WHERE request.derivation_path = $1 AND lease.purpose IN ('input', 'derivation')
+         ) AND NOT EXISTS (
+             SELECT 1 FROM build_requests AS request
+             WHERE request.derivation_path = $1
+             AND EXISTS (SELECT 1 FROM store_leases AS lease WHERE lease.owner_kind = 'request'
+                 AND lease.owner_id = request.request_id AND lease.purpose IN ('input', 'derivation') AND lease.state = 'active')
+             AND NOT EXISTS (SELECT 1 FROM store_leases AS lease WHERE lease.owner_kind = 'request'
+                 AND lease.owner_id = request.request_id AND lease.purpose IN ('input', 'derivation') AND lease.state <> 'active')
+         )", &[&derivation_path],
+    ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?.get(0);
+    if inputs_released {
+        return Err(SharedBuildError(SharedBuildFailure::InvalidState));
+    }
+    let attempt_id: i64 = transaction.query_one(
+        "SELECT attempt_id FROM shared_build_attempts WHERE derivation_path = $1 AND backend_execution_id = $2 AND state = 'running' ORDER BY ordinal DESC LIMIT 1",
+        &[&derivation_path, &execution_id],
+    ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?.get(0);
+    transaction
+        .query_opt(
+            "INSERT INTO nomad_execution_obligations (attempt_id) VALUES ($1)
+         ON CONFLICT (attempt_id) DO UPDATE SET attempt_id = EXCLUDED.attempt_id
+         WHERE nomad_execution_obligations.resolved_at IS NULL RETURNING attempt_id",
+            &[&attempt_id],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .ok_or(SharedBuildError(SharedBuildFailure::InvalidState))?;
+    transaction
+        .commit()
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Commit))?;
+    Ok(attempt_id)
+}
+
+pub fn resolve_nomad_execution_obligation(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+) -> Result<(), SharedBuildError> {
+    let _operation =
+        telemetry::DatabaseOperation::start(stringify!(resolve_nomad_execution_obligation));
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client.execute(
+        "UPDATE nomad_execution_obligations SET resolved_at = transaction_timestamp() WHERE attempt_id = $1 AND resolved_at IS NULL",
+        &[&attempt_id],
+    ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     Ok(())
 }
 

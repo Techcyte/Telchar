@@ -30,6 +30,27 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
     let admitted = admitted_request();
     let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
         .expect("execution creates");
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("database migrates");
+    let derivation = std::str::from_utf8(admitted.derivation_path()).unwrap();
+    telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        derivation,
+        &admitted.shared_build_digest(),
+        "nomad-test",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some(&deterministic_job_name(&backend, shared_build_key)),
+        &admitted
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| std::str::from_utf8(path).unwrap())
+            .collect::<Vec<_>>(),
+        &admitted,
+    )
+    .expect("shared build claims");
+    telchar::persistence::start_shared_build(database.url(), derivation)
+        .expect("shared build starts");
     let client = NomadClient::new(backend).expect("Nomad client constructs");
     let shared_builds = telchar::shared_build::SharedBuildRegistry::new();
     let leader = match shared_builds
@@ -40,7 +61,7 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
     };
     let error = client
         .execute(
-            "postgresql://unused",
+            database.url(),
             &execution,
             shared_build_key,
             &mut |_| Ok(()),
@@ -344,6 +365,15 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
             .ordinal,
         2
     );
+    let unresolved: i64 = database
+        .connect()
+        .query_one(
+            "SELECT count(*) FROM nomad_execution_obligations WHERE resolved_at IS NULL",
+            &[],
+        )
+        .expect("obligations read")
+        .get(0);
+    assert_eq!(unresolved, 0);
     drop(leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
