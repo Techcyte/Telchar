@@ -23,8 +23,12 @@ mod upload_audit;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[path = "ipc_frontend/discovery.rs"]
+mod discovery;
 #[path = "ipc_frontend/handshake.rs"]
 mod handshake;
+#[path = "ipc_frontend/inventory.rs"]
+mod inventory;
 #[path = "ipc_frontend/ownership.rs"]
 mod ownership;
 #[path = "ipc_frontend/readiness.rs"]

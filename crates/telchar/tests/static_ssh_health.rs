@@ -35,6 +35,55 @@ fn immediate_probe_classifies_ready_and_unavailable_hosts() {
 }
 
 #[test]
+fn initial_inventory_probes_run_concurrently_with_four_process_limit() {
+    let observations = tempfile::tempdir().unwrap();
+    let fixtures = (0..12)
+        .map(|index| {
+            fixture(
+                &format!("builder{index}"),
+                &format!(
+                    "#!/bin/sh\ndate +%s%N > '{}/start-{index}'\nsleep 0.2\ndate +%s%N > '{}/end-{index}'\nexit 255\n",
+                    observations.path().display(),
+                    observations.path().display(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let backends = fixtures
+        .iter()
+        .map(|fixture| fixture.config.clone())
+        .collect::<Vec<_>>();
+    let health = StaticSshHealth::probe_all(&backends);
+    let mut events = Vec::new();
+    for index in 0..12 {
+        assert_eq!(
+            health.state(&format!("pool.builder{index}")),
+            Some(StaticSshHealthState::Unavailable)
+        );
+        for (name, delta) in [("start", 1), ("end", -1)] {
+            let timestamp = fs::read_to_string(observations.path().join(format!("{name}-{index}")))
+                .unwrap()
+                .trim()
+                .parse::<u128>()
+                .unwrap();
+            events.push((timestamp, delta));
+        }
+    }
+    events.sort_unstable();
+    let mut active = 0;
+    let mut maximum = 0;
+    for (_, delta) in events {
+        active += delta;
+        maximum = maximum.max(active);
+    }
+    assert!(
+        (2..=4).contains(&maximum),
+        "observed {maximum} concurrent probe processes"
+    );
+    assert_eq!(active, 0);
+}
+
+#[test]
 fn periodic_checks_use_state_specific_intervals_and_restore_readiness() {
     let fixture = fixture("builder", "#!/bin/sh\nexit 255\n");
     let config = fixture.config.clone();

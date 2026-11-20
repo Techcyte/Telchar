@@ -33,21 +33,37 @@ struct BackendHealth {
 impl StaticSshHealth {
     pub fn probe_all(backends: &[StaticSshBackendConfig]) -> Self {
         let now = Instant::now();
-        let states = backends
-            .iter()
-            .map(|backend| {
-                let started = Instant::now();
-                let state = probe_backend(backend, backend.check_timeout());
-                record_probe(backend, state, started.elapsed());
-                (
-                    backend.target().name().to_owned(),
-                    BackendHealth {
-                        state,
-                        checked_at: now,
-                    },
-                )
-            })
-            .collect();
+        let deadline = now + Duration::from_secs(30);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let states = Mutex::new(BTreeMap::new());
+        std::thread::scope(|scope| {
+            for _ in 0..backends.len().min(4) {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(backend) = backends.get(index) else {
+                            break;
+                        };
+                        let started = Instant::now();
+                        let remaining = deadline.saturating_duration_since(started);
+                        let state = if remaining.is_zero() {
+                            StaticSshHealthState::Unavailable
+                        } else {
+                            probe_backend(backend, backend.check_timeout().min(remaining))
+                        };
+                        record_probe(backend, state, started.elapsed());
+                        states.lock().expect("probe state lock").insert(
+                            backend.target().name().to_owned(),
+                            BackendHealth {
+                                state,
+                                checked_at: started,
+                            },
+                        );
+                    }
+                });
+            }
+        });
+        let states = states.into_inner().expect("probe state lock");
         let health = Self {
             inner: Arc::new(StaticSshHealthInner {
                 backends: backends.to_vec(),
