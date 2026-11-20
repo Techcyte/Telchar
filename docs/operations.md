@@ -282,6 +282,10 @@ SSH authentication details must come from sshd `ExposeAuthInfo`; the adapter cle
 
 Build logs are bounded and live-only. Late followers, reconnecting clients, and restarted daemons do not receive earlier log output. PostgreSQL stores no log bytes.
 
+Client log delivery is lossy under backpressure. An attachment retains at most one pending serialized log frame; additional output is omitted while that frame cannot be sent. Oversized chunks are capped at the worker protocol message limit. A resumed reader receives a truncation marker before subsequent output. A partially sent frame is completed before control or result bytes, preserving protocol framing. Local and SSH executors forward at most eight queued chunks before checking execution control again.
+
+An unread client does not prevent execution from reaching its durable terminal state. Final response delivery can still wait for that client, retaining its bounded session resources until reading resumes or the connection closes. Disconnect policy governs running execution, not log loss: `detach-and-finish` preserves admitted execution; `cancel-running` requests cancellation. Ownership loss closes admission and stops the daemon independently of response delivery.
+
 Send systemd journals and OTLP signals to operator-owned systems. Telchar supports OTLP/gRPC and OTLP/HTTP with protobuf encoding:
 
 ```bash
