@@ -627,6 +627,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 io::Error::other(shared_build_error_message(&error))
                             })
                             .and_then(|_| {
+                                shared_build_scheduler.capacity_changed();
                                 crate::service::activity::run("queue", || shared_build_scheduler
                                     .wait_for_admission(derivation_path))
                                     .map_err(|error| {
@@ -652,6 +653,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     &serde_json::json!({"failure": execution_error_reason(&error)}),
                                     output_retention.duration(),
                                 );
+                                shared_build_scheduler.capacity_changed();
                                 let _ = leader.complete(Err(
                                     crate::shared_build::SharedBuildTerminalFailure::Internal,
                                 ));
@@ -822,6 +824,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         }),
                                         output_retention.duration(),
                                     );
+                                    shared_build_scheduler.capacity_changed();
                                     let failure = if error.kind() == io::ErrorKind::Unsupported {
                                         crate::shared_build::SharedBuildTerminalFailure::BackendUnavailable
                                     } else {
@@ -1042,6 +1045,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                 &serde_json::json!({"reason": execution_error_reason(&error)}),
                                 output_retention.duration(),
                             );
+                            shared_build_scheduler.capacity_changed();
                         }
                         tracing::error!(
                             event = "worker.build_derivation.output_validation_failed",
@@ -1135,6 +1139,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             &serde_json::json!({"stage": "lease"}),
                             output_retention.duration(),
                         );
+                        shared_build_scheduler.capacity_changed();
                     }
                     if store_retention.rollback(&retained_outputs).is_err() {
                         retention_batch_event(
@@ -1234,6 +1239,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         "shared-build-state",
                         &format!("shared build completion failed: {:?}", error.failure()),
                     );
+                }
+                if durable_execution_owned.get() {
+                    shared_build_scheduler.capacity_changed();
                 }
                 if let Some(build_audit) = build_audit.as_ref() {
                     build_audit.completed("succeeded", admitted.expected_outputs().iter()

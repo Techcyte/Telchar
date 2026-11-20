@@ -61,7 +61,9 @@ This is single-active process exclusion, not high availability. A standby design
 
 One equivalent derivation has at most one active shared execution. The derivation path and a digest of the admitted specification protect request equivalence. Shared builds move through `claimed`, `running`, `collecting`, `succeeded`, or `failed`.
 
-The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Queue and active limits are transactional. Backend capacity is a separate gate, so an admitted build may wait for its selected backend permit.
+The first requester owns shared-build quota until terminal completion. Followers use the same execution and consume no extra execution slot or backend permit. Queue and active limits are transactional. Backend capacity is a separate gate, so an admitted build may wait for its selected backend permit. A permit-wait timeout fails that shared build rather than moving it to another backend. Static SSH readiness excludes unavailable targets from fresh selection; it does not authorize rerouting an execution after dispatch.
+
+Subject rotation spans the queued population, with at most 256 examinations per scheduling pass. A quota-saturated page retains its examination cursor for the next pass. Blocked waiters share a 250-millisecond recheck bound rather than each repeating a scheduling scan. Enqueue, session terminal transitions and completed recovery monitoring notify the scheduler; periodic rechecks preserve progress when notifications are missed or completion occurs outside those paths. These are subject-admission guarantees, not FIFO backend execution or a backend-locality promise.
 
 Requester disconnect behavior is operator configuration:
 

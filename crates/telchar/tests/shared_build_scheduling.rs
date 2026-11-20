@@ -103,6 +103,39 @@ fn active_execution_limit_is_atomic_and_releases_on_terminal_failure() {
 }
 
 #[test]
+fn subject_cursor_reaches_past_first_page_and_wraps() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    for index in 0..257 {
+        let path = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-subject-{index:03}.drv");
+        claim(&fixture, &path, 1);
+        telchar::persistence::enqueue_shared_build(
+            fixture.url(),
+            &path,
+            &format!("subject-{index:03}"),
+            2,
+        )
+        .expect("subject enqueues");
+    }
+    let next = telchar::persistence::read_next_queued_shared_build(
+        fixture.url(),
+        Some("subject-255"),
+        256,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(next.quota_subject, "subject-256");
+    let wrapped = telchar::persistence::read_next_queued_shared_build(
+        fixture.url(),
+        Some("subject-256"),
+        256,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(wrapped.quota_subject, "subject-000");
+}
+
+#[test]
 fn next_eligible_build_round_robins_subjects_and_preserves_subject_fifo() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");

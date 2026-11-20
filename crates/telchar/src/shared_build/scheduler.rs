@@ -21,6 +21,8 @@ pub struct SharedBuildScheduler {
 
 struct SchedulerState {
     last_admitted_subject: Option<String>,
+    last_examined_subject: Option<String>,
+    next_examination: Instant,
 }
 
 impl SharedBuildScheduler {
@@ -34,7 +36,9 @@ impl SharedBuildScheduler {
             database,
             limits_for_subject: Box::new(limits_for_subject),
             state: Mutex::new(SchedulerState {
+                last_examined_subject: last_admitted_subject.clone(),
                 last_admitted_subject,
+                next_examination: Instant::now(),
             }),
             changed: Condvar::new(),
         })
@@ -52,7 +56,10 @@ impl SharedBuildScheduler {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             self.database.wait_for_ownership()?;
-            self.admit_eligible_builds(&mut state)?;
+            if Instant::now() >= state.next_examination {
+                self.admit_eligible_builds(&mut state)?;
+                state.next_examination = Instant::now() + RECHECK_INTERVAL;
+            }
             let build = persistence::read_shared_build(&self.database, derivation_path)
                 .map_err(shared_build_error)?
                 .ok_or_else(|| io::Error::other("queued shared build is unavailable"))?;
@@ -81,6 +88,10 @@ impl SharedBuildScheduler {
     }
 
     pub fn capacity_changed(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_examination = Instant::now();
         self.changed.notify_all();
     }
 
@@ -92,7 +103,8 @@ impl SharedBuildScheduler {
             event = "shared_build.scheduler.examination.started",
             "shared build scheduler examination started"
         );
-        let mut cursor = state.last_admitted_subject.clone();
+        let mut cursor = state.last_examined_subject.clone();
+        let mut saturated_subjects = std::collections::BTreeSet::new();
         while examined_subjects < MAXIMUM_SCHEDULING_SUBJECTS {
             self.database.wait_for_ownership()?;
             let Some(entry) = persistence::read_next_queued_shared_build(
@@ -123,7 +135,11 @@ impl SharedBuildScheduler {
                 );
                 return Ok(());
             }
+            if saturated_subjects.contains(&entry.quota_subject) {
+                break;
+            }
             cursor = Some(entry.quota_subject.clone());
+            state.last_examined_subject = cursor.clone();
             examined_subjects += 1;
             let limits = (self.limits_for_subject)(&entry.quota_subject);
             match persistence::start_queued_shared_build(
@@ -141,7 +157,9 @@ impl SharedBuildScheduler {
                     admitted_builds += 1;
                     self.changed.notify_all();
                 }
-                Err(error) if error.failure() == SharedBuildFailure::Quota => {}
+                Err(error) if error.failure() == SharedBuildFailure::Quota => {
+                    saturated_subjects.insert(entry.quota_subject);
+                }
                 Err(error) if error.failure() == SharedBuildFailure::InvalidState => {}
                 Err(error) => return Err(shared_build_error(error)),
             }

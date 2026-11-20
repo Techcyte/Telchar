@@ -386,34 +386,21 @@ pub fn read_next_queued_shared_build(
     {
         return Err(SharedBuildError(SharedBuildFailure::Configuration));
     }
-    let maximum_subjects = i64::try_from(maximum_subjects)
-        .map_err(|_| SharedBuildError(SharedBuildFailure::Configuration))?;
     let mut client =
         connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
-    let rows = client
-        .query(
-            "SELECT DISTINCT ON (quota_subject)
-                    derivation_path, quota_subject, queue_position, queued_at
+    let row = client
+        .query_opt(
+            "SELECT derivation_path, quota_subject, queue_position, queued_at
              FROM shared_builds
              WHERE state = 'claimed' AND quota_subject IS NOT NULL
-             ORDER BY quota_subject, queue_position
-             LIMIT $1",
-            &[&maximum_subjects],
+             ORDER BY CASE WHEN $1::text IS NULL OR quota_subject > $1 THEN 0 ELSE 1 END,
+                      quota_subject, queue_position
+             LIMIT 1",
+            &[&after_quota_subject],
         )
         .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
-    let mut entries = rows
-        .into_iter()
-        .map(|row| decode_shared_build_queue_entry(&row).map_err(SharedBuildError))
-        .collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by(|left, right| left.quota_subject.cmp(&right.quota_subject));
-    let selected = after_quota_subject
-        .and_then(|subject| {
-            entries
-                .iter()
-                .position(|entry| entry.quota_subject.as_str() > subject)
-        })
-        .or_else(|| (!entries.is_empty()).then_some(0));
-    Ok(selected.map(|index| entries.swap_remove(index)))
+    row.map(|row| decode_shared_build_queue_entry(&row).map_err(SharedBuildError))
+        .transpose()
 }
 
 fn decode_shared_build_queue_entry(row: &Row) -> Result<SharedBuildQueueEntry, SharedBuildFailure> {
