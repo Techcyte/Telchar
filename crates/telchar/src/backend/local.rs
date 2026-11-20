@@ -120,40 +120,31 @@ impl GatewayStoreExecutor {
                 });
                 let _ = result_sender.send(result);
             });
-            loop {
-                if let Err(error) = forward_logs(&log_receiver, logs) {
-                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("build worker failed"))?;
-                    return Err(error);
-                }
-                if let Ok(result) = result_receiver.try_recv() {
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("build worker failed"))?;
+            let result = (|| {
+                loop {
                     forward_logs(&log_receiver, logs)?;
-                    break result;
+                    if let Ok(result) = result_receiver.try_recv() {
+                        forward_logs(&log_receiver, logs)?;
+                        return result;
+                    }
+                    if cancelled()? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "build requester disconnected",
+                        ));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                if cancelled()? {
-                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("build worker failed"))?;
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionAborted,
-                        "build requester disconnected",
-                    ));
-                }
-                if Instant::now() >= deadline {
-                    let _ = shutdown.shutdown(std::net::Shutdown::Both);
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("build worker failed"))?;
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            })();
+            let _ = shutdown.shutdown(std::net::Shutdown::Both);
+            drop(log_receiver);
+            worker
+                .join()
+                .map_err(|_| io::Error::other("build worker failed"))?;
+            result
         })?;
         if let WorkerBuildStatus::Failed(status) = result.status() {
             return BuildResult::failed(crate::backend::BuildFailure {
