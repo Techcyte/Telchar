@@ -25,11 +25,18 @@
         telchar = telchar;
       };
       remoteOnlyDerivation = pkgs.writeText "telchar-static-ssh-build.nix" ''
-        derivation {
+        let
+          dependency = builtins.toFile "telchar-cold-dependency" "static-ssh-source";
+          candidates = builtins.genList (index:
+            builtins.toFile "telchar-cold-parent-''${toString index}" dependency
+          ) 64;
+          parent = builtins.head (builtins.filter (path: builtins.lessThan path dependency) candidates);
+        in derivation {
           name = "telchar-static-ssh-build";
           system = builtins.currentSystem;
           builder = builtins.storePath "${pkgs.runtimeShell}";
-          args = [ "-c" "printf 'static-ssh-build-log\\n' >&2; printf static-ssh-source > $out" ];
+          input = parent;
+          args = [ "-c" "printf 'static-ssh-build-log\\n' >&2; read dependency < $input || test -n \"$dependency\"; read content < $dependency || test -n \"$content\"; printf '%s' \"$content\" > $out" ];
         }
       '';
     in
@@ -39,6 +46,12 @@
         stock_client.succeed("cp ${remoteOnlyDerivation} /tmp/static-ssh-build.nix")
         derivation_path = stock_client.succeed("nix-instantiate /tmp/static-ssh-build.nix").strip()
         gateway.succeed("test \"$(nix-instantiate ${remoteOnlyDerivation})\" = '" + derivation_path + "'")
+        inputs = stock_client.succeed("nix-store -q --references '" + derivation_path + "'").splitlines()
+        parent = next(path for path in inputs if "-telchar-cold-parent-" in path)
+        dependency = stock_client.succeed("cat '" + parent + "'").strip()
+        assert parent < dependency, "fixture must stage referrer before dependency in lexical order"
+        for path in [parent, dependency]:
+            builder.fail("nix-store --check-validity '" + path + "'")
         stock_client.succeed("HOME=/root NIX_CONFIG='substituters =' NIX_SSHOPTS='-i /root/.ssh/telchar -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' timeout -s KILL 20 nix --extra-experimental-features nix-command build --no-link --print-build-logs --print-out-paths --max-jobs 0 --builders 'ssh-ng://telchar-ingress@gateway x86_64-linux' --file /tmp/static-ssh-build.nix > /tmp/static-ssh-build.out 2>&1 || { cat /tmp/static-ssh-build.out >&2; exit 1; }")
         stock_client.succeed("grep -Fq 'static-ssh-build-log' /tmp/static-ssh-build.out")
         output_path = stock_client.succeed("tail -n 1 /tmp/static-ssh-build.out").strip()
