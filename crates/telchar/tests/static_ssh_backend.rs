@@ -253,6 +253,38 @@ fn cancellation_terminates_the_static_ssh_process_group() {
     fixture.assert_descendant_stopped();
 }
 
+#[test]
+fn log_failure_stops_transport_before_joining_protocol_worker() {
+    let fixture = BlockingTransportFixture::new("log-failure");
+    fs::write(
+        fixture.root.join("ssh"),
+        "#!/bin/sh\nprintf 'transport diagnostic\\n' >&2\nsleep 3\n",
+    )
+    .expect("SSH program writes");
+    let mut backend = fixture.backend();
+    let build = admitted_request();
+    let execution = BuildExecution::new("log-failure", &build, Duration::from_secs(10))
+        .expect("execution is valid");
+    let started = Instant::now();
+    let error = backend
+        .execute_with_logs(
+            &execution,
+            &mut |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "attachment closed",
+                ))
+            },
+            &mut || Ok(false),
+        )
+        .expect_err("log failure stops execution");
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "protocol worker waited for transport exit"
+    );
+}
+
 struct BlockingTransportFixture {
     root: std::path::PathBuf,
     config: telchar::service::config::StaticSshBackendConfig,

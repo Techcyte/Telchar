@@ -256,36 +256,38 @@ impl StaticSshBackend {
                 );
                 let _ = result_sender.send(result);
             });
-            loop {
-                forward_logs(&log_receiver, logs)?;
-                if let Ok(error) = error_receiver.try_recv() {
-                    child.kill_and_reap();
-                    return Err(error);
-                }
-                if let Ok(result) = result_receiver.try_recv() {
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("static SSH worker failed"))?;
+            let result = (|| {
+                loop {
                     forward_logs(&log_receiver, logs)?;
-                    break result;
+                    if let Ok(error) = error_receiver.try_recv() {
+                        return Err(error);
+                    }
+                    if let Ok(result) = result_receiver.try_recv() {
+                        forward_logs(&log_receiver, logs)?;
+                        return result;
+                    }
+                    if cancelled()? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "build requester disconnected",
+                        ));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                if cancelled()? {
-                    child.kill_and_reap();
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionAborted,
-                        "build requester disconnected",
-                    ));
-                }
-                if Instant::now() >= deadline {
-                    child.kill_and_reap();
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "build timed out"));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        })?;
-        child.kill_and_reap();
-        drop(log_receiver);
-        join_log_reader(stderr_reader)?;
+            })();
+            child.kill_and_reap();
+            drop(log_receiver);
+            worker
+                .join()
+                .map_err(|_| io::Error::other("static SSH worker failed"))?;
+            result
+        });
+        let reader_result = join_log_reader(stderr_reader);
+        let result = result?;
+        reader_result?;
         tracing::trace!(
             event = "backend.static_ssh.transport.completed",
             operation = "execute",

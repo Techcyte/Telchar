@@ -431,6 +431,59 @@ fn executor_times_out_and_reaps_the_helper() {
 }
 
 #[test]
+fn gateway_log_failure_releases_saturated_worker() {
+    let Ok(store_uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
+        let status = std::process::Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/microvm/canonical-store.sh"
+            ))
+            .arg(std::env::current_exe().expect("test executable resolves"))
+            .args([
+                "--exact",
+                "gateway_log_failure_releases_saturated_worker",
+                "--nocapture",
+            ])
+            .status()
+            .expect("canonical fixture starts");
+        assert!(status.success());
+        return;
+    };
+    let endpoint = GatewayStoreEndpoint::parse(&store_uri).expect("endpoint parses");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let build = admitted_request_with_builder(
+            b"while true; do printf 'saturated-build-log-012345678901234567890123456789\\n' >&2; done",
+        );
+        let request = BuildExecution::new("log-failure", &build, Duration::from_secs(10))
+            .expect("execution request is valid");
+        let mut executor = GatewayStoreExecutor::new(endpoint);
+        let error = executor.execute_with_logs(
+            &request,
+            &mut |_| {
+                std::thread::sleep(Duration::from_millis(200));
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "attachment closed",
+                ))
+            },
+            &mut || Ok(false),
+        );
+        sender
+            .send(error.map(|_| ()))
+            .expect("owner receives result");
+    });
+    let result = receiver.recv_timeout(Duration::from_secs(5));
+    assert!(
+        result.is_ok(),
+        "log failure left daemon worker blocked: {result:?}"
+    );
+    let error = result.unwrap().unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error:?}");
+    worker.join().expect("executor joins");
+}
+
+#[test]
 fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let mut store = fixture
