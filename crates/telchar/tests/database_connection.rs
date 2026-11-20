@@ -186,6 +186,25 @@ fn database_replaces_stale_connections_after_restart() {
 #[cfg(target_os = "linux")]
 #[test]
 fn dropping_database_retires_background_tasks() {
+    const CHILD: &str = "TELCHAR_TEST_DATABASE_POOL_RETIREMENT";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dropping_database_retires_background_tasks",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     fn pool_threads() -> std::collections::BTreeSet<std::path::PathBuf> {
         std::fs::read_dir("/proc/self/task")
             .unwrap()
