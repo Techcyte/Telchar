@@ -147,9 +147,32 @@ pub fn reconcile_active_shared_builds(
     outputs: &mut dyn SharedBuildOutputStore,
     backends: &mut dyn RecoveryBackend,
 ) -> io::Result<ReconciliationOutcome> {
-    let active = persistence::read_active_shared_builds(database, MAXIMUM_ACTIVE_SHARED_BUILDS)
+    let mut cursor = None;
+    let mut outcome = ReconciliationOutcome::default();
+    loop {
+        let active = persistence::read_active_shared_builds_after(
+            database,
+            cursor
+                .as_ref()
+                .map(|(created_at, path): &(std::time::SystemTime, String)| {
+                    (*created_at, path.as_str())
+                }),
+            MAXIMUM_ACTIVE_SHARED_BUILDS,
+        )
         .map_err(|_| io::Error::other("shared build recovery failed"))?;
-    reconcile_shared_builds(database, retention, active, outputs, backends)
+        let Some(last) = active.last() else {
+            break;
+        };
+        cursor = Some((last.created_at, last.derivation_path.clone()));
+        let page = reconcile_shared_builds(database, retention, active, outputs, backends)?;
+        outcome.succeeded += page.succeeded;
+        outcome.failed += page.failed;
+        outcome.monitoring += page.monitoring;
+        outcome
+            .monitoring_derivations
+            .extend(page.monitoring_derivations);
+    }
+    Ok(outcome)
 }
 
 pub fn reconcile_adopted_shared_builds(

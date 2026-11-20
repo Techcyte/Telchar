@@ -594,22 +594,17 @@ fn run_daemon() -> io::Result<()> {
         static_ssh_health.clone(),
     )?
     .attach_microvm_services(&config, microvm_services.clone())?;
-    let active_shared_builds = telchar::persistence::read_active_shared_builds(&database, 256)
-        .map_err(|_| invalid("shared build recovery failed"))?;
     let recovery_started = std::time::Instant::now();
     telchar::service::metrics::recovery_started("startup");
-    let reconciliation_result = if active_shared_builds.is_empty() {
-        Ok(telchar::shared_build::recovery::ReconciliationOutcome::default())
-    } else {
+    let reconciliation_result = {
         let mut shared_build_outputs =
             telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(
                 gateway_store.endpoint().cloned(),
             )
             .hook_delivery_retention(gateway_store.retention()?);
-        telchar::shared_build::recovery::reconcile_shared_builds(
+        telchar::shared_build::recovery::reconcile_active_shared_builds(
             &database,
             output_retention.duration(),
-            active_shared_builds,
             &mut shared_build_outputs,
             &mut configured_backends,
         )
