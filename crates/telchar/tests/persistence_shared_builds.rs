@@ -126,6 +126,76 @@ fn durable_build_request() -> telchar::build::BuildRequest {
 }
 
 #[test]
+fn nomad_submission_requires_retained_admitted_inputs() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let request = durable_build_request();
+    let derivation = std::str::from_utf8(request.derivation_path()).unwrap();
+    telchar::persistence::claim_shared_build_with_request(
+        fixture.url(),
+        derivation,
+        &request.shared_build_digest(),
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("retained-input-job"),
+        &["/nix/store/22222222222222222222222222222222-shared"],
+        &request,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.url(), derivation).unwrap();
+    assert!(
+        telchar::persistence::retain_nomad_execution_obligation(
+            fixture.url(),
+            derivation,
+            "retained-input-job"
+        )
+        .is_err()
+    );
+    telchar::persistence::create_build_request(
+        fixture.url(),
+        "retained-request",
+        derivation,
+        "x86_64-linux",
+        "audit",
+        "quota",
+    )
+    .unwrap();
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "unrelated-input",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "retained-request",
+        "/nix/store/44444444444444444444444444444444-unrelated",
+        telchar::persistence::StoreLeasePurpose::Input,
+    )
+    .unwrap();
+    assert!(
+        telchar::persistence::retain_nomad_execution_obligation(
+            fixture.url(),
+            derivation,
+            "retained-input-job"
+        )
+        .is_err()
+    );
+    telchar::persistence::create_store_lease(
+        fixture.url(),
+        "required-input",
+        telchar::persistence::StoreLeaseOwnerKind::Request,
+        "retained-request",
+        "/nix/store/33333333333333333333333333333333-input",
+        telchar::persistence::StoreLeasePurpose::Input,
+    )
+    .unwrap();
+    telchar::persistence::retain_nomad_execution_obligation(
+        fixture.url(),
+        derivation,
+        "retained-input-job",
+    )
+    .unwrap();
+}
+
+#[test]
 fn reads_authoritative_operational_shared_build_counts() {
     let fixture = PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
@@ -454,6 +524,141 @@ fn shared_build_claim_rejects_digest_conflict_and_requires_adoptable_identity() 
         .expect_err("adoptable execution requires a stable identity")
         .failure(),
         telchar::persistence::SharedBuildFailure::Configuration
+    );
+}
+
+#[test]
+fn unresolved_nomad_obligation_prevents_attempt_rotation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
+    let derivation = "/nix/store/77777777777777777777777777777777-obligation.drv";
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4_u8; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("attempt-1"),
+        &["/nix/store/88888888888888888888888888888888-obligation"],
+    )
+    .expect("claim succeeds");
+    telchar::persistence::start_shared_build(fixture.url(), derivation).expect("build starts");
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        telchar::persistence::retain_nomad_execution_obligation(
+            fixture.url(),
+            derivation,
+            "attempt-1",
+        )
+        .expect("execution liability persists before submission"),
+        attempt.attempt_id
+    );
+    assert!(
+        telchar::persistence::reassign_running_shared_build(
+            fixture.url(),
+            derivation,
+            "replacement",
+            BackendKind::Local,
+            BackendKind::Local.capabilities(),
+            None,
+        )
+        .is_err(),
+        "unresolved execution cannot migrate backend"
+    );
+    assert!(
+        telchar::persistence::retry_shared_build(
+            fixture.url(),
+            derivation,
+            "attempt-1",
+            "attempt-2",
+            "nomad-infrastructure-lost",
+            &serde_json::json!({}),
+        )
+        .is_err(),
+        "unresolved predecessor cannot be replaced"
+    );
+    assert_eq!(
+        telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+            .unwrap()
+            .unwrap(),
+        attempt
+    );
+    telchar::persistence::resolve_nomad_execution_obligation(fixture.url(), attempt.attempt_id)
+        .expect("proven absent execution resolves");
+    assert!(
+        telchar::persistence::retain_nomad_execution_obligation(
+            fixture.url(),
+            derivation,
+            "attempt-1",
+        )
+        .is_err(),
+        "resolved attempt cannot be submitted again"
+    );
+    assert!(
+        telchar::persistence::retry_shared_build(
+            fixture.url(),
+            derivation,
+            "attempt-1",
+            "attempt-2",
+            "nomad-infrastructure-lost",
+            &serde_json::json!({}),
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn unresolved_nomad_obligation_prevents_fresh_claim_after_failure() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    let derivation = "/nix/store/77777777777777777777777777777777-liability.drv";
+    let outputs = ["/nix/store/88888888888888888888888888888888-liability"];
+    telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("liability-job"),
+        &outputs,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.url(), derivation).unwrap();
+    telchar::persistence::retain_nomad_execution_obligation(
+        fixture.url(),
+        derivation,
+        "liability-job",
+    )
+    .unwrap();
+    telchar::persistence::complete_shared_build_failure(
+        fixture.url(),
+        derivation,
+        "control-plane-unavailable",
+        &serde_json::json!({}),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let before = telchar::persistence::read_shared_build(fixture.url(), derivation)
+        .unwrap()
+        .unwrap();
+    let claim = telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("replacement-job"),
+        &outputs,
+    )
+    .unwrap();
+    assert_eq!(
+        claim.build, before,
+        "unresolved execution cannot be replaced by fresh request"
     );
 }
 

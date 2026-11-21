@@ -703,7 +703,14 @@ pub fn release_abandoned_request_leases(
             "SELECT ra.session_id, ra.request_id
              FROM request_attachments ra
              JOIN protocol_sessions ps USING (session_id)
-             WHERE ra.state = 'attached' AND ps.state = 'closed'
+             WHERE ps.state = 'closed'
+               AND (ra.state = 'attached' OR (
+                   ra.state = 'detached' AND EXISTS (
+                       SELECT 1 FROM store_leases AS lease
+                       WHERE lease.owner_kind = 'request' AND lease.owner_id = ra.request_id
+                         AND lease.state = 'active' AND lease.purpose IN ('derivation', 'input')
+                   )
+               ))
              ORDER BY ra.request_id
              FOR UPDATE OF ra SKIP LOCKED",
             &[],
@@ -735,7 +742,7 @@ pub fn release_abandoned_request_leases(
         }
         let attachment = transaction
             .query_one(
-                "UPDATE request_attachments SET state = 'detached', detached_at = transaction_timestamp() WHERE session_id = $1 AND request_id = $2 AND state = 'attached' RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
+                "UPDATE request_attachments SET state = 'detached', detached_at = COALESCE(detached_at, transaction_timestamp()) WHERE session_id = $1 AND request_id = $2 AND state IN ('attached', 'detached') RETURNING session_id, request_id, state, attached_at, detached_at, delivered_at",
                 &[&session_id, &request_id],
             )
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
@@ -890,6 +897,25 @@ fn release_locked_request_leases(
     request_id: &str,
     locked: &[StoreLeaseRecord],
 ) -> Result<Vec<StoreLeaseRecord>, StoreLeaseError> {
+    transaction
+        .query_opt(
+            "SELECT shared.derivation_path FROM shared_builds AS shared
+         JOIN build_requests AS request USING (derivation_path)
+         WHERE request.request_id = $1 FOR UPDATE OF shared",
+            &[&request_id],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let obligation: bool = transaction.query_one(
+        "SELECT EXISTS (
+             SELECT 1 FROM build_requests AS request
+             JOIN shared_build_attempts AS attempt ON attempt.derivation_path = request.derivation_path
+             JOIN nomad_execution_obligations AS obligation USING (attempt_id)
+             WHERE request.request_id = $1 AND obligation.resolved_at IS NULL
+         )", &[&request_id],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?.get(0);
+    if obligation {
+        return Ok(Vec::new());
+    }
     let releasable = locked
         .iter()
         .filter(|lease| {
