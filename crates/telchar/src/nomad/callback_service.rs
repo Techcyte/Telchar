@@ -526,6 +526,23 @@ pub fn serve_connection(
         .map_err(|_| io::Error::other("Nomad shared build failure completion failed"))?;
         return Ok(());
     }
+    use crate::shared_build::recovery::SharedBuildOutputStore;
+    let runtime = hook_delivery_store
+        .ok_or_else(|| io::Error::other("Nomad output retention is unavailable"))?;
+    let mut outputs =
+        crate::shared_build::recovery::GatewaySharedBuildOutputStore::new(gateway_store.clone())
+            .hook_delivery_retention(runtime.retention()?);
+    outputs.validate_outputs(build_request)?;
+    let build = crate::persistence::read_shared_build(database, derivation_path)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("Nomad shared build is unavailable"))?;
+    let attempt = crate::persistence::read_shared_build_attempt(database, derivation_path)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("Nomad attempt is unavailable"))?;
+    if attempt.attempt_id != attempt_id {
+        return Err(io::Error::other("Nomad output retention attempt mismatch"));
+    }
+    outputs.retain_outputs(database, &build, output_retention)?;
     crate::persistence::complete_shared_build_execution(
         database,
         derivation_path,
@@ -731,6 +748,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                 }
                 let metadata: PathManifestEntry =
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
+                validate_output_authority(build_request.output_authorities(), &metadata)?;
                 session.accept(Direction::WorkerToGateway, frame)?;
                 current = Some(OutputImport::new(
                     gateway_store,
@@ -851,6 +869,28 @@ fn write_transfer_frame<S: io::Read + io::Write>(
 struct InputTransferSummary {
     path_count: usize,
     nar_bytes: u64,
+}
+
+fn validate_output_authority(
+    authorities: &[crate::build::OutputAuthority],
+    metadata: &PathManifestEntry,
+) -> io::Result<()> {
+    let authority = authorities
+        .iter()
+        .find(|authority| authority.path() == metadata.path.as_bytes())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Nomad output authority is unavailable",
+            )
+        })?;
+    if metadata.content_address.as_deref() != authority.expected_content_address().as_deref() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Nomad output content address mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn summarize_requested_inputs(
@@ -1316,6 +1356,31 @@ mod tests {
     use tracing::field::{Field, Visit};
     use tracing_subscriber::layer::{Context, Layer};
     use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn worker_output_content_address_must_match_admitted_authority() {
+        let path = "/nix/store/11111111111111111111111111111111-output";
+        let authority: crate::build::OutputAuthority = serde_json::from_value(serde_json::json!({
+            "name": b"out".as_slice(), "path": path.as_bytes(),
+            "hash_algorithm": b"r:sha256".as_slice(), "hash": vec![b'0'; 64],
+        }))
+        .unwrap();
+        let mut metadata = PathManifestEntry {
+            path: path.into(),
+            nar_hash: "0".repeat(64),
+            nar_size: 128,
+            references: Vec::new(),
+            deriver: None,
+            content_address: None,
+        };
+        assert!(
+            super::validate_output_authority(std::slice::from_ref(&authority), &metadata).is_err()
+        );
+        metadata.content_address = authority.expected_content_address();
+        super::validate_output_authority(std::slice::from_ref(&authority), &metadata).unwrap();
+        metadata.path = "/nix/store/22222222222222222222222222222222-foreign".into();
+        assert!(super::validate_output_authority(&[authority], &metadata).is_err());
+    }
 
     #[test]
     fn health_requests_release_completed_workers() {

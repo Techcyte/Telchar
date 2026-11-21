@@ -459,6 +459,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 execution.set_trace_context(telchar_telemetry::TraceContext::capture_current());
                 let requester_detached = std::cell::Cell::new(false);
                 let durable_execution_owned = std::cell::Cell::new(false);
+                let mut completion_owner = None;
                 let shared_build_key = admitted.shared_build_key();
                 let derivation_path =
                     std::str::from_utf8(admitted.derivation_path()).map_err(|_| {
@@ -799,9 +800,12 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                         if result.failure().is_some() { "failed" } else { "succeeded" },
                                         None,
                                     );
-                                    leader.complete(Ok(result)).map_err(|_| {
-                                        io::Error::other("shared BuildDerivation execution failed")
-                                    })
+                                    if result.failure().is_some() {
+                                        leader.complete(Ok(result)).map_err(|_| io::Error::other("shared BuildDerivation execution failed"))
+                                    } else {
+                                        completion_owner = Some(leader);
+                                        Ok(result)
+                                    }
                                 }
                                 Err(error) => {
                                     crate::service::metrics::build_execution_finished(
@@ -1094,6 +1098,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             "failed",
                             Some("helper"),
                         );
+                        if durable_execution_owned.get() {
+                            crate::persistence::complete_shared_build_failure(
+                                database, derivation_path, "output-retention-failure",
+                                &serde_json::json!({"stage": "root"}), output_retention.duration(),
+                            ).map_err(|failure| io::Error::other(shared_build_error_message(&failure)))?;
+                            shared_build_scheduler.capacity_changed();
+                        }
                         if let Err(release_error) = release_attached_request_leases(
                             store_retention,
                             database,
@@ -1176,6 +1187,13 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     session_id,
                     &request_id,
                 ) {
+                    if durable_execution_owned.get() {
+                        crate::persistence::complete_shared_build_failure(
+                            database, derivation_path, "request-release-failure",
+                            &serde_json::json!({"stage": "completion-release"}), output_retention.duration(),
+                        ).map_err(|failure| io::Error::other(shared_build_error_message(&failure)))?;
+                        shared_build_scheduler.capacity_changed();
+                    }
                     return reject(
                         &mut output,
                         "request-lease-release",
@@ -1232,6 +1250,9 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                 }
                 if durable_execution_owned.get() {
                     shared_build_scheduler.capacity_changed();
+                }
+                if let Some(leader) = completion_owner.take() {
+                    leader.complete(Ok(result.clone())).map_err(|_| io::Error::other("shared BuildDerivation completion failed"))?;
                 }
                 if let Some(build_audit) = build_audit.as_ref() {
                     build_audit.completed("succeeded", admitted.expected_outputs().iter()
@@ -2493,6 +2514,96 @@ fn reject(output: &mut impl Write, rejection: &str, message: &str) -> io::Result
 #[cfg(test)]
 mod timeout_diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn recovered_success_is_consumable_as_durable_result() {
+        struct Outputs;
+        impl crate::shared_build::recovery::SharedBuildOutputStore for Outputs {
+            fn retain_outputs(
+                &mut self,
+                _: &dyn crate::persistence::DatabaseSource,
+                _: &crate::persistence::SharedBuild,
+                _: Duration,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+            fn validate_outputs(&mut self, _: &crate::build::BuildRequest) -> io::Result<()> {
+                Ok(())
+            }
+            fn contains_all(&mut self, _: &[String]) -> io::Result<bool> {
+                Ok(true)
+            }
+            fn protect_hook_delivery(
+                &mut self,
+                _: &dyn crate::persistence::DatabaseSource,
+                _: &crate::persistence::SharedBuild,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Backends;
+        impl crate::shared_build::recovery::RecoveryBackend for Backends {
+            fn capabilities(
+                &self,
+                _: &str,
+            ) -> Option<(
+                crate::backend::BackendKind,
+                crate::backend::BackendCapabilities,
+            )> {
+                None
+            }
+            fn adopt(
+                &mut self,
+                _: &crate::persistence::SharedBuild,
+            ) -> io::Result<crate::shared_build::recovery::AdoptedExecution> {
+                panic!("registered outputs need no adoption")
+            }
+        }
+        let fixture = telchar_test_support::postgres::PostgresFixture::start();
+        crate::persistence::migrate(fixture.url()).unwrap();
+        let derivation = b"/nix/store/11111111111111111111111111111111-recovered.drv";
+        let output = b"/nix/store/22222222222222222222222222222222-recovered";
+        let request: crate::build::BuildRequest = serde_json::from_value(serde_json::json!({
+            "derivation_path": derivation.as_slice(), "expected_outputs": [[b"out".as_slice(), output.as_slice()]],
+            "output_authorities": [{"name": b"out".as_slice(), "path": output.as_slice(), "hash_algorithm": [], "hash": []}],
+            "input_sources": [], "system": "x86_64-linux", "required_system_features": [],
+            "builder": b"/bin/sh".as_slice(), "arguments": [], "environment": [
+                [b"builder".as_slice(), b"/bin/sh".as_slice()], [b"name".as_slice(), b"recovered".as_slice()],
+                [b"out".as_slice(), output.as_slice()], [b"system".as_slice(), b"x86_64-linux".as_slice()]
+            ]
+        })).unwrap();
+        request.validate_for_execution().unwrap();
+        let kind = crate::backend::BackendKind::Local;
+        let database = crate::persistence::Database::connect(fixture.url()).unwrap();
+        crate::persistence::claim_shared_build_with_request(
+            &database,
+            std::str::from_utf8(derivation).unwrap(),
+            &request.shared_build_digest(),
+            "local",
+            kind,
+            kind.capabilities(),
+            None,
+            &[std::str::from_utf8(output).unwrap()],
+            &request,
+        )
+        .unwrap();
+        crate::shared_build::recovery::reconcile_active_shared_builds(
+            &database,
+            Duration::from_secs(60),
+            &mut Outputs,
+            &mut Backends,
+        )
+        .unwrap();
+        let build = crate::persistence::read_shared_build(
+            &database,
+            std::str::from_utf8(derivation).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let result = durable_shared_build_result(&build).unwrap();
+        assert_eq!(result.outputs(), request.expected_outputs());
+        assert_eq!(result.status(), BuildStatus::Built);
+    }
 
     #[test]
     fn preserves_bounded_nomad_failure_diagnostics() {
