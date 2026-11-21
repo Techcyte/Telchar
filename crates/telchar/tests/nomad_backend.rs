@@ -30,6 +30,8 @@ fn gateway_store_endpoint() -> telchar::store::daemon::GatewayStoreEndpoint {
     .expect("gateway endpoint is valid")
 }
 
+#[path = "nomad_backend/capacity.rs"]
+mod capacity;
 #[path = "nomad_backend/client.rs"]
 mod client;
 #[path = "nomad_backend/execution.rs"]

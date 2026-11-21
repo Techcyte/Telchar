@@ -596,6 +596,7 @@ fn run_daemon() -> io::Result<()> {
         static_ssh_health.clone(),
     )?
     .attach_microvm_services(&config, microvm_services.clone())?;
+    configured_backends.restore_nomad_capacity(&database)?;
     let recovery_started = std::time::Instant::now();
     telchar::service::metrics::recovery_started("startup");
     let reconciliation_result = {
@@ -777,11 +778,15 @@ fn run_daemon() -> io::Result<()> {
     let once = std::env::args().any(|argument| argument == "--once");
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
+    let maintenance_backends = backends.clone();
     let mut maintenance_service =
         telchar::service::daemon_services::MaintenanceService::start_with_ownership(
             Duration::from_secs(60),
             Arc::clone(&singleton_ownership),
             move || {
+                maintenance_backends
+                    .snapshot()
+                    .reconcile_nomad_capacity(&maintenance_database)?;
                 let mut backend = maintenance_gateway_store.retention()?;
                 telchar::service::hook_delivery::reconcile_released_roots(
                     &maintenance_database,
