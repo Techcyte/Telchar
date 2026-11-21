@@ -333,6 +333,31 @@ impl BackendPool {
         self.acquire_where(system, required_features, timeout, |_| true)
     }
 
+    pub(crate) fn restore_target(&self, target_name: &str) -> io::Result<BackendPermit> {
+        let index = self
+            .inner
+            .targets
+            .iter()
+            .position(|target| target.name() == target_name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "backend is unavailable"))?;
+        let mut permits = self.inner.permits.lock().unwrap_or_else(|p| p.into_inner());
+        let selected = permits.get_mut(target_name).expect("configured capacity");
+        selected.active = selected
+            .active
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("backend occupancy overflow"))?;
+        let target = &self.inner.targets[index];
+        crate::service::metrics::backend_permit_acquired(
+            target.name(),
+            target.kind().as_str(),
+            Duration::ZERO,
+        );
+        Ok(BackendPermit {
+            pool: Arc::clone(&self.inner),
+            index,
+        })
+    }
+
     pub fn acquire_target(
         &self,
         target_name: &str,

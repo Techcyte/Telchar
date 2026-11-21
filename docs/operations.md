@@ -85,6 +85,10 @@ PostgreSQL must not contain NAR bodies, secret credential material, signatures, 
 
 Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery uses the persisted backend name and deterministic job identity, resolving the backend through current configuration; do not change endpoint or namespace under the same name while work is in flight. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
 
+Nomad submission retains a durable exact-attempt execution obligation before contacting the scheduler. An uncertain submission or monitoring response does not authorize a replacement attempt. Unresolved obligations retain input protection and backend occupancy across restart and inventory reload, even when recovered occupancy exceeds the configured maximum. New work waits until enough liabilities are resolved.
+
+Cleanup resolves an obligation only when the exact job is absent, or the validated job is stopped and every allocation is terminal. Stop requests do not purge allocation evidence. Database or cleanup uncertainty preserves the obligation and occupied capacity; operators must repair the failing dependency rather than delete obligation records to regain slots.
+
 ## EC2 SSH discovery
 
 EC2 is an SSH inventory source, not an autoscaling controller. Telchar discovers running instances using `DescribeInstances`; an external system owns launching, draining, and terminating them. Grant the gateway instance role `ec2:DescribeInstances` (resource `*`). No EC2 write permissions are required.

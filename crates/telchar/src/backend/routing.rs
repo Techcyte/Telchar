@@ -18,6 +18,9 @@ pub struct ConfiguredBackends {
 
 struct ConfiguredBackendsInner {
     pool: BackendPool,
+    uncertain_nomad_permits: Arc<std::sync::Mutex<Vec<crate::backend::BackendPermit>>>,
+    nomad_obligations:
+        Arc<std::sync::Mutex<std::collections::BTreeMap<i64, crate::backend::BackendPermit>>>,
     permit_wait: std::time::Duration,
     gateway_store: Option<GatewayStoreEndpoint>,
     local_build_helper: Option<PathBuf>,
@@ -218,6 +221,10 @@ impl ConfiguredBackends {
         Ok(Self {
             inner: Arc::new(ConfiguredBackendsInner {
                 pool: BackendPool::new(targets, maximums)?,
+                uncertain_nomad_permits: Arc::new(std::sync::Mutex::new(Vec::new())),
+                nomad_obligations: Arc::new(std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
                 permit_wait: config.backend_permit_wait(),
                 gateway_store,
                 local_build_helper,
@@ -251,9 +258,6 @@ impl ConfiguredBackends {
         config: &ServiceConfig,
         current: &Self,
     ) -> io::Result<Self> {
-        if current.inner.microvm.is_empty() {
-            return Ok(self);
-        }
         let mut replacement = Self::compose(
             config,
             self.inner.static_ssh.clone(),
@@ -270,6 +274,8 @@ impl ConfiguredBackends {
         )?;
         let inner = Arc::get_mut(&mut replacement.inner).expect("exclusive routing construction");
         inner.pool = inner.pool.clone().retain_capacity(&current.inner.pool)?;
+        inner.nomad_obligations = Arc::clone(&current.inner.nomad_obligations);
+        inner.uncertain_nomad_permits = Arc::clone(&current.inner.uncertain_nomad_permits);
         Ok(replacement)
     }
 
@@ -283,6 +289,67 @@ impl ConfiguredBackends {
 
     pub fn static_ssh_scheduling(&self) -> Arc<RwLock<BTreeSet<String>>> {
         Arc::clone(&self.inner.schedulable_static_ssh)
+    }
+
+    pub fn reconcile_nomad_capacity(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> io::Result<()> {
+        let attempts = self
+            .inner
+            .nomad_obligations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for attempt_id in attempts {
+            let attempt = crate::persistence::read_shared_build_attempt_by_id(database, attempt_id)
+                .map_err(|error| io::Error::other(error.to_string()))?
+                .ok_or_else(|| io::Error::other("obligated Nomad attempt is missing"))?;
+            let backend = attempt.backend_name;
+            let job = attempt
+                .backend_execution_id
+                .ok_or_else(|| io::Error::other("obligated Nomad execution identity is missing"))?;
+            let config = self
+                .inner
+                .nomad
+                .iter()
+                .find(|config| config.target().name() == backend)
+                .ok_or_else(|| io::Error::other("obligated Nomad backend is not configured"))?;
+            if crate::nomad::backend::NomadClient::new(config.clone())?
+                .execution_cleanup_complete(&job)?
+            {
+                crate::persistence::resolve_nomad_execution_obligation(database, attempt_id)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                self.inner
+                    .nomad_obligations
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&attempt_id);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn restore_nomad_capacity(
+        &self,
+        database: &crate::persistence::Database,
+    ) -> io::Result<()> {
+        let pending = crate::persistence::read_nomad_execution_obligations(database)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let mut retained = self
+            .inner
+            .nomad_obligations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        retained.retain(|attempt_id, _| pending.iter().any(|(id, _)| id == attempt_id));
+        for (attempt_id, backend) in pending {
+            if let std::collections::btree_map::Entry::Vacant(entry) = retained.entry(attempt_id) {
+                entry.insert(self.inner.pool.restore_target(&backend)?);
+            }
+        }
+        Ok(())
     }
 
     pub fn executor(
@@ -676,6 +743,41 @@ impl BuildBackend for BackendExecutor {
                     config.transfer_limits().live_log_queue_bytes(),
                     cancelled,
                 );
+                let liability = (|| {
+                    let pending =
+                        crate::persistence::read_nomad_execution_obligations(&self.database)
+                            .map_err(|error| io::Error::other(error.to_string()))?;
+                    let derivation = std::str::from_utf8(execution.build().derivation_path())
+                        .map_err(|_| io::Error::other("Nomad derivation path is invalid"))?;
+                    let attempt =
+                        crate::persistence::read_shared_build_attempt(&self.database, derivation)
+                            .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok::<_, io::Error>(
+                        attempt.filter(|attempt| {
+                            pending.iter().any(|(id, _)| *id == attempt.attempt_id)
+                        }),
+                    )
+                })();
+                let liability = match liability {
+                    Ok(attempt) => attempt,
+                    Err(error) => {
+                        self.backends
+                            .inner
+                            .uncertain_nomad_permits
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .push(permit);
+                        return Err(error);
+                    }
+                };
+                if let Some(attempt) = liability {
+                    self.backends
+                        .inner
+                        .nomad_obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(attempt.attempt_id, permit);
+                }
                 let result_name = if result
                     .as_ref()
                     .is_ok_and(|result| result.failure().is_none())
