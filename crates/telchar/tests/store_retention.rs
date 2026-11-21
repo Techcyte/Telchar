@@ -17,6 +17,8 @@ use telchar::store::retention::{
 mod cleanup;
 #[path = "store_retention/durability.rs"]
 mod durability;
+#[path = "store_retention/nomad.rs"]
+mod nomad;
 #[path = "store_retention/reconciliation.rs"]
 mod reconciliation;
 #[path = "store_retention/release.rs"]
