@@ -10,8 +10,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telchar::store::export::{NixStoreExportBackend, StoreExportBackend, StoreExportRequest};
 
+// Forked helpers can inherit another fixture's script write descriptor until exec.
+static HELPER_PROCESSES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn oversized_helper_stderr_is_drained_bounded_and_helper_is_reaped() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let fixture = HelperFixture::create(
         r#"#!/bin/sh
 printf '%070000d' 0 >&2
@@ -36,6 +40,7 @@ exit 1
 
 #[test]
 fn writer_failure_kills_and_reaps_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let fixture = HelperFixture::create(
         r#"#!/bin/sh
 trap 'exit 0' TERM INT
@@ -62,6 +67,7 @@ done
 
 #[test]
 fn panicking_writer_terminates_export_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let fixture = HelperFixture::create(
         r#"#!/bin/sh
 trap 'exit 0' TERM INT
@@ -79,15 +85,16 @@ done
     let mut writer = PanickingWriter;
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = backend.export_nar(&request, 0, &mut writer);
+        backend.export_nar(&request, 0, &mut writer)
     }));
 
-    assert!(result.is_err(), "writer did not panic");
+    assert!(result.is_err(), "writer did not panic: {result:?}");
     fixture.assert_recorded_process_reaped();
 }
 
 #[test]
 fn killed_owner_terminates_export_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     const CHILD_ENV: &str = "TELCHAR_EXPORT_OWNER_CHILD";
     const HELPER_ENV: &str = "TELCHAR_EXPORT_OWNER_HELPER";
     const EVIDENCE_ENV: &str = "TELCHAR_EXPORT_OWNER_EVIDENCE";
