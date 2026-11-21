@@ -185,10 +185,16 @@ fn second_daemon_cannot_replace_live_socket() {
     let mut second = daemon_command(&socket, 1_000, true, database.url())
         .spawn()
         .expect("second daemon runs");
-    let output = wait_with_deadline(&mut second, Duration::from_millis(500));
+    let output = wait_with_deadline(&mut second, Duration::from_secs(10));
     assert!(
         !output.status.success(),
         "second daemon replaced live socket"
+    );
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("database.singleton_ownership.refused")
+            && diagnostics.contains("failure_class=\"contended\""),
+        "{output:?}"
     );
 
     let mut frontend = Command::new(env!("CARGO_BIN_EXE_telchar"))

@@ -183,7 +183,15 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> std::process::Out
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            panic!("child did not exit before deadline");
+            child.wait().expect("timed-out child reaps");
+            let mut diagnostics = String::new();
+            child
+                .stderr
+                .take()
+                .expect("child stderr")
+                .read_to_string(&mut diagnostics)
+                .expect("child diagnostics read");
+            panic!("child did not exit before deadline: {diagnostics}");
         }
         thread::sleep(Duration::from_millis(5));
     }
