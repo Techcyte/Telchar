@@ -166,7 +166,7 @@ fn failed_build_sessions(cleanup_fault: bool) {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn send_failure_build(
+pub(super) fn send_failure_build(
     input: &mut impl Write,
     build: &telchar::build::BuildRequest,
     target: &str,

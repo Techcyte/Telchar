@@ -578,7 +578,14 @@ pub fn validate_store_output(
     backend: &mut (impl StoreExportBackend + ?Sized),
 ) -> io::Result<RegisteredPathInfo> {
     let mut sink = io::sink();
-    verify_exported_nar(path, &mut sink, backend).map(|verified| verified.metadata)
+    verify_exported_nar(path, &mut sink, backend).map(|verified| {
+        tracing::info!(
+            event = "gateway.output.validated",
+            nar_bytes = verified.nar_size,
+            "gateway output NAR validated"
+        );
+        verified.metadata
+    })
 }
 
 fn verify_exported_nar(

@@ -919,7 +919,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                         Ok(result)
                     })()
                 };
-                let result = match shared_result {
+                let mut result = match shared_result {
                     Ok(result) => result,
                     Err(error) => {
                         let unavailable = error.kind() == io::ErrorKind::Unsupported;
@@ -988,7 +988,11 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     continue;
                 }
                 let validation_started = std::time::Instant::now();
-                let output_paths = crate::service::activity::run("validate-outputs", || validate_build_outputs(&result, &admitted, store_export));
+                let output_paths = if result.gateway_validated() {
+                    result.outputs().iter().map(|(_, path)| String::from_utf8(path.clone()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid validated output path"))).collect::<io::Result<Vec<_>>>()
+                } else {
+                    crate::service::activity::run("validate-outputs", || validate_build_outputs(&result, &admitted, store_export))
+                };
                 crate::service::metrics::store_validation_finished(
                     validation_started.elapsed(),
                     if output_paths.is_ok() {
@@ -1252,6 +1256,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                     shared_build_scheduler.capacity_changed();
                 }
                 if let Some(leader) = completion_owner.take() {
+                    result.mark_gateway_validated();
                     leader.complete(Ok(result.clone())).map_err(|_| io::Error::other("shared BuildDerivation completion failed"))?;
                 }
                 if let Some(build_audit) = build_audit.as_ref() {
