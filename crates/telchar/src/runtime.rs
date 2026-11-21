@@ -779,6 +779,8 @@ fn run_daemon() -> io::Result<()> {
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
     let maintenance_backends = backends.clone();
+    let detail_retention = config.lifecycle_detail_retention();
+    let mut detail_cursor = telchar::persistence::LeaseDetailCursor::default();
     let mut maintenance_service =
         telchar::service::daemon_services::MaintenanceService::start_with_ownership(
             Duration::from_secs(60),
@@ -796,7 +798,15 @@ fn run_daemon() -> io::Result<()> {
                     &maintenance_database,
                     backend.as_mut(),
                     SystemTime::now(),
+                )?;
+                telchar::persistence::prune_store_lease_details(
+                    &maintenance_database,
+                    detail_retention,
+                    256,
+                    &mut detail_cursor,
                 )
+                .map(|_| ())
+                .map_err(std::io::Error::other)
             },
         )?;
     let mut hook_delivery_service = telchar::service::daemon_services::HookDeliveryService::start(

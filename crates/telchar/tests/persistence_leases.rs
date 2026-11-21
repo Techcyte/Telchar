@@ -42,14 +42,38 @@ use tracing_subscriber::prelude::*;
 
 static TELEMETRY_TESTS: Mutex<()> = Mutex::new(());
 
+#[path = "persistence_leases/attachment_history.rs"]
+mod attachment_history;
+#[path = "persistence_leases/attachment_locking.rs"]
+mod attachment_locking;
+#[path = "persistence_leases/attachment_traversal.rs"]
+mod attachment_traversal;
 #[path = "persistence_leases/batch.rs"]
 mod batch;
+#[path = "persistence_leases/history.rs"]
+mod history;
+#[path = "persistence_leases/history_cutoff.rs"]
+mod history_cutoff;
+#[path = "persistence_leases/history_locking.rs"]
+mod history_locking;
+#[path = "persistence_leases/history_maintenance.rs"]
+mod history_maintenance;
+#[path = "persistence_leases/history_scan.rs"]
+mod history_scan;
+#[path = "persistence_leases/history_traversal.rs"]
+mod history_traversal;
 #[path = "persistence_leases/input.rs"]
 mod input;
 #[path = "persistence_leases/output.rs"]
 mod output;
 #[path = "persistence_leases/release.rs"]
 mod release;
+#[path = "persistence_leases/request_history.rs"]
+mod request_history;
+#[path = "persistence_leases/session_history.rs"]
+mod session_history;
+#[path = "persistence_leases/session_scan.rs"]
+mod session_scan;
 #[path = "persistence_leases/store.rs"]
 mod store;
 

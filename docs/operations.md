@@ -199,6 +199,10 @@ The gateway Nix daemon is trusted authority. The Telchar account needs the opera
 
 Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
 
+`lifecycle_detail_retention_days` controls disposable lifecycle detail retention in service TOML: default `30`, range `1` through `3650`, with daemon restart required for changes. Every sixty seconds, maintenance prunes bounded pages of eligible reconciled leases, detached or delivered attachments, and unreferenced closed sessions after root reconciliation. Age starts at final closure or reconciliation, including execution cleanup and hook-root release; unresolved consumers prevent pruning. Request, attempt, result and ownership audit records remain intact.
+
+A sweep uses a fixed database-time cutoff and process-local keyset cursors. Restart safely rescans eligibility. Cleanup faults can delay pruning; this policy is not a database-size ceiling or an archive. Back up immutable audit history and monitor its growth separately.
+
 Nomad allocation stores are separate operator policy. See [Nomad backend](nomad.md).
 
 ## Ingress and clients
