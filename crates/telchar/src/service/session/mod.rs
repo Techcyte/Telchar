@@ -565,6 +565,7 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                                     let result = match wait_for_shared_build_terminal_state(
                                         database,
                                         derivation_path,
+                                        execution.timeout(),
                                     )
                                     .map_err(|error| {
                                         io::Error::new(
@@ -2308,7 +2309,8 @@ fn wait_for_shared_build_terminal(
     database: &crate::persistence::Database,
     derivation_path: &str,
 ) -> io::Result<()> {
-    match wait_for_shared_build_terminal_state(database, derivation_path)? {
+    match wait_for_shared_build_terminal_state(database, derivation_path, Duration::from_secs(30))?
+    {
         crate::persistence::SharedBuildState::Succeeded => Ok(()),
         _ => Err(io::Error::other("shared BuildDerivation execution failed")),
     }
@@ -2317,9 +2319,14 @@ fn wait_for_shared_build_terminal(
 fn wait_for_shared_build_terminal_state(
     database: &crate::persistence::Database,
     derivation_path: &str,
+    timeout: Duration,
 ) -> io::Result<crate::persistence::SharedBuildState> {
     crate::service::activity::run("await-terminal", || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "shared build wait is invalid")
+            })?;
         loop {
             let build = crate::persistence::read_shared_build(database, derivation_path)
                 .map_err(|error| io::Error::other(shared_build_error_message(&error)))?
