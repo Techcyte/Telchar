@@ -52,13 +52,18 @@ fn daemon_refuses_insecure_existing_runtime_directory_without_changing_it() {
         .expect("fixture root permissions set");
     let socket = root.join("daemon.sock");
     let database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("fixture schema migrates");
     let mut daemon = daemon_command(&socket, 1_000, true, database.url())
         .spawn()
         .expect("daemon command runs");
-    let output = wait_with_deadline(&mut daemon, Duration::from_millis(500));
+    let output = wait_with_deadline(&mut daemon, Duration::from_secs(10));
     assert!(
         !output.status.success(),
         "daemon accepted insecure runtime directory"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("reason=\"permission-denied\""),
+        "{output:?}"
     );
     assert_eq!(
         fs::metadata(&root)
