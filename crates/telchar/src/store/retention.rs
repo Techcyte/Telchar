@@ -57,6 +57,41 @@ pub trait StoreRetentionBackend: Send {
     fn release(&mut self, released: &[ReleasedRetentionEntry]) -> io::Result<()>;
 }
 
+#[derive(Debug)]
+struct CleanupFailure(io::Error);
+
+impl std::fmt::Display for CleanupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("store root cleanup pending")
+    }
+}
+
+impl std::error::Error for CleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+pub fn cleanup_retryable(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<CleanupFailure>())
+}
+
+fn cleanup_error(error: io::Error) -> io::Error {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::TimedOut
+    ) {
+        io::Error::other(CleanupFailure(error))
+    } else {
+        retention_error()
+    }
+}
+
 pub fn reconcile_released_request_leases(
     database: &(impl crate::persistence::DatabaseSource + ?Sized),
     backend: &mut dyn StoreRetentionBackend,
@@ -467,7 +502,7 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 let linked = fs::read_link(&root_path).map_err(|error| {
                     log_retention_failure("release-read-root", &error);
-                    retention_error()
+                    cleanup_error(error)
                 })?;
                 if linked != Path::new(&entry.store_path) {
                     let error = retention_error();
@@ -476,7 +511,7 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
                 }
                 fs::remove_file(&root_path).map_err(|error| {
                     log_retention_failure("release-remove-root", &error);
-                    retention_error()
+                    cleanup_error(error)
                 })?;
             }
             Ok(_) => {
@@ -487,7 +522,7 @@ fn release_paths(root_directory: &Path, released: &[ReleasedRetentionEntry]) -> 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
                 log_retention_failure("release-read-root", &error);
-                return Err(retention_error());
+                return Err(cleanup_error(error));
             }
         }
     }
@@ -547,9 +582,9 @@ fn validate_root_directory(directory: PathBuf) -> io::Result<PathBuf> {
         .write(true)
         .create_new(true)
         .open(&probe)
-        .map_err(|_| retention_error())?;
+        .map_err(cleanup_error)?;
     drop(file);
-    fs::remove_file(probe).map_err(|_| retention_error())?;
+    fs::remove_file(probe).map_err(cleanup_error)?;
     Ok(directory)
 }
 

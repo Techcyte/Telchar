@@ -81,6 +81,8 @@ Back up PostgreSQL with a PostgreSQL-aware tool such as `pg_dump -Fc`. The backu
 - attempt and backend execution identity;
 - transfer, retention, attachment, and terminal metadata.
 
+During GC-root release, filesystem permission denial, would-block, interruption and timeout errors leave released leases unreconciled and defer the remaining maintenance pass. The daemon emits `gateway.root_cleanup.deferred` and retries at its sixty-second maintenance interval; the IPC listener remains active while ownership is valid, but new sessions fail closed if the root directory cannot establish retention protection. Sessions resume after filesystem repair. Persistent faults retain roots: alert on repeated deferral and repair the filesystem policy rather than deleting lease records. Conflicting root targets, invalid roots, other filesystem errors, database failures and ownership loss are not classified as retryable cleanup.
+
 PostgreSQL must not contain NAR bodies, secret credential material, signatures, or build-log bytes. It does contain bounded credential identifiers and authentication authority, backend capability metadata, admitted build specifications, and execution identities required for scheduling and recovery. Back up the gateway Nix store and GC-root directory separately. A database-only restore does not restore missing store objects.
 
 Recovery checks exact gateway-store outputs first. Static SSH recovery remains bound to the original target. Nomad recovery uses the persisted backend name and deterministic job identity, resolving the backend through current configuration; do not change endpoint or namespace under the same name while work is in flight. Missing or unverifiable state fails closed; Telchar does not resubmit automatically.
