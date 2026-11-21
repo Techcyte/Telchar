@@ -779,6 +779,8 @@ fn run_daemon() -> io::Result<()> {
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
     let maintenance_backends = backends.clone();
+    let detail_retention = config.lifecycle_detail_retention();
+    let mut detail_cursor = telchar::persistence::LeaseDetailCursor::default();
     let mut maintenance_service =
         telchar::service::daemon_services::MaintenanceService::start_with_ownership(
             Duration::from_secs(60),
@@ -796,7 +798,15 @@ fn run_daemon() -> io::Result<()> {
                     &maintenance_database,
                     backend.as_mut(),
                     SystemTime::now(),
+                )?;
+                telchar::persistence::prune_store_lease_details(
+                    &maintenance_database,
+                    detail_retention,
+                    256,
+                    &mut detail_cursor,
                 )
+                .map(|_| ())
+                .map_err(std::io::Error::other)
             },
         )?;
     let mut hook_delivery_service = telchar::service::daemon_services::HookDeliveryService::start(
@@ -816,7 +826,7 @@ fn run_daemon() -> io::Result<()> {
     let mut ec2_static_ssh = Vec::new();
     let (once_result, completed_session) = std::sync::mpsc::channel();
     let mut once_started = false;
-    let mut reload_preparation: Option<std::thread::JoinHandle<_>> = None;
+    let mut reload_preparation = daemon_runtime::InventoryPreparation(None);
     let mut reload_started = std::time::Instant::now();
     loop {
         if once_started {
@@ -870,7 +880,7 @@ fn run_daemon() -> io::Result<()> {
         for service in &microvm_services {
             service.check()?;
         }
-        if reload_preparation.is_none()
+        if reload_preparation.0.is_none()
             && static_ssh_health_service.can_replace()?
             && reload_requested.swap(false, std::sync::atomic::Ordering::Relaxed)
         {
@@ -885,7 +895,7 @@ fn run_daemon() -> io::Result<()> {
             let helper = gateway_store
                 .build_helper()
                 .map(std::path::Path::to_path_buf);
-            reload_preparation = Some(
+            reload_preparation.0 = Some(
                 std::thread::Builder::new()
                     .name("backend-reload".into())
                     .spawn(move || {
@@ -901,10 +911,12 @@ fn run_daemon() -> io::Result<()> {
             );
         }
         if reload_preparation
+            .0
             .as_ref()
             .is_some_and(|worker| worker.is_finished())
         {
             let prepared = reload_preparation
+                .0
                 .take()
                 .expect("finished reload exists")
                 .join()
@@ -948,7 +960,7 @@ fn run_daemon() -> io::Result<()> {
             }
         }
         let mut discovery_changed = false;
-        if reload_preparation.is_none()
+        if reload_preparation.0.is_none()
             && static_ssh_health_service.can_replace()?
             && let Some(service) = static_ssh_consul_service.as_mut()
             && let Some(discovered) = service.check()?
@@ -956,7 +968,7 @@ fn run_daemon() -> io::Result<()> {
             consul_static_ssh = discovered;
             discovery_changed = true;
         }
-        if reload_preparation.is_none()
+        if reload_preparation.0.is_none()
             && static_ssh_health_service.can_replace()?
             && let Some(service) = static_ssh_ec2_service.as_mut()
             && let Some(discovered) = service.check()?
@@ -976,7 +988,7 @@ fn run_daemon() -> io::Result<()> {
                 .build_helper()
                 .map(std::path::Path::to_path_buf);
             reload_started = std::time::Instant::now();
-            reload_preparation = Some(std::thread::Builder::new().name("backend-inventory".into()).spawn(move || {
+            reload_preparation.0 = Some(std::thread::Builder::new().name("backend-inventory".into()).spawn(move || {
                 telchar::service::config_reload::BackendReload::prepare_config_with_inventory(
                     &current, current.clone(), &discovered, endpoint, helper, Duration::from_secs(1),
                 ).map(|reload| (reload, Some(discovered)))

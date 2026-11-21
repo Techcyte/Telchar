@@ -4,9 +4,30 @@ use super::*;
 
 #[test]
 fn daemon_persists_authenticated_session_before_worker_handshake_and_closes_it_after_completion() {
-    let fixture = Fixture::start();
+    let mut fixture = Fixture::start();
     let session_id = "durable-session";
-    let mut stream = UnixStream::connect(&fixture.socket).expect("raw frontend connects");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut stream = loop {
+        match UnixStream::connect(&fixture.socket) {
+            Ok(stream) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                if let Some(status) = fixture.daemon.try_wait().expect("daemon status") {
+                    let mut stderr = String::new();
+                    fixture
+                        .daemon
+                        .stderr
+                        .as_mut()
+                        .unwrap()
+                        .read_to_string(&mut stderr)
+                        .unwrap();
+                    panic!("daemon exited before listening: {status}: {stderr}");
+                }
+                assert!(Instant::now() < deadline, "daemon did not listen: {error}");
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("raw frontend connects: {error}"),
+        }
+    };
     IpcListener::send_envelope(
         &mut stream,
         &IpcEnvelope {

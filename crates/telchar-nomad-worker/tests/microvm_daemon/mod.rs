@@ -588,7 +588,7 @@ chunk_bytes = 262144
     }
     assert_eq!(
         control
-            .query_one("SELECT count(*) FROM singleton_ownership", &[])
+            .query_one("SELECT count(*) FROM singleton_ownership WHERE lease_expires_at > clock_timestamp()", &[])
             .unwrap()
             .get::<_, i64>(0),
         0

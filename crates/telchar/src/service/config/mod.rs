@@ -100,6 +100,7 @@ const PACKAGED_SSH_PROGRAM: Option<&str> = option_env!("TELCHAR_DEFAULT_SSH_PROG
 pub struct ServiceConfig {
     running_disconnect_policy: RunningDisconnectPolicy,
     output_retention: OutputRetention,
+    lifecycle_detail_retention: Duration,
     maximum_retained_input_bytes: u64,
     audit_enabled: bool,
     post_build_hook: Option<crate::service::post_build_hook::PostBuildHook>,
@@ -156,6 +157,10 @@ impl ServiceConfig {
 
     pub fn output_retention(&self) -> OutputRetention {
         self.output_retention
+    }
+
+    pub fn lifecycle_detail_retention(&self) -> Duration {
+        self.lifecycle_detail_retention
     }
 
     pub fn maximum_retained_input_bytes(&self) -> u64 {
@@ -266,6 +271,7 @@ impl ServiceConfig {
     ) -> io::Result<StaticSshReloadChanges> {
         if self.running_disconnect_policy != replacement.running_disconnect_policy
             || self.output_retention != replacement.output_retention
+            || self.lifecycle_detail_retention != replacement.lifecycle_detail_retention
             || self.maximum_retained_input_bytes != replacement.maximum_retained_input_bytes
             || self.audit_enabled != replacement.audit_enabled
             || self.post_build_hook != replacement.post_build_hook
@@ -388,6 +394,12 @@ impl ServiceConfig {
                     .transpose()?
                     .unwrap_or_default(),
             };
+        let lifecycle_detail_retention_days = raw.lifecycle_detail_retention_days.unwrap_or(30);
+        if !(1..=3650).contains(&lifecycle_detail_retention_days) {
+            return Err(invalid("lifecycle detail retention days are invalid"));
+        }
+        let lifecycle_detail_retention =
+            Duration::from_secs(lifecycle_detail_retention_days * 86400);
         let maximum_retained_input_bytes =
             match environment_string(environment, "TELCHAR_MAX_RETAINED_INPUT_BYTES")? {
                 Some(value) => parse_positive_u64(&value, "retained input byte limit is invalid")?,
@@ -575,6 +587,7 @@ impl ServiceConfig {
         Ok(Self {
             running_disconnect_policy,
             output_retention,
+            lifecycle_detail_retention,
             maximum_retained_input_bytes,
             audit_enabled: raw.audit.unwrap_or_default().enabled,
             post_build_hook,

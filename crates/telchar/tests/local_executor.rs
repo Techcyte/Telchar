@@ -15,6 +15,9 @@ use telchar::build::BuildRequest;
 use telchar::fixture::nix::NixFixture;
 use telchar::store::daemon::GatewayStoreEndpoint;
 
+// Forked helpers can inherit another fixture's script write descriptor until exec.
+static HELPER_PROCESSES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const DERIVATION_PATH: &[u8] =
     b"/nix/store/00000000000000000000000000000000-telchar-local-executor.drv";
 const OUTPUT_PATH: &[u8] = b"/nix/store/11111111111111111111111111111111-telchar-local-executor";
@@ -59,6 +62,7 @@ fn build_execution_retains_only_the_admitted_build_and_control_metadata() {
 
 #[test]
 fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("arguments");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("record-helper");
@@ -112,6 +116,7 @@ fn executor_uses_fixed_helper_and_store_endpoint_without_shell_interpolation() {
 
 #[test]
 fn built_and_already_valid_results_have_output_trust() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     for (status, expected_status) in [
         ("built", BuildStatus::Built),
         ("already-valid", BuildStatus::AlreadyValid),
@@ -149,6 +154,7 @@ fn built_and_already_valid_results_have_output_trust() {
 
 #[test]
 fn executor_streams_bounded_helper_logs_before_returning_result() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("logs");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("log-helper");
@@ -182,6 +188,7 @@ fn executor_streams_bounded_helper_logs_before_returning_result() {
 
 #[test]
 fn executor_streams_logs_larger_than_the_result_limit() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("large-logs");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("log-helper");
@@ -214,6 +221,7 @@ fn executor_streams_logs_larger_than_the_result_limit() {
 
 #[test]
 fn log_writer_failure_kills_and_reaps_the_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("log-writer-failure");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("log-helper");
@@ -255,6 +263,7 @@ fn log_writer_failure_kills_and_reaps_the_helper() {
 
 #[test]
 fn cancellation_kills_and_reaps_a_silent_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("cancelled");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("cancelled-helper");
@@ -297,6 +306,7 @@ fn cancellation_kills_and_reaps_a_silent_helper() {
 
 #[test]
 fn executor_rejects_malformed_success_output_sets() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     for (label, response) in [
         (
             "missing",
@@ -357,6 +367,7 @@ fn executor_rejects_malformed_success_output_sets() {
 
 #[test]
 fn executor_rejects_oversized_or_malformed_helper_output() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     for label in ["oversized", "malformed"] {
         let root = unique_root(label);
         fs::create_dir_all(&root).expect("fixture root creates");
@@ -397,6 +408,7 @@ fn executor_rejects_oversized_or_malformed_helper_output() {
 
 #[test]
 fn executor_times_out_and_reaps_the_helper() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let root = unique_root("timeout");
     fs::create_dir_all(&root).expect("fixture root creates");
     let helper = root.join("slow-helper");
@@ -432,6 +444,7 @@ fn executor_times_out_and_reaps_the_helper() {
 
 #[test]
 fn gateway_log_failure_releases_saturated_worker() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let Ok(store_uri) = std::env::var("MICROVM_TEST_STORE_URI") else {
         let status = std::process::Command::new("bash")
             .arg(concat!(
@@ -485,6 +498,7 @@ fn gateway_log_failure_releases_saturated_worker() {
 
 #[test]
 fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let mut store = fixture
         .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
@@ -505,6 +519,7 @@ fn gateway_executor_sends_fixed_output_authority_to_nix_daemon() {
 
 #[test]
 fn gateway_executor_rejects_zero_exit_when_expected_output_is_missing() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let fixture = NixFixture::create().expect("Nix fixture creates");
     let mut store = fixture
         .start_daemon(telchar::fixture::nix::TrustMode::Trusted)
@@ -608,6 +623,7 @@ fn unique_root(label: &str) -> PathBuf {
 
 #[test]
 fn gateway_executor_preserves_exit_three_and_live_logs() {
+    let _guard = HELPER_PROCESSES.lock().unwrap();
     let expression = r#"derivation { name = "telchar-exit-three"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo telchar-exit-three >&2; exit 3" ]; }"#;
     let instantiated = std::process::Command::new("nix-instantiate")
         .args(["--store", "local", "--expr", expression])

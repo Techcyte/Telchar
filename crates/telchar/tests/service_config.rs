@@ -17,6 +17,8 @@ use telchar_test_support::environment::Environment;
 mod core;
 #[path = "service_config/environment.rs"]
 mod environment;
+#[path = "service_config/history.rs"]
+mod history;
 #[path = "service_config/nomad.rs"]
 mod nomad;
 #[path = "service_config/static_ssh.rs"]

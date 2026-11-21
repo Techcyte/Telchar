@@ -211,8 +211,14 @@ pub fn prune_post_build_hooks(
     let mut transaction = client.transaction()?;
     transaction.execute(
         "DELETE FROM post_build_hook_roots WHERE (attempt_id, output_index) IN (
-             SELECT attempt_id, output_index FROM post_build_hook_roots
-             WHERE released_at IS NOT NULL ORDER BY attempt_id, output_index LIMIT 256
+             SELECT r.attempt_id, r.output_index FROM post_build_hook_roots r
+             WHERE r.released_at IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM shared_build_attempts a JOIN build_requests b USING (derivation_path)
+                 WHERE a.attempt_id = r.attempt_id AND (
+                     EXISTS (SELECT 1 FROM request_attachments t WHERE t.request_id = b.request_id)
+                     OR EXISTS (SELECT 1 FROM store_leases l WHERE l.owner_kind = 'request' AND l.owner_id = b.request_id)
+                 )
+             ) ORDER BY r.attempt_id, r.output_index LIMIT 256
          )",
         &[],
     )?;
@@ -221,6 +227,12 @@ pub fn prune_post_build_hooks(
              SELECT p.attempt_id FROM post_build_hooks_outbox p
              WHERE p.state <> 'pending' AND NOT EXISTS (
                  SELECT 1 FROM post_build_hook_roots r WHERE r.attempt_id = p.attempt_id
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM shared_build_attempts a JOIN build_requests b USING (derivation_path)
+                 WHERE a.attempt_id = p.attempt_id AND (
+                     EXISTS (SELECT 1 FROM request_attachments r WHERE r.request_id = b.request_id)
+                     OR EXISTS (SELECT 1 FROM store_leases l WHERE l.owner_kind = 'request' AND l.owner_id = b.request_id)
+                 )
              ) ORDER BY p.attempt_id LIMIT 256
          )",
         &[],

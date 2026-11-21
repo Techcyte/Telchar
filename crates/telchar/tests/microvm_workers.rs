@@ -23,6 +23,68 @@ fn current_assignment_cancellation_drains_reused_worker() {
     worker_lifecycle(true, 2);
 }
 
+#[test]
+fn clean_owner_replacement_closes_predecessor_worker_launch() {
+    let fixture = PostgresFixture::start();
+    db::migrate(fixture.url()).unwrap();
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner.drv";
+    db::claim_shared_build(
+        owner.database(),
+        path,
+        &[1; 32],
+        "arm",
+        BackendKind::Microvm,
+        BackendKind::Microvm.capabilities(),
+        None,
+        &["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-output"],
+    )
+    .unwrap();
+    db::start_shared_build(owner.database(), path).unwrap();
+    let attempt = db::read_shared_build_attempt(owner.database(), path)
+        .unwrap()
+        .unwrap();
+    let intent = db::MicrovmLaunchIntent {
+        intent_id: "owner-worker".into(),
+        attempt_id: attempt.attempt_id,
+        backend_name: "arm".into(),
+        account_id: "116392764028".into(),
+        region: "us-west-2".into(),
+        image_arn: "arn:aws:lambda:us-west-2:116392764028:microvm-image:fixture".into(),
+        image_version: "1".into(),
+        vpc_egress_connector_arn: "connector".into(),
+        configuration_digest: [1; 32],
+        request_digest: [2; 32],
+        client_token: "owner-worker".into(),
+        credential_verifier: [3; 32],
+        admission_cutoff: SystemTime::now() + Duration::from_secs(60),
+        maximum_duration_seconds: 120,
+    };
+    assert!(db::reserve_microvm_launch(owner.database(), &intent, 1).unwrap());
+    assert!(db::dispatch_microvm_launch(owner.database(), &intent.intent_id).unwrap());
+    assert!(
+        db::bind_microvm_launch(owner.database(), &intent.intent_id, "provider-worker").unwrap()
+    );
+    let generation = owner.generation();
+    drop(owner);
+    let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    assert!(replacement.generation() > generation);
+    let row = fixture.connect().query_one(
+        "SELECT l.phase, w.state FROM microvm_launches l JOIN microvm_workers w USING (intent_id) WHERE intent_id = $1",
+        &[&intent.intent_id],
+    ).unwrap();
+    assert_eq!(row.get::<_, String>(0), "closed");
+    assert_eq!(row.get::<_, String>(1), "draining");
+}
+
 fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
     let fixture = PostgresFixture::start();
     db::migrate(fixture.url()).unwrap();

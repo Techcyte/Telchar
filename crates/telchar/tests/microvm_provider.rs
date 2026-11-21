@@ -957,9 +957,28 @@ fn concurrent_launches_succeed_over_kept_alive_provider_connections() {
 /// rather than only the gateway's opaque provider error.
 #[test]
 fn refused_launch_logs_provider_error_at_warn() {
+    const CHILD: &str = "TELCHAR_TEST_PROVIDER_REFUSAL_LOG";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "refused_launch_logs_provider_error_at_warn",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let fixture = telchar_test_support::postgres::PostgresFixture::start();
     telchar::persistence::migrate(fixture.url()).expect("database migrates");
-    let (endpoint, _) = keep_alive_provider(|_| {
+    let (endpoint, served) = keep_alive_provider(|_| {
         (
             "400 Bad Request",
             "x-amzn-errortype: ValidationException\r\n",
@@ -984,6 +1003,11 @@ fn refused_launch_logs_provider_error_at_warn() {
         provider.launch_reserved(&owner, &intent, &payload)
     });
     assert!(result.is_err());
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "launch reaches provider refusal before logging is checked"
+    );
     let bytes = output.0.lock().unwrap();
     let logs = String::from_utf8_lossy(&bytes);
     let line = logs

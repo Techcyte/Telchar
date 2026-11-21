@@ -5,6 +5,7 @@ use super::*;
 pub(super) struct RawServiceConfig {
     pub(super) running_disconnect_policy: Option<String>,
     pub(super) output_retention_seconds: Option<u64>,
+    pub(super) lifecycle_detail_retention_days: Option<u64>,
     pub(super) maximum_retained_input_bytes: Option<u64>,
     pub(super) post_build_hook: Option<PostBuildHookSection>,
     pub(super) audit: Option<AuditSection>,

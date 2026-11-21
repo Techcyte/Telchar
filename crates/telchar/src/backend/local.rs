@@ -647,9 +647,9 @@ fn forward_logs(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
     logs: &mut dyn FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<bool> {
-    for _ in 0..MAXIMUM_QUEUED_BUILD_LOG_CHUNKS {
+    for forwarded in 0..MAXIMUM_QUEUED_BUILD_LOG_CHUNKS {
         let Ok(chunk) = receiver.try_recv() else {
-            return Ok(false);
+            return Ok(forwarded != 0);
         };
         logs(&chunk)?;
     }
@@ -740,6 +740,14 @@ mod tests {
                 .expect("test receives source progress");
             Ok(buffer.len())
         }
+    }
+
+    #[test]
+    fn partial_log_batch_keeps_execution_polling() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(MAXIMUM_QUEUED_BUILD_LOG_CHUNKS);
+        sender.send(vec![1]).unwrap();
+        assert!(super::forward_logs(&receiver, &mut |_| Ok(())).unwrap());
+        assert!(!super::forward_logs(&receiver, &mut |_| Ok(())).unwrap());
     }
 
     #[test]

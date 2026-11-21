@@ -175,6 +175,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "nomad_execution_obligations",
         sql: include_str!("../../migrations/0032_nomad_execution_obligations.sql"),
     },
+    Migration {
+        version: 33,
+        name: "closed_session_history_index",
+        sql: include_str!("../../migrations/0033_closed_session_history_index.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
