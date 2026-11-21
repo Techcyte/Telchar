@@ -193,7 +193,7 @@ fn create_store_lease_inner(
         .transaction()
         .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
     match owner_kind {
-        StoreLeaseOwnerKind::Request => match transaction.query_opt("SELECT request_id, derivation_path, system, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1", &[&owner_id])
+        StoreLeaseOwnerKind::Request => match transaction.query_opt("SELECT request_id, derivation_path, system, audit_subject, quota_subject, created_at FROM build_requests WHERE request_id = $1 FOR NO KEY UPDATE", &[&owner_id])
             .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
         {
             None => return Err(StoreLeaseError(StoreLeaseFailure::Missing)),
@@ -1210,6 +1210,165 @@ pub fn read_released_request_leases_page(
             Ok(lease)
         })
         .collect()
+}
+
+#[derive(Default)]
+pub struct LeaseDetailCursor {
+    request: Option<String>,
+    session: Option<String>,
+    cutoff: Option<SystemTime>,
+    attachment: Option<(String, String)>,
+}
+
+pub fn prune_store_lease_details(
+    database: &(impl DatabaseSource + ?Sized),
+    retention: Duration,
+    maximum_rows: usize,
+    cursor: &mut LeaseDetailCursor,
+) -> Result<u64, StoreLeaseError> {
+    if retention.subsec_nanos() != 0
+        || retention.as_secs() == 0
+        || retention.as_secs() > 3650 * 86400
+    {
+        return Err(StoreLeaseError(StoreLeaseFailure::Configuration));
+    }
+    let mut client =
+        connect(database).map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let seconds = retention.as_secs() as f64;
+    let maximum_rows = maximum_rows.min(256) as i64;
+    let mut transaction = client
+        .transaction()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Connection))?;
+    let cutoff = match cursor.cutoff {
+        Some(cutoff) => cutoff,
+        None => transaction
+            .query_one(
+                "SELECT transaction_timestamp() - make_interval(secs => $1)",
+                &[&seconds],
+            )
+            .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+            .get::<_, SystemTime>(0),
+    };
+    let requests = transaction.query(
+        "SELECT request_id FROM build_requests r WHERE ($3::text IS NULL OR request_id > $3) AND (
+             EXISTS (SELECT 1 FROM store_leases l WHERE l.owner_kind = 'request' AND l.owner_id = r.request_id
+                 AND l.state = 'reconciled' AND l.reconciled_at < $1::timestamptz)
+             OR EXISTS (SELECT 1 FROM request_attachments a WHERE a.request_id = r.request_id
+                 AND a.state <> 'attached' AND GREATEST(a.detached_at, a.delivered_at) < $1::timestamptz)
+         ) ORDER BY request_id LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED",
+        &[&cutoff, &maximum_rows, &cursor.request],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        .iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>();
+    let sessions = transaction.query(
+        "SELECT session_id FROM protocol_sessions s WHERE ($3::text IS NULL OR session_id > $3) AND s.state = 'closed' AND (
+             EXISTS (SELECT 1 FROM store_leases l WHERE l.owner_kind = 'session' AND l.owner_id = s.session_id
+                 AND l.state = 'reconciled' AND l.reconciled_at < $1::timestamptz)
+             OR (s.closed_at < $1::timestamptz AND NOT EXISTS (
+                 SELECT 1 FROM store_leases l WHERE l.owner_kind = 'session' AND l.owner_id = s.session_id))
+         ) ORDER BY session_id LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED",
+        &[&cutoff, &maximum_rows, &cursor.session],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?
+        .iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>();
+    let deleted = transaction.execute(
+        "DELETE FROM store_leases WHERE lease_id IN (
+             SELECT l.lease_id FROM store_leases l
+             LEFT JOIN protocol_sessions s ON l.owner_kind = 'session' AND s.session_id = l.owner_id
+             LEFT JOIN build_requests r ON l.owner_kind = 'request' AND r.request_id = l.owner_id
+             WHERE l.state = 'reconciled'
+               AND ((l.owner_kind = 'request' AND l.owner_id = ANY($3)) OR (l.owner_kind = 'session' AND l.owner_id = ANY($4))) AND (
+               (s.state = 'closed'
+                AND GREATEST(l.reconciled_at, s.closed_at) < $1::timestamptz
+                AND NOT EXISTS (SELECT 1 FROM request_attachments a WHERE a.session_id = s.session_id AND a.state = 'attached'))
+               OR (r.request_id IS NOT NULL AND l.reconciled_at < $1::timestamptz
+                AND NOT EXISTS (SELECT 1 FROM store_leases other WHERE other.owner_kind = 'request' AND other.owner_id = r.request_id AND other.state <> 'reconciled')
+                AND NOT EXISTS (SELECT 1 FROM request_attachments a JOIN protocol_sessions p USING (session_id)
+                    WHERE a.request_id = r.request_id AND (a.state = 'attached' OR p.state <> 'closed'
+                    OR GREATEST(a.detached_at, a.delivered_at, p.closed_at) >= $1::timestamptz))
+                AND NOT EXISTS (SELECT 1 FROM shared_builds b WHERE b.derivation_path = r.derivation_path
+                    AND (b.state NOT IN ('succeeded', 'failed') OR b.completed_at >= $1::timestamptz))
+                AND NOT EXISTS (SELECT 1 FROM shared_build_attempts a LEFT JOIN nomad_execution_obligations n USING (attempt_id)
+                    LEFT JOIN microvm_launches m USING (attempt_id) LEFT JOIN post_build_hooks_outbox h USING (attempt_id)
+                    WHERE a.derivation_path = r.derivation_path AND (a.state NOT IN ('succeeded', 'failed')
+                    OR (n.attempt_id IS NOT NULL AND (n.resolved_at IS NULL OR n.resolved_at >= $1::timestamptz))
+                    OR (m.intent_id IS NOT NULL AND (m.reservation_released_at IS NULL OR m.reservation_released_at >= $1::timestamptz))
+                    OR h.state = 'pending' OR h.completed_at >= $1::timestamptz
+                    OR EXISTS (SELECT 1 FROM post_build_hook_roots hr WHERE hr.attempt_id = a.attempt_id
+                        AND (hr.released_at IS NULL OR hr.released_at >= $1::timestamptz)))))
+             )
+             ORDER BY l.reconciled_at, l.lease_id LIMIT $2 FOR UPDATE OF l SKIP LOCKED
+         )",
+        &[&cutoff, &maximum_rows, &requests, &sessions],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let attachment_page = transaction
+        .query(
+            "SELECT session_id, request_id FROM request_attachments
+         WHERE state <> 'attached' AND GREATEST(detached_at, delivered_at) < $1::timestamptz
+           AND ($2::text IS NULL OR (session_id, request_id) > ($2, $3))
+         ORDER BY session_id, request_id LIMIT $4",
+            &[
+                &cutoff,
+                &cursor.attachment.as_ref().map(|pair| &pair.0),
+                &cursor.attachment.as_ref().map(|pair| &pair.1),
+                &maximum_rows,
+            ],
+        )
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    let attachment_requests: Vec<String> = attachment_page.iter().map(|row| row.get(1)).collect();
+    let attachment_sessions: Vec<String> = attachment_page.iter().map(|row| row.get(0)).collect();
+    let locked_requests: Vec<String> = transaction.query(
+        "SELECT request_id FROM build_requests WHERE request_id = ANY($1) ORDER BY request_id FOR NO KEY UPDATE SKIP LOCKED",
+        &[&attachment_requests],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?.iter().map(|row| row.get(0)).collect();
+    let locked_sessions: Vec<String> = transaction.query(
+        "SELECT session_id FROM protocol_sessions WHERE session_id = ANY($1) ORDER BY session_id FOR NO KEY UPDATE SKIP LOCKED",
+        &[&attachment_sessions],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?.iter().map(|row| row.get(0)).collect();
+    transaction.execute(
+        "DELETE FROM request_attachments WHERE (session_id, request_id) IN (
+             SELECT a.session_id, a.request_id FROM request_attachments a
+             JOIN protocol_sessions s USING (session_id) JOIN build_requests r USING (request_id)
+             WHERE a.request_id = ANY($2) AND a.session_id = ANY($3)
+               AND a.state <> 'attached' AND s.state = 'closed'
+               AND GREATEST(a.detached_at, a.delivered_at, s.closed_at) < $1::timestamptz
+               AND NOT EXISTS (SELECT 1 FROM store_leases l WHERE
+                   (l.owner_kind = 'request' AND l.owner_id = a.request_id)
+                   OR (l.owner_kind = 'session' AND l.owner_id = a.session_id))
+               AND NOT EXISTS (SELECT 1 FROM shared_builds b WHERE b.derivation_path = r.derivation_path
+                   AND (b.state NOT IN ('succeeded', 'failed') OR b.completed_at >= $1::timestamptz))
+               AND NOT EXISTS (SELECT 1 FROM shared_build_attempts b
+                   LEFT JOIN nomad_execution_obligations n USING (attempt_id)
+                   LEFT JOIN microvm_launches m USING (attempt_id)
+                   LEFT JOIN post_build_hooks_outbox h USING (attempt_id)
+                   WHERE b.derivation_path = r.derivation_path AND (
+                     b.state NOT IN ('succeeded', 'failed') OR b.completed_at >= $1::timestamptz
+                     OR (n.attempt_id IS NOT NULL AND (n.resolved_at IS NULL OR n.resolved_at >= $1::timestamptz))
+                     OR (m.intent_id IS NOT NULL AND (m.reservation_released_at IS NULL OR m.reservation_released_at >= $1::timestamptz))
+                     OR h.state = 'pending' OR h.completed_at >= $1::timestamptz
+                     OR EXISTS (SELECT 1 FROM post_build_hook_roots hr WHERE hr.attempt_id = b.attempt_id
+                         AND (hr.released_at IS NULL OR hr.released_at >= $1::timestamptz))))
+             ORDER BY a.session_id, a.request_id LIMIT $4 FOR UPDATE OF a SKIP LOCKED
+         )",
+        &[&cutoff, &locked_requests, &locked_sessions, &maximum_rows],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    transaction.execute(
+        "DELETE FROM protocol_sessions s WHERE s.session_id = ANY($2) AND s.state = 'closed'
+             AND s.closed_at < $1::timestamptz
+             AND NOT EXISTS (SELECT 1 FROM request_attachments a WHERE a.session_id = s.session_id)
+             AND NOT EXISTS (SELECT 1 FROM store_leases l WHERE l.owner_kind = 'session' AND l.owner_id = s.session_id)",
+        &[&cutoff, &sessions],
+    ).map_err(|_| StoreLeaseError(StoreLeaseFailure::Query))?;
+    transaction
+        .commit()
+        .map_err(|_| StoreLeaseError(StoreLeaseFailure::Commit))?;
+    cursor.request = requests.last().cloned();
+    cursor.session = sessions.last().cloned();
+    cursor.attachment = attachment_page.last().map(|row| (row.get(0), row.get(1)));
+    cursor.cutoff = if requests.is_empty() && sessions.is_empty() && attachment_page.is_empty() {
+        None
+    } else {
+        Some(cutoff)
+    };
+    Ok(deleted)
 }
 
 pub fn read_store_lease(

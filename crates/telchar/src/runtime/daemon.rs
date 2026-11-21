@@ -10,6 +10,21 @@ use std::time::Duration;
 
 use super::{invalid, protocol_session_limits};
 
+pub(super) struct InventoryPreparation<T>(pub Option<std::thread::JoinHandle<T>>);
+
+impl<T> Drop for InventoryPreparation<T> {
+    fn drop(&mut self) {
+        if let Some(worker) = self.0.take()
+            && worker.join().is_err()
+        {
+            tracing::error!(
+                event = "configuration.preparation.failed",
+                "inventory preparation worker panicked during shutdown"
+            );
+        }
+    }
+}
+
 pub(super) struct MicrovmShutdown<'a>(pub &'a [Arc<telchar::microvm::service::Service>]);
 
 impl Drop for MicrovmShutdown<'_> {

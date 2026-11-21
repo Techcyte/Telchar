@@ -46,12 +46,51 @@ fn only_one_owner_acquires_the_database_lease() {
         telchar::service::singleton_ownership::SingletonOwnershipFailure::Contended
     );
 
+    let generation = owner.generation();
+    let predecessor = owner.database().clone();
     drop(owner);
-    telchar::service::singleton_ownership::SingletonOwnership::acquire(
+    let replacement = telchar::service::singleton_ownership::SingletonOwnership::acquire(
         fixture.url(),
         Duration::from_secs(20),
     )
     .expect("replacement acquires after authoritative release");
+    assert!(
+        replacement.generation() > generation,
+        "clean release preserves generation ledger"
+    );
+    assert!(
+        telchar::persistence::open_protocol_session(
+            &predecessor,
+            "stale-owner",
+            "reference",
+            "credential",
+            "subject",
+            "quota",
+        )
+        .is_err(),
+        "predecessor database authority remains fenced"
+    );
+    replacement.verify().expect("replacement retains authority");
+}
+
+#[test]
+fn local_executor_clean_release_preserves_generation() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).expect("database migrates");
+    let owner = telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
+        fixture.url(),
+        Duration::from_secs(20),
+    )
+    .expect("executor acquires");
+    let generation = owner.generation();
+    drop(owner);
+    let replacement =
+        telchar::service::singleton_ownership::SingletonOwnership::acquire_local_executor(
+            fixture.url(),
+            Duration::from_secs(20),
+        )
+        .expect("replacement executor acquires");
+    assert!(replacement.generation() > generation);
 }
 
 #[test]

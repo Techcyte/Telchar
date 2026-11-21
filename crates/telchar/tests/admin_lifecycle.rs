@@ -787,11 +787,21 @@ fn exercise_daemon(url: &str, scenario: Scenario) {
         replacement.renew().unwrap();
         drop(replacement);
     }
-    assert_eq!(
-        inspector
-            .query_one("SELECT count(*) FROM singleton_ownership", &[])
-            .unwrap()
-            .get::<_, i64>(0),
-        0
+    let retired = inspector
+        .query_one(
+            "SELECT generation, lease_expires_at <= clock_timestamp() FROM singleton_ownership WHERE owner_kind = 'daemon'",
+            &[],
+        )
+        .unwrap();
+    let expected_generation =
+        if matches!(scenario, Scenario::RunningSql | Scenario::StalledTransport) {
+            generation + 1
+        } else {
+            generation
+        };
+    assert_eq!(retired.get::<_, i64>(0), expected_generation);
+    assert!(
+        retired.get::<_, bool>(1),
+        "retired ownership must not remain live"
     );
 }

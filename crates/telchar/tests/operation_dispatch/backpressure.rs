@@ -2,6 +2,8 @@
 
 use super::*;
 
+static LOG_FLOODS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn unread_frontend_does_not_block_build_completion() {
     unread_build_completion(false, false, 0);
@@ -28,6 +30,7 @@ fn unread_completed_frontend_does_not_block_ownership_shutdown() {
 }
 
 fn unread_build_completion(real_store: bool, attach_follower: bool, completion_action: u8) {
+    let _flood = LOG_FLOODS.lock().unwrap();
     let root = tempfile::tempdir().unwrap();
     let helper = root.path().join("build-helper");
     let completed = root.path().join("completed");
@@ -246,10 +249,19 @@ fn unread_build_completion(real_store: bool, attach_follower: bool, completion_a
             child.wait().unwrap();
         }
     }
+    let helper_completed = completed.exists();
+    let states = fixture
+        .database
+        .connect()
+        .query("SELECT state FROM shared_builds", &[])
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
     let diagnostics = fixture.finish();
     assert!(
-        succeeded && completed.exists(),
-        "unread frontend blocked execution completion: {diagnostics}"
+        succeeded && helper_completed,
+        "unread frontend blocked execution completion: helper_completed={helper_completed}, states={states:?}: {diagnostics}"
     );
 }
 

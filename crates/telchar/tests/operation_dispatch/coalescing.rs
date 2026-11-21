@@ -3,6 +3,86 @@
 use super::*;
 
 #[test]
+fn durable_client_join_survives_coordination_timeout() {
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", "/bin/false".to_owned())],
+    );
+    let drv = "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv";
+    let path = "/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract";
+    let derivation = format!(
+        r#"Derive([("out","{path}","","")],[],[],"x86_64-linux","/bin/sh",["-c","printf telchar-remote-build > $out"],[("builder","/bin/sh"),("name","telchar-build-derivation-contract"),("out","{path}"),("system","x86_64-linux")])"#
+    );
+    let kind = telchar::backend::BackendKind::Local;
+    let build = telchar::build::BuildRequest::from_stored_derivation(
+        drv.as_bytes(),
+        derivation.as_bytes(),
+        &[
+            telchar::backend::BackendTarget::new("local", kind, "x86_64-linux", [] as [&str; 0])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    telchar::persistence::claim_shared_build_with_request(
+        fixture.database.url(),
+        drv,
+        &build.shared_build_digest(),
+        "local",
+        kind,
+        kind.capabilities(),
+        None,
+        &[path],
+        &build,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(fixture.database.url(), drv).unwrap();
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
+    input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture
+        .database
+        .connect()
+        .query_one(
+            "SELECT count(*) FROM request_attachments WHERE state = 'attached'",
+            &[],
+        )
+        .unwrap()
+        .get::<_, i64>(0)
+        != 1
+    {
+        assert!(
+            Instant::now() < deadline,
+            "durable client was not attached: {}",
+            fs::read_to_string(fixture.root.join("daemon.stderr")).unwrap()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let started = Instant::now();
+    let database = fixture.database.url().to_owned();
+    let completion = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(31));
+        telchar::persistence::collect_shared_build(&database, drv).unwrap();
+        telchar::persistence::complete_shared_build_success(
+            &database,
+            drv,
+            &serde_json::json!({"status":"built","outputs":[{"name":"out","path":path}]}),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    });
+    let response = read_build_success(output);
+    completion.join().unwrap();
+    response.expect("durable client receives terminal success beyond coordination timeout");
+    assert!(started.elapsed() >= Duration::from_secs(31));
+    drop(input);
+    assert!(fixture.frontend.wait().unwrap().success());
+    fixture.finish();
+}
+
+#[test]
 fn real_output_fan_in_validates_one_nar() {
     let root = tempfile::tempdir().unwrap();
     let started = root.path().join("started");

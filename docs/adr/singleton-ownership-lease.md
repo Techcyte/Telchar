@@ -57,7 +57,7 @@ passes and later reconciles normally, rather than replaying failed writes.
 
 ## Consequences
 
-Abrupt process, node, proxy, and network loss release ownership within the configured lease duration without manual database-session termination. Graceful shutdown deletes only the caller's matching lease generation.
+Abrupt process, node, proxy, and network loss release ownership within the configured lease duration without manual database-session termination. Graceful shutdown expires only the caller's matching lease and retains its generation ledger. Clean replacement increments that generation; predecessor MicroVM workers remain distinguishable from the current owner.
 
 The takeover bound is the lease duration plus scheduling and startup time. Operators must not configure the duration below three renewal intervals. Lower values trade faster takeover for less tolerance of database latency and scheduling pauses.
 

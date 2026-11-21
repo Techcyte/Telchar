@@ -393,7 +393,10 @@ fn daemon_startup_rejection(retained_cleanup: bool) {
     let _callback = std::net::TcpListener::bind(address).unwrap();
     let count: i64 = database
         .connect()
-        .query_one("SELECT count(*) FROM singleton_ownership", &[])
+        .query_one(
+            "SELECT count(*) FROM singleton_ownership WHERE lease_expires_at > clock_timestamp()",
+            &[],
+        )
         .unwrap()
         .get(0);
     assert_eq!(count, 0, "failed startup releases ownership");
@@ -851,7 +854,10 @@ fn daemon_lifecycle(exit: DaemonExit) {
     drop(callback);
     let _listener = std::net::TcpListener::bind(address).unwrap();
     let count: i64 = connect()
-        .query_one("SELECT count(*) FROM singleton_ownership", &[])
+        .query_one(
+            "SELECT count(*) FROM singleton_ownership WHERE lease_expires_at > clock_timestamp()",
+            &[],
+        )
         .unwrap()
         .get(0);
     assert_eq!(count, 0);

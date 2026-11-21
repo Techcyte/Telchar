@@ -275,6 +275,7 @@ impl FrontendFixture {
         )
         .expect("daemon configuration writes");
         let database = PostgresFixture::start();
+        telchar::persistence::migrate(database.url()).expect("fixture database migrates");
         let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_telchar"));
         daemon_command.args([
             "daemon",
@@ -323,11 +324,15 @@ impl FrontendFixture {
         let mut daemon = daemon_command.spawn().expect("daemon starts");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !socket.exists() {
-            assert!(Instant::now() < deadline, "daemon socket was not created");
-            assert!(
-                daemon.try_wait().expect("daemon status").is_none(),
-                "daemon exited before binding"
-            );
+            let status = daemon.try_wait().expect("daemon status");
+            if Instant::now() >= deadline || status.is_some() {
+                if status.is_none() {
+                    daemon.kill().expect("stalled daemon stops");
+                    daemon.wait().expect("stalled daemon exits");
+                }
+                let stderr = fs::read_to_string(root.join("daemon.stderr")).unwrap();
+                panic!("daemon did not bind: status={status:?}: {stderr}");
+            }
             thread::sleep(Duration::from_millis(5));
         }
         let mut command = Command::new(env!("CARGO_BIN_EXE_telchar"));
