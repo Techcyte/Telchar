@@ -153,8 +153,6 @@ fn detach_failure_does_not_send_successful_build_result() {
     complete_handshake(&mut input, &mut output);
     write_build_derivation_request(&mut input, "x86_64-linux", 0);
     input.flush().expect("BuildDerivation request flushes");
-    drop(input);
-
     let mut response = Vec::new();
     output
         .read_to_end(&mut response)
@@ -175,6 +173,7 @@ fn detach_failure_does_not_send_successful_build_result() {
     assert_eq!(read_integer(&mut response), 0, "error has no position");
     assert_eq!(read_integer(&mut response), 0, "error has no trace");
     assert!(response.is_empty(), "terminal error has trailing bytes");
+    drop(input);
     assert!(child.wait().expect("Telchar exits").success());
     assert_eq!(
         fixture
@@ -186,7 +185,22 @@ fn detach_failure_does_not_send_successful_build_result() {
         "attached",
         "failed detach changed attachment state"
     );
+    let build = telchar::persistence::read_shared_build(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        build.state,
+        telchar::persistence::SharedBuildState::Failed,
+        "owned detach failure must not leave collecting work"
+    );
     let stderr = fixture.finish();
+    assert!(
+        stderr.contains("phase=\"retain-outputs\""),
+        "detach injection must follow output validation and retention: {stderr}"
+    );
     assert!(
         stderr.contains("database.request_lease_release.failed"),
         "{stderr}"
@@ -194,6 +208,58 @@ fn detach_failure_does_not_send_successful_build_result() {
     assert!(stderr.contains("operation=\"detach-release\""), "{stderr}");
     assert!(!stderr.contains("reject detach"), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
+}
+
+#[test]
+fn output_root_failure_terminalizes_owned_execution() {
+    let root = tempfile::tempdir().unwrap();
+    let helper = root.path().join("build-helper");
+    let started = root.path().join("started");
+    let release = root.path().join("release");
+    fs::write(&helper, format!(
+        "#!/bin/sh\nset -eu\ncat >/dev/null\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nprintf '%s\\n' '{{\"version\":1,\"success\":true,\"status\":\"built\",\"outputs\":[[\"out\",\"/nix/store/11111111111111111111111111111111-telchar-build-derivation-contract\"]]}}'\n",
+        started.display(), release.display(),
+    )).unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///fixed-gateway.sock",
+        [("TELCHAR_TEST_BUILD_HELPER", helper.display().to_string())],
+    );
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    write_build_derivation_request(&mut input, "x86_64-linux", 0);
+    input.flush().unwrap();
+    wait_for_file_for(&started, Duration::from_secs(5), "leader not started");
+    let roots = fixture.root.join("gc-roots");
+    let preserved_roots = fixture.root.join("preserved-roots");
+    fs::rename(&roots, &preserved_roots).unwrap();
+    fs::write(&roots, b"root directory unavailable").unwrap();
+    fs::write(&release, b"release").unwrap();
+    assert_eq!(read_integer(&mut output), STDERR_ERROR);
+    assert_eq!(read_string(&mut output), "Error");
+    read_integer(&mut output);
+    assert_eq!(read_string(&mut output), "Error");
+    assert_eq!(read_string(&mut output), "gateway store retention failed");
+    assert_eq!(read_integer(&mut output), 0);
+    assert_eq!(read_integer(&mut output), 0);
+    drop(input);
+    assert!(fixture.frontend.wait().unwrap().success());
+    let build = telchar::persistence::read_shared_build(
+        fixture.database.url(),
+        "/nix/store/00000000000000000000000000000000-telchar-build-derivation-contract.drv",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(build.state, telchar::persistence::SharedBuildState::Failed);
+    assert_eq!(
+        build.failure_classification.as_deref(),
+        Some("output-retention-failure")
+    );
+    fs::remove_file(&roots).unwrap();
+    fs::rename(&preserved_roots, &roots).unwrap();
+    let stderr = fixture.finish();
+    assert!(stderr.contains("phase=\"retain-outputs\""), "{stderr}");
 }
 
 #[test]

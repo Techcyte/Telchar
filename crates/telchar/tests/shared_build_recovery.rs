@@ -19,9 +19,25 @@ const OUTPUT: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-recovery";
 struct OutputStore {
     valid: BTreeSet<String>,
     checked: Vec<String>,
+    validation_failure: bool,
 }
 
 impl SharedBuildOutputStore for OutputStore {
+    fn retain_outputs(
+        &mut self,
+        _: &dyn telchar::persistence::DatabaseSource,
+        _: &SharedBuild,
+        _: Duration,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+    fn validate_outputs(&mut self, _: &telchar::build::BuildRequest) -> io::Result<()> {
+        if self.validation_failure {
+            Err(io::Error::other("output authority rejected"))
+        } else {
+            Ok(())
+        }
+    }
     fn protect_hook_delivery(
         &mut self,
         database: &dyn telchar::persistence::DatabaseSource,
@@ -77,23 +93,115 @@ impl RecoveryBackend for Backends {
     }
 }
 
+#[path = "support/build_request.rs"]
+mod build_request;
+
+fn recovery_request() -> telchar::build::BuildRequest {
+    let mut value = serde_json::to_value(build_request::admitted_request()).unwrap();
+    value["derivation_path"] = serde_json::json!(DERIVATION.as_bytes());
+    value["expected_outputs"] = serde_json::json!([[b"out".as_slice(), OUTPUT.as_bytes()]]);
+    value["output_authorities"][0]["path"] = serde_json::json!(OUTPUT.as_bytes());
+    value["environment"][1][1] = serde_json::json!(b"recovery".as_slice());
+    value["environment"][2][1] = serde_json::json!(OUTPUT.as_bytes());
+    serde_json::from_value(value).unwrap()
+}
+
 fn claim(
     fixture: &PostgresFixture,
     backend_name: &str,
     backend_kind: BackendKind,
     backend_execution_id: Option<&str>,
 ) {
-    telchar::persistence::claim_shared_build(
+    let request = recovery_request();
+    telchar::persistence::claim_shared_build_with_request(
         fixture.url(),
         DERIVATION,
-        &[1_u8; 32],
+        &request.shared_build_digest(),
         backend_name,
         backend_kind,
         backend_kind.capabilities(),
         backend_execution_id,
         &[OUTPUT],
+        &request,
     )
     .expect("shared build claims");
+}
+
+#[test]
+fn running_output_retention_cannot_create_request_before_collection() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    claim(&fixture, "nomad", BackendKind::Nomad, Some("job-running"));
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION).unwrap();
+    let build = telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
+        .unwrap()
+        .unwrap();
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), DERIVATION)
+        .unwrap()
+        .unwrap();
+    let mut outputs =
+        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(None);
+    assert!(
+        outputs
+            .retain_outputs(
+                &telchar::persistence::Database::connect(fixture.url()).unwrap(),
+                &build,
+                Duration::from_secs(60)
+            )
+            .is_err()
+    );
+    assert!(
+        telchar::persistence::read_build_request(
+            fixture.url(),
+            &format!("recovery-{}", attempt.attempt_id)
+        )
+        .unwrap()
+        .is_none(),
+        "running attempt acquired retention request before collection"
+    );
+}
+
+#[test]
+fn stale_output_retention_cannot_create_successor_request() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    claim(&fixture, "nomad", BackendKind::Nomad, Some("job-first"));
+    telchar::persistence::start_shared_build(fixture.url(), DERIVATION).unwrap();
+    let predecessor = telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
+        .unwrap()
+        .unwrap();
+    telchar::persistence::retry_shared_build(
+        fixture.url(),
+        DERIVATION,
+        "job-first",
+        "job-second",
+        "infrastructure-lost",
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    let successor = telchar::persistence::read_shared_build_attempt(fixture.url(), DERIVATION)
+        .unwrap()
+        .unwrap();
+    let mut outputs =
+        telchar::shared_build::recovery::GatewaySharedBuildOutputStore::with_endpoint(None);
+    assert!(
+        outputs
+            .retain_outputs(
+                &telchar::persistence::Database::connect(fixture.url()).unwrap(),
+                &predecessor,
+                Duration::from_secs(60)
+            )
+            .is_err()
+    );
+    assert!(
+        telchar::persistence::read_build_request(
+            fixture.url(),
+            &format!("recovery-{}", successor.attempt_id)
+        )
+        .unwrap()
+        .is_none(),
+        "stale retention attributed request to successor"
+    );
 }
 
 #[test]
@@ -143,15 +251,17 @@ fn microvm_restart_uses_gateway_outputs_without_adoption() {
         telchar::persistence::migrate(fixture.url()).expect("migration succeeds");
         let database = telchar::persistence::Database::connect(fixture.url()).expect("connects");
         let kind = BackendKind::Microvm;
-        telchar::persistence::claim_shared_build(
+        let request = recovery_request();
+        telchar::persistence::claim_shared_build_with_request(
             &database,
             DERIVATION,
-            &[1; 32],
+            &request.shared_build_digest(),
             "arm",
             kind,
             kind.capabilities(),
             None,
             &[OUTPUT],
+            &request,
         )
         .expect("MicroVM build claims");
         telchar::persistence::start_shared_build(&database, DERIVATION).expect("attempt starts");
@@ -186,6 +296,32 @@ fn microvm_restart_uses_gateway_outputs_without_adoption() {
             }
         );
     }
+}
+
+#[test]
+fn invalid_registered_outputs_cannot_become_recovered_success() {
+    let fixture = PostgresFixture::start();
+    telchar::persistence::migrate(fixture.url()).unwrap();
+    claim(&fixture, "local", BackendKind::Local, None);
+    let mut outputs = OutputStore {
+        valid: BTreeSet::from([OUTPUT.to_owned()]),
+        validation_failure: true,
+        ..Default::default()
+    };
+    let result = reconcile_active_shared_builds(
+        fixture.url(),
+        Duration::from_secs(60),
+        &mut outputs,
+        &mut Backends::default(),
+    );
+    assert!(result.is_err());
+    assert_ne!(
+        telchar::persistence::read_shared_build(fixture.url(), DERIVATION)
+            .unwrap()
+            .unwrap()
+            .state,
+        SharedBuildState::Succeeded
+    );
 }
 
 #[test]
@@ -228,7 +364,9 @@ fn complete_expected_outputs_win_before_backend_recovery() {
     assert_eq!(build.state, SharedBuildState::Succeeded);
     assert_eq!(
         build.result_metadata,
-        Some(serde_json::json!({"outputs": [OUTPUT], "recovered": true}))
+        Some(
+            serde_json::json!({"status": "built", "outputs": [{"name": "out", "path": OUTPUT}], "recovered": true})
+        )
     );
 }
 

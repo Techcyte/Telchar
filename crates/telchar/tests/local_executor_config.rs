@@ -46,6 +46,188 @@ fn explicit_gateway_endpoint_constructs_store_clients_without_environment() {
 }
 
 #[test]
+fn rejected_recovery_validation_protects_outputs_until_owner_drops() {
+    use telchar::shared_build::recovery::SharedBuildOutputStore;
+    assert!(
+        std::env::var_os("TELCHAR_STORE_ROOT").is_some(),
+        "canonical isolated store runner required"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("recovery-output");
+    std::fs::write(&source, "protected recovery output").unwrap();
+    let added = std::process::Command::new("nix-store")
+        .args(["--store", "daemon", "--add"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let path = String::from_utf8(added.stdout).unwrap().trim().to_owned();
+    let mut value = serde_json::to_value(admitted_request()).unwrap();
+    value["expected_outputs"][0][1] = serde_json::json!(path.as_bytes());
+    value["output_authorities"][0]["path"] = serde_json::json!(path.as_bytes());
+    let request = serde_json::from_value(value).unwrap();
+    let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
+        "unix:///nix/var/nix/daemon-socket/socket",
+    )
+    .unwrap();
+    let mut outputs = telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(endpoint);
+    let error = outputs.validate_outputs(&request).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "recovered output content address mismatch"
+    );
+    let delete = || {
+        std::process::Command::new("nix-store")
+            .args(["--store", "daemon", "--delete", &path])
+            .output()
+            .unwrap()
+    };
+    let rooted = delete();
+    assert!(!rooted.status.success());
+    assert!(
+        String::from_utf8_lossy(&rooted.stderr).contains("is still alive"),
+        "{}",
+        String::from_utf8_lossy(&rooted.stderr)
+    );
+    drop(outputs);
+    let released = delete();
+    assert!(
+        released.status.success(),
+        "{}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    assert!(!std::path::Path::new(&path).exists());
+}
+
+#[test]
+fn recovered_success_retains_outputs_after_recovery_owner_drops() {
+    assert!(
+        std::env::var_os("TELCHAR_STORE_ROOT").is_some(),
+        "canonical isolated store runner required"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("recovered-output");
+    std::fs::write(&source, "durable recovered output").unwrap();
+    let added = std::process::Command::new("nix-store")
+        .args(["--store", "daemon", "--add"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let path = String::from_utf8(added.stdout).unwrap().trim().to_owned();
+    let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
+        "unix:///nix/var/nix/daemon-socket/socket",
+    )
+    .unwrap();
+    let info = telchar::store::daemon::GatewayStoreConnection::connect(&endpoint)
+        .unwrap()
+        .query_path_info(path.as_bytes())
+        .unwrap()
+        .unwrap();
+    let mut value = serde_json::to_value(admitted_request()).unwrap();
+    value["expected_outputs"][0][1] = serde_json::json!(path.as_bytes());
+    value["output_authorities"][0]["path"] = serde_json::json!(path.as_bytes());
+    value["output_authorities"][0]["hash_algorithm"] = serde_json::json!(b"r:sha256".as_slice());
+    value["output_authorities"][0]["hash"] = serde_json::json!(info.nar_hash_hex().as_bytes());
+    value["environment"][2][1] = serde_json::json!(path.as_bytes());
+    let request: telchar::build::BuildRequest = serde_json::from_value(value).unwrap();
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).unwrap();
+    let kind = telchar::backend::BackendKind::Local;
+    let derivation = std::str::from_utf8(request.derivation_path()).unwrap();
+    telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        derivation,
+        &request.shared_build_digest(),
+        "local",
+        kind,
+        kind.capabilities(),
+        None,
+        &[&path],
+        &request,
+    )
+    .unwrap();
+    let roots = directory.path().join("roots");
+    std::fs::create_dir(&roots).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&roots, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let retention = telchar::store::retention::NixStoreRetentionBackend::new_with_store_directory(
+        "unix:///nix/var/nix/daemon-socket/socket",
+        "/nix/store",
+        &roots,
+    )
+    .unwrap();
+    let mut outputs = telchar::shared_build::recovery::GatewaySharedBuildOutputStore::new(endpoint)
+        .hook_delivery_retention(Box::new(retention));
+    let config_path = directory.path().join("config.toml");
+    std::fs::write(&config_path, "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
+    let config = telchar::service::config::ServiceConfig::load_from_default(&config_path).unwrap();
+    let mut backends = telchar::backend::routing::ConfiguredBackends::new(&config, None).unwrap();
+    let attempt =
+        telchar::persistence::read_shared_build_attempt(database.url(), derivation).unwrap();
+    assert!(attempt.is_none());
+    std::fs::remove_dir(&roots).unwrap();
+    std::fs::write(&roots, "retention unavailable").unwrap();
+    assert!(
+        telchar::shared_build::recovery::reconcile_active_shared_builds(
+            database.url(),
+            std::time::Duration::from_secs(60),
+            &mut outputs,
+            &mut backends,
+        )
+        .is_err()
+    );
+    let attempt = telchar::persistence::read_shared_build_attempt(database.url(), derivation)
+        .unwrap()
+        .unwrap();
+    let lease_id = format!("recovery-{}-0", attempt.attempt_id);
+    let lease = telchar::persistence::read_store_lease(database.url(), &lease_id)
+        .unwrap()
+        .expect("root creation failure retains durable cleanup authority");
+    assert_eq!(lease.state, telchar::persistence::StoreLeaseState::Active);
+    assert_ne!(
+        telchar::persistence::read_shared_build(database.url(), derivation)
+            .unwrap()
+            .unwrap()
+            .state,
+        telchar::persistence::SharedBuildState::Succeeded
+    );
+    std::fs::remove_file(&roots).unwrap();
+    std::fs::create_dir(&roots).unwrap();
+    std::fs::set_permissions(&roots, std::fs::Permissions::from_mode(0o700)).unwrap();
+    telchar::shared_build::recovery::reconcile_active_shared_builds(
+        database.url(),
+        std::time::Duration::from_secs(60),
+        &mut outputs,
+        &mut backends,
+    )
+    .unwrap();
+    drop(outputs);
+    let deletion = std::process::Command::new("nix-store")
+        .args(["--store", "daemon", "--delete", &path])
+        .output()
+        .unwrap();
+    assert!(
+        !deletion.status.success(),
+        "recovered success must retain output after owner drops"
+    );
+    assert!(
+        String::from_utf8_lossy(&deletion.stderr).contains("is still alive"),
+        "{}",
+        String::from_utf8_lossy(&deletion.stderr)
+    );
+}
+
+#[test]
 fn configured_executor_rejects_an_inaccessible_gateway_store() {
     let endpoint = telchar::store::daemon::GatewayStoreEndpoint::parse(
         "unix:///definitely-missing/telchar-gateway.sock",

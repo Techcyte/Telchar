@@ -472,7 +472,7 @@ uri = "{worker_store_uri}"
             .0,
         1
     );
-    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 2);
     let uploaded = root.join("published-outputs");
     let hook = telchar::service::post_build_hook::PostBuildHook::new(
         "/bin/sh",
@@ -499,7 +499,7 @@ uri = "{worker_store_uri}"
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while db::post_build_hooks_backlog(&owned_database).unwrap().0 != 0
-        || std::fs::read_dir(&hook_delivery_roots).unwrap().count() != 0
+        || std::fs::read_dir(&hook_delivery_roots).unwrap().count() != 1
     {
         publisher.check().unwrap();
         assert!(Instant::now() < deadline, "owned publisher did not finish");
@@ -509,8 +509,41 @@ uri = "{worker_store_uri}"
     let outputs: Vec<String> = serde_json::from_slice(&std::fs::read(uploaded).unwrap()).unwrap();
     assert_eq!(outputs, [output]);
 
-    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 0);
+    let attempt = db::read_shared_build_attempt(&owned_database, drv)
+        .unwrap()
+        .unwrap();
+    let lease = db::read_store_lease(
+        &owned_database,
+        &format!("recovery-{}-0", attempt.attempt_id),
+    )
+    .unwrap()
+    .expect("completed callback must retain retrieval independently of hook delivery");
+    assert_eq!(lease.store_path, output);
+    assert_eq!(lease.purpose, db::StoreLeasePurpose::Output);
+    assert_eq!(lease.state, db::StoreLeaseState::Active);
+    assert!(lease.expires_at.unwrap() > std::time::SystemTime::now());
+    assert_eq!(std::fs::read_dir(&hook_delivery_roots).unwrap().count(), 1);
     assert_eq!(db::post_build_hooks_backlog(&owned_database).unwrap().0, 0);
+    let deletion = Command::new("nix-store")
+        .args(["--store", "daemon", "--delete", output])
+        .output()
+        .unwrap();
+    assert!(
+        !deletion.status.success(),
+        "retained callback output was collected"
+    );
+    let diagnostic = String::from_utf8_lossy(&deletion.stderr);
+    assert!(diagnostic.contains("alive"), "{diagnostic}");
+    let info = store.query_path_info(output.as_bytes()).unwrap().unwrap();
+    let mut retrieved = Vec::new();
+    store
+        .nar_from_path(output.as_bytes(), info.nar_size(), &mut retrieved)
+        .unwrap();
+    assert!(
+        retrieved
+            .windows(b"connected-nomad".len())
+            .any(|bytes| bytes == b"connected-nomad")
+    );
     let expired_drv = "/nix/store/11111111111111111111111111111111-hook_delivery-expired.drv";
     db::claim_shared_build(
         &owned_database,

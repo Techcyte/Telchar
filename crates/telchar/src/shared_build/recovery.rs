@@ -12,6 +12,15 @@ const MAXIMUM_ACTIVE_SHARED_BUILDS: usize = 256;
 pub trait SharedBuildOutputStore {
     fn contains_all(&mut self, outputs: &[String]) -> io::Result<bool>;
 
+    fn validate_outputs(&mut self, request: &crate::build::BuildRequest) -> io::Result<()>;
+
+    fn retain_outputs(
+        &mut self,
+        database: &dyn crate::persistence::DatabaseSource,
+        build: &SharedBuild,
+        retention: Duration,
+    ) -> io::Result<()>;
+
     fn protect_hook_delivery(
         &mut self,
         database: &dyn crate::persistence::DatabaseSource,
@@ -22,6 +31,7 @@ pub trait SharedBuildOutputStore {
 pub struct GatewaySharedBuildOutputStore {
     endpoint: Option<GatewayStoreEndpoint>,
     hook_delivery_retention: Option<Box<dyn crate::store::retention::StoreRetentionBackend>>,
+    output_protection: Option<GatewayStoreConnection>,
 }
 
 impl GatewaySharedBuildOutputStore {
@@ -29,6 +39,7 @@ impl GatewaySharedBuildOutputStore {
         Self {
             endpoint: Some(endpoint),
             hook_delivery_retention: None,
+            output_protection: None,
         }
     }
 
@@ -36,6 +47,7 @@ impl GatewaySharedBuildOutputStore {
         Self {
             endpoint,
             hook_delivery_retention: None,
+            output_protection: None,
         }
     }
 
@@ -60,6 +72,129 @@ impl GatewaySharedBuildOutputStore {
 }
 
 impl SharedBuildOutputStore for GatewaySharedBuildOutputStore {
+    fn retain_outputs(
+        &mut self,
+        database: &dyn crate::persistence::DatabaseSource,
+        build: &SharedBuild,
+        duration: Duration,
+    ) -> io::Result<()> {
+        let attempt = persistence::read_shared_build_attempt(database, &build.derivation_path)
+            .map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("recovered attempt is missing"))?;
+        if attempt.state != persistence::SharedBuildAttemptState::Collecting {
+            return Err(io::Error::other(
+                "output retention requires collecting attempt",
+            ));
+        }
+        if attempt.backend_name != build.backend_name
+            || attempt.backend_kind != build.backend_kind
+            || attempt.backend_execution_id != build.backend_execution_id
+        {
+            return Err(io::Error::other(
+                "output retention execution identity mismatch",
+            ));
+        }
+        let request = build
+            .build_request
+            .as_ref()
+            .ok_or_else(|| io::Error::other("recovered specification is missing"))?;
+        let request_id = format!("recovery-{}", attempt.attempt_id);
+        if persistence::read_build_request(database, &request_id)
+            .map_err(io::Error::other)?
+            .is_none()
+        {
+            persistence::create_build_request(
+                database,
+                &request_id,
+                &build.derivation_path,
+                request.system(),
+                "recovery",
+                "recovery",
+            )
+            .map_err(io::Error::other)?;
+        }
+        let leases = build
+            .expected_outputs
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                (
+                    format!("recovery-{}-{index}", attempt.attempt_id),
+                    path.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let retention = self
+            .hook_delivery_retention
+            .as_mut()
+            .ok_or_else(|| io::Error::other("recovered output retention is unavailable"))?;
+        let entries = leases
+            .iter()
+            .map(|(id, path)| crate::store::retention::RetentionEntry::new(id, path))
+            .collect::<Vec<_>>();
+        let mut present = 0;
+        for (id, path) in &leases {
+            if let Some(lease) =
+                persistence::read_store_lease(database, id).map_err(io::Error::other)?
+            {
+                if lease.store_path != *path
+                    || lease.owner_id != request_id
+                    || lease.purpose != persistence::StoreLeasePurpose::Output
+                    || lease.state != persistence::StoreLeaseState::Active
+                    || lease
+                        .expires_at
+                        .is_none_or(|expires| expires <= std::time::SystemTime::now())
+                {
+                    return Err(io::Error::other("recovered output lease is inconsistent"));
+                }
+                present += 1;
+            }
+        }
+        if present == 0 {
+            persistence::create_request_output_leases(database, &request_id, duration, &leases)
+                .map_err(io::Error::other)?;
+        } else if present != leases.len() {
+            return Err(io::Error::other("recovered output lease set is incomplete"));
+        }
+        retention.retain(&entries)?;
+        Ok(())
+    }
+
+    fn validate_outputs(&mut self, request: &crate::build::BuildRequest) -> io::Result<()> {
+        let endpoint = self
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| io::Error::other("gateway store endpoint is not configured"))?;
+        if self.output_protection.is_none() {
+            self.output_protection = Some(GatewayStoreConnection::connect(endpoint)?);
+        }
+        let protection = self
+            .output_protection
+            .as_mut()
+            .expect("output protection connected");
+        for (_, path) in request.expected_outputs() {
+            protection.add_temporary_root(path)?;
+        }
+        let mut export = crate::store::export::GatewayStoreExportBackend::new(endpoint.clone());
+        for authority in request.output_authorities() {
+            let path = std::str::from_utf8(authority.path())
+                .map_err(|_| io::Error::other("recovered output path is invalid"))?;
+            let metadata = crate::store::export::validate_store_output(
+                std::path::Path::new(path),
+                &mut export,
+            )?;
+            if metadata.content_address.as_deref()
+                != authority.expected_content_address().as_deref()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "recovered output content address mismatch",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn protect_hook_delivery(
         &mut self,
         database: &dyn crate::persistence::DatabaseSource,
@@ -289,14 +424,34 @@ fn complete_recovered_success(
     retention: Duration,
     outputs: &mut dyn SharedBuildOutputStore,
 ) -> io::Result<()> {
+    let request = build
+        .build_request
+        .as_ref()
+        .ok_or_else(|| io::Error::other("recovered build specification is unavailable"))?;
+    let paths = request
+        .expected_outputs()
+        .iter()
+        .map(|(_, path)| std::str::from_utf8(path))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| io::Error::other("recovered output path is invalid"))?;
+    if paths != build.expected_outputs {
+        return Err(io::Error::other("recovered output identity mismatch"));
+    }
+    outputs.validate_outputs(request)?;
     advance_to_collecting(database, build)?;
+    let retention_database = database.database().map_err(io::Error::other)?;
+    outputs.retain_outputs(&retention_database, build, retention)?;
     let hook_delivery_database = database.database().map_err(io::Error::other)?;
     outputs.protect_hook_delivery(&hook_delivery_database, build)?;
     persistence::complete_shared_build_success(
         database,
         &build.derivation_path,
         &serde_json::json!({
-            "outputs": build.expected_outputs,
+            "status": "built",
+            "outputs": request.expected_outputs().iter().map(|(name, path)| serde_json::json!({
+                "name": String::from_utf8_lossy(name),
+                "path": String::from_utf8_lossy(path),
+            })).collect::<Vec<_>>(),
             "recovered": true,
         }),
         retention,
