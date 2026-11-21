@@ -717,6 +717,7 @@ pub struct BuildResult {
     outputs: Vec<(Vec<u8>, Vec<u8>)>,
     output_trust: OutputTrust,
     failure: Option<BuildFailure>,
+    gateway_validated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -740,7 +741,16 @@ impl BuildResult {
             outputs: Vec::new(),
             output_trust: OutputTrust::TrustedExecutor,
             failure: Some(failure),
+            gateway_validated: false,
         })
+    }
+
+    pub(crate) fn mark_gateway_validated(&mut self) {
+        self.gateway_validated = true;
+    }
+
+    pub(crate) fn gateway_validated(&self) -> bool {
+        self.gateway_validated
     }
 
     pub fn failure(&self) -> Option<&BuildFailure> {
@@ -763,6 +773,7 @@ impl BuildResult {
             outputs,
             output_trust,
             failure: None,
+            gateway_validated: false,
         })
     }
 
