@@ -128,6 +128,7 @@ pub enum NomadExecutionState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NomadExecutionStatus {
+    cleanup_complete: bool,
     state: NomadExecutionState,
     allocations: Vec<NomadAllocation>,
 }
@@ -162,6 +163,8 @@ struct SubmissionResponse {
 
 #[derive(Deserialize)]
 struct JobResponse {
+    #[serde(rename = "Stop", default)]
+    stopped: bool,
     #[serde(rename = "ID")]
     id: String,
     #[serde(rename = "Namespace")]
@@ -336,6 +339,14 @@ impl NomadClient {
         Ok(())
     }
 
+    pub fn execution_cleanup_complete(&self, job_id: &str) -> io::Result<bool> {
+        let status = self.execution_status(job_id)?;
+        if !status.cleanup_complete {
+            self.stop(job_id)?;
+        }
+        Ok(status.cleanup_complete)
+    }
+
     pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
         self.execution_status(job_id).map(|status| status.state)
     }
@@ -375,6 +386,7 @@ impl NomadClient {
                 "Nomad API request completed"
             );
             return Ok(NomadExecutionStatus {
+                cleanup_complete: true,
                 state: NomadExecutionState::Missing,
                 allocations: Vec::new(),
             });
@@ -419,6 +431,10 @@ impl NomadClient {
                 })?,
             "Nomad job monitoring failed",
         )?;
+        let cleanup_complete = job.stopped
+            && allocations.iter().all(|allocation| {
+                matches!(allocation.client_status.as_str(), "complete" | "failed")
+            });
         let current_allocations = allocations
             .iter()
             .filter(|allocation| allocation.job_version == job.version)
@@ -456,7 +472,11 @@ impl NomadClient {
             duration_ms = started.elapsed().as_millis(),
             "Nomad API request completed"
         );
-        Ok(NomadExecutionStatus { state, allocations })
+        Ok(NomadExecutionStatus {
+            cleanup_complete,
+            state,
+            allocations,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -793,7 +813,7 @@ impl NomadClient {
                 if status_poll.due(Instant::now()) {
                     let status = self
                         .execution_status(submission.job_id())
-                        .map_err(NomadAttemptFailure::Retryable)?;
+                        .map_err(NomadAttemptFailure::Terminal)?;
                     match status.state {
                         NomadExecutionState::Pending => {}
                         NomadExecutionState::Placed | NomadExecutionState::Succeeded => {
@@ -866,7 +886,7 @@ impl NomadClient {
         bounded_json::<serde_json::Value>(
             self.client
                 .delete(format!("{}/v1/job/{job_id}", self.config.endpoint()))
-                .query(&[("namespace", self.config.namespace()), ("purge", "true")])
+                .query(&[("namespace", self.config.namespace()), ("purge", "false")])
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
                 .map_err(|error| {

@@ -23,7 +23,7 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
         let (mut stop_request, _) = listener.accept().expect("stop request accepts");
         let request = read_http_request(&mut stop_request);
         assert!(request.starts_with(&format!(
-            "DELETE /v1/job/{expected_job_id}?namespace=telchar&purge=true HTTP/1.1\r\n"
+            "DELETE /v1/job/{expected_job_id}?namespace=telchar&purge=false HTTP/1.1\r\n"
         )));
         write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
     });
@@ -100,7 +100,7 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
         let (mut stop_request, _) = listener.accept().expect("stop request accepts");
         let request = read_http_request(&mut stop_request);
         assert!(request.starts_with(&format!(
-            "DELETE /v1/job/{served_job_id}?namespace=telchar&purge=true HTTP/1.1\r\n"
+            "DELETE /v1/job/{served_job_id}?namespace=telchar&purge=false HTTP/1.1\r\n"
         )));
         write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
     });
@@ -287,13 +287,37 @@ fn callback_recorded_failure(ordinary: bool) {
 
 #[test]
 fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
+    retry_after_status(404, 2, false);
+}
+
+#[test]
+fn uncertain_monitoring_retains_attempt_and_capacity_across_reload() {
+    retry_after_status(500, 1, false);
+}
+
+#[test]
+fn database_uncertainty_retains_execution_capacity() {
+    retry_after_status(500, 1, true);
+}
+
+fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
         "http://{}",
         listener.local_addr().expect("fixture address reads")
     );
-    let config = load_service_config(&root, &endpoint, None);
+    load_service_config(&root, &endpoint, None);
+    let config_path = root.join("client.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[backends]\npermit_wait_seconds = 1\n{}",
+            fs::read_to_string(&config_path).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut config = ServiceConfig::load_from_default(&config_path).unwrap();
     let backend = config.nomad_backends()[0].clone();
     let admitted = admitted_request();
     let key = admitted.shared_build_key();
@@ -301,6 +325,9 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
     let second_job =
         telchar::nomad::backend::deterministic_job_name_for_attempt(&backend, key.as_bytes(), 2)
             .expect("retry identity derives");
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).unwrap();
+    let failure_database = database.url().to_owned();
     let server = thread::spawn(move || {
         for (job_id, evaluation) in [(first_job, 1), (second_job, 2)] {
             let (mut submit, _) = listener.accept().expect("submit accepts");
@@ -312,11 +339,20 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
             );
             let (mut status, _) = listener.accept().expect("status accepts");
             assert!(read_http_request(&mut status).starts_with(&format!("GET /v1/job/{job_id}?")));
-            write_json_response(&mut status, 404, r#"{}"#);
+            if database_failure {
+                postgres::Client::connect(&failure_database, postgres::NoTls)
+                    .unwrap()
+                    .batch_execute(
+                        "ALTER TABLE nomad_execution_obligations RENAME TO hidden_obligations",
+                    )
+                    .unwrap();
+            }
+            write_json_response(&mut status, status_code, r#"{}"#);
+            if status_code == 500 {
+                break;
+            }
         }
     });
-    let database = telchar_test_support::postgres::PostgresFixture::start();
-    telchar::persistence::migrate(database.url()).expect("database migrates");
     let derivation = std::str::from_utf8(admitted.derivation_path()).expect("derivation is UTF-8");
     telchar::persistence::claim_shared_build_with_request(
         database.url(),
@@ -346,25 +382,31 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
         telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
         telchar::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
     };
-    let mut executor = ConfiguredBackends::new(&config, gateway_store_endpoint())
-        .expect("backends configure")
+    let backends = ConfiguredBackends::new(&config, gateway_store_endpoint()).unwrap();
+    let mut executor = backends
         .executor(
-            telchar::persistence::Database::connect(database.url()).expect("database connects"),
+            telchar::persistence::Database::connect(database.url()).unwrap(),
             Arc::clone(&builds),
         )
-        .expect("executor configures");
+        .unwrap();
 
     executor
         .execute(&execution)
-        .expect_err("exhausted retry rejects");
+        .expect_err("unavailable execution rejects");
 
     assert_eq!(
         telchar::persistence::read_shared_build_attempt(database.url(), derivation)
             .expect("attempt reads")
             .expect("attempt exists")
             .ordinal,
-        2
+        expected_ordinal
     );
+    if database_failure {
+        database
+            .connect()
+            .batch_execute("ALTER TABLE hidden_obligations RENAME TO nomad_execution_obligations")
+            .unwrap();
+    }
     let unresolved: i64 = database
         .connect()
         .query_one(
@@ -373,7 +415,44 @@ fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
         )
         .expect("obligations read")
         .get(0);
-    assert_eq!(unresolved, 0);
+    assert_eq!(unresolved, if status_code == 500 { 1 } else { 0 });
+    if status_code == 500 {
+        assert!(executor.reserve_target("x86_64-linux", &[]).is_err());
+        let health = backends.static_ssh_health();
+        let mut health_service = telchar::service::daemon_services::StaticSshHealthService::start(
+            health,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let reloadable = telchar::backend::routing::ReloadableBackends::new(backends);
+        let replacement = ServiceConfig::load_from_default(&config_path).unwrap();
+        telchar::service::config_reload::BackendReload::prepare_config(
+            &config,
+            replacement,
+            Some(gateway_store_endpoint()),
+            None,
+            Duration::from_secs(60),
+        )
+        .unwrap()
+        .apply(&mut config, &reloadable, &mut health_service)
+        .unwrap();
+        let reloaded = reloadable
+            .snapshot()
+            .executor(
+                telchar::persistence::Database::connect(database.url()).unwrap(),
+                Arc::clone(&builds),
+            )
+            .unwrap();
+        assert!(reloaded.reserve_target("x86_64-linux", &[]).is_err());
+        health_service.shutdown().unwrap();
+    } else {
+        assert!(
+            executor
+                .reserve_target("x86_64-linux", &[])
+                .unwrap()
+                .is_some()
+        );
+    }
     drop(leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");

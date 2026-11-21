@@ -1258,6 +1258,34 @@ pub fn retain_nomad_execution_obligation(
     Ok(attempt_id)
 }
 
+pub fn read_nomad_execution_obligations(
+    database: &(impl DatabaseSource + ?Sized),
+) -> Result<Vec<(i64, String)>, SharedBuildError> {
+    let _operation =
+        telemetry::DatabaseOperation::start(stringify!(read_nomad_execution_obligations));
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query(
+            "SELECT attempt.attempt_id, attempt.backend_name
+         FROM nomad_execution_obligations AS obligation
+         JOIN shared_build_attempts AS attempt USING (attempt_id)
+         WHERE obligation.resolved_at IS NULL ORDER BY attempt.attempt_id",
+            &[],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .iter()
+        .map(|row| {
+            Ok((
+                row.try_get(0)
+                    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?,
+                row.try_get(1)
+                    .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?,
+            ))
+        })
+        .collect()
+}
+
 pub fn resolve_nomad_execution_obligation(
     database: &(impl DatabaseSource + ?Sized),
     attempt_id: i64,
@@ -1271,6 +1299,26 @@ pub fn resolve_nomad_execution_obligation(
         &[&attempt_id],
     ).map_err(|_| SharedBuildError(SharedBuildFailure::Query))?;
     Ok(())
+}
+
+pub fn read_shared_build_attempt_by_id(
+    database: &(impl DatabaseSource + ?Sized),
+    attempt_id: i64,
+) -> Result<Option<SharedBuildAttempt>, SharedBuildError> {
+    let _operation =
+        telemetry::DatabaseOperation::start(stringify!(read_shared_build_attempt_by_id));
+    let mut client =
+        connect(database).map_err(|_| SharedBuildError(SharedBuildFailure::Connection))?;
+    client
+        .query_opt(
+            "SELECT attempt_id, derivation_path, ordinal, backend_name, backend_kind,
+                backend_execution_id, state, traceparent, tracestate, created_at, started_at,
+                collecting_at, completed_at FROM shared_build_attempts WHERE attempt_id = $1",
+            &[&attempt_id],
+        )
+        .map_err(|_| SharedBuildError(SharedBuildFailure::Query))?
+        .map(|row| decode_shared_build_attempt(&row).map_err(SharedBuildError))
+        .transpose()
 }
 
 pub fn read_shared_build_attempt(

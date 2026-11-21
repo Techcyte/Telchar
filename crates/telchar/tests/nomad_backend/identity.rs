@@ -4,6 +4,17 @@ use super::*;
 
 #[test]
 fn monitors_only_the_exact_backend_bound_job() {
+    monitor_job(false, false, false);
+}
+
+#[test]
+fn cleanup_requires_stopped_job_and_every_allocation_terminal() {
+    monitor_job(true, false, false);
+    monitor_job(false, true, false);
+    monitor_job(true, true, true);
+}
+
+fn monitor_job(stopped: bool, terminal: bool, cleanup: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -23,7 +34,7 @@ fn monitors_only_the_exact_backend_bound_job() {
             &mut job_request,
             200,
             &format!(
-                r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                r#"{{"ID":"{expected_job_id}","Namespace":"telchar","Type":"batch","Stop":{stopped},"Version":1,"Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
             ),
         );
 
@@ -35,13 +46,26 @@ fn monitors_only_the_exact_backend_bound_job() {
         write_json_response(
             &mut allocations_request,
             200,
-            r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#,
+            &format!(
+                r#"[{{"ID":"allocation-1","JobVersion":1,"ClientStatus":"complete"}},{{"ID":"allocation-2","JobVersion":0,"ClientStatus":"{}"}}]"#,
+                if terminal { "failed" } else { "running" }
+            ),
         );
+        if !cleanup {
+            let (mut stop, _) = listener.accept().expect("non-purging stop accepts");
+            let request = read_http_request(&mut stop);
+            assert!(request.starts_with(&format!(
+                "DELETE /v1/job/{expected_job_id}?namespace=telchar&purge=false HTTP/1.1\r\n"
+            )));
+            write_json_response(&mut stop, 200, r#"{"EvalID":"cleanup"}"#);
+        }
     });
     let client = NomadClient::new(config).expect("Nomad client constructs");
     assert_eq!(
-        client.status(&job_id).expect("Nomad job status reads"),
-        NomadExecutionState::Placed
+        client
+            .execution_cleanup_complete(&job_id)
+            .expect("Nomad cleanup status reads"),
+        cleanup
     );
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
