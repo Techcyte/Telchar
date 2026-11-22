@@ -64,7 +64,34 @@ fn daemon_restart_reconciles_every_record_beyond_first_page() {
             )
             .spawn()
             .unwrap();
-        wait_for_socket(&socket, &mut daemon);
+        use std::os::fd::AsRawFd;
+        assert!(
+            unsafe {
+                libc::fcntl(
+                    daemon.stderr.as_ref().unwrap().as_raw_fd(),
+                    libc::F_SETPIPE_SZ,
+                    4096,
+                )
+            } >= 4096
+        );
+        let mut diagnostics = daemon.stderr.take().unwrap();
+        let reader = thread::spawn(move || {
+            let mut captured = String::new();
+            diagnostics.read_to_string(&mut captured).unwrap();
+            captured
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !socket.exists() {
+            if daemon.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                let _ = daemon.kill();
+                daemon.wait().unwrap();
+                panic!(
+                    "recovery daemon did not become ready: {}",
+                    reader.join().unwrap()
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         let row = database.connect().query_one(
         "SELECT count(*) FILTER(WHERE state='failed'),count(*) FILTER(WHERE state IN ('claimed','running','collecting')) FROM shared_builds", &[],
     ).unwrap();
@@ -74,7 +101,8 @@ fn daemon_restart_reconciles_every_record_beyond_first_page() {
         daemon.kill().unwrap();
         let output = daemon.wait_with_output().unwrap();
         assert!(output.stdout.is_empty());
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.stderr.is_empty());
+        let stderr = reader.join().unwrap();
         assert!(!stderr.contains(database.url()));
         assert_eq!(
             stderr
