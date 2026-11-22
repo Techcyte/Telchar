@@ -51,19 +51,17 @@ fn capacity_child() {
     );
     if mode == "insufficient-staging" {
         build.expect("unknown store capacity permits build");
-        assert_eq!(
-            transfer.expect_err("measured staging rejects").filesystem(),
-            "staging"
-        );
+        let failure = transfer.expect_err("unmeasured store rejects transfer");
+        assert_eq!(failure.filesystem(), "gateway-store");
+        assert_eq!(failure.reason(), RejectionReason::ProbeFailed);
     } else if mode == "insufficient-store" {
         assert_eq!(
             build.expect_err("measured store rejects").reason(),
             RejectionReason::InsufficientSpace
         );
-        assert_eq!(
-            transfer.expect_err("measured store rejects").filesystem(),
-            "gateway-store"
-        );
+        let failure = transfer.expect_err("unmeasured staging rejects transfer");
+        assert_eq!(failure.filesystem(), "staging");
+        assert_eq!(failure.reason(), RejectionReason::ProbeFailed);
     } else if mode == "insufficient" {
         assert_eq!(
             build.expect_err("measured store rejects").reason(),
@@ -73,9 +71,17 @@ fn capacity_child() {
             transfer.expect_err("measured store rejects").reason(),
             RejectionReason::InsufficientSpace
         );
+    } else if mode == "available" {
+        build.expect("measured capacity permits build");
+        transfer.expect("measured capacity permits transfer");
     } else {
-        build.expect("unavailable measurement permits build");
-        transfer.expect("unavailable measurement permits transfer");
+        build.expect("build admission permits unavailable measurement");
+        assert_eq!(
+            transfer
+                .expect_err("unavailable measurement rejects transfer")
+                .reason(),
+            RejectionReason::ProbeFailed
+        );
     }
 }
 
@@ -92,7 +98,7 @@ fn capacity_checks_warn_on_denied_access_and_reject_measured_shortage() {
         ("available", root.clone(), root.clone(), 0),
         ("denied", blocked.join("store"), root.clone(), 2),
         ("denied", root.clone(), blocked.join("store"), 1),
-        ("denied", blocked.join("store"), blocked.join("store"), 3),
+        ("denied", blocked.join("store"), blocked.join("store"), 2),
         ("missing", root.join("missing"), root.clone(), 2),
         ("insufficient", root.clone(), root.clone(), 0),
         (

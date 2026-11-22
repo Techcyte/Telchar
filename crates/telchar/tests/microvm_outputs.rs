@@ -160,6 +160,8 @@ fn receipts_require_authoritative_registration() {
         Some("reference"),
         Some("deriver"),
         Some("content address"),
+        Some("occupied"),
+        Some("rate"),
         None,
     ] {
         gateway_session(&endpoint, staging.path(), &metadata, &nar, rejection);
@@ -182,6 +184,27 @@ fn gateway_session(
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let limits = ProtocolLimits::new(8192, 65536);
+    let mut transfer_limits = telchar::service::transfer_limits::TransferLimits::parse(
+        "262144", "262144", "262144", "10", "10", "1", "1",
+    )
+    .unwrap();
+    if rejection == Some("rate") {
+        transfer_limits.inbound_rate_bytes_per_second = 1;
+        transfer_limits.inbound_burst_bytes = 1;
+    }
+    let admission = telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
+    if rejection == Some("rate") {
+        let mut frontend_budget = telchar::service::transfer_limits::TransferBudget::new(1);
+        let mut frontend = telchar::service::transfer_limits::LimitedReader::with_rate(
+            std::io::Cursor::new([0]),
+            1,
+            &mut frontend_budget,
+            admission.rates(),
+        );
+        let mut byte = [0];
+        std::io::Read::read_exact(&mut frontend, &mut byte).unwrap();
+    }
+    let occupied = (rejection == Some("occupied")).then(|| admission.admit_inbound().unwrap());
     let mut output_info = input.clone();
     output_info.path = output.into();
     match rejection {
@@ -273,7 +296,7 @@ fn gateway_session(
                 encode_metadata(&output_info, 8192).unwrap(),
                 vec![],
             );
-            if rejection.is_some() {
+            if rejection.is_some() && rejection != Some("rate") {
                 assert!(
                     socket.read().is_err(),
                     "unadmitted metadata must close session before NAR transfer"
@@ -298,6 +321,13 @@ fn gateway_session(
                     .unwrap(),
                     payload.to_vec(),
                 );
+            }
+            if rejection == Some("rate") {
+                assert!(
+                    socket.read().is_err(),
+                    "rate-rejected output receives no receipt"
+                );
+                return;
             }
             let receipt = read(&mut socket);
             assert_eq!(receipt.kind(), FrameKind::OutputReceipt);
@@ -355,13 +385,20 @@ fn gateway_session(
                 metadata_bytes: 8192,
                 chunk_bytes: 65536,
             },
+            admission.clone(),
         )
         .unwrap()
         .run(socket, || Ok(()), |bytes| logs.extend_from_slice(bytes));
         if let Some(field) = rejection {
             assert_eq!(
                 result.unwrap_err().to_string(),
-                format!("MicroVM output {field} is not admitted")
+                if field == "occupied" {
+                    "active object count exceeded".to_owned()
+                } else if field == "rate" {
+                    "transfer rate limit exceeded".to_owned()
+                } else {
+                    format!("MicroVM output {field} is not admitted")
+                }
             );
         } else {
             assert_eq!(result.unwrap().outcome, BuildOutcome::Built);
@@ -369,6 +406,11 @@ fn gateway_session(
         assert_eq!(logs, b"building\n");
         worker.join().unwrap();
     });
+    if occupied.is_some() {
+        assert!(admission.admit_inbound().is_err());
+    }
+    drop(occupied);
+    assert!(admission.admit_inbound().is_ok());
     let mut store = GatewayStoreConnection::connect(endpoint).unwrap();
     assert_eq!(
         store.is_valid_path(output.as_bytes()).unwrap(),

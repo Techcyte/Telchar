@@ -118,6 +118,7 @@ maximum_diagnostic_bytes = 1024
         Duration::from_secs(60),
         std::sync::Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         None,
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
     .expect("service starts");
     let mut client = TcpStream::connect(address).expect("client connects");

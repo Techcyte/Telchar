@@ -14,6 +14,56 @@ fn cleanup_requires_stopped_job_and_every_allocation_terminal() {
     monitor_job(true, true, true);
 }
 
+#[test]
+fn cleanup_requests_share_one_deadline() {
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    load_nomad_config(&root, &endpoint, None);
+    let path = root.join("client.toml");
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        source.replace(
+            "runtime_limit_seconds = 60",
+            "runtime_limit_seconds = 60\ncleanup_timeout_seconds = 1",
+        ),
+    )
+    .unwrap();
+    let service = ServiceConfig::load_from_default(&path).unwrap();
+    let config = service.nomad_backends()[0].clone();
+    assert_eq!(config.cleanup_timeout(), Duration::from_secs(1));
+    let job = deterministic_job_name(&config, b"cleanup-budget");
+    let expected = job.clone();
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().unwrap();
+        assert!(read_http_request(&mut request).starts_with("GET /v1/job/"));
+        thread::sleep(Duration::from_millis(650));
+        write_json_response(
+            &mut request,
+            200,
+            &format!(
+                r#"{{"ID":"{expected}","Namespace":"telchar","Type":"batch","Stop":true,"Version":1,"Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+            ),
+        );
+        let (mut allocations, _) = listener.accept().unwrap();
+        assert!(read_http_request(&mut allocations).contains("/allocations?"));
+        thread::sleep(Duration::from_millis(900));
+        drop(allocations);
+    });
+    let client = NomadClient::new(config).unwrap();
+    let started = std::time::Instant::now();
+    let result = client.execution_cleanup_complete(&job);
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert!(result.is_err());
+    assert!(
+        elapsed < Duration::from_millis(1400),
+        "cleanup exceeded shared budget: {elapsed:?}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn monitor_job(stopped: bool, terminal: bool, cleanup: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");

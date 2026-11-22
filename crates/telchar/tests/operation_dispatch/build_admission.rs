@@ -63,11 +63,8 @@ fn disk_reserve_rejects_transfer_before_nar_body_or_promotion() {
         stderr.contains("worker.disk_reserve.probe_failed"),
         "{stderr}"
     );
-    assert!(stderr.contains("filesystem=\"staging\""), "{stderr}");
-    assert!(
-        stderr.contains("reason=\"arithmetic-overflow\""),
-        "{stderr}"
-    );
+    assert!(stderr.contains("filesystem=\"gateway-store\""), "{stderr}");
+    assert!(stderr.contains("reason=\"probe-failed\""), "{stderr}");
     fs::remove_dir_all(root).expect("fixture cleans");
 }
 

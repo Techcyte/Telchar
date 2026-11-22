@@ -1,5 +1,78 @@
 //! Constructs configured backend executors and dispatches admitted builds to the selected target.
 
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn reload_preserves_occupied_objects_and_consumed_rate_tokens() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("service.toml");
+        std::fs::write(&path, "[backends.local]\nname = \"local\"\nsystem = \"x86_64-linux\"\nmaximum_concurrent_builds = 1\n").unwrap();
+        let mut config = ServiceConfig::load_from_default(&path).unwrap();
+        let limits = crate::service::transfer_limits::TransferLimits {
+            maximum_active_inbound_objects: 1,
+            inbound_rate_bytes_per_second: 1,
+            inbound_burst_bytes: 1,
+            ..Default::default()
+        };
+        let admission = crate::service::transfer_limits::ObjectAdmissionState::new(&limits);
+        let held = admission.admit_inbound().unwrap();
+        let mut budget = crate::service::transfer_limits::TransferBudget::new(1);
+        let mut frontend = crate::service::transfer_limits::LimitedReader::with_rate(
+            std::io::Cursor::new([1]),
+            1,
+            &mut budget,
+            admission.rates(),
+        );
+        frontend.read_exact(&mut [0]).unwrap();
+        let initial = ConfiguredBackends::new(&config, None)
+            .unwrap()
+            .with_object_admission(admission.clone());
+        let mut health = crate::service::daemon_services::StaticSshHealthService::start(
+            initial.static_ssh_health(),
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        let backends = ReloadableBackends::new(initial.clone());
+        crate::service::config_reload::BackendReload::prepare_config(
+            &config,
+            config.clone(),
+            None,
+            None,
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap()
+        .apply(&mut config, &backends, &mut health)
+        .unwrap();
+        for generation in [initial, backends.snapshot()] {
+            assert!(generation.inner.object_admission.admit_inbound().is_err());
+            let mut destination = Vec::new();
+            let mut backend = crate::service::transfer_limits::RateWriter::new(
+                &mut destination,
+                generation.inner.object_admission.rates(),
+                true,
+            );
+            assert_eq!(
+                backend.write_all(&[2]).unwrap_err().to_string(),
+                "transfer rate limit exceeded"
+            );
+            assert!(destination.is_empty());
+        }
+        drop(held);
+        assert!(
+            backends
+                .snapshot()
+                .inner
+                .object_admission
+                .admit_inbound()
+                .is_ok()
+        );
+        health.shutdown().unwrap();
+    }
+}
+
 use std::collections::BTreeSet;
 use std::io;
 use std::path::PathBuf;
@@ -18,9 +91,11 @@ pub struct ConfiguredBackends {
 
 struct ConfiguredBackendsInner {
     pool: BackendPool,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     uncertain_nomad_permits: Arc<std::sync::Mutex<Vec<crate::backend::BackendPermit>>>,
     nomad_obligations:
         Arc<std::sync::Mutex<std::collections::BTreeMap<i64, crate::backend::BackendPermit>>>,
+    nomad_cleanup_cursor: Arc<std::sync::Mutex<Option<i64>>>,
     permit_wait: std::time::Duration,
     gateway_store: Option<GatewayStoreEndpoint>,
     local_build_helper: Option<PathBuf>,
@@ -221,10 +296,14 @@ impl ConfiguredBackends {
         Ok(Self {
             inner: Arc::new(ConfiguredBackendsInner {
                 pool: BackendPool::new(targets, maximums)?,
+                object_admission: crate::service::transfer_limits::ObjectAdmissionState::new(
+                    &crate::service::transfer_limits::TransferLimits::from_environment()?,
+                ),
                 uncertain_nomad_permits: Arc::new(std::sync::Mutex::new(Vec::new())),
                 nomad_obligations: Arc::new(std::sync::Mutex::new(
                     std::collections::BTreeMap::new(),
                 )),
+                nomad_cleanup_cursor: Arc::new(std::sync::Mutex::new(None)),
                 permit_wait: config.backend_permit_wait(),
                 gateway_store,
                 local_build_helper,
@@ -235,6 +314,16 @@ impl ConfiguredBackends {
                 microvm,
             }),
         })
+    }
+
+    pub fn with_object_admission(
+        mut self,
+        admission: crate::service::transfer_limits::ObjectAdmissionState,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("exclusive routing construction")
+            .object_admission = admission;
+        self
     }
 
     pub fn attach_microvm_services(
@@ -251,6 +340,7 @@ impl ConfiguredBackends {
             Arc::clone(&self.inner.schedulable_static_ssh),
             services,
         )
+        .map(|backends| backends.with_object_admission(self.inner.object_admission.clone()))
     }
 
     pub(crate) fn retain_microvm_services(
@@ -274,7 +364,9 @@ impl ConfiguredBackends {
         )?;
         let inner = Arc::get_mut(&mut replacement.inner).expect("exclusive routing construction");
         inner.pool = inner.pool.clone().retain_capacity(&current.inner.pool)?;
+        inner.object_admission = current.inner.object_admission.clone();
         inner.nomad_obligations = Arc::clone(&current.inner.nomad_obligations);
+        inner.nomad_cleanup_cursor = Arc::clone(&current.inner.nomad_cleanup_cursor);
         inner.uncertain_nomad_permits = Arc::clone(&current.inner.uncertain_nomad_permits);
         Ok(replacement)
     }
@@ -295,7 +387,22 @@ impl ConfiguredBackends {
         &self,
         database: &crate::persistence::Database,
     ) -> io::Result<()> {
-        let attempts = self
+        let mut cursor = self
+            .inner
+            .nomad_cleanup_cursor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(budget) = self
+            .inner
+            .nomad
+            .iter()
+            .map(|config| config.cleanup_timeout())
+            .min()
+        else {
+            return Ok(());
+        };
+        let deadline = std::time::Instant::now() + budget;
+        let mut attempts = self
             .inner
             .nomad_obligations
             .lock()
@@ -303,7 +410,15 @@ impl ConfiguredBackends {
             .keys()
             .copied()
             .collect::<Vec<_>>();
+        if let Some(after) = *cursor {
+            let start = attempts.partition_point(|id| *id <= after);
+            attempts.rotate_left(start);
+        }
         for attempt_id in attempts {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            *cursor = Some(attempt_id);
             let attempt = crate::persistence::read_shared_build_attempt_by_id(database, attempt_id)
                 .map_err(|error| io::Error::other(error.to_string()))?
                 .ok_or_else(|| io::Error::other("obligated Nomad attempt is missing"))?;
@@ -317,9 +432,22 @@ impl ConfiguredBackends {
                 .iter()
                 .find(|config| config.target().name() == backend)
                 .ok_or_else(|| io::Error::other("obligated Nomad backend is not configured"))?;
-            if crate::nomad::backend::NomadClient::new(config.clone())?
-                .execution_cleanup_complete(&job)?
-            {
+            let cleanup = crate::nomad::backend::NomadClient::new(config.clone())?
+                .execution_cleanup_before(&job, deadline);
+            let complete = match cleanup {
+                Ok(complete) => complete,
+                Err(error) if crate::nomad::diagnostics::transient_cleanup_failure(&error) => {
+                    tracing::warn!(
+                        event = "nomad.cleanup.deferred",
+                        backend_name = backend,
+                        attempt_id,
+                        "Nomad cleanup deferred while execution liability remains retained"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if complete {
                 crate::persistence::resolve_nomad_execution_obligation(database, attempt_id)
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 self.inner
@@ -429,6 +557,7 @@ impl crate::shared_build::recovery::RecoveryBackend for ConfiguredBackends {
             gateway_store,
             &build.expected_outputs,
             std::time::Duration::from_secs(10),
+            self.inner.object_admission.clone(),
         )?;
         Ok(true)
     }
@@ -723,6 +852,7 @@ impl BuildBackend for BackendExecutor {
                 Box::new(crate::backend::static_ssh::StaticSshBackend::new(
                     config.clone(),
                     gateway_store.clone(),
+                    self.backends.inner.object_admission.clone(),
                 ))
             }
             BackendKind::Nomad => {

@@ -1739,18 +1739,24 @@ fn run_worker_session(context: SessionContext<'_>) -> io::Result<()> {
                             object_counts
                                 .admit_inbound(transfer_limits.maximum_inbound_session_objects)?;
                             let _permit = object_admission.admit_inbound()?;
-                            if let Some(staging_directory) = staging_directory.as_deref()
-                                && let Err(error) = disk_reserve.admit_transfer(
-                                    disk_probe,
-                                    &store_directory,
-                                    staging_directory,
-                                    info.nar_size(),
-                                )
-                            {
-                                disk_reserve_rejected("transfer", disk_reserve, error);
-                                disk_rejection = Some(error);
-                                return Err(io::Error::other("disk reserve rejected"));
-                            }
+                            let _disk_reservation =
+                                if let Some(staging_directory) = staging_directory.as_deref() {
+                                    match disk_reserve.reserve_transfer(
+                                        disk_probe,
+                                        &store_directory,
+                                        staging_directory,
+                                        info.nar_size(),
+                                    ) {
+                                        Ok(reservation) => Some(reservation),
+                                        Err(error) => {
+                                            disk_reserve_rejected("transfer", disk_reserve, error);
+                                            disk_rejection = Some(error);
+                                            return Err(io::Error::other("disk reserve rejected"));
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
                             let mut limited =
                                 crate::service::transfer_limits::LimitedReader::with_rate(
                                     source,

@@ -15,7 +15,11 @@ pub struct Outputs {
     session: OutputTransferSession,
     endpoint: GatewayStoreEndpoint,
     staging: PathBuf,
-    current: Option<(PathManifestEntry, std::fs::File)>,
+    current: Option<(
+        PathManifestEntry,
+        std::fs::File,
+        crate::service::disk_reserve::DiskReservation,
+    )>,
     disk_reserve: crate::service::disk_reserve::DiskReserve,
     store_directory: PathBuf,
 }
@@ -48,8 +52,9 @@ impl Outputs {
         if self.current.is_some() {
             return Err(io::Error::other("interleaved MicroVM output"));
         }
-        self.disk_reserve
-            .admit_promotion(
+        let reservation = self
+            .disk_reserve
+            .reserve_promotion(
                 &crate::service::disk_reserve::OsDiskReserveProbe,
                 &self.store_directory,
                 &self.staging,
@@ -62,7 +67,7 @@ impl Outputs {
                 )
             })?;
         self.session.declare(metadata.clone())?;
-        self.current = Some((metadata, tempfile::tempfile_in(&self.staging)?));
+        self.current = Some((metadata, tempfile::tempfile_in(&self.staging)?, reservation));
         Ok(())
     }
 
@@ -71,7 +76,7 @@ impl Outputs {
         chunk: &NarMetadata,
         payload: &[u8],
     ) -> io::Result<Option<OutputReceipt>> {
-        let (metadata, file) = self
+        let (metadata, file, _reservation) = self
             .current
             .as_mut()
             .ok_or_else(|| io::Error::other("MicroVM output metadata missing"))?;

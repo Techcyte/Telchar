@@ -667,6 +667,9 @@ print('# decline-permanently', file=sys.stderr, flush=True)
                 let result = StaticSshBackend::new(
                     config.static_ssh_backends()[0].clone(),
                     endpoint.clone(),
+                    telchar::service::transfer_limits::ObjectAdmissionState::new(
+                        &Default::default(),
+                    ),
                 )
                 .execute_with_logs(
                     &BuildExecution::new("ssh", &request, Duration::from_secs(10)).unwrap(),
@@ -718,6 +721,7 @@ print('# decline-permanently', file=sys.stderr, flush=True)
             Box::new(StaticSshBackend::new(
                 config.static_ssh_backends()[0].clone(),
                 endpoint.clone(),
+                telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
             ))
         };
         let mut logs = Vec::new();

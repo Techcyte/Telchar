@@ -6,6 +6,7 @@ pub mod outputs;
 pub mod pricing;
 pub mod rendezvous;
 mod runtime;
+pub use runtime::WorkerReset;
 pub mod service;
 pub mod session;
 

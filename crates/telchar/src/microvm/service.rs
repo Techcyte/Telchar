@@ -21,6 +21,7 @@ pub struct Service {
     owner: Arc<SingletonOwnership>,
     sessions: Arc<ExecutionSessions>,
     store: GatewayStoreEndpoint,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     lifecycle: Mutex<Lifecycle>,
     stopped: Arc<AtomicBool>,
 }
@@ -37,8 +38,15 @@ impl Service {
         owner: Arc<SingletonOwnership>,
         listener: TcpListener,
         store: GatewayStoreEndpoint,
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     ) -> io::Result<Self> {
-        let services = Self::start_many(vec![(config, provider)], owner, listener, store)?;
+        let services = Self::start_many(
+            vec![(config, provider)],
+            owner,
+            listener,
+            store,
+            object_admission,
+        )?;
         Arc::try_unwrap(services.into_iter().next().expect("one configured service"))
             .map_err(|_| io::Error::other("MicroVM service ownership unavailable"))
     }
@@ -48,6 +56,7 @@ impl Service {
         owner: Arc<SingletonOwnership>,
         listener: TcpListener,
         store: GatewayStoreEndpoint,
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     ) -> io::Result<Vec<Arc<Self>>> {
         owner.verify().map_err(io::Error::other)?;
         let mut names = std::collections::BTreeSet::new();
@@ -128,6 +137,7 @@ impl Service {
                 owner: Arc::clone(&owner),
                 sessions: Arc::clone(&sessions),
                 store: store.clone(),
+                object_admission: object_admission.clone(),
                 lifecycle: Mutex::new(Lifecycle {
                     callback: Arc::clone(&callback),
                     cleanup,
@@ -345,6 +355,7 @@ impl Service {
             store: self.store.clone(),
             staging: self.config.staging_directory().to_owned(),
             limits: self.config.transfer_limits(),
+            object_admission: self.object_admission.clone(),
         }
         .execute_build(&self.config, build, logs, &mut || {
             self.check()?;

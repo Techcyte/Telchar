@@ -58,8 +58,21 @@ mod collector;
 
 #[test]
 fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
+    maintenance_reset(false);
+}
+
+#[test]
+fn maintenance_terminates_worker_after_authenticated_pending_reset_expires() {
+    maintenance_reset(true);
+}
+
+fn maintenance_reset(expired: bool) {
     // Isolate the global exporter/subscriber and its environment from other tests.
-    let name = "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment";
+    let name = if expired {
+        "microvm::runtime::tests::lifecycle::maintenance_terminates_worker_after_authenticated_pending_reset_expires"
+    } else {
+        "microvm::runtime::tests::lifecycle::maintenance_retains_worker_and_dispatch_admits_next_assignment"
+    };
     if !telchar_test_support::process::is_child(name) {
         let collector = collector::start_collector();
         telchar_test_support::process::assert_success(
@@ -70,17 +83,26 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
         let parents = collector.spans("telchar", "backend.execution");
         let confirmations = collector.spans("telchar", "microvm.gateway.reset_confirmation");
         assert_eq!(parents.len(), 1);
-        assert_eq!(confirmations.len(), 1);
-        collector::Collector::assert_child(&parents[0], &confirmations[0]);
+        assert_eq!(confirmations.len(), 2);
+        for confirmation in &confirmations {
+            collector::Collector::assert_child(&parents[0], confirmation);
+        }
         use opentelemetry_proto::tonic::common::v1::any_value::Value;
-        assert!(confirmations[0].attributes.iter().any(|attribute| {
-            attribute.key == "confirmed"
-                && attribute
-                    .value
-                    .as_ref()
-                    .and_then(|value| value.value.as_ref())
-                    == Some(&Value::BoolValue(true))
-        }));
+        assert_eq!(
+            confirmations
+                .iter()
+                .any(
+                    |confirmation| confirmation.attributes.iter().any(|attribute| {
+                        attribute.key == "confirmed"
+                            && attribute
+                                .value
+                                .as_ref()
+                                .and_then(|value| value.value.as_ref())
+                                == Some(&Value::BoolValue(true))
+                    })
+                ),
+            !expired
+        );
         collector.assert_no_private_markers(&["fixture-secret", "fixture-token"]);
         if let Some(path) = std::env::var_os("TELCHAR_RESET_TRACE_ARTIFACT") {
             collector.write_trace_artifact(path);
@@ -175,19 +197,26 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
     let callback_owner = owner.clone();
     let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback_admitted = admitted.clone();
-    let callback_server = std::thread::spawn(move || {
-        let stream = accept(&callback);
-        let pending = crate::microvm::rendezvous::PendingConnections::new(1, 1).unwrap();
-        callback_sessions
-            .accept(
-                stream,
-                &callback_owner,
-                std::time::Instant::now() + Duration::from_secs(10),
-                pending.reserve().unwrap(),
-            )
-            .unwrap();
-        callback_admitted.store(true, std::sync::atomic::Ordering::Release);
+    let callback_server = (!expired).then(|| {
+        std::thread::spawn(move || {
+            let stream = accept(&callback);
+            let pending = crate::microvm::rendezvous::PendingConnections::new(1, 1).unwrap();
+            callback_sessions
+                .accept(
+                    stream,
+                    &callback_owner,
+                    std::time::Instant::now() + Duration::from_secs(10),
+                    pending.reserve().unwrap(),
+                )
+                .unwrap();
+            callback_admitted.store(true, std::sync::atomic::Ordering::Release);
+        })
     });
+    let reset_checked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pending_checked = reset_checked.clone();
+    let pending_reported = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reported = pending_reported.clone();
+    let pending_database = database.clone();
     let runtime_server = std::thread::spawn(move || {
         let config = rustls::ServerConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
@@ -200,7 +229,14 @@ fn maintenance_retains_worker_and_dispatch_admits_next_assignment() {
             rustls::pki_types::PrivateKeyDer::Pkcs8(key.to_vec().into()),
         )
         .unwrap();
-        for run in [false, true] {
+        for phase in 0..if expired { 2 } else { 3 } {
+            let run = phase == 2;
+            if phase == 1 {
+                reported.store(true, std::sync::atomic::Ordering::Release);
+                while !pending_checked.load(std::sync::atomic::Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
             let stream = accept(&tls);
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
@@ -319,7 +355,11 @@ with tempfile.TemporaryDirectory() as directory:
                 reply(
                     &mut stream,
                     409,
-                    r#"{"status":"succeeded","reset_complete":true,"intent_id":"runtime-intent","provider_id":"microvm-exact","assignment_epoch":1}"#,
+                    if phase == 0 || expired {
+                        r#"{"status":"running","reset_complete":false,"intent_id":"runtime-intent","provider_id":"microvm-exact","assignment_epoch":1}"#
+                    } else {
+                        r#"{"status":"succeeded","reset_complete":true,"intent_id":"runtime-intent","provider_id":"microvm-exact","assignment_epoch":1}"#
+                    },
                 );
             }
         }
@@ -327,7 +367,7 @@ with tempfile.TemporaryDirectory() as directory:
     let control = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", control.local_addr().unwrap());
     let control_server = std::thread::spawn(move || {
-        for index in 0..5 {
+        for index in 0..if expired { 8 } else { 7 } {
             let mut stream = accept(&control);
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
@@ -336,6 +376,12 @@ with tempfile.TemporaryDirectory() as directory:
             assert!(incoming.to_ascii_lowercase().contains("authorization:"));
             let body = if index == 0 {
                 "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/fixture</Arn><UserId>fixture</UserId></GetCallerIdentityResult><ResponseMetadata><RequestId>fixture</RequestId></ResponseMetadata></GetCallerIdentityResponse>".to_owned()
+            } else if expired && index == 6 {
+                assert!(incoming.contains("microvm-exact"));
+                "{}".to_owned()
+            } else if expired && index == 7 {
+                assert!(incoming.contains("microvm-exact"));
+                serde_json::json!({"microvmId":"microvm-exact","state":"TERMINATED","imageArn":"image-fixture","imageVersion":"1","maximumDurationInSeconds":600,"startedAt":1}).to_string()
             } else if index % 2 == 1 {
                 serde_json::json!({"microvmId":"microvm-exact","state":"RUNNING","endpoint":runtime_endpoint,"imageArn":"image-fixture","imageVersion":"1","maximumDurationInSeconds":600,"startedAt":1}).to_string()
             } else {
@@ -381,7 +427,11 @@ with tempfile.TemporaryDirectory() as directory:
         provider.clone(),
         "123456789012".into(),
         "us-west-2".into(),
-        Duration::from_millis(25),
+        if expired {
+            Duration::from_millis(25)
+        } else {
+            Duration::from_secs(60)
+        },
         10,
         std::collections::BTreeMap::from([(config.fingerprint(), (Duration::from_secs(60), 100))]),
     )
@@ -389,6 +439,20 @@ with tempfile.TemporaryDirectory() as directory:
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         maintenance.check().unwrap();
+        if pending_reported.load(std::sync::atomic::Ordering::Acquire)
+            && !reset_checked.load(std::sync::atomic::Ordering::Acquire)
+        {
+            let row = crate::persistence::connect(&pending_database).unwrap().query_one(
+                "SELECT w.state,l.reservation_released_at IS NULL,w.assignment_epoch FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id='runtime-intent'", &[],
+            ).unwrap();
+            assert_eq!(row.get::<_, String>(0), "busy");
+            assert!(row.get::<_, bool>(1));
+            assert_eq!(row.get::<_, i64>(2), 1);
+            if expired {
+                fixture.connect().execute("UPDATE shared_build_attempts SET created_at=created_at-interval '60 seconds', started_at=started_at-interval '60 seconds', collecting_at=collecting_at-interval '60 seconds', completed_at=completed_at-interval '60 seconds' WHERE attempt_id=$1", &[&attempt]).unwrap();
+            }
+            reset_checked.store(true, std::sync::atomic::Ordering::Release);
+        }
         let row = fixture
             .connect()
             .query_one(
@@ -396,7 +460,12 @@ with tempfile.TemporaryDirectory() as directory:
                 &[],
             )
             .unwrap();
-        if row.get::<_, String>(0) == "idle" {
+        if expired {
+            let released = fixture.connect().query_one("SELECT reservation_released_at IS NOT NULL FROM microvm_launches WHERE intent_id='runtime-intent'", &[]).unwrap().get::<_, bool>(0);
+            if released {
+                break;
+            }
+        } else if row.get::<_, String>(0) == "idle" {
             break;
         }
         assert!(
@@ -406,6 +475,18 @@ with tempfile.TemporaryDirectory() as directory:
         std::thread::sleep(Duration::from_millis(10));
     }
     maintenance.shutdown().unwrap();
+    if expired {
+        runtime_server.join().unwrap();
+        control_server.join().unwrap();
+        let row = fixture.connect().query_one("SELECT w.state,l.phase,w.assignment_epoch FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id='runtime-intent'", &[]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "draining");
+        assert_eq!(row.get::<_, String>(1), "closed");
+        assert_eq!(row.get::<_, i64>(2), 1);
+        drop(entered);
+        drop(parent);
+        telemetry.shutdown();
+        return;
+    }
     let next = "/nix/store/cccccccccccccccccccccccccccccccc-runtime.drv";
     crate::persistence::claim_shared_build(
         database,
@@ -442,6 +523,9 @@ with tempfile.TemporaryDirectory() as directory:
             .unwrap(),
         staging: std::env::temp_dir(),
         limits: config.transfer_limits(),
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState::new(
+            &Default::default(),
+        ),
     };
     let error = executor
         .run_configured(&config, attempt, |_| {})
@@ -451,7 +535,7 @@ with tempfile.TemporaryDirectory() as directory:
         error.to_string(),
         "MicroVM transfer requires binary messages"
     );
-    callback_server.join().unwrap();
+    callback_server.unwrap().join().unwrap();
     let assignment=fixture.connect().query_one("SELECT assignment_epoch,admitted_at IS NOT NULL FROM microvm_assignments WHERE intent_id='runtime-intent' ORDER BY assignment_epoch DESC LIMIT 1",&[]).unwrap();
     assert_eq!(assignment.get::<_, i64>(0), 2);
     assert!(assignment.get::<_, bool>(1));

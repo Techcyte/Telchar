@@ -43,6 +43,8 @@ mod coalescing;
 mod detached_completion;
 #[path = "operation_dispatch/hook_delivery_restart.rs"]
 mod hook_delivery_restart;
+#[path = "operation_dispatch/load.rs"]
+mod load;
 #[path = "operation_dispatch/protocol.rs"]
 mod protocol;
 #[path = "operation_dispatch/queueing.rs"]

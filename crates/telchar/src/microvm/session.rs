@@ -29,6 +29,7 @@ pub fn run_admitted(
     store: GatewayStoreEndpoint,
     staging: PathBuf,
     limits: Limits,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     log: impl FnMut(&[u8]),
 ) -> io::Result<BuildResultMetadata> {
     let span = tracing::info_span!("microvm.gateway.session");
@@ -76,7 +77,7 @@ pub fn run_admitted(
         })
     };
     let request = load(false)?;
-    let session = Session::new(&request, store, staging, limits)?;
+    let session = Session::new(&request, store, staging, limits, object_admission)?;
     let interrupt = socket.get_ref().interrupt_handle()?;
     std::thread::scope(|scope| {
         let (stop, stopped) = std::sync::mpsc::channel();
@@ -147,6 +148,7 @@ pub struct Session {
     store: GatewayStoreEndpoint,
     transfer: TransferSession,
     outputs: Outputs,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     limits: Limits,
 }
 
@@ -156,6 +158,7 @@ impl Session {
         store: GatewayStoreEndpoint,
         staging: PathBuf,
         limits: Limits,
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     ) -> io::Result<Self> {
         if limits.chunk_bytes == 0
             || limits.chunk_bytes > 256 * 1024
@@ -215,6 +218,7 @@ impl Session {
             store,
             transfer,
             outputs,
+            object_admission,
             limits,
         })
     }
@@ -267,6 +271,7 @@ impl Session {
                     let _entered = span.enter();
                     let mut store = GatewayStoreConnection::connect(&self.store)?;
                     for path in requested.paths {
+                        let _permit = self.object_admission.admit_outbound()?;
                         verify(true)?;
                         let entry = self
                             .manifest
@@ -283,7 +288,12 @@ impl Session {
                             limits: self.limits,
                             verify: &mut || verify(false),
                         };
-                        store.nar_from_path(path.as_bytes(), entry.nar_size, &mut sink)?;
+                        let mut rated = crate::service::transfer_limits::RateWriter::new(
+                            &mut sink,
+                            self.object_admission.rates(),
+                            false,
+                        );
+                        store.nar_from_path(path.as_bytes(), entry.nar_size, &mut rated)?;
                         sink.flush()?;
                         if sink.offset != entry.nar_size {
                             return Err(io::Error::other("MicroVM input NAR is incomplete"));
@@ -295,6 +305,7 @@ impl Session {
         let span = tracing::info_span!("microvm.gateway.build_and_collect");
         let _entered = span.enter();
         let mut collection = None;
+        let mut output_permit = None;
         loop {
             verify(true)?;
             let frame = receive(&mut socket, self.limits)?;
@@ -339,11 +350,18 @@ impl Session {
                             "MicroVM output content address is not admitted",
                         ));
                     }
+                    output_permit = Some(self.object_admission.admit_inbound()?);
                     self.outputs.declare(metadata)?;
                 }
                 FrameKind::OutputNar => {
                     let chunk: NarMetadata =
                         decode_metadata(frame.metadata(), self.limits.metadata_bytes)?;
+                    let mut admission = crate::service::transfer_limits::RateWriter::new(
+                        io::sink(),
+                        self.object_admission.rates(),
+                        true,
+                    );
+                    admission.write_all(frame.payload())?;
                     let receipt = self.outputs.receive(&chunk, frame.payload())?;
                     if let Some(receipt) = receipt {
                         verify(true)?;
@@ -355,6 +373,7 @@ impl Session {
                         self.transfer
                             .accept(Direction::GatewayToWorker, receipt.clone())?;
                         send(&mut socket, &receipt, self.limits)?;
+                        drop(output_permit.take());
                     }
                 }
                 FrameKind::BuildResult => {

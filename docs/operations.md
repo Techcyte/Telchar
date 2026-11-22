@@ -199,7 +199,7 @@ A gateway-store interruption rejects store-dependent operations. Restore the Nix
 
 The gateway Nix daemon is trusted authority. The Telchar account needs the operations required for closure queries, NAR import/export, builds, substitution through `EnsurePath`, and GC-root retention. Substituters, cache credentials, trusted keys, signature policy, and store registration remain Nix-daemon configuration.
 
-Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
+Keep the GC-root directory on persistent storage. Monitor it together with the gateway store, import spool, and disk reserve. Fresh disk-consuming transfers fail closed when store or staging capacity cannot be measured. Client imports, static SSH staging, Nomad output spooling, and MicroVM output promotion hold shared per-filesystem reservations until their staging/import lifetime ends. Reservations account for concurrent transfers within one gateway process; they do not coordinate unrelated processes or guarantee free space against external writers. Observed free space and outstanding reservations are combined conservatively, so partially written transfers can temporarily reduce available admission twice. Status, cancellation, and cleanup do not require a fresh transfer reservation. Output retention defaults to a bounded period so a disconnected client can still retrieve a completed result.
 
 `lifecycle_detail_retention_days` controls disposable lifecycle detail retention in service TOML: default `30`, range `1` through `3650`, with daemon restart required for changes. Every sixty seconds, maintenance prunes bounded pages of eligible reconciled leases, detached or delivered attachments, and unreferenced closed sessions after root reconciliation. Age starts at final closure or reconciliation, including execution cleanup and hook-root release; unresolved consumers prevent pruning. Request, attempt, result and ownership audit records remain intact.
 
@@ -304,6 +304,12 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
 ```
 
 Use `http/protobuf` and port `4318` for OTLP/HTTP. Unsupported protocols fail startup. Telchar exposes no Prometheus endpoint. Telemetry is bounded and omits protocol bodies, NAR contents, secrets, raw authentication material, request identities, derivation paths, and execution identities from metric attributes.
+
+`OTEL_SDK_DISABLED=true` (case-insensitive) disables remote traces, metrics and logs,
+including remote audit delivery. It creates no exporter runtime. Local diagnostics
+remain controlled by `RUST_LOG`; explicit audit records still go to stderr even when
+that filter suppresses ordinary INFO. Configure local log retention when selecting
+this mode. Endpoint/protocol settings are unused while the SDK is disabled.
 
 ### Frontend telemetry limits
 

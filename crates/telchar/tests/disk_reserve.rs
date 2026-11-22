@@ -262,14 +262,86 @@ fn transfer_rejects_arithmetic_overflow() {
 }
 
 #[test]
-fn transfer_admits_when_store_probe_fails_and_staging_has_space() {
+fn concurrent_transfers_hold_capacity_until_release() {
+    let reserve = DiskReserve::parse("10").unwrap();
+    let probe = ControlledProbe {
+        store: filesystem(71001, 20),
+        staging: filesystem(71001, 20),
+    };
+    let first = reserve
+        .reserve_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 3)
+        .unwrap();
+    assert!(
+        reserve
+            .reserve_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 3)
+            .is_err()
+    );
+    drop(first);
+    assert!(
+        reserve
+            .reserve_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 3)
+            .is_ok()
+    );
+}
+
+#[test]
+fn rejected_staging_reservation_does_not_consume_store_capacity() {
+    let reserve = DiskReserve::parse("10").unwrap();
+    let rejected = ControlledProbe {
+        store: filesystem(71002, 20),
+        staging: filesystem(71003, 10),
+    };
+    assert!(
+        reserve
+            .reserve_transfer(&rejected, Path::new("/nix/store"), Path::new("/staging"), 6)
+            .is_err()
+    );
+    let available = ControlledProbe {
+        store: filesystem(71002, 20),
+        staging: filesystem(71003, 20),
+    };
+    let reservation = reserve
+        .reserve_transfer(
+            &available,
+            Path::new("/nix/store"),
+            Path::new("/staging"),
+            6,
+        )
+        .unwrap();
+    assert!(
+        reserve
+            .reserve_promotion(
+                &available,
+                Path::new("/nix/store"),
+                Path::new("/staging"),
+                3
+            )
+            .is_err()
+    );
+    drop(reservation);
+    assert!(
+        reserve
+            .reserve_promotion(
+                &available,
+                Path::new("/nix/store"),
+                Path::new("/staging"),
+                3
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn transfer_rejects_when_store_probe_fails_and_staging_has_space() {
     let reserve = DiskReserve::parse("10").expect("positive reserve parses");
     let probe = ControlledProbe {
         store: Err(ProbeError::Failed),
         staging: filesystem(1, u64::MAX),
     };
 
-    reserve
+    let failure = reserve
         .admit_transfer(&probe, Path::new("/nix/store"), Path::new("/staging"), 1)
-        .expect("unknown store capacity does not reject");
+        .expect_err("unknown store capacity rejects transfer");
+    assert_eq!(failure.reason(), RejectionReason::ProbeFailed);
+    assert_eq!(failure.filesystem(), "gateway-store");
 }

@@ -344,6 +344,7 @@ uri = "{worker_store_uri}"
         Duration::from_secs(60),
         Arc::new(telchar::shared_build::SharedBuildRegistry::new()),
         Some(hook_delivery_store.clone()),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
     .unwrap();
     let env = job["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]

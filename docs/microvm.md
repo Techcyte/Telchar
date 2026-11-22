@@ -56,6 +56,16 @@ execution and assignment delivery are not retried. Restart drains predecessor
 workers rather than adopting them. Provider capacity remains reserved until exact
 termination observation.
 
+An authenticated exact-epoch runtime report of `running` with incomplete reset
+keeps the worker busy for at most 30 seconds after the durable attempt completion
+when retention is enabled. It cannot receive another assignment during that grace.
+The cutoff uses PostgreSQL time and does not restart on each maintenance pass.
+Malformed, foreign, failed, or expired reports do not grant grace. Completed-worker
+reset observation runs on a one-second maintenance cadence, or the configured cleanup
+interval when shorter. Provider termination checks and requests retain the configured
+cleanup cadence. Each pass remains bounded by the configured batch size; provider
+request durations and batch traversal can delay observation beyond one second.
+
 Both image entrypoints accept `TELCHAR_MICROVM_MAXIMUM_STORE_BYTES` (default
 8 GiB) and `TELCHAR_MICROVM_MINIMUM_FREE_BYTES` (default 1 GiB). Runtime scans
 allocated retained-store files and retained Nix metadata bytes before import and

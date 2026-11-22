@@ -44,6 +44,7 @@ impl NomadCallbackService {
         output_retention: std::time::Duration,
         shared_builds: Arc<crate::shared_build::SharedBuildRegistry>,
         hook_delivery_store: Option<crate::store::runtime::GatewayStoreRuntime>,
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState,
     ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -104,6 +105,7 @@ impl NomadCallbackService {
                 let gateway_store = gateway_store.clone();
                 let shared_builds = Arc::clone(&shared_builds);
                 let hook_delivery_store = hook_delivery_store.clone();
+                let object_admission = object_admission.clone();
                 let worker = std::thread::spawn(move || {
                     let _permit = permit;
                     crate::service::metrics::nomad_callback_started();
@@ -116,6 +118,7 @@ impl NomadCallbackService {
                         output_retention,
                         &shared_builds,
                         hook_delivery_store.as_ref(),
+                        &object_admission,
                     );
                     match result {
                         Ok(()) => crate::service::metrics::nomad_callback_finished("succeeded"),
@@ -219,6 +222,7 @@ pub fn serve_connection(
     output_retention: std::time::Duration,
     shared_builds: &crate::shared_build::SharedBuildRegistry,
     hook_delivery_store: Option<&crate::store::runtime::GatewayStoreRuntime>,
+    object_admission: &crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
     let namespaces = backends
         .iter()
@@ -466,7 +470,7 @@ pub fn serve_connection(
         &requested,
         gateway_store,
         limits,
-        setup_deadline,
+        (setup_deadline, object_admission),
     )?;
     tracing::debug!(
         event = "nomad.callback.output_collection.started",
@@ -489,6 +493,7 @@ pub fn serve_connection(
         &build_request.shared_build_key(),
         hook_delivery_store,
         attempt_id,
+        object_admission,
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -684,10 +689,12 @@ fn receive_build_outputs<S: io::Read + io::Write>(
     shared_build_key: &str,
     hook_delivery_store: Option<&crate::store::runtime::GatewayStoreRuntime>,
     attempt_id: i64,
+    object_admission: &crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<BuildCollectionOutcome> {
     let span = tracing::info_span!("nomad.gateway.build_and_collect");
     let _entered = span.enter();
     let mut current: Option<OutputImport> = None;
+    let mut object_permit = None;
     let mut collecting = false;
     let mut _collection = None;
     let mut deadline =
@@ -750,6 +757,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     decode_metadata(frame.metadata(), limits.maximum_frame_metadata_bytes())?;
                 validate_output_authority(build_request.output_authorities(), &metadata)?;
                 session.accept(Direction::WorkerToGateway, frame)?;
+                object_permit = Some(object_admission.admit_inbound()?);
                 current = Some(OutputImport::new(
                     gateway_store,
                     metadata,
@@ -765,7 +773,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                         "Nomad output NAR has no metadata",
                     )
                 })?;
-                import.receive(&metadata, frame.payload())?;
+                import.receive(&metadata, frame.payload(), object_admission.rates())?;
                 session.accept(Direction::WorkerToGateway, frame)?;
                 if metadata.final_chunk {
                     let receipt = import.finish()?;
@@ -790,6 +798,7 @@ fn receive_build_outputs<S: io::Read + io::Write>(
                     session.accept(Direction::GatewayToWorker, receipt_frame.clone())?;
                     write_transfer_frame(socket, &receipt_frame, limits, 0)?;
                     current = None;
+                    drop(object_permit.take());
                 }
             }
             FrameKind::BuildResult => {
@@ -920,8 +929,12 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     requested: &PathSet,
     gateway_store: &GatewayStoreEndpoint,
     limits: crate::service::config::NomadTransferLimits,
-    connection_deadline: Instant,
+    admission: (
+        Instant,
+        &crate::service::transfer_limits::ObjectAdmissionState,
+    ),
 ) -> io::Result<()> {
+    let (connection_deadline, object_admission) = admission;
     let span = tracing::info_span!("nomad.gateway.export_inputs");
     let _entered = span.enter();
     let summary = summarize_requested_inputs(&manifest.paths, requested)?;
@@ -935,6 +948,7 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
     );
     let mut store = GatewayStoreConnection::connect(gateway_store)?;
     for requested_path in &requested.paths {
+        let _permit = object_admission.admit_outbound()?;
         ensure_before(connection_deadline, "Nomad transfer setup timed out")?;
         let entry = manifest
             .paths
@@ -953,8 +967,13 @@ fn stream_requested_inputs<S: io::Read + io::Write>(
                 maximum_metadata_bytes: limits.maximum_frame_metadata_bytes(),
                 failure_stage: None,
             };
+            let mut rated = crate::service::transfer_limits::RateWriter::new(
+                &mut sink,
+                object_admission.rates(),
+                false,
+            );
             if let Err(error) =
-                store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut sink)
+                store.nar_from_path(entry.path.as_bytes(), entry.nar_size, &mut rated)
             {
                 tracing::warn!(
                     event = "nomad.callback.input_nar.failed",
@@ -1135,6 +1154,7 @@ struct OutputImport {
     metadata: PathManifestEntry,
     store: GatewayStoreConnection,
     temporary: tempfile::SpooledTempFile,
+    _disk_reservation: crate::service::disk_reserve::DiskReservation,
     received: u64,
     started: Instant,
     metric_finished: bool,
@@ -1149,10 +1169,24 @@ impl OutputImport {
         crate::service::metrics::transfer_started("inbound", "build_output", "nomad_callback");
         let started = Instant::now();
         let result = (|| {
+            let reservation = crate::service::disk_reserve::DiskReserve::from_environment()?
+                .reserve_transfer(
+                    &crate::service::disk_reserve::OsDiskReserveProbe,
+                    &crate::service::disk_reserve::gateway_store_directory()?,
+                    &std::env::temp_dir(),
+                    metadata.nar_size,
+                )
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::StorageFull,
+                        "Nomad output disk reserve rejected",
+                    )
+                })?;
             Ok(Self {
                 metadata,
                 store: GatewayStoreConnection::connect(endpoint)?,
                 temporary: tempfile::SpooledTempFile::new(memory_bytes),
+                _disk_reservation: reservation,
                 received: 0,
                 started,
                 metric_finished: false,
@@ -1170,7 +1204,12 @@ impl OutputImport {
         result
     }
 
-    fn receive(&mut self, metadata: &NarMetadata, payload: &[u8]) -> io::Result<()> {
+    fn receive(
+        &mut self,
+        metadata: &NarMetadata,
+        payload: &[u8],
+        rates: crate::service::transfer_limits::RateAdmissionState,
+    ) -> io::Result<()> {
         if metadata.path != self.metadata.path
             || metadata.nar_hash != self.metadata.nar_hash
             || metadata.nar_size != self.metadata.nar_size
@@ -1182,7 +1221,9 @@ impl OutputImport {
                 "Nomad output NAR chunk is inconsistent",
             ));
         }
-        io::Write::write_all(&mut self.temporary, payload)?;
+        let mut sink =
+            crate::service::transfer_limits::RateWriter::new(&mut self.temporary, rates, true);
+        io::Write::write_all(&mut sink, payload)?;
         self.received = self
             .received
             .checked_add(payload.len() as u64)
@@ -1461,6 +1502,7 @@ maximum_diagnostic_bytes = 1024
             Duration::from_secs(60),
             Arc::new(crate::shared_build::SharedBuildRegistry::new()),
             None,
+            crate::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
         )
         .unwrap();
         for _ in 0..32 {

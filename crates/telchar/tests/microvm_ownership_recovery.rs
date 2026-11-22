@@ -232,6 +232,9 @@ fn admitted_transfer_is_retained_during_recovery_and_interrupted_on_expiry_or_ta
                         metadata_bytes: 8192,
                         chunk_bytes: 256,
                     },
+                    telchar::service::transfer_limits::ObjectAdmissionState::new(
+                        &Default::default(),
+                    ),
                     |_| {},
                 )
             });

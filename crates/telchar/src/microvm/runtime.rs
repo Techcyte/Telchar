@@ -11,15 +11,34 @@ struct Report {
     assignment_epoch: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerReset {
+    Pending,
+    Ready,
+    Rejected,
+}
+
+fn reset_state(bytes: &[u8], intent: &str, provider: &str, epoch: i64) -> WorkerReset {
+    let Ok(report) = serde_json::from_slice::<Report>(bytes) else {
+        return WorkerReset::Rejected;
+    };
+    if report.intent_id != intent
+        || report.provider_id != provider
+        || report.assignment_epoch != epoch
+        || epoch <= 0
+    {
+        return WorkerReset::Rejected;
+    }
+    match (report.status.as_str(), report.reset_complete) {
+        ("succeeded", true) => WorkerReset::Ready,
+        ("running", false) => WorkerReset::Pending,
+        _ => WorkerReset::Rejected,
+    }
+}
+
+#[cfg(test)]
 fn reset_matches(bytes: &[u8], intent: &str, provider: &str, epoch: i64) -> bool {
-    serde_json::from_slice::<Report>(bytes).is_ok_and(|report| {
-        report.status == "succeeded"
-            && report.reset_complete
-            && report.intent_id == intent
-            && report.provider_id == provider
-            && report.assignment_epoch == epoch
-            && epoch > 0
-    })
+    reset_state(bytes, intent, provider, epoch) == WorkerReset::Ready
 }
 
 fn read_reset_report(
@@ -27,9 +46,9 @@ fn read_reset_report(
     intent: &str,
     provider: &str,
     epoch: i64,
-) -> Result<bool, ProviderError> {
+) -> Result<WorkerReset, ProviderError> {
     if response.status().as_u16() != 409 {
-        return Ok(false);
+        return Ok(WorkerReset::Rejected);
     }
     let mut bytes = Vec::new();
     response
@@ -37,7 +56,11 @@ fn read_reset_report(
         .take(16385)
         .read_to_end(&mut bytes)
         .map_err(|_| ProviderError)?;
-    Ok(bytes.len() <= 16384 && reset_matches(&bytes, intent, provider, epoch))
+    Ok(if bytes.len() <= 16384 {
+        reset_state(&bytes, intent, provider, epoch)
+    } else {
+        WorkerReset::Rejected
+    })
 }
 
 #[cfg(test)]
@@ -194,7 +217,7 @@ impl Provider {
         attempt_id: i64,
         provider_id: &str,
         retention: (std::time::Duration, u32),
-    ) -> Result<bool, ProviderError> {
+    ) -> Result<WorkerReset, ProviderError> {
         // Gateway-observed validation round trip, not Python-local reset duration.
         let span = tracing::info_span!(
             "microvm.gateway.reset_confirmation",
@@ -214,8 +237,9 @@ impl Provider {
             &serde_json::json!({}),
         )?;
         let database = owner.database();
-        if !read_reset_report(response, intent_id, provider_id, epoch)? {
-            return Ok(false);
+        let reset = read_reset_report(response, intent_id, provider_id, epoch)?;
+        if reset != WorkerReset::Ready {
+            return Ok(reset);
         }
         span.record("confirmed", true);
         owner.verify().map_err(|_| ProviderError)?;
@@ -227,6 +251,13 @@ impl Provider {
             retention.0,
             retention.1,
         )
+        .map(|reset| {
+            if reset {
+                WorkerReset::Ready
+            } else {
+                WorkerReset::Rejected
+            }
+        })
         .map_err(|_| ProviderError)
     }
 }
@@ -308,7 +339,11 @@ mod tests {
             let response = post_status(&client, url, "fixture-token").unwrap();
             assert_eq!(
                 read_reset_report(response, "intent", "provider", 2).unwrap(),
-                !oversized
+                if oversized {
+                    WorkerReset::Rejected
+                } else {
+                    WorkerReset::Ready
+                }
             );
             server.join().unwrap();
         }
@@ -332,6 +367,36 @@ mod tests {
         ] {
             assert!(runtime_endpoint(endpoint).is_err(), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn pending_reset_requires_authenticated_exact_running_report() {
+        let report = serde_json::json!({"status":"running","reset_complete":false,
+            "intent_id":"intent","provider_id":"provider","assignment_epoch":2});
+        let bytes = serde_json::to_vec(&report).unwrap();
+        assert_eq!(
+            reset_state(&bytes, "intent", "provider", 2),
+            WorkerReset::Pending
+        );
+        assert_eq!(
+            reset_state(&bytes, "intent", "provider", 1),
+            WorkerReset::Rejected
+        );
+        assert_eq!(
+            reset_state(&bytes, "foreign", "provider", 2),
+            WorkerReset::Rejected
+        );
+        let mut failed = report;
+        failed["status"] = "failed".into();
+        assert_eq!(
+            reset_state(
+                &serde_json::to_vec(&failed).unwrap(),
+                "intent",
+                "provider",
+                2
+            ),
+            WorkerReset::Rejected
+        );
     }
 
     #[test]

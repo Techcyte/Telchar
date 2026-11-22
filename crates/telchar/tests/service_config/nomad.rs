@@ -117,6 +117,36 @@ output_collection_timeout_seconds = 900
     assert_eq!(secondary.maximum_manifest_paths(), 65_536);
     assert_eq!(secondary.stream_buffer_bytes(), 131_072);
     assert_eq!(secondary.output_collection_timeout().as_secs(), 900);
+    assert_eq!(config.nomad_backends()[0].cleanup_timeout().as_secs(), 30);
+    let source = fs::read_to_string(&config_path).unwrap();
+    for seconds in [1, 120] {
+        fs::write(
+            &config_path,
+            source.replace(
+                "[backends.nomad.secondary]",
+                &format!("[backends.nomad.secondary]\ncleanup_timeout_seconds = {seconds}"),
+            ),
+        )
+        .unwrap();
+        let configured = load(&environment).unwrap();
+        let secondary = configured
+            .nomad_backends()
+            .iter()
+            .find(|backend| backend.target().name() == "secondary")
+            .unwrap();
+        assert_eq!(secondary.cleanup_timeout().as_secs(), seconds);
+    }
+    for seconds in [0, 121] {
+        fs::write(
+            &config_path,
+            source.replace(
+                "runtime_limit_seconds = 3600",
+                &format!("runtime_limit_seconds = 3600\ncleanup_timeout_seconds = {seconds}"),
+            ),
+        )
+        .unwrap();
+        assert!(load(&environment).is_err());
+    }
 
     fs::remove_dir_all(root).expect("fixture removes");
 }

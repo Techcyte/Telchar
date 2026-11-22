@@ -96,6 +96,7 @@ fn static_ssh_executor_implements_backend_contract_with_configured_transport() {
     let backend = StaticSshBackend::new(
         config.static_ssh_backends()[0].clone(),
         GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     );
     let _backend: &dyn BuildBackend = &backend;
     let _execution_type = std::any::TypeId::of::<BuildExecution<'static>>();
@@ -155,6 +156,7 @@ fn hostile_transport_diagnostics_do_not_expose_credentials_or_destination() {
     let mut backend = StaticSshBackend::new(
         config.static_ssh_backends()[0].clone(),
         GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     );
     let build = admitted_request();
     let execution = BuildExecution::new("request-1", &build, Duration::from_secs(1))
@@ -345,6 +347,7 @@ impl BlockingTransportFixture {
         StaticSshBackend::new(
             self.config.clone(),
             GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
+            telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
         )
     }
 
@@ -393,10 +396,33 @@ fn malformed_worker_protocol_fails_output_recovery_cleanly() {
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],
         Duration::from_secs(1),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
     .expect_err("malformed worker protocol fails");
 
     assert_ne!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn output_recovery_shares_active_inbound_occupancy() {
+    let fixture = RecoveryTransportFixture::new("occupied", "printf 'not-worker-protocol'");
+    let limits = telchar::service::transfer_limits::TransferLimits::parse(
+        "1024", "1024", "1024", "1", "1", "1", "1",
+    )
+    .unwrap();
+    let admission = telchar::service::transfer_limits::ObjectAdmissionState::new(&limits);
+    let permit = admission.admit_inbound().unwrap();
+    let error = telchar::backend::static_ssh::recover_outputs(
+        &fixture.config,
+        &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").unwrap(),
+        &["/nix/store/11111111111111111111111111111111-output".to_owned()],
+        Duration::from_secs(1),
+        admission.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "active object count exceeded");
+    drop(permit);
+    assert!(admission.admit_inbound().is_ok());
 }
 
 #[test]
@@ -415,6 +441,7 @@ fn missing_exact_remote_output_fails_before_gateway_import() {
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &[missing],
         Duration::from_secs(5),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
     .expect_err("missing remote output fails");
 
@@ -481,6 +508,7 @@ fn output_recovery_timeout_terminates_the_static_ssh_process_group() {
         &GatewayStoreEndpoint::parse("unix:///run/nix-daemon.sock").expect("endpoint parses"),
         &["/nix/store/11111111111111111111111111111111-static-ssh-output".to_owned()],
         Duration::from_millis(50),
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
     )
     .expect_err("blocked recovery times out");
 

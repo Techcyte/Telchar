@@ -87,6 +87,36 @@ fn saturated_queue_and_blocked_stderr_do_not_stall_producer() {
 }
 
 #[test]
+fn disabled_sdk_audit_does_not_block_on_unread_stderr() {
+    use std::process::Stdio;
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["emit_audit", "--exact", "--nocapture"])
+        .env("TELCHAR_AUDIT_TEST", "1")
+        .env("TELCHAR_AUDIT_BURST", "1")
+        .env("OTEL_SDK_DISABLED", "true")
+        .env("RUST_LOG", "off")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!("disabled audit blocked on unread stderr: {output:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("audit-burst"));
+}
+
+#[test]
 fn failed_export_falls_back_locally_without_tracing_recursion() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

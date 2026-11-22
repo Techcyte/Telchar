@@ -145,7 +145,7 @@ pub struct Telemetry {
     logger_provider: SdkLoggerProvider,
     meter_provider: SdkMeterProvider,
     tracer_provider: SdkTracerProvider,
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl Telemetry {
@@ -168,6 +168,24 @@ impl Telemetry {
         service_version: &'static str,
         worker_threads: Option<usize>,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        if std::env::var("OTEL_SDK_DISABLED").is_ok_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            tracing_subscriber::registry()
+                .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .event_format(LocalFormat)
+                        .with_writer(LocalWriter),
+                )
+                .try_init()?;
+            audit::initialize_local();
+            return Ok(Self {
+                logger_provider: SdkLoggerProvider::builder().build(),
+                meter_provider: SdkMeterProvider::builder().build(),
+                tracer_provider: SdkTracerProvider::builder().build(),
+                runtime: None,
+            });
+        }
         let transport = OtlpTransport::from_environment()?;
         let endpoint =
             std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| match transport {
@@ -355,7 +373,7 @@ impl Telemetry {
             logger_provider,
             meter_provider,
             tracer_provider,
-            runtime,
+            runtime: Some(runtime),
         })
     }
 
@@ -365,7 +383,9 @@ impl Telemetry {
             let _ = self.logger_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
             let _ = self.meter_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
             let _ = self.tracer_provider.shutdown_with_timeout(EXPORT_TIMEOUT);
-            self.runtime.shutdown_timeout(EXPORT_TIMEOUT);
+            if let Some(runtime) = self.runtime {
+                runtime.shutdown_timeout(EXPORT_TIMEOUT);
+            }
             let _ = completed.send(());
         });
         let _ = result.recv_timeout(SHUTDOWN_TIMEOUT);
@@ -380,9 +400,12 @@ mod tests {
     fn frontend_runtime_has_one_background_worker() {
         let telemetry = Telemetry::initialize_frontend("frontend-runtime-test", "test")
             .expect("frontend telemetry initializes");
-        assert_eq!(telemetry.runtime.metrics().num_workers(), 1);
+        assert_eq!(
+            telemetry.runtime.as_ref().unwrap().metrics().num_workers(),
+            1
+        );
         let (sender, receiver) = std::sync::mpsc::channel();
-        telemetry.runtime.spawn(async move {
+        telemetry.runtime.as_ref().unwrap().spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             sender.send(()).expect("runtime progress reports");
         });

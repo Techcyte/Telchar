@@ -15,12 +15,21 @@ use opentelemetry_sdk::logs::{
 };
 
 static LOGGER: OnceLock<SdkLogger> = OnceLock::new();
+static LOCAL: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn initialize_local() {
+    LOCAL.store(true, Ordering::Release);
+}
 
 pub(crate) fn initialize(provider: &SdkLoggerProvider) {
     let _ = LOGGER.set(provider.logger("telchar.audit"));
 }
 
 pub fn emit_audit(event: &'static str, json: &str) {
+    if LOCAL.load(Ordering::Acquire) {
+        write_local(&format!("audit event={event} {json}\n"));
+        return;
+    }
     if let Some(logger) = LOGGER.get() {
         let mut record = logger.create_log_record();
         record.set_target("telchar.audit");
@@ -170,35 +179,39 @@ fn fallback(record: &SdkLogRecord, reason: &str) {
     if let Some(AnyValue::String(body)) = record.body() {
         let event = record.event_name().unwrap_or("audit.event");
         let line = format!("WARN {reason} event={event} {}\n", body.as_str());
-        // Opening procfs gives an independent file description: O_NONBLOCK does not alter stderr.
-        // A stalled or unavailable local sink cannot hold the process-wide stderr lock.
-        unsafe {
-            let mut stat = std::mem::zeroed::<libc::stat>();
-            if libc::fstat(libc::STDERR_FILENO, &mut stat) == 0
-                && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
-            {
-                let _ = libc::send(
-                    libc::STDERR_FILENO,
-                    line.as_ptr().cast(),
-                    line.len(),
-                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
-                );
-                return;
-            }
-            if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
-                let flags = libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL);
-                if flags >= 0 {
-                    libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_APPEND);
-                }
-            }
-            let fd = libc::open(
-                c"/proc/self/fd/2".as_ptr(),
-                libc::O_WRONLY | libc::O_APPEND | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        write_local(&line);
+    }
+}
+
+fn write_local(line: &str) {
+    // Opening procfs gives an independent file description: O_NONBLOCK does not alter stderr.
+    // A stalled or unavailable local sink cannot hold the process-wide stderr lock.
+    unsafe {
+        let mut stat = std::mem::zeroed::<libc::stat>();
+        if libc::fstat(libc::STDERR_FILENO, &mut stat) == 0
+            && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
+        {
+            let _ = libc::send(
+                libc::STDERR_FILENO,
+                line.as_ptr().cast(),
+                line.len(),
+                libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
             );
-            if fd >= 0 {
-                let _ = libc::write(fd, line.as_ptr().cast(), line.len());
-                libc::close(fd);
+            return;
+        }
+        if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
+            let flags = libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_APPEND);
             }
+        }
+        let fd = libc::open(
+            c"/proc/self/fd/2".as_ptr(),
+            libc::O_WRONLY | libc::O_APPEND | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        );
+        if fd >= 0 {
+            let _ = libc::write(fd, line.as_ptr().cast(), line.len());
+            libc::close(fd);
         }
     }
 }

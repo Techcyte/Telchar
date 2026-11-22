@@ -438,6 +438,8 @@ fn run_daemon() -> io::Result<()> {
     let output_retention = config.output_retention();
     let maximum_retained_input_bytes = config.maximum_retained_input_bytes();
     let transfer_limits = telchar::service::transfer_limits::TransferLimits::from_environment()?;
+    let object_admission =
+        telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
     let disk_reserve = telchar::service::disk_reserve::DiskReserve::from_environment()?;
     telchar::service::disk_reserve::gateway_store_directory()
         .map_err(|error| configuration_failure("gateway-store-directory", error))?;
@@ -581,6 +583,7 @@ fn run_daemon() -> io::Result<()> {
                 .endpoint()
                 .cloned()
                 .ok_or_else(|| invalid("MicroVM requires a gateway store endpoint"))?,
+            object_admission.clone(),
         )?,
         None => Vec::new(),
     };
@@ -595,6 +598,7 @@ fn run_daemon() -> io::Result<()> {
             .map(std::path::Path::to_path_buf),
         static_ssh_health.clone(),
     )?
+    .with_object_admission(object_admission.clone())
     .attach_microvm_services(&config, microvm_services.clone())?;
     configured_backends.restore_nomad_capacity(&database)?;
     let recovery_started = std::time::Instant::now();
@@ -730,15 +734,13 @@ fn run_daemon() -> io::Result<()> {
                 output_retention.duration(),
                 Arc::clone(&shared_builds),
                 Some(gateway_store.clone()),
+                object_admission.clone(),
             )?,
         )
     } else {
         None
     };
-    let object_admission =
-        telchar::service::transfer_limits::ObjectAdmissionState::new(&transfer_limits);
-    let rate_admission =
-        telchar::service::transfer_limits::RateAdmissionState::new(&transfer_limits);
+    let rate_admission = object_admission.rates();
     tracing::info!(
         event = "backend.fleet.configured",
         backend_count = config.backend_targets().count(),

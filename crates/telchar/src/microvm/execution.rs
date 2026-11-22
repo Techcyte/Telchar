@@ -19,6 +19,7 @@ pub struct Execution<'a> {
     pub store: GatewayStoreEndpoint,
     pub staging: PathBuf,
     pub limits: Limits,
+    pub object_admission: crate::service::transfer_limits::ObjectAdmissionState,
 }
 
 impl Execution<'_> {
@@ -293,6 +294,7 @@ impl Execution<'_> {
                         self.store.clone(),
                         config.staging_directory().to_owned(),
                         config.transfer_limits(),
+                        self.object_admission.clone(),
                         log,
                     )
                 })();
@@ -342,6 +344,7 @@ impl Execution<'_> {
             store: self.store.clone(),
             staging: config.staging_directory().to_owned(),
             limits: config.transfer_limits(),
+            object_admission: self.object_admission.clone(),
         };
         let result = execution.run_reserved(&intent, &payload, deadline, log);
         self.owner.verify().map_err(io::Error::other)?;
@@ -384,6 +387,7 @@ impl Execution<'_> {
                 self.store.clone(),
                 self.staging.clone(),
                 self.limits,
+                self.object_admission.clone(),
                 log,
             )
         })();
