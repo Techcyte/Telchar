@@ -371,6 +371,7 @@ impl Fixture {
         )
         .expect("daemon configuration writes");
         let database = PostgresFixture::start();
+        telchar::persistence::migrate(database.url()).expect("fixture database migrates");
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_telchar"));
         let mut daemon = Command::new(&binary)
             .env("TELCHAR_CONFIG", config)

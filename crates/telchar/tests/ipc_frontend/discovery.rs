@@ -7,6 +7,7 @@ fn discovered_inventory_probe_does_not_block_worker_handshake() {
     let root = temporary_root();
     let socket = root.join("discovery.sock");
     let database = PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).expect("fixture database migrates");
     let mut command = daemon_command(&socket, 1_000, false, database.url());
     command.env(
         "TELCHAR_GATEWAY_STORE_URI",
@@ -16,13 +17,15 @@ fn discovered_inventory_probe_does_not_block_worker_handshake() {
     let address = listener.local_addr().unwrap();
     let (publish, publication) = std::sync::mpsc::channel();
     let server = thread::spawn(move || {
+        publication
+            .recv()
+            .expect("daemon readiness releases discovery publication");
         let (mut stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let mut request = [0; 4096];
         assert!(stream.read(&mut request).unwrap() > 0);
-        publication.recv_timeout(Duration::from_secs(5)).unwrap();
         let body = r#"[{"Node":{"Node":"node","Address":"127.0.0.1"},"Service":{"ID":"builder","Service":"builder","Address":"127.0.0.1","Port":22},"Checks":[{"Status":"passing"}]}]"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
