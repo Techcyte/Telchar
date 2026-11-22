@@ -34,6 +34,12 @@ fn mixed_batches(duration: Duration) {
     drop(fixture.frontend.stdin.take());
     drop(fixture.frontend.stdout.take());
     assert!(fixture.frontend.wait().unwrap().success());
+    fixture.database.connect().batch_execute("
+        INSERT INTO shared_builds (derivation_path,request_digest,state,backend_name,backend_kind,execution_recovery,cancellation,log_recovery,expected_outputs,result_metadata,failure_classification,created_at,started_at,completed_at,expires_at)
+        SELECT '/nix/store/' || lpad(n::text,32,'0') || '-aged-load.drv',decode(repeat('01',32),'hex'),'failed','local','local','output-only','connection-bound','live-only',ARRAY['/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aged-output'],'{}'::jsonb,'fixture-failure',now()-interval '60 days',now()-interval '50 days',now()-interval '40 days',now()-interval '39 days'
+        FROM generate_series(1,10000) n;
+        ANALYZE shared_builds;
+    ").unwrap();
     let soak_started = Instant::now();
     let mut batches = 0;
     loop {
@@ -191,6 +197,8 @@ fn mixed_batches(duration: Duration) {
         );
         let active: i64 = connection.query_one("SELECT count(*) FROM shared_builds WHERE state IN ('claimed','running','collecting')", &[]).unwrap().get(0);
         assert_eq!(active, 0);
+        let history: i64 = connection.query_one("SELECT count(*) FROM shared_builds WHERE state='failed' AND completed_at < now()-interval '30 days'", &[]).unwrap().get(0);
+        assert_eq!(history, 10000);
         assert!(fixture.daemon.try_wait().unwrap().is_none());
         batches += 1;
         eprintln!(
