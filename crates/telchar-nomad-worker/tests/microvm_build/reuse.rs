@@ -575,6 +575,9 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
                     provider: &provider,
                     owner: &execution_owner,
                     sessions: &execution_sessions,
+                    object_admission: telchar::service::transfer_limits::ObjectAdmissionState::new(
+                        &Default::default(),
+                    ),
                     store: execution_store,
                     staging,
                     limits,
@@ -627,6 +630,9 @@ fn connected_jobs(jobs: usize, input_mib: usize, mode: &str) {
                     execution_store,
                     staging,
                     limits,
+                    telchar::service::transfer_limits::ObjectAdmissionState::new(
+                        &Default::default(),
+                    ),
                     |_| {},
                 )
             });

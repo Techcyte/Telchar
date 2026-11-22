@@ -28,6 +28,7 @@ pub fn recover_outputs(
     gateway: &GatewayStoreEndpoint,
     outputs: &[String],
     timeout: Duration,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
     let mut command = ssh_command(config);
     let mut child = ChildGuard::new(command.spawn()?);
@@ -52,7 +53,12 @@ pub fn recover_outputs(
     let gateway = gateway.clone();
     let outputs = outputs.to_vec();
     let worker = std::thread::spawn(move || {
-        let result = recover_remote_outputs(WorkerStream { stdin, stdout }, &gateway, &outputs);
+        let result = recover_remote_outputs(
+            WorkerStream { stdin, stdout },
+            &gateway,
+            &outputs,
+            &object_admission,
+        );
         let _ = sender.send(result);
     });
     let result = match receiver.recv_timeout(timeout) {
@@ -82,7 +88,9 @@ fn recover_remote_outputs(
     stream: WorkerStream,
     gateway: &GatewayStoreEndpoint,
     outputs: &[String],
+    object_admission: &crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<()> {
+    let _permit = object_admission.admit_inbound()?;
     let mut remote = WorkerClient::connect(stream)?;
     let mut remote_outputs = Vec::with_capacity(outputs.len());
     for output in outputs {
@@ -92,8 +100,13 @@ fn recover_remote_outputs(
         })?;
         remote_outputs.push((path, info));
     }
+    validate_transfer_sizes(
+        &crate::service::transfer_limits::TransferLimits::from_environment()?,
+        remote_outputs.iter().map(|(_, info)| info.nar_size()),
+        true,
+    )?;
     for (path, info) in order_remote_outputs_by_references(remote_outputs)? {
-        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info)?;
+        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info, object_admission.rates())?;
         let mut verification = GatewayStoreConnection::connect(gateway)?;
         if verification.query_path_info(&path)?.is_none() {
             return Err(io::Error::new(
@@ -156,11 +169,20 @@ pub(super) fn verify_backend(config: &StaticSshBackendConfig, timeout: Duration)
 pub struct StaticSshBackend {
     config: StaticSshBackendConfig,
     gateway: GatewayStoreEndpoint,
+    object_admission: crate::service::transfer_limits::ObjectAdmissionState,
 }
 
 impl StaticSshBackend {
-    pub fn new(config: StaticSshBackendConfig, gateway: GatewayStoreEndpoint) -> Self {
-        Self { config, gateway }
+    pub fn new(
+        config: StaticSshBackendConfig,
+        gateway: GatewayStoreEndpoint,
+        object_admission: crate::service::transfer_limits::ObjectAdmissionState,
+    ) -> Self {
+        Self {
+            config,
+            gateway,
+            object_admission,
+        }
     }
 
     fn execute_request(
@@ -243,6 +265,7 @@ impl StaticSshBackend {
         let stderr_reader = spawn_log_reader(stderr, log_sender.clone(), error_sender);
         let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
         let gateway = self.gateway.clone();
+        let object_admission = self.object_admission.clone();
         let build = execution.build();
         let deadline = Instant::now() + execution.timeout();
 
@@ -253,6 +276,7 @@ impl StaticSshBackend {
                     &gateway,
                     build,
                     &log_sender,
+                    &object_admission,
                 );
                 let _ = result_sender.send(result);
             });
@@ -318,6 +342,7 @@ fn execute_remote_build(
     gateway: &GatewayStoreEndpoint,
     build: &crate::build::BuildRequest,
     logs: &std::sync::mpsc::SyncSender<Vec<u8>>,
+    object_admission: &crate::service::transfer_limits::ObjectAdmissionState,
 ) -> io::Result<BuildResult> {
     let connected_started = Instant::now();
     let mut remote = WorkerClient::connect(stream)
@@ -356,10 +381,16 @@ fn execute_remote_build(
         duration_ms = missing_started.elapsed().as_millis(),
         "static SSH missing inputs selected"
     );
+    validate_transfer_sizes(
+        &crate::service::transfer_limits::TransferLimits::from_environment()?,
+        inputs.iter().map(|path| path.nar_size),
+        false,
+    )?;
     let input_count = inputs.len();
     let mut source = GatewayStoreConnection::connect(gateway)?;
     for path in inputs {
-        copy_gateway_path_to_remote(&mut source, &mut remote, &path)?;
+        let _permit = object_admission.admit_outbound()?;
+        copy_gateway_path_to_remote(&mut source, &mut remote, &path, object_admission.rates())?;
     }
 
     tracing::debug!(
@@ -425,6 +456,7 @@ fn execute_remote_build(
         ));
     }
 
+    let _permit = object_admission.admit_inbound()?;
     let mut remote_outputs = Vec::with_capacity(expected_outputs.len());
     for (_, path) in &expected_outputs {
         let info = remote.query_path_info(path)?.ok_or_else(|| {
@@ -432,8 +464,13 @@ fn execute_remote_build(
         })?;
         remote_outputs.push((path.clone(), info));
     }
+    validate_transfer_sizes(
+        &crate::service::transfer_limits::TransferLimits::from_environment()?,
+        remote_outputs.iter().map(|(_, info)| info.nar_size()),
+        true,
+    )?;
     for (path, info) in order_remote_outputs_by_references(remote_outputs)? {
-        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info)?;
+        copy_remote_path_to_gateway(&mut remote, gateway, &path, &info, object_admission.rates())?;
         let mut verification = GatewayStoreConnection::connect(gateway)?;
         if verification.query_path_info(&path)?.is_none() {
             return Err(io::Error::new(
@@ -493,10 +530,46 @@ fn select_missing_inputs(
     )
 }
 
+fn validate_transfer_sizes(
+    limits: &crate::service::transfer_limits::TransferLimits,
+    sizes: impl IntoIterator<Item = u64>,
+    inbound: bool,
+) -> io::Result<()> {
+    let (byte_limit, object_limit) = if inbound {
+        (
+            limits.maximum_inbound_session_bytes,
+            limits.maximum_inbound_session_objects,
+        )
+    } else {
+        (
+            limits.maximum_outbound_session_bytes,
+            limits.maximum_outbound_session_objects,
+        )
+    };
+    let mut total = 0_u64;
+    for (index, size) in sizes.into_iter().enumerate() {
+        total = total.checked_add(size).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "static SSH transfer size overflow",
+            )
+        })?;
+        if size > limits.maximum_object_bytes || total > byte_limit || index as u64 >= object_limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "static SSH transfer limit exceeded",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn copy_gateway_path_to_remote(
     gateway: &mut GatewayStoreConnection,
     remote: &mut WorkerClient<WorkerStream>,
     path: &crate::store::closure::ClosurePath,
+    rates: crate::service::transfer_limits::RateAdmissionState,
 ) -> io::Result<()> {
     let started = Instant::now();
     crate::service::metrics::transfer_started("outbound", "build_input", "static_ssh");
@@ -517,8 +590,10 @@ fn copy_gateway_path_to_remote(
         content_address: path.content_address.as_ref().map(|value| value.as_bytes()),
     };
     let result = (|| {
+        let _reservation = reserve_staging(path.nar_size)?;
         let mut nar = create_staging_file()?;
-        gateway.nar_from_path(path.store_path.as_bytes(), path.nar_size, &mut nar)?;
+        let mut sink = crate::service::transfer_limits::RateWriter::new(&mut nar, rates, false);
+        gateway.nar_from_path(path.store_path.as_bytes(), path.nar_size, &mut sink)?;
         nar.rewind()?;
         let mut source =
             telchar_telemetry::TransferIo::new(&mut nar, telchar_telemetry::TransferSide::Source);
@@ -591,14 +666,16 @@ fn copy_remote_path_to_gateway(
     gateway: &GatewayStoreEndpoint,
     path: &[u8],
     metadata: &WorkerPathInfo,
+    rates: crate::service::transfer_limits::RateAdmissionState,
 ) -> io::Result<()> {
     let started = Instant::now();
     crate::service::metrics::transfer_started("inbound", "build_output", "static_ssh");
     let result = (|| {
+        let _reservation = reserve_staging(metadata.nar_size())?;
         let mut nar = create_staging_file()?;
         {
             let mut sink = telchar_telemetry::TransferIo::new(
-                &mut nar,
+                crate::service::transfer_limits::RateWriter::new(&mut nar, rates, true),
                 telchar_telemetry::TransferSide::Destination,
             );
             remote.nar_from_path(path, metadata.nar_size(), &mut sink)?;
@@ -636,6 +713,26 @@ fn record_static_ssh_transfer(
         ),
     }
     result
+}
+
+fn reserve_staging(nar_size: u64) -> io::Result<crate::service::disk_reserve::DiskReservation> {
+    let directory = std::env::var_os("TELCHAR_IMPORT_STAGING_DIRECTORY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("telchar-import"));
+    std::fs::create_dir_all(&directory)?;
+    crate::service::disk_reserve::DiskReserve::from_environment()?
+        .reserve_transfer(
+            &crate::service::disk_reserve::OsDiskReserveProbe,
+            &crate::service::disk_reserve::gateway_store_directory()?,
+            &directory,
+            nar_size,
+        )
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::StorageFull,
+                "static SSH transfer disk reserve rejected",
+            )
+        })
 }
 
 fn create_staging_file() -> io::Result<std::fs::File> {
@@ -862,6 +959,20 @@ mod tests {
             deriver: None,
             content_address: None,
         }
+    }
+
+    #[test]
+    fn transfer_metadata_rejects_object_and_aggregate_overflow() {
+        let limits = crate::service::transfer_limits::TransferLimits {
+            maximum_object_bytes: 4,
+            maximum_inbound_session_bytes: 6,
+            maximum_outbound_session_bytes: 6,
+            ..Default::default()
+        };
+        assert!(validate_transfer_sizes(&limits, [4, 2], true).is_ok());
+        assert!(validate_transfer_sizes(&limits, [4, 3], true).is_err());
+        assert!(validate_transfer_sizes(&limits, [5], false).is_err());
+        assert!(validate_transfer_sizes(&limits, [u64::MAX, 1], false).is_err());
     }
 
     #[test]

@@ -125,6 +125,7 @@ chunk_bytes = 1024
             owner,
             listener,
             telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
+            telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
         )
         .unwrap();
         assert_eq!(

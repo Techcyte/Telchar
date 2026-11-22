@@ -19,6 +19,23 @@ impl Error for OperationFailure {
     }
 }
 
+pub(crate) fn transient_cleanup_failure(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::TimedOut {
+        return true;
+    }
+    let mut source: Option<&(dyn Error + 'static)> = error.get_ref().map(|error| error as _);
+    while let Some(error) = source {
+        if let Some(request) = error.downcast_ref::<reqwest::Error>() {
+            return request.is_timeout()
+                || request
+                    .status()
+                    .is_some_and(|status| matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504));
+        }
+        source = error.source();
+    }
+    false
+}
+
 pub(super) fn failure(
     operation: &'static str,
     source: impl Error + Send + Sync + 'static,

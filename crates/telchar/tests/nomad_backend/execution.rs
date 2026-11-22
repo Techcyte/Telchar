@@ -4,14 +4,35 @@ use super::*;
 
 #[test]
 fn cancellation_stops_only_the_exact_submitted_nomad_job() {
+    cancelled_execution(false);
+}
+
+#[test]
+fn stalled_cancellation_retains_exact_execution_liability() {
+    cancelled_execution(true);
+}
+
+fn cancelled_execution(stalled: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
         "http://{}",
         listener.local_addr().expect("fixture address reads")
     );
-    let config = load_service_config(&root, &endpoint, None);
+    load_service_config(&root, &endpoint, None);
+    let path = root.join("client.toml");
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        source.replace(
+            "runtime_limit_seconds = 60",
+            "runtime_limit_seconds = 60\ncleanup_timeout_seconds = 1",
+        ),
+    )
+    .unwrap();
+    let config = ServiceConfig::load_from_default(&path).unwrap();
     let backend = config.nomad_backends()[0].clone();
+    assert_eq!(backend.cleanup_timeout(), Duration::from_secs(1));
     let shared_build_key = b"cancelled-shared-build";
     let expected_job_id = deterministic_job_name(&backend, shared_build_key);
     let server = thread::spawn(move || {
@@ -25,7 +46,11 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
         assert!(request.starts_with(&format!(
             "DELETE /v1/job/{expected_job_id}?namespace=telchar&purge=false HTTP/1.1\r\n"
         )));
-        write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
+        if stalled {
+            thread::sleep(Duration::from_secs(2));
+        } else {
+            write_json_response(&mut stop_request, 200, r#"{"EvalID":"evaluation-2"}"#);
+        }
     });
     let admitted = admitted_request();
     let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(5))
@@ -59,6 +84,7 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
         telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
         telchar::shared_build::SharedBuildAccess::Follower(_) => panic!("build leads"),
     };
+    let started = std::time::Instant::now();
     let error = client
         .execute(
             database.url(),
@@ -70,10 +96,129 @@ fn cancellation_stops_only_the_exact_submitted_nomad_job() {
             &mut || Ok(true),
         )
         .expect_err("cancelled execution rejects");
-    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    if stalled {
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(1700),
+            "cancellation exceeded cleanup budget: {elapsed:?}"
+        );
+        assert_eq!(
+            telchar::persistence::read_nomad_execution_obligations(database.url())
+                .unwrap()
+                .len(),
+            1
+        );
+    } else {
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
     drop(leader);
     server.join().expect("HTTP fixture joins");
     fs::remove_dir_all(root).expect("fixture removes");
+}
+
+#[test]
+fn stalled_submission_obeys_execution_deadline_and_retains_obligation() {
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let config = load_service_config(&root, &endpoint, None);
+    let backend = config.nomad_backends()[0].clone();
+    let admitted = admitted_request();
+    let key = admitted.shared_build_key();
+    let job = deterministic_job_name(&backend, key.as_bytes());
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).unwrap();
+    let derivation = std::str::from_utf8(admitted.derivation_path()).unwrap();
+    telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        derivation,
+        &admitted.shared_build_digest(),
+        "nomad-test",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some(&job),
+        &admitted
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| std::str::from_utf8(path).unwrap())
+            .collect::<Vec<_>>(),
+        &admitted,
+    )
+    .unwrap();
+    telchar::persistence::start_shared_build(database.url(), derivation).unwrap();
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().unwrap();
+        assert!(read_http_request_with_body(&mut request).contains(&job));
+        thread::sleep(Duration::from_secs(2));
+        drop(request);
+    });
+    let client = NomadClient::new(backend).unwrap();
+    let builds = telchar::shared_build::SharedBuildRegistry::new();
+    let leader = match builds.acquire(&key) {
+        telchar::shared_build::SharedBuildAccess::Leader(leader) => leader,
+        _ => panic!("build leads"),
+    };
+    let execution =
+        BuildExecution::new("request-1", &admitted, Duration::from_millis(100)).unwrap();
+    let started = std::time::Instant::now();
+    let result = client.execute(
+        database.url(),
+        &execution,
+        key.as_bytes(),
+        &mut |_| Ok(()),
+        &builds,
+        1024,
+        &mut || Ok(false),
+    );
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert!(result.is_err());
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "submission exceeded execution budget: {elapsed:?}"
+    );
+    assert_eq!(
+        telchar::persistence::read_nomad_execution_obligations(database.url())
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(leader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovered_status_obeys_cleanup_budget() {
+    let root = fixture_root();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let _ = load_service_config(&root, &endpoint, None);
+    let path = root.join("client.toml");
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        source.replace(
+            "runtime_limit_seconds = 60",
+            "runtime_limit_seconds = 60\ncleanup_timeout_seconds = 1",
+        ),
+    )
+    .unwrap();
+    let config = ServiceConfig::load_from_default(&path).unwrap();
+    let client = NomadClient::new(config.nomad_backends()[0].clone()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut request, _) = listener.accept().unwrap();
+        assert!(read_http_request(&mut request).starts_with("GET /v1/job/exact-recovered"));
+        thread::sleep(Duration::from_secs(2));
+    });
+    let started = std::time::Instant::now();
+    assert!(client.status("exact-recovered").is_err());
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(1700),
+        "recovered status exceeded cleanup budget: {elapsed:?}"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -94,7 +239,6 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
         let (mut submit_request, _) = listener.accept().expect("submit request accepts");
         let request = read_http_request_with_body(&mut submit_request);
         assert!(request.starts_with("POST /v1/jobs?namespace=telchar HTTP/1.1\r\n"));
-        thread::sleep(Duration::from_millis(10));
         write_json_response(&mut submit_request, 200, r#"{"EvalID":"evaluation-1"}"#);
 
         let (mut stop_request, _) = listener.accept().expect("stop request accepts");
@@ -128,7 +272,7 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
         std::str::from_utf8(admitted.derivation_path()).expect("derivation path is UTF-8"),
     )
     .expect("shared build starts");
-    let execution = BuildExecution::new("request-1", &admitted, Duration::from_millis(1))
+    let execution = BuildExecution::new("request-1", &admitted, Duration::from_secs(1))
         .expect("execution creates");
     let client = NomadClient::new(backend).expect("Nomad client constructs");
     let shared_builds = telchar::shared_build::SharedBuildRegistry::new();
@@ -144,7 +288,10 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
             &mut |_| Ok(()),
             &shared_builds,
             1024,
-            &mut || Ok(false),
+            &mut || {
+                thread::sleep(Duration::from_millis(1100));
+                Ok(false)
+            },
         )
         .expect_err("timed out execution rejects");
     assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
@@ -349,6 +496,26 @@ fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure:
             }
             write_json_response(&mut status, status_code, r#"{}"#);
             if status_code == 500 {
+                for code in if database_failure {
+                    vec![401, 403, 400, 200, 201, 429, 500, 502, 503, 504, 404]
+                } else {
+                    Vec::new()
+                } {
+                    let (mut cleanup, _) = listener.accept().unwrap();
+                    assert!(
+                        read_http_request(&mut cleanup)
+                            .starts_with(&format!("GET /v1/job/{job_id}?"))
+                    );
+                    if code == 201 {
+                        write_json_response(
+                            &mut cleanup,
+                            200,
+                            r#"{"ID":"foreign-job","Namespace":"telchar","Type":"batch","Version":1,"Meta":{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}"#,
+                        );
+                    } else {
+                        write_json_response(&mut cleanup, code, r#"{}"#);
+                    }
+                }
                 break;
             }
         }
@@ -445,6 +612,52 @@ fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure:
             .unwrap();
         assert!(reloaded.reserve_target("x86_64-linux", &[]).is_err());
         health_service.shutdown().unwrap();
+        if database_failure {
+            let connection = telchar::persistence::Database::connect(database.url()).unwrap();
+            reloadable
+                .snapshot()
+                .restore_nomad_capacity(&connection)
+                .unwrap();
+            for _ in 0..5 {
+                assert!(
+                    reloadable
+                        .snapshot()
+                        .reconcile_nomad_capacity(&connection)
+                        .is_err(),
+                    "credential, request, malformed response, and identity errors remain fatal"
+                );
+                assert!(executor.reserve_target("x86_64-linux", &[]).is_err());
+            }
+            for _ in 0..5 {
+                reloadable
+                    .snapshot()
+                    .reconcile_nomad_capacity(&connection)
+                    .unwrap();
+                assert!(
+                    executor.reserve_target("x86_64-linux", &[]).is_err(),
+                    "transient cleanup retains capacity"
+                );
+                assert_eq!(
+                    telchar::persistence::read_nomad_execution_obligations(&connection)
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+            reloadable
+                .snapshot()
+                .reconcile_nomad_capacity(&connection)
+                .unwrap();
+            assert!(
+                telchar::persistence::read_nomad_execution_obligations(&connection)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                executor.reserve_target("x86_64-linux", &[]).is_err(),
+                "database-uncertain permit remains retained independently of restored obligations"
+            );
+        }
     } else {
         assert!(
             executor

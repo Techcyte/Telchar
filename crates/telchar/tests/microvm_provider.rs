@@ -539,6 +539,9 @@ fn launch_exchange(success: bool, ownership: &'static str) {
                     "unix:///not-used/microvm.sock",
                 )
                 .unwrap(),
+                object_admission: telchar::service::transfer_limits::ObjectAdmissionState::new(
+                    &Default::default(),
+                ),
                 staging: std::env::temp_dir(),
                 limits: telchar::microvm::session::Limits {
                     maximum_paths: 10,
@@ -620,6 +623,7 @@ chunk_bytes = 1024
                                 owner.clone(),
                                 TcpListener::bind("127.0.0.1:0").unwrap(),
                                 executor.store.clone(),
+                                executor.object_admission.clone(),
                             )
                             .unwrap(),
                         );

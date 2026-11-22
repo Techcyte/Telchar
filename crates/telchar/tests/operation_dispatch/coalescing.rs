@@ -84,6 +84,29 @@ fn durable_client_join_survives_coordination_timeout() {
 
 #[test]
 fn real_output_fan_in_validates_one_nar() {
+    output_fan_in(None, false);
+}
+
+#[test]
+fn collector_availability_preserves_real_output_fan_in() {
+    let collector = collector::start_collector();
+    let connected = output_fan_in(Some(collector.endpoint()), false);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unavailable = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let outage = output_fan_in(Some(unavailable), false);
+    let disabled = output_fan_in(Some(collector.endpoint()), true);
+    eprintln!(
+        "FAN_IN_EXPORTER connected_ms={} outage_ms={} disabled_ms={}",
+        connected.as_millis(),
+        outage.as_millis(),
+        disabled.as_millis()
+    );
+    assert!(collector.has_log_event("gateway.output.validated"));
+}
+
+fn output_fan_in(endpoint: Option<String>, disabled: bool) -> Duration {
+    let elapsed = Instant::now();
     let root = tempfile::tempdir().unwrap();
     let started = root.path().join("started");
     let release = root.path().join("release");
@@ -94,7 +117,8 @@ fn real_output_fan_in_validates_one_nar() {
     assert!(sleep.status.success());
     let sleep = String::from_utf8(sleep.stdout).unwrap();
     let expression = format!(
-        r#"derivation {{ name = "telchar-validation-fan-in"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo started > {}; while [ ! -e {} ]; do {} 0.01; done; printf fan-in-output > $out" ]; }}"#,
+        r#"derivation {{ name = "telchar-validation-fan-in-{}"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo started > {}; while [ ! -e {} ]; do {} 0.01; done; printf fan-in-output > $out" ]; }}"#,
+        FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         started.display(),
         release.display(),
         sleep.trim()
@@ -118,44 +142,56 @@ fn real_output_fan_in_validates_one_nar() {
         ],
     )
     .unwrap();
-    let mut fixture =
-        FrontendFixture::spawn_multi_with_store("unix:///nix/var/nix/daemon-socket/socket", []);
-    let mut follower = fixture.spawn_frontend();
+    let environment = endpoint
+        .into_iter()
+        .map(|endpoint| ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint))
+        .chain(std::iter::once(("OTEL_SDK_DISABLED", disabled.to_string())));
+    let mut fixture = FrontendFixture::spawn_multi_with_store(
+        "unix:///nix/var/nix/daemon-socket/socket",
+        environment,
+    );
     let mut leader_input = fixture.frontend.stdin.take().unwrap();
     let mut leader_output = fixture.frontend.stdout.take().unwrap();
-    let mut follower_input = follower.stdin.take().unwrap();
-    let mut follower_output = follower.stdout.take().unwrap();
     complete_handshake(&mut leader_input, &mut leader_output);
-    complete_handshake(&mut follower_input, &mut follower_output);
     super::build_failure::send_failure_build(&mut leader_input, &build, "", false);
     wait_for_file_for(
         &started,
         Duration::from_secs(10),
         "real leader did not start",
     );
-    super::build_failure::send_failure_build(&mut follower_input, &build, "", false);
-    assert_eq!(
-        read_integer(&mut follower_output),
-        nix_worker_protocol::STDERR_NEXT
-    );
-    assert_eq!(
-        read_string(&mut follower_output),
-        "identical build already in progress\n"
-    );
+    let mut followers = Vec::new();
+    for _ in 0..7 {
+        let mut follower = fixture.spawn_frontend();
+        let mut input = follower.stdin.take().unwrap();
+        let mut output = follower.stdout.take().unwrap();
+        complete_handshake(&mut input, &mut output);
+        super::build_failure::send_failure_build(&mut input, &build, "", false);
+        assert_eq!(read_integer(&mut output), nix_worker_protocol::STDERR_NEXT);
+        assert_eq!(
+            read_string(&mut output),
+            "identical build already in progress\n"
+        );
+        followers.push((
+            follower,
+            input,
+            thread::spawn(move || read_build_success(output)),
+        ));
+    }
     fs::write(&release, "release").unwrap();
     let leader = thread::spawn(move || read_build_success(leader_output));
-    let following = thread::spawn(move || read_build_success(follower_output));
     leader.join().unwrap().unwrap();
-    following.join().unwrap().unwrap();
+    for (mut follower, input, response) in followers {
+        response.join().unwrap().unwrap();
+        drop(input);
+        assert!(follower.wait().unwrap().success());
+    }
     drop(leader_input);
-    drop(follower_input);
-    assert!(follower.wait().unwrap().success());
     assert!(fixture.frontend.wait().unwrap().success());
     let lease_owners: i64 = fixture.database.connect().query_one(
         "SELECT count(DISTINCT owner_id) FROM store_leases WHERE purpose = 'output' AND state = 'active'", &[]
     ).unwrap().get(0);
     assert_eq!(
-        lease_owners, 2,
+        lease_owners, 8,
         "each coalesced requester retains retrieval authority"
     );
     let path = &build.expected_outputs()[0].1;
@@ -252,6 +288,7 @@ fn real_output_fan_in_validates_one_nar() {
             .unwrap();
         assert_eq!(bytes, info.nar_size());
     }
+    elapsed.elapsed()
 }
 
 #[test]

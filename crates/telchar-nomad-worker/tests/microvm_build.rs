@@ -774,6 +774,9 @@ printf 'if (sum != 261632) {{ return 1; }}\nputs("dedicated-worker-success");\nr
                 provider: &provider,
                 owner: &owner,
                 sessions: &sessions,
+                object_admission: telchar::service::transfer_limits::ObjectAdmissionState::new(
+                    &Default::default(),
+                ),
                 store: gateway_store,
                 staging,
                 limits,
@@ -821,6 +824,7 @@ chunk_bytes = 262144
                         owner.clone(),
                         gateway.take().unwrap(),
                         execution.store.clone(),
+                        execution.object_admission.clone(),
                     )
                     .unwrap(),
                 );

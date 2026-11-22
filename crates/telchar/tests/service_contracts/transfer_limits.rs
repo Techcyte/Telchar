@@ -3,6 +3,31 @@
 use std::io::{Cursor, Read, Write};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn transfer_sink_and_frontend_reader_share_rate_tokens() {
+    use telchar::service::transfer_limits::{RateAdmissionState, RateWriter};
+    let clock = Arc::new(ManualClock::new());
+    let limits = TransferLimits {
+        inbound_rate_bytes_per_second: 1,
+        inbound_burst_bytes: 3,
+        ..TransferLimits::default()
+    };
+    let rates = RateAdmissionState::with_clock(&limits, clock);
+    let mut bytes = Vec::new();
+    RateWriter::new(&mut bytes, rates.clone(), true)
+        .write_all(&[1, 2])
+        .unwrap();
+    let mut budget = TransferBudget::new(10);
+    let mut reader = LimitedReader::with_rate(Cursor::new([3, 4]), 10, &mut budget, rates);
+    let mut received = Vec::new();
+    assert_eq!(
+        reader.read_to_end(&mut received).unwrap_err().to_string(),
+        "NAR inbound rate limit exceeded"
+    );
+    assert_eq!(received, [3]);
+    assert_eq!(bytes, [1, 2]);
+}
+
 struct ManualClock(Mutex<u128>);
 
 impl ManualClock {
@@ -388,7 +413,7 @@ fn active_object_permit_releases_during_panic_unwind() {
     let limits = TransferLimits::parse("1", "1", "1", "1", "1", "1", "1").unwrap();
     let state = ObjectAdmissionState::new(&limits);
 
-    let unwind = std::panic::catch_unwind({
+    let unwind = std::thread::spawn({
         let state = state.clone();
         move || {
             let _permit = state.admit_outbound().expect("permit acquired");
@@ -396,7 +421,7 @@ fn active_object_permit_releases_during_panic_unwind() {
         }
     });
 
-    assert!(unwind.is_err());
+    assert!(unwind.join().is_err());
     assert!(state.admit_outbound().is_ok());
 }
 

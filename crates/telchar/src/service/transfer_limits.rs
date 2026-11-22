@@ -158,6 +158,46 @@ pub struct RateAdmissionState {
     clock: Arc<dyn MonotonicClock>,
 }
 
+pub struct RateWriter<W> {
+    sink: W,
+    rates: RateAdmissionState,
+    inbound: bool,
+}
+
+impl<W> RateWriter<W> {
+    pub fn new(sink: W, rates: RateAdmissionState, inbound: bool) -> Self {
+        Self {
+            sink,
+            rates,
+            inbound,
+        }
+    }
+}
+
+impl<W: Write> Write for RateWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let Some(mut reservation) = self.rates.reserve(bytes.len(), self.inbound)? else {
+            if self.inbound {
+                self.rates.reject_inbound();
+            } else {
+                self.rates.reject_outbound();
+            }
+            return Err(invalid("transfer rate limit exceeded"));
+        };
+        let allowed = usize::try_from(reservation.reserved()).unwrap_or(usize::MAX);
+        let written = self.sink.write(&bytes[..allowed])?;
+        reservation.commit(written)?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.sink.flush()
+    }
+}
+
 struct RateBuckets {
     inbound: TokenBucket,
     outbound: TokenBucket,
@@ -343,11 +383,12 @@ impl Drop for RateReservation {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ObjectAdmissionState {
     active: Arc<Mutex<ActiveObjects>>,
     inbound_limit: u64,
     outbound_limit: u64,
+    rates: RateAdmissionState,
 }
 
 #[derive(Debug, Default)]
@@ -396,7 +437,12 @@ impl ObjectAdmissionState {
             active: Arc::new(Mutex::new(ActiveObjects::default())),
             inbound_limit: limits.maximum_active_inbound_objects,
             outbound_limit: limits.maximum_active_outbound_objects,
+            rates: RateAdmissionState::new(limits),
         }
+    }
+
+    pub fn rates(&self) -> RateAdmissionState {
+        self.rates.clone()
     }
 
     pub fn admit_inbound(&self) -> io::Result<ActiveObjectPermit> {

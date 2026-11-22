@@ -5,22 +5,22 @@ use telchar_test_support::postgres::PostgresFixture;
 
 #[test]
 fn bound_worker_reset_is_fenced_and_launch_close_prevents_assignment() {
-    worker_lifecycle(true, 100);
+    worker_lifecycle(true, 100, false);
 }
 
 #[test]
 fn zero_retention_reset_never_publishes_claimable_worker() {
-    worker_lifecycle(false, 100);
+    worker_lifecycle(false, 100, false);
 }
 
 #[test]
 fn job_limit_reset_never_publishes_claimable_worker() {
-    worker_lifecycle(true, 1);
+    worker_lifecycle(true, 1, false);
 }
 
 #[test]
 fn current_assignment_cancellation_drains_reused_worker() {
-    worker_lifecycle(true, 2);
+    worker_lifecycle(true, 2, false);
 }
 
 #[test]
@@ -85,7 +85,12 @@ fn clean_owner_replacement_closes_predecessor_worker_launch() {
     assert_eq!(row.get::<_, String>(1), "draining");
 }
 
-fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
+#[test]
+fn expired_reset_keeps_capacity_until_exact_cleanup() {
+    worker_lifecycle(true, 100, true);
+}
+
+fn worker_lifecycle(retain: bool, maximum_jobs: u32, expired: bool) {
     let fixture = PostgresFixture::start();
     db::migrate(fixture.url()).unwrap();
     let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-worker.drv";
@@ -182,6 +187,36 @@ fn worker_lifecycle(retain: bool, maximum_jobs: u32) {
         db::completed_microvm_worker(fixture.url(), &intent.intent_id).unwrap(),
         Some((1, attempt))
     );
+    assert!(
+        db::microvm_reset_grace_available(fixture.url(), &intent.intent_id, 1, attempt).unwrap()
+    );
+    assert!(
+        !db::microvm_reset_grace_available(fixture.url(), &intent.intent_id, 2, attempt).unwrap()
+    );
+    client.execute("UPDATE shared_build_attempts SET created_at=created_at-interval '60 seconds', started_at=started_at-interval '60 seconds', collecting_at=collecting_at-interval '60 seconds', completed_at=completed_at-interval '60 seconds' WHERE attempt_id=$1", &[&attempt]).unwrap();
+    assert!(
+        !db::microvm_reset_grace_available(fixture.url(), &intent.intent_id, 1, attempt).unwrap()
+    );
+    if expired {
+        assert!(db::cancel_microvm_launch(fixture.url(), &intent.intent_id).unwrap());
+        let row = client.query_one("SELECT w.state,l.phase,l.reservation_released_at IS NULL FROM microvm_workers w JOIN microvm_launches l USING(intent_id) WHERE intent_id=$1", &[&intent.intent_id]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "draining");
+        assert_eq!(row.get::<_, String>(1), "closed");
+        assert!(row.get::<_, bool>(2));
+        assert!(
+            !db::reset_microvm_worker_until(
+                fixture.url(),
+                &intent.intent_id,
+                1,
+                attempt,
+                Duration::from_secs(60),
+                100
+            )
+            .unwrap()
+        );
+        return;
+    }
+    client.execute("UPDATE shared_build_attempts SET created_at=created_at+interval '60 seconds', started_at=started_at+interval '60 seconds', collecting_at=collecting_at+interval '60 seconds', completed_at=completed_at+interval '60 seconds' WHERE attempt_id=$1", &[&attempt]).unwrap();
     assert!(
         !db::reset_microvm_worker_until(
             fixture.url(),

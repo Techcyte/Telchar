@@ -178,87 +178,120 @@ impl MicrovmCleanupService {
                 "invalid MicroVM cleanup bounds",
             ));
         }
+        if interval.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MicroVM cleanup interval must be positive",
+            ));
+        }
         let mut after_intent = None;
-        BackgroundService::start(interval, "MicroVM cleanup maintenance failed", move || {
-            if !owner.verify_available().map_err(io::Error::other)? {
-                return Ok(true);
-            }
-            let uncertainty_sequence = owner.uncertainty_sequence();
-            let pending = match crate::persistence::pending_microvm_cleanup(
-                owner.database(),
-                &account_id,
-                &region,
-                batch_size,
-                after_intent.as_deref(),
-            ) {
-                Ok(pending) => pending,
-                Err(error) => {
-                    return background_result(
-                        &owner,
-                        Err(io::Error::other(error)),
-                        true,
-                        uncertainty_sequence,
-                    );
+        let mut cleanup_at = std::time::Instant::now() + interval;
+        BackgroundService::start(
+            interval.min(Duration::from_secs(1)),
+            "MicroVM cleanup maintenance failed",
+            move || {
+                let cleanup_due = std::time::Instant::now() >= cleanup_at;
+                if cleanup_due {
+                    cleanup_at = std::time::Instant::now() + interval;
                 }
-            };
-            for cleanup in pending {
-                after_intent = Some(cleanup.intent_id.clone());
                 if !owner.verify_available().map_err(io::Error::other)? {
                     return Ok(true);
                 }
-                if let Some((epoch, attempt)) = crate::persistence::completed_microvm_worker(
+                let uncertainty_sequence = owner.uncertainty_sequence();
+                let pending = match crate::persistence::pending_microvm_cleanup(
                     owner.database(),
-                    &cleanup.intent_id,
-                )
-                .map_err(io::Error::other)?
-                {
-                    let mut connection =
-                        crate::persistence::connect(owner.database()).map_err(io::Error::other)?;
-                    let row = connection
+                    &account_id,
+                    &region,
+                    batch_size,
+                    after_intent.as_deref(),
+                ) {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        return background_result(
+                            &owner,
+                            Err(io::Error::other(error)),
+                            true,
+                            uncertainty_sequence,
+                        );
+                    }
+                };
+                for cleanup in pending {
+                    after_intent = Some(cleanup.intent_id.clone());
+                    if !owner.verify_available().map_err(io::Error::other)? {
+                        return Ok(true);
+                    }
+                    if let Some((epoch, attempt)) = crate::persistence::completed_microvm_worker(
+                        owner.database(),
+                        &cleanup.intent_id,
+                    )
+                    .map_err(io::Error::other)?
+                    {
+                        let mut connection = crate::persistence::connect(owner.database())
+                            .map_err(io::Error::other)?;
+                        let row = connection
                         .query_one(
                             "SELECT configuration_digest FROM microvm_launches WHERE intent_id=$1",
                             &[&cleanup.intent_id],
                         )
                         .map_err(io::Error::other)?;
-                    let digest: Vec<u8> = row.get(0);
-                    let (duration, maximum_jobs) = <[u8; 32]>::try_from(digest.as_slice())
-                        .ok()
-                        .and_then(|key| retention.get(&key).copied())
-                        .unwrap_or((Duration::ZERO, 1));
-                    let reset = provider.observe_worker_reset(
-                        &owner,
-                        &cleanup.intent_id,
-                        epoch,
-                        attempt,
-                        &cleanup.provider_id,
-                        (duration, maximum_jobs),
-                    );
-                    if matches!(reset, Ok(true))
-                        && !crate::persistence::pending_microvm_cleanup_identity(
+                        let digest: Vec<u8> = row.get(0);
+                        let (duration, maximum_jobs) = <[u8; 32]>::try_from(digest.as_slice())
+                            .ok()
+                            .and_then(|key| retention.get(&key).copied())
+                            .unwrap_or((Duration::ZERO, 1));
+                        let reset = provider.observe_worker_reset(
+                            &owner,
+                            &cleanup.intent_id,
+                            epoch,
+                            attempt,
+                            &cleanup.provider_id,
+                            (duration, maximum_jobs),
+                        );
+                        if matches!(reset, Ok(crate::microvm::WorkerReset::Pending))
+                            && !duration.is_zero()
+                            && crate::persistence::microvm_reset_grace_available(
+                                owner.database(),
+                                &cleanup.intent_id,
+                                epoch,
+                                attempt,
+                            )
+                            .map_err(io::Error::other)?
+                        {
+                            continue;
+                        }
+                        if matches!(reset, Ok(crate::microvm::WorkerReset::Ready))
+                            && !crate::persistence::pending_microvm_cleanup_identity(
+                                owner.database(),
+                                &cleanup.intent_id,
+                                &cleanup.provider_id,
+                            )
+                            .map_err(io::Error::other)?
+                        {
+                            continue;
+                        }
+                        crate::persistence::cancel_microvm_launch(
                             owner.database(),
                             &cleanup.intent_id,
-                            &cleanup.provider_id,
                         )
-                        .map_err(io::Error::other)?
-                    {
+                        .map_err(io::Error::other)?;
+                    }
+                    if !cleanup_due {
                         continue;
                     }
-                    crate::persistence::cancel_microvm_launch(owner.database(), &cleanup.intent_id)
-                        .map_err(io::Error::other)?;
+                    if provider.cleanup(&owner, &cleanup).is_err() {
+                        // Provider uncertainty retains the durable obligation for a later pass.
+                        tracing::warn!(
+                            event = "microvm.cleanup.pending",
+                            "MicroVM cleanup remains pending"
+                        );
+                    }
+                    if !owner.verify_available().map_err(io::Error::other)? {
+                        return Ok(true);
+                    }
                 }
-                if provider.cleanup(&owner, &cleanup).is_err() {
-                    // Provider uncertainty retains the durable obligation for a later pass.
-                    tracing::warn!(
-                        event = "microvm.cleanup.pending",
-                        "MicroVM cleanup remains pending"
-                    );
-                }
-                if !owner.verify_available().map_err(io::Error::other)? {
-                    return Ok(true);
-                }
-            }
-            Ok(true)
-        })
+                Ok(true)
+            },
+        )
         .map(Self)
     }
 

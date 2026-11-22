@@ -213,6 +213,27 @@ pub fn select_microvm_worker(
     Ok(Some((intent, provider, epoch + 1, lifetime)))
 }
 
+pub fn microvm_reset_grace_available(
+    database: &(impl DatabaseSource + ?Sized),
+    intent_id: &str,
+    epoch: i64,
+    attempt_id: i64,
+) -> Result<bool, MicrovmLaunchError> {
+    let mut client = connect(database).map_err(|_| MicrovmLaunchError)?;
+    let row = client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM microvm_workers w
+         JOIN microvm_launches l USING(intent_id)
+         JOIN shared_build_attempts a ON a.attempt_id=w.attempt_id
+         WHERE w.intent_id=$1 AND w.assignment_epoch=$2 AND w.attempt_id=$3
+           AND w.state='busy' AND l.phase='bound' AND a.state='succeeded'
+           AND a.completed_at > clock_timestamp() - interval '30 seconds'
+           AND w.owner_generation=COALESCE(NULLIF(current_setting('telchar.owner_generation',true),'')::bigint,0)
+           AND w.expires_at > clock_timestamp())",
+        &[&intent_id, &epoch, &attempt_id],
+    ).map_err(|_| MicrovmLaunchError)?;
+    Ok(row.get(0))
+}
+
 pub fn completed_microvm_worker(
     database: &(impl DatabaseSource + ?Sized),
     intent_id: &str,

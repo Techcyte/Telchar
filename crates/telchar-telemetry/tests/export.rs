@@ -48,6 +48,32 @@ fn export(endpoint: String, protocol: &str) -> Output {
 }
 
 #[test]
+fn disabled_sdk_keeps_local_diagnostics_and_audit_without_export() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["emit_signals", "--exact", "--nocapture"])
+        .env("TELCHAR_TELEMETRY_IDENTITY_TEST", "1")
+        .env("OTEL_SDK_DISABLED", "true")
+        .env(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            format!("http://{}", listener.local_addr().unwrap()),
+        )
+        .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        .env("RUST_LOG", "info")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("service started"), "{diagnostics}");
+    assert!(diagnostics.contains("export-audit"), "{diagnostics}");
+    assert!(
+        listener.accept().is_err(),
+        "disabled SDK contacted collector"
+    );
+}
+
+#[test]
 fn exports_configured_service_identity() {
     let collector = collector::start_collector();
     let output = export(collector.endpoint(), "grpc");

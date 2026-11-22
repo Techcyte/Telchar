@@ -526,6 +526,16 @@ pub(super) fn validate_nomad_backends(
                 .or(group.runtime_limit_seconds)
                 .ok_or_else(|| invalid("Nomad runtime limit is required"))?;
 
+            let cleanup_timeout_seconds = backend
+                .cleanup_timeout_seconds
+                .or(group.cleanup_timeout_seconds)
+                .unwrap_or(30);
+            if !(1..=120).contains(&cleanup_timeout_seconds) {
+                return Err(invalid(
+                    "Nomad cleanup timeout must be between 1 and 120 seconds",
+                ));
+            }
+
             validate_backend_capacity(maximum_concurrent_builds)?;
             if max_retries > MAXIMUM_NOMAD_RETRIES {
                 return Err(invalid("Nomad retry count exceeds limit"));
@@ -687,6 +697,7 @@ pub(super) fn validate_nomad_backends(
                 job_name_scope,
                 poll_interval: Duration::from_secs(poll_interval_seconds),
                 runtime_limit: Duration::from_secs(runtime_limit_seconds),
+                cleanup_timeout: Duration::from_secs(cleanup_timeout_seconds),
                 constraints,
                 transfer_endpoint,
                 callback_connect,

@@ -244,6 +244,7 @@ chunk_bytes = 1024
             Arc::clone(&owner),
             TcpListener::bind("127.0.0.1:0").unwrap(),
             telchar::store::daemon::GatewayStoreEndpoint::parse("unix:///unused").unwrap(),
+            telchar::service::transfer_limits::ObjectAdmissionState::new(&Default::default()),
         )
         .unwrap(),
     );

@@ -4,6 +4,15 @@ use super::*;
 
 #[test]
 fn restored_capacity_survives_uncertainty_and_releases_only_exact_absence() {
+    restored_capacity(false);
+}
+
+#[test]
+fn reconciliation_budget_continues_after_stalled_predecessor() {
+    restored_capacity(true);
+}
+
+fn restored_capacity(stalled: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -13,7 +22,10 @@ fn restored_capacity_survives_uncertainty_and_releases_only_exact_absence() {
         &path,
         format!(
             "[backends]\npermit_wait_seconds = 1\n{}",
-            fs::read_to_string(&path).unwrap()
+            fs::read_to_string(&path).unwrap().replace(
+                "runtime_limit_seconds = 60",
+                "runtime_limit_seconds = 60\ncleanup_timeout_seconds = 1"
+            )
         ),
     )
     .unwrap();
@@ -58,7 +70,28 @@ fn restored_capacity_survives_uncertainty_and_releases_only_exact_absence() {
         .unwrap();
     assert!(executor.reserve_target("x86_64-linux", &[]).is_err());
     let server = thread::spawn(move || {
-        for (job, status) in [("job-one", 500), ("job-one", 404), ("job-two", 404)] {
+        if stalled {
+            let (mut request, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut request).contains("/v1/job/job-one?"));
+            let stalled_request = thread::spawn(move || {
+                thread::sleep(Duration::from_secs(2));
+                drop(request);
+            });
+            let (mut request, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut request).contains("/v1/job/job-two?"));
+            write_json_response(&mut request, 404, "{}");
+            let (mut request, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut request).contains("/v1/job/job-one?"));
+            write_json_response(&mut request, 500, "{}");
+            stalled_request.join().unwrap();
+            return;
+        }
+        for (job, status) in [
+            ("job-one", 500),
+            ("job-two", 500),
+            ("job-one", 404),
+            ("job-two", 404),
+        ] {
             let (mut request, _) = listener.accept().unwrap();
             assert!(
                 read_http_request(&mut request)
@@ -67,7 +100,15 @@ fn restored_capacity_survives_uncertainty_and_releases_only_exact_absence() {
             write_json_response(&mut request, status, "{}");
         }
     });
-    assert!(backends.reconcile_nomad_capacity(&connection).is_err());
+    let started = std::time::Instant::now();
+    backends.reconcile_nomad_capacity(&connection).unwrap();
+    if stalled {
+        assert!(
+            started.elapsed() < Duration::from_millis(1700),
+            "aggregate sweep exceeded budget: {:?}",
+            started.elapsed()
+        );
+    }
     assert_eq!(
         telchar::persistence::read_nomad_execution_obligations(&connection)
             .unwrap()
@@ -76,6 +117,14 @@ fn restored_capacity_survives_uncertainty_and_releases_only_exact_absence() {
     );
     assert!(executor.reserve_target("x86_64-linux", &[]).is_err());
     backends.reconcile_nomad_capacity(&connection).unwrap();
+    if stalled {
+        let remaining =
+            telchar::persistence::read_nomad_execution_obligations(&connection).unwrap();
+        assert_eq!(remaining.len(), 1);
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        return;
+    }
     assert!(
         telchar::persistence::read_nomad_execution_obligations(&connection)
             .unwrap()

@@ -750,6 +750,7 @@ pub struct NomadBackendConfig {
     pub(super) job_name_scope: String,
     pub(super) poll_interval: Duration,
     pub(super) runtime_limit: Duration,
+    pub(super) cleanup_timeout: Duration,
     pub(super) constraints: Vec<NomadConstraint>,
     pub(super) transfer_endpoint: String,
     pub(super) callback_connect: Option<NomadCallbackConnect>,
@@ -865,6 +866,10 @@ impl NomadBackendConfig {
 
     pub fn runtime_limit(&self) -> Duration {
         self.runtime_limit
+    }
+
+    pub fn cleanup_timeout(&self) -> Duration {
+        self.cleanup_timeout
     }
 
     pub fn constraints(&self) -> &[NomadConstraint] {
