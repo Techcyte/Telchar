@@ -1,6 +1,9 @@
 //! Queries authoritative gateway-store path validity through the daemon protocol.
 
 use std::io;
+use std::time::Duration;
+
+pub const DEFAULT_SUBSTITUTION_QUERY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 use crate::store::daemon::{GatewayStoreConnection, GatewayStoreEndpoint};
 
@@ -24,6 +27,7 @@ pub trait QueryValidPathsStore {
 
 pub struct GatewayStoreQuery {
     endpoint: Option<GatewayStoreEndpoint>,
+    substitution_timeout: Duration,
 }
 
 impl GatewayStoreQuery {
@@ -32,7 +36,21 @@ impl GatewayStoreQuery {
     }
 
     pub fn with_endpoint(endpoint: Option<GatewayStoreEndpoint>) -> Self {
-        Self { endpoint }
+        Self {
+            endpoint,
+            substitution_timeout: DEFAULT_SUBSTITUTION_QUERY_TIMEOUT,
+        }
+    }
+
+    pub fn with_substitution_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        if timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "substitution query timeout must be positive",
+            ));
+        }
+        self.substitution_timeout = timeout;
+        Ok(self)
     }
 
     fn endpoint(&self) -> io::Result<&GatewayStoreEndpoint> {
@@ -55,7 +73,14 @@ impl QueryValidPathsStore for GatewayStoreQuery {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        let mut connection = GatewayStoreConnection::connect(self.endpoint()?)?;
+        let mut connection = if substitute {
+            GatewayStoreConnection::connect_with_timeout(
+                self.endpoint()?,
+                self.substitution_timeout,
+            )?
+        } else {
+            GatewayStoreConnection::connect(self.endpoint()?)?
+        };
         connection.query_valid_paths(paths, substitute)
     }
 

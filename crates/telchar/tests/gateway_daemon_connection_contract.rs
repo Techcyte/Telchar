@@ -96,6 +96,126 @@ fn complete_handshake(stream: &mut std::os::unix::net::UnixStream, trust: u64) {
 }
 
 #[test]
+fn substitution_query_waits_for_daemon_transfer_completion() {
+    use telchar::store::query::{GatewayStoreQuery, QueryValidPathsStore};
+
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 31);
+        assert_eq!(read_integer(&mut stream), 1);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        assert_eq!(read_integer(&mut stream), 1);
+        thread::sleep(Duration::from_secs(32));
+        let mut response = Vec::new();
+        integer(&mut response, STDERR_LAST);
+        integer(&mut response, 1);
+        byte_string(&mut response, STORE_PATH);
+        stream.write_all(&response)
+    });
+    let result =
+        GatewayStoreQuery::new(fixture.endpoint()).query_valid_paths(&[STORE_PATH.to_vec()], true);
+    let response = server.join().expect("daemon thread joins");
+    assert_eq!(
+        result.expect("substitution query completes"),
+        vec![STORE_PATH.to_vec()]
+    );
+    response.expect("daemon response writes");
+}
+
+#[test]
+fn substitution_query_enforces_configured_timeout() {
+    use telchar::store::query::{GatewayStoreQuery, QueryValidPathsStore};
+
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 31);
+        assert_eq!(read_integer(&mut stream), 1);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        assert_eq!(read_integer(&mut stream), 1);
+        thread::sleep(Duration::from_millis(150));
+    });
+    let result = GatewayStoreQuery::new(fixture.endpoint())
+        .with_substitution_timeout(Duration::from_millis(30))
+        .expect("positive timeout accepted")
+        .query_valid_paths(&[STORE_PATH.to_vec()], true);
+    server.join().expect("daemon thread joins");
+    assert!(result.is_err());
+    assert!(
+        GatewayStoreQuery::new(fixture.endpoint())
+            .with_substitution_timeout(Duration::ZERO)
+            .is_err()
+    );
+}
+
+#[test]
+fn substitution_query_runtime_environment() {
+    use telchar::store::query::QueryValidPathsStore;
+    use telchar::store::runtime::GatewayStoreRuntime;
+
+    let Ok(mode) = std::env::var("TELCHAR_QUERY_RUNTIME_PROBE") else {
+        return;
+    };
+    let runtime = GatewayStoreRuntime::from_environment();
+    if mode == "invalid" {
+        assert!(runtime.is_err());
+        return;
+    }
+    let result = runtime
+        .expect("runtime configuration parses")
+        .query()
+        .query_valid_paths(&[STORE_PATH.to_vec()], true);
+    assert!(result.is_err(), "configured one-second timeout must expire");
+}
+
+#[test]
+fn runtime_applies_substitution_query_timeout_environment() {
+    let fixture = SocketFixture::create();
+    let listener = UnixListener::bind(&fixture.socket).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection accepts");
+        complete_handshake(&mut stream, 1);
+        assert_eq!(read_integer(&mut stream), 31);
+        assert_eq!(read_integer(&mut stream), 1);
+        assert_eq!(read_byte_string(&mut stream), STORE_PATH);
+        assert_eq!(read_integer(&mut stream), 1);
+        thread::sleep(Duration::from_secs(2));
+        let mut response = Vec::new();
+        integer(&mut response, STDERR_LAST);
+        integer(&mut response, 1);
+        byte_string(&mut response, STORE_PATH);
+        let _ = stream.write_all(&response);
+    });
+    for value in ["1", "0", "invalid"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "substitution_query_runtime_environment"])
+            .env(
+                "TELCHAR_QUERY_RUNTIME_PROBE",
+                if value == "1" { "timeout" } else { "invalid" },
+            )
+            .env(
+                "TELCHAR_GATEWAY_STORE_URI",
+                format!("unix://{}", fixture.socket.display()),
+            )
+            .env("TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS", value)
+            .output()
+            .expect("runtime probe starts");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    server.join().expect("daemon thread joins");
+}
+
+#[test]
 fn gateway_connection_delegates_typed_path_queries() {
     let fixture = SocketFixture::create();
     let listener = UnixListener::bind(&fixture.socket).expect("listener binds");

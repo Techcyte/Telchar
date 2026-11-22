@@ -13,6 +13,8 @@ Telchar supports two gateway Nix-daemon topologies:
 
 `TELCHAR_GATEWAY_STORE_URI` selects the operator-owned daemon socket. Clients cannot select or alter this topology.
 
+`TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS` sets the positive integer socket read/write timeout for gateway validity queries that permit substitution; default `1800` seconds (30 minutes). Substitution can download dependencies and register their contents before replying. The timeout bounds each blocking socket read/write, including silent download and post-download work, not the total query duration. Queries without substitution retain a 30-second timeout. Invalid or zero values prevent startup. On NixOS, set it through `services.telchar.environment.TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS = "1800";`. Restart the daemon to apply it.
+
 - Use a gateway store that is not shared with a local client workload.
 - Give the daemon access only to its PostgreSQL database, gateway Nix daemon, state directories, and configured backend credentials.
 - Keep the daemon Unix socket private to the configured frontend UID.

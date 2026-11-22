@@ -2,6 +2,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::backend::BuildBackend;
 use crate::store::closure::{
@@ -14,7 +15,7 @@ use crate::store::export::{
     GatewayStoreExportBackend, StoreExportBackend, UnavailableStoreExportBackend,
 };
 use crate::store::import::{GatewayStoreImport, StoreImportBackend, UnavailableStoreImport};
-use crate::store::query::GatewayStoreQuery;
+use crate::store::query::{DEFAULT_SUBSTITUTION_QUERY_TIMEOUT, GatewayStoreQuery};
 #[cfg(debug_assertions)]
 use crate::store::retention::filesystem_backend;
 use crate::store::retention::{StoreRetentionBackend, backend_for_gateway_store};
@@ -25,6 +26,7 @@ use crate::store::substitution::{
 #[derive(Clone)]
 pub struct GatewayStoreRuntime {
     endpoint: Option<GatewayStoreEndpoint>,
+    substitution_query_timeout: Duration,
     #[cfg(debug_assertions)]
     nix_executable: String,
     #[cfg(debug_assertions)]
@@ -41,8 +43,16 @@ impl GatewayStoreRuntime {
         let endpoint = std::env::var_os("TELCHAR_GATEWAY_STORE_URI")
             .map(|value| GatewayStoreEndpoint::parse_os(&value))
             .transpose()?;
+        let substitution_query_timeout = match std::env::var("TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS") {
+            Ok(value) => value.parse::<u64>().ok().filter(|value| *value > 0)
+                .map(Duration::from_secs)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS must be a positive integer"))?,
+            Err(std::env::VarError::NotPresent) => DEFAULT_SUBSTITUTION_QUERY_TIMEOUT,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidInput, "TELCHAR_GATEWAY_SUBSTITUTION_QUERY_TIMEOUT_SECONDS must be a positive integer")),
+        };
         Ok(Self {
             endpoint,
+            substitution_query_timeout,
             #[cfg(debug_assertions)]
             nix_executable: std::env::var("TELCHAR_NIX").unwrap_or_else(|_| "nix".to_owned()),
             #[cfg(debug_assertions)]
@@ -71,6 +81,8 @@ impl GatewayStoreRuntime {
 
     pub fn query(&self) -> GatewayStoreQuery {
         GatewayStoreQuery::with_endpoint(self.endpoint.clone())
+            .with_substitution_timeout(self.substitution_query_timeout)
+            .expect("runtime substitution query timeout is positive")
     }
 
     pub fn export(&self) -> Box<dyn StoreExportBackend> {
