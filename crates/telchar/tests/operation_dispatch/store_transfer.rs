@@ -128,13 +128,19 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
         ),
     )
     .expect("native backend configuration writes");
-    let mut frontend = FrontendFixture::spawn_with_store(
+    let mut frontend = FrontendFixture::spawn_with_store_policy_and_mode(
         Some(5_000),
         "unix:///nix/var/nix/daemon-socket/socket",
         [("TELCHAR_CONFIG", config.path().display().to_string())],
+        Some("cancel-running"),
+        false,
     );
-    let _ = frontend.frontend.kill();
-    let _ = frontend.frontend.wait();
+    let mut initial_input = frontend.frontend.stdin.take().unwrap();
+    let mut initial_output = frontend.frontend.stdout.take().unwrap();
+    complete_handshake(&mut initial_input, &mut initial_output);
+    drop(initial_input);
+    drop(initial_output);
+    assert!(frontend.frontend.wait().unwrap().success());
     let mut client = frontend.spawn_frontend();
     let mut input = client.stdin.take().expect("frontend input");
     let mut output = client.stdout.take().expect("frontend output");

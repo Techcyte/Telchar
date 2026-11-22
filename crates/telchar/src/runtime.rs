@@ -778,6 +778,11 @@ fn run_daemon() -> io::Result<()> {
     let listener = IpcListener::from_listener(listener, expected_uid);
     let envelope_timeout = duration_from_env("TELCHAR_IPC_ENVELOPE_TIMEOUT_MS", 5_000);
     let once = std::env::args().any(|argument| argument == "--once");
+    tracing::info!(
+        event = "ipc.daemon.session_policy",
+        once,
+        "daemon session policy configured"
+    );
     let maintenance_database = database.clone();
     let maintenance_gateway_store = gateway_store.clone();
     let maintenance_backends = backends.clone();
@@ -826,7 +831,7 @@ fn run_daemon() -> io::Result<()> {
     let mut discovered_static_ssh = Vec::new();
     let mut consul_static_ssh = Vec::new();
     let mut ec2_static_ssh = Vec::new();
-    let (once_result, completed_session) = std::sync::mpsc::channel();
+    let (once_result, completed_session) = std::sync::mpsc::channel::<io::Result<()>>();
     let mut once_started = false;
     let mut reload_preparation = daemon_runtime::InventoryPreparation(None);
     let mut reload_started = std::time::Instant::now();
@@ -834,6 +839,11 @@ fn run_daemon() -> io::Result<()> {
         if once_started {
             match completed_session.try_recv() {
                 Ok(result) => {
+                    tracing::info!(
+                        event = "ipc.daemon.once_completed",
+                        succeeded = result.is_ok(),
+                        "one-shot daemon session completed"
+                    );
                     shutdown_daemon_services(
                         &mut callback_service,
                         &mut maintenance_service,
@@ -1124,6 +1134,12 @@ fn run_daemon() -> io::Result<()> {
                     "frontend session failed"
                 );
             }
+            tracing::debug!(
+                event = "ipc.daemon.session_completed",
+                once,
+                succeeded = result.is_ok(),
+                "frontend session completed"
+            );
             if once {
                 let _ = once_result.send(result);
             }
