@@ -87,6 +87,7 @@ impl Fixture {
         let root = temporary_root();
         let socket = root.join("daemon.sock");
         let database = PostgresFixture::start();
+        telchar::persistence::migrate(database.url()).expect("fixture database migrates");
         let mut daemon = daemon_command(&socket, envelope_timeout_ms, once, database.url())
             .env("TELCHAR_IPC_MAX_SESSIONS", session_limit.to_string())
             .spawn()

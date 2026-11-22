@@ -146,6 +146,7 @@ impl Fixture {
         )
         .expect("daemon configuration writes");
         let database = PostgresFixture::start();
+        telchar::persistence::migrate(database.url()).expect("fixture database migrates");
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_telchar"))
             .env("TELCHAR_CONFIG", config)
             .env("TELCHAR_DATABASE_URL", database.url())
@@ -201,11 +202,15 @@ impl Fixture {
 fn wait_for_socket(path: &Path, daemon: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while !path.exists() {
-        assert!(Instant::now() < deadline, "daemon socket was not created");
-        assert!(
-            daemon.try_wait().expect("daemon status").is_none(),
-            "daemon exited before binding"
-        );
+        let status = daemon.try_wait().expect("daemon status");
+        if Instant::now() >= deadline || status.is_some() {
+            let _ = daemon.kill();
+            daemon.wait().expect("daemon exits");
+            let mut diagnostics = String::new();
+            std::io::Read::read_to_string(daemon.stderr.as_mut().unwrap(), &mut diagnostics)
+                .unwrap();
+            panic!("daemon did not bind: {status:?}: {diagnostics}");
+        }
         thread::sleep(Duration::from_millis(5));
     }
 }
