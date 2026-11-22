@@ -14,7 +14,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
 
 /// How long a caller without a tighter deadline waits for a validated connection.
-pub(crate) const DEFAULT_CONNECTION_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_CONNECTION_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Eq, PartialEq)]
 enum ConnectionSecurity {

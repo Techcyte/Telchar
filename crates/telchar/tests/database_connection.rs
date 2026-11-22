@@ -293,17 +293,18 @@ fn database_checkout_bounds_stalled_validation() {
             let result = database.connection();
             sender.send((started.elapsed(), result.is_err())).unwrap();
         });
-        let observed = receiver.recv_timeout(Duration::from_secs(6));
+        let observed = receiver.recv_timeout(Duration::from_secs(12));
         assert_eq!(unsafe { libc::kill(backend, libc::SIGCONT) }, 0);
         drop(resume);
         checkout.join().unwrap();
         observed
     });
     let (elapsed, rejected) = within_deadline.expect(
-        "database checkout exceeded its five-second budget while validating a stalled backend",
+        "database checkout exceeded its ten-second budget while validating a stalled backend",
     );
     assert!(rejected, "stalled connection must not be checked out");
-    assert!(elapsed < Duration::from_secs(6));
+    assert!(elapsed >= Duration::from_secs(9));
+    assert!(elapsed < Duration::from_secs(12));
 }
 
 #[test]
@@ -327,7 +328,7 @@ fn database_deadline_discards_an_uncommitted_transaction() {
     transaction
         .execute("INSERT INTO deadline_rows VALUES (1)", &[])
         .unwrap();
-    let error = transaction.simple_query("SELECT pg_sleep(10)").unwrap_err();
+    let error = transaction.simple_query("SELECT pg_sleep(20)").unwrap_err();
     assert!(matches!(
         error,
         telchar::persistence::DatabaseError::Deadline
@@ -339,7 +340,7 @@ fn database_deadline_discards_an_uncommitted_transaction() {
     ));
     drop(connection);
     assert!(
-        started.elapsed() < Duration::from_secs(6),
+        started.elapsed() < Duration::from_secs(12),
         "query timeout and rollback must share the checkout deadline"
     );
 
@@ -428,14 +429,14 @@ fn database_bounds_stalled_query_and_transaction_teardown() {
             let backend = ready_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
             let resume = ResumeBackend::stop(backend);
             start_sender.send(()).unwrap();
-            let observed = done_receiver.recv_timeout(Duration::from_secs(6));
+            let observed = done_receiver.recv_timeout(Duration::from_secs(12));
             drop(resume);
             worker.join().unwrap();
             (backend, observed)
         });
         assert!(
             observed.expect("stalled transaction exceeded checkout budget")
-                < Duration::from_secs(6),
+                < Duration::from_secs(12),
             "{operation} must share the checkout deadline"
         );
         let mut replacement = database.connection().unwrap();
@@ -553,7 +554,7 @@ fn database_commit_timeout_can_leave_a_durable_transaction() {
     let hide_responses = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let relay = scope.spawn(|| {
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(20);
             let (mut client, _) = loop {
                 match listener.accept() {
                     Ok(connection) => break connection,
@@ -619,7 +620,7 @@ fn database_commit_timeout_can_leave_a_durable_transaction() {
             Err(DatabaseError::Closed)
         ));
         drop(connection);
-        assert!(started.elapsed() < Duration::from_secs(6));
+        assert!(started.elapsed() < Duration::from_secs(12));
         assert_eq!(
             observer
                 .query_one("SELECT count(*) FROM commit_rows", &[])

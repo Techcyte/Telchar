@@ -251,7 +251,12 @@ fn migrate_list(
         return Err(MigrationError(MigrationFailure::Configuration));
     }
     validate_migrations(migrations).map_err(MigrationError)?;
-    let mut client = connect(database).map_err(|_| MigrationError(MigrationFailure::Connection))?;
+    let database = database
+        .database()
+        .map_err(|_| MigrationError(MigrationFailure::Connection))?;
+    let mut client = database
+        .connection_until(std::time::Instant::now() + std::time::Duration::from_secs(120))
+        .map_err(|_| MigrationError(MigrationFailure::Connection))?;
     run_migrations(&mut client, migrations).map_err(MigrationError)
 }
 
@@ -331,6 +336,26 @@ fn checksum(sql: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use telchar_test_support::postgres::PostgresFixture;
+
+    #[test]
+    fn migration_can_execute_beyond_ordinary_database_budget() {
+        let fixture = PostgresFixture::start();
+        let migrations = [Migration {
+            version: 1,
+            name: "bounded-work",
+            sql: "SELECT pg_sleep(11); CREATE TABLE migration_budget_proof (value integer)",
+        }];
+        migrate_list(fixture.url(), &migrations)
+            .expect("migration completes beyond ordinary query budget");
+        let mut client = connect(fixture.url()).unwrap();
+        assert!(
+            client
+                .query_one("SELECT to_regclass('migration_budget_proof')::text", &[])
+                .unwrap()
+                .get::<_, Option<String>>(0)
+                .is_some()
+        );
+    }
 
     #[test]
     fn migration_metadata_is_valid() {
