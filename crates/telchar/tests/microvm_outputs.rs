@@ -116,13 +116,25 @@ fn receipts_require_authoritative_registration() {
     };
     let mut store = GatewayStoreConnection::connect(&endpoint).unwrap();
     assert!(!store.is_valid_path(path.as_bytes()).unwrap());
+    let mut constrained = Outputs::new(
+        vec![path.into()],
+        endpoint.clone(),
+        staging.path().into(),
+        metadata.nar_size,
+        metadata.nar_size - 1,
+    )
+    .unwrap();
+    assert!(constrained.declare(metadata.clone()).is_err());
+    assert!(!store.is_valid_path(path.as_bytes()).unwrap());
+    assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+    drop(constrained);
     for corrupt in [true, false] {
         let mut outputs = Outputs::new(
             vec![path.into()],
             endpoint.clone(),
             staging.path().into(),
-            131072,
-            262144,
+            metadata.nar_size,
+            metadata.nar_size,
         )
         .unwrap();
         outputs.declare(metadata.clone()).unwrap();
