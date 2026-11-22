@@ -138,21 +138,36 @@ fn real_stock_nix_build_reaches_production_dispatch_without_unsupported_operatio
     let mut client = frontend.spawn_frontend();
     let mut input = client.stdin.take().expect("frontend input");
     let mut output = client.stdout.take().expect("frontend output");
-    complete_handshake(&mut input, &mut output);
-    write_integer(&mut input, 40);
-    write_integer(&mut input, 1);
-    write_string(&mut input, format!("{derivation}!*").as_bytes());
-    input.flush().expect("QueryMissing request flushes");
+    let exchange = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        complete_handshake(&mut input, &mut output);
+        write_integer(&mut input, 40);
+        write_integer(&mut input, 1);
+        write_string(&mut input, format!("{derivation}!*").as_bytes());
+        input.flush().expect("QueryMissing request flushes");
 
-    assert_eq!(read_integer(&mut output), STDERR_LAST);
-    let will_build = read_integer(&mut output);
-    for _ in 0..will_build {
-        let _ = read_string(&mut output);
+        assert_eq!(read_integer(&mut output), STDERR_LAST);
+        let will_build = read_integer(&mut output);
+        for _ in 0..will_build {
+            let _ = read_string(&mut output);
+        }
+        assert_eq!(read_integer(&mut output), 0);
+        assert_eq!(read_integer(&mut output), 0);
+        assert_eq!(read_integer(&mut output), 0);
+        assert_eq!(read_integer(&mut output), 0);
+    }));
+    if let Err(failure) = exchange {
+        drop(input);
+        drop(output);
+        let status = client.try_wait().unwrap();
+        let _ = client.kill();
+        let diagnostics = client.wait_with_output().unwrap();
+        let daemon_diagnostics = frontend.finish();
+        eprintln!(
+            "STOCK_CLIENT_FAILURE status={status:?} frontend={} daemon={daemon_diagnostics}",
+            String::from_utf8_lossy(&diagnostics.stderr)
+        );
+        std::panic::resume_unwind(failure);
     }
-    assert_eq!(read_integer(&mut output), 0);
-    assert_eq!(read_integer(&mut output), 0);
-    assert_eq!(read_integer(&mut output), 0);
-    assert_eq!(read_integer(&mut output), 0);
     write_integer(&mut input, 46);
     write_integer(&mut input, 1);
     write_string(&mut input, format!("{derivation}!*").as_bytes());
