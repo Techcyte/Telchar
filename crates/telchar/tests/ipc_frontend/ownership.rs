@@ -74,15 +74,35 @@ fn daemon_restart_reconciles_every_record_beyond_first_page() {
                 )
             } >= 4096
         );
-        let mut diagnostics = daemon.stderr.take().unwrap();
+        let diagnostics = daemon.stderr.take().unwrap();
+        let recovered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&recovered);
         let reader = thread::spawn(move || {
+            use std::io::BufRead;
             let mut captured = String::new();
-            diagnostics.read_to_string(&mut captured).unwrap();
+            for line in std::io::BufReader::new(diagnostics).lines() {
+                let line = line.unwrap();
+                if line.contains("event=\"database.shared_build.output_recovery_failed\"") {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                captured.push_str(&line);
+                captured.push('\n');
+            }
             captured
         });
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut progress_at = Instant::now();
+        let mut completed = 0;
         while !socket.exists() {
-            if daemon.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let current = recovered.load(std::sync::atomic::Ordering::Relaxed);
+            if current > completed {
+                completed = current;
+                progress_at = Instant::now();
+            }
+            if daemon.try_wait().unwrap().is_some()
+                || Instant::now() >= deadline
+                || progress_at.elapsed() >= Duration::from_secs(2)
+            {
                 let _ = daemon.kill();
                 daemon.wait().unwrap();
                 panic!(
