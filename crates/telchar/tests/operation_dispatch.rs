@@ -698,6 +698,7 @@ fn read_build_success(output: impl Read) -> Result<(), String> {
 }
 
 fn read_build_status(mut output: impl Read, expected_status: u64) -> Result<(), String> {
+    let mut diagnostics = Vec::new();
     loop {
         let frame = try_read_integer(&mut output)?;
         if frame == STDERR_LAST {
@@ -706,13 +707,18 @@ fn read_build_status(mut output: impl Read, expected_status: u64) -> Result<(), 
         if frame != nix_worker_protocol::STDERR_NEXT {
             return Err(format!("unexpected stderr frame {frame}"));
         }
-        try_read_string(&mut output)?;
+        let message = try_read_string(&mut output)?;
+        if diagnostics.len() < 16 {
+            diagnostics.push(message.chars().take(4096).collect::<String>());
+        }
     }
     let status = try_read_integer(&mut output)?;
-    if status != expected_status {
-        return Err(format!("unexpected build status {status}"));
-    }
     let error_message = try_read_string(&mut output)?;
+    if status != expected_status {
+        return Err(format!(
+            "unexpected build status {status}: {error_message}; logs={diagnostics:?}"
+        ));
+    }
     if !error_message.is_empty() {
         return Err(format!("unexpected build error {error_message:?}"));
     }
