@@ -39,51 +39,62 @@ fn daemon_restart_reconciles_every_record_beyond_first_page() {
     let socket = root.join("daemon.sock");
     let database = PostgresFixture::start();
     telchar::persistence::migrate(database.url()).unwrap();
-    for index in 0..257 {
-        let drv = format!("/nix/store/{index:032}-restart.drv");
-        let output = format!("/nix/store/{index:032}-restart-output");
-        telchar::persistence::claim_shared_build(
-            database.url(),
-            &drv,
-            &[1; 32],
-            "local",
-            telchar::backend::BackendKind::Local,
-            telchar::backend::BackendKind::Local.capabilities(),
-            None,
-            &[&output],
-        )
-        .unwrap();
-        telchar::persistence::start_shared_build(database.url(), &drv).unwrap();
-    }
-    let mut daemon = daemon_command(&socket, 1000, false, database.url())
-        .env("TELCHAR_TEST_STORE_RETENTION", "filesystem-only")
-        .env(
-            "TELCHAR_GATEWAY_STORE_URI",
-            "unix:///nix/var/nix/daemon-socket/socket",
-        )
-        .spawn()
-        .unwrap();
-    wait_for_socket(&socket, &mut daemon);
-    let row = database.connect().query_one(
+    for wave in 0..3 {
+        for index in wave * 257..(wave + 1) * 257 {
+            let drv = format!("/nix/store/{index:032}-restart.drv");
+            let output = format!("/nix/store/{index:032}-restart-output");
+            telchar::persistence::claim_shared_build(
+                database.url(),
+                &drv,
+                &[1; 32],
+                "local",
+                telchar::backend::BackendKind::Local,
+                telchar::backend::BackendKind::Local.capabilities(),
+                None,
+                &[&output],
+            )
+            .unwrap();
+            telchar::persistence::start_shared_build(database.url(), &drv).unwrap();
+        }
+        let mut daemon = daemon_command(&socket, 1000, false, database.url())
+            .env("TELCHAR_TEST_STORE_RETENTION", "filesystem-only")
+            .env(
+                "TELCHAR_GATEWAY_STORE_URI",
+                "unix:///nix/var/nix/daemon-socket/socket",
+            )
+            .spawn()
+            .unwrap();
+        wait_for_socket(&socket, &mut daemon);
+        let row = database.connect().query_one(
         "SELECT count(*) FILTER(WHERE state='failed'),count(*) FILTER(WHERE state IN ('claimed','running','collecting')) FROM shared_builds", &[],
     ).unwrap();
-    assert_eq!(row.get::<_, i64>(0), 257);
-    assert_eq!(row.get::<_, i64>(1), 0);
-    assert!(daemon.try_wait().unwrap().is_none());
-    daemon.kill().unwrap();
-    let output = daemon.wait_with_output().unwrap();
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains(database.url()));
-    assert_eq!(
-        stderr
-            .lines()
-            .filter(|line| line.contains("event=\"database.shared_build.output_recovery_failed\""))
-            .count(),
-        257,
-        "{stderr}"
-    );
-    assert!(!stderr.contains("ipc.daemon.connection_failed"), "{stderr}");
+        assert_eq!(row.get::<_, i64>(0), (wave + 1) * 257);
+        assert_eq!(row.get::<_, i64>(1), 0);
+        assert!(daemon.try_wait().unwrap().is_none());
+        daemon.kill().unwrap();
+        let output = daemon.wait_with_output().unwrap();
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains(database.url()));
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(
+                    |line| line.contains("event=\"database.shared_build.output_recovery_failed\"")
+                )
+                .count(),
+            257,
+            "{stderr}"
+        );
+        assert!(!stderr.contains("ipc.daemon.connection_failed"), "{stderr}");
+        database.expire_singleton_ownership("daemon");
+        fs::remove_file(&socket).unwrap();
+        eprintln!(
+            "RECOVERY_WAVE wave={} terminal_records={}",
+            wave + 1,
+            (wave + 1) * 257
+        );
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
