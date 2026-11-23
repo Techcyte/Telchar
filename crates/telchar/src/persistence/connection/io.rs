@@ -85,10 +85,13 @@ impl r2d2::ManageConnection for Manager {
                 .map_err(|_| DatabaseError::Deadline)?
                 .map_err(DatabaseError::Query)
         })?;
+        let cancellation = client.cancel_token();
         Ok(DatabaseClient {
             client,
             driver: Driver {
                 runtime,
+                cancellation,
+                security: self.security.clone(),
                 connection: Some(connection),
                 deadline,
                 request: None,
@@ -111,6 +114,8 @@ type ConnectionFuture = Pin<Box<dyn Future<Output = Result<(), tokio_postgres::E
 struct Driver {
     runtime: tokio::runtime::Runtime,
     connection: Option<ConnectionFuture>,
+    cancellation: tokio_postgres::CancelToken,
+    security: Security,
     deadline: Instant,
     request: Option<super::RequestBudget>,
     ownership: Option<crate::service::singleton_ownership::OwnershipObserver>,
@@ -150,6 +155,20 @@ impl Driver {
                 result = operation => result.map_err(DatabaseError::Query),
             }
         });
+        if matches!(
+            result,
+            Err(DatabaseError::Deadline | DatabaseError::Cancelled)
+        ) {
+            self.runtime.block_on(async {
+                let cancel = async {
+                    match &self.security {
+                        Security::Plain => self.cancellation.cancel_query(NoTls).await,
+                        Security::Tls(tls) => self.cancellation.cancel_query(tls.clone()).await,
+                    }
+                };
+                let _ = tokio::time::timeout(Duration::from_millis(250), cancel).await;
+            });
+        }
         if let Err(error) = &result
             && let Some(owner) = &self.ownership
         {

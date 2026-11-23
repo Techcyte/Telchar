@@ -50,6 +50,8 @@ mod attachment_locking;
 mod attachment_traversal;
 #[path = "persistence_leases/batch.rs"]
 mod batch;
+#[path = "persistence_leases/deadline.rs"]
+mod deadline;
 #[path = "persistence_leases/history.rs"]
 mod history;
 #[path = "persistence_leases/history_cutoff.rs"]

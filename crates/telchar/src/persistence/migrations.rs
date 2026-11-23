@@ -180,6 +180,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "closed_session_history_index",
         sql: include_str!("../../migrations/0033_closed_session_history_index.sql"),
     },
+    Migration {
+        version: 34,
+        name: "session_lease_owner_index",
+        sql: include_str!("../../migrations/0034_session_lease_owner_index.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
