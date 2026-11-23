@@ -107,6 +107,50 @@ fn stored_request_realizes_dependencies_in_gateway_store() {
             !std::path::Path::new(std::str::from_utf8(path).unwrap()).exists()
         })
     );
+    let mut wire = Vec::new();
+    write_worker_integer(&mut wire, 36);
+    write_worker_byte_string(&mut wire, request.derivation_path());
+    write_worker_integer(&mut wire, request.output_authorities().len() as u64);
+    for output in request.output_authorities() {
+        for value in [
+            output.name(),
+            output.path(),
+            output.hash_algorithm(),
+            output.hash(),
+        ] {
+            write_worker_byte_string(&mut wire, value);
+        }
+    }
+    let sources = request
+        .input_sources()
+        .iter()
+        .filter(|path| !path.ends_with(b".drv"))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    write_worker_integer(&mut wire, sources.len() as u64);
+    for source in sources {
+        write_worker_byte_string(&mut wire, &source);
+    }
+    write_worker_byte_string(&mut wire, request.system().as_bytes());
+    write_worker_byte_string(&mut wire, request.builder());
+    write_worker_integer(&mut wire, request.arguments().len() as u64);
+    for argument in request.arguments() {
+        write_worker_byte_string(&mut wire, argument);
+    }
+    write_worker_integer(&mut wire, request.environment().len() as u64);
+    for (key, value) in request.environment() {
+        write_worker_byte_string(&mut wire, key);
+        write_worker_byte_string(&mut wire, value);
+    }
+    write_worker_integer(&mut wire, 0);
+    let worker =
+        BuildRequest::from_worker_request(&decode_wire(wire), &backends(request.system(), &[]))
+            .unwrap();
+    assert_eq!(
+        request.shared_build_digest(),
+        worker.shared_build_digest(),
+        "stored and resolved worker admission must identify the same dependency build"
+    );
 }
 
 #[test]

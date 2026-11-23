@@ -3,6 +3,168 @@
 use super::*;
 
 #[test]
+fn stock_client_dependency_build_reuses_success_through_worker_admission() {
+    let expression = "let dep = derivation { name = \"telchar-cache-dependency\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"echo dependency > $out\" ]; }; in derivation { name = \"telchar-cache-root\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"echo ${dep} > $out\" ]; }";
+    let instantiated = Command::new("nix-instantiate")
+        .args(["--store", "local", "--expr", expression])
+        .output()
+        .unwrap();
+    assert!(instantiated.status.success(), "{instantiated:?}");
+    let drv = String::from_utf8(instantiated.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let mut fixture =
+        FrontendFixture::spawn_multi_with_store("unix:///nix/var/nix/daemon-socket/socket", []);
+    let ssh = fixture.root.join("ssh");
+    fs::write(&ssh, "#!/bin/sh\nexec \"$TELCHAR_STDIO_BIN\" serve-stdio\n").unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "build",
+            "--store",
+            "ssh-ng://fixture",
+            "--no-link",
+            &format!("{drv}^*"),
+        ])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fixture.root.display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env("TELCHAR_STDIO_BIN", env!("CARGO_BIN_EXE_telchar"))
+        .env("TELCHAR_IPC_SOCKET", fixture.root.join("daemon.sock"))
+        .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+        .output()
+        .unwrap();
+    assert!(client.status.success(), "{client:?}");
+    let durable = telchar::persistence::read_shared_build(fixture.database.url(), &drv)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        durable.state,
+        telchar::persistence::SharedBuildState::Succeeded
+    );
+    let backend = telchar::backend::BackendTarget::new(
+        "local",
+        telchar::backend::BackendKind::Local,
+        "x86_64-linux",
+        [] as [&str; 0],
+    )
+    .unwrap();
+    let request = telchar::build::BuildRequest::from_stored_derivation(
+        drv.as_bytes(),
+        &fs::read(&drv).unwrap(),
+        &[backend],
+    )
+    .unwrap();
+    let json = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "derivation",
+            "show",
+            &drv,
+        ])
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let root = &shown["derivations"][std::path::Path::new(&drv)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()];
+    let mut wire = Vec::new();
+    write_integer(&mut wire, 36);
+    write_string(&mut wire, drv.as_bytes());
+    write_integer(&mut wire, request.output_authorities().len() as u64);
+    for output in request.output_authorities() {
+        for value in [
+            output.name(),
+            output.path(),
+            output.hash_algorithm(),
+            output.hash(),
+        ] {
+            write_string(&mut wire, value);
+        }
+    }
+    let mut sources = root["inputs"]["srcs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for (dependency, selected) in root["inputs"]["drvs"].as_object().unwrap() {
+        let dependency_path = format!("/nix/store/{dependency}");
+        let output = Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "derivation",
+                "show",
+                &dependency_path,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let dependency_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        for name in selected["outputs"].as_array().unwrap() {
+            sources.insert(format!("/nix/store/{}", dependency_json["derivations"][dependency]["outputs"][name.as_str().unwrap()]["path"].as_str().unwrap()));
+        }
+    }
+    write_integer(&mut wire, sources.len() as u64);
+    for source in sources {
+        write_string(&mut wire, source.as_bytes());
+    }
+    write_string(&mut wire, request.system().as_bytes());
+    write_string(&mut wire, request.builder());
+    write_integer(&mut wire, request.arguments().len() as u64);
+    for argument in request.arguments() {
+        write_string(&mut wire, argument);
+    }
+    write_integer(&mut wire, request.environment().len() as u64);
+    for (key, value) in request.environment() {
+        write_string(&mut wire, key);
+        write_string(&mut wire, value);
+    }
+    write_integer(&mut wire, 0);
+    let mut input = fixture.frontend.stdin.take().unwrap();
+    let mut output = fixture.frontend.stdout.take().unwrap();
+    complete_handshake(&mut input, &mut output);
+    input.write_all(&wire).unwrap();
+    input.flush().unwrap();
+    assert_eq!(read_integer(&mut output), STDERR_LAST);
+    assert_eq!(
+        read_integer(&mut output),
+        2,
+        "worker admission reuses durable success"
+    );
+    assert_eq!(read_string(&mut output), "");
+    for _ in 0..6 {
+        read_integer(&mut output);
+    }
+    assert_eq!(read_integer(&mut output), 1);
+    let output_id = read_string(&mut output);
+    let realization: serde_json::Value = serde_json::from_str(&read_string(&mut output)).unwrap();
+    assert_eq!(realization["id"], output_id);
+    let expected_path = std::str::from_utf8(&request.expected_outputs()[0].1).unwrap();
+    assert_eq!(
+        realization["outPath"],
+        expected_path.strip_prefix("/nix/store/").unwrap()
+    );
+    drop(input);
+    drop(output);
+    assert!(fixture.frontend.wait().unwrap().success());
+    fixture.finish();
+}
+
+#[test]
 #[ignore = "private fixture paths are outside the production /nix/store namespace"]
 fn query_valid_paths_returns_only_authoritative_valid_paths() {
     let fixture = NixFixture::create().expect("Nix fixture creates");

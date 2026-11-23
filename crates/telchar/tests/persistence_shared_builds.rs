@@ -660,6 +660,34 @@ fn unresolved_nomad_obligation_prevents_fresh_claim_after_failure() {
         claim.build, before,
         "unresolved execution cannot be replaced by fresh request"
     );
+    assert_eq!(
+        claim.ownership,
+        telchar::persistence::SharedBuildOwnership::Joined
+    );
+    let attempt = telchar::persistence::read_shared_build_attempt(fixture.url(), derivation)
+        .unwrap()
+        .unwrap();
+    telchar::persistence::resolve_nomad_execution_obligation(fixture.url(), attempt.attempt_id)
+        .unwrap();
+    let reclaimed = telchar::persistence::claim_shared_build(
+        fixture.url(),
+        derivation,
+        &[4; 32],
+        "nomad",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some("replacement-job"),
+        &outputs,
+    )
+    .unwrap();
+    assert_eq!(
+        reclaimed.ownership,
+        telchar::persistence::SharedBuildOwnership::Claimed
+    );
+    assert_eq!(
+        reclaimed.build.state,
+        telchar::persistence::SharedBuildState::Claimed
+    );
 }
 
 #[test]

@@ -199,6 +199,7 @@ impl BuildRequest {
                 .build_paths_with_results(&dependency_derivations)
                 .map_err(|error| dependency_realization_error(&error))?;
         }
+        request.input_sources = stored.input_sources;
         for (input_derivation, output_names) in stored.input_derivations {
             let input_path = std::path::Path::new(
                 std::str::from_utf8(&input_derivation)
@@ -224,6 +225,8 @@ impl BuildRequest {
                 }
             }
         }
+        request.input_sources.sort();
+        request.input_sources.dedup();
         request
             .validate_for_execution()
             .map_err(|_| stored_load_error(StoredLoadFailurePhase::FinalValidation))?;

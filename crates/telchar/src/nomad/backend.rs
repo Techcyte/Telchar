@@ -5,7 +5,7 @@ mod tests;
 
 use std::fs;
 use std::io::{self, Read};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -377,6 +377,22 @@ impl NomadClient {
         Ok(status.cleanup_complete)
     }
 
+    fn await_execution_cleanup(&self, job_id: &str, deadline: Instant) -> io::Result<()> {
+        loop {
+            if self.execution_cleanup_before(job_id, deadline)? {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Nomad execution cleanup unconfirmed; retry withheld",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50).min(remaining));
+        }
+    }
+
     pub fn status(&self, job_id: &str) -> io::Result<NomadExecutionState> {
         Self {
             config: self.config.clone(),
@@ -553,7 +569,32 @@ impl NomadClient {
         let mut live_logs = shared_builds
             .subscribe_logs(shared_build_key_text, live_log_queue_bytes)
             .ok_or_else(|| io::Error::other("Nomad shared build live logs are unavailable"))?;
-        let mut attempt_ordinal = 1_usize;
+        let attempt = crate::persistence::read_shared_build_attempt(database, derivation_path)
+            .map_err(|error| {
+                super::diagnostics::failure("Nomad shared build attempt is unavailable", error)
+            })?
+            .ok_or_else(|| io::Error::other("Nomad shared build attempt is unavailable"))?;
+        let mut attempt_ordinal = usize::try_from(attempt.ordinal)
+            .map_err(|_| io::Error::other("Nomad shared build attempt ordinal is invalid"))?;
+        let execution_id =
+            deterministic_job_name_for_attempt(&self.config, shared_build_key, attempt_ordinal)?;
+        if attempt.backend_execution_id.as_deref() != Some(execution_id.as_str()) {
+            crate::persistence::reassign_running_shared_build(
+                database,
+                derivation_path,
+                self.config.target().name(),
+                crate::backend::BackendKind::Nomad,
+                crate::backend::BackendKind::Nomad.capabilities(),
+                Some(&execution_id),
+            )
+            .map_err(|error| {
+                super::diagnostics::failure(
+                    "Nomad shared build execution identity could not be assigned",
+                    error,
+                )
+            })?;
+        }
+        let mut attempt_count = 1_usize;
         let result = loop {
             let result = bounded.execute_attempt(
                 database,
@@ -585,7 +626,7 @@ impl NomadClient {
                 Ok(result) => break Ok(result),
                 Err(NomadAttemptFailure::Terminal(error)) => break Err(error),
                 Err(NomadAttemptFailure::Retryable(error))
-                    if attempt_ordinal <= self.config.max_retries() =>
+                    if attempt_count <= self.config.max_retries() =>
                 {
                     let next_ordinal = attempt_ordinal + 1;
                     let current_execution_id = deterministic_job_name_for_attempt(
@@ -609,7 +650,7 @@ impl NomadClient {
                     .map_err(|error| {
                         super::diagnostics::failure("Nomad shared build retry failed", error)
                     })?;
-                    let delay = retry_delay(attempt_ordinal);
+                    let delay = retry_delay(attempt_count);
                     tracing::warn!(
                         event = "nomad.execution.retrying",
                         derivation_path,
@@ -626,6 +667,7 @@ impl NomadClient {
                     );
                     wait_for_retry(delay, deadline, cancelled)?;
                     attempt_ordinal = next_ordinal;
+                    attempt_count += 1;
                 }
                 Err(NomadAttemptFailure::Retryable(error)) => break Err(error),
             }
@@ -639,7 +681,7 @@ impl NomadClient {
                 derivation_path,
                 backend = self.config.target().name(),
                 namespace = self.config.namespace(),
-                attempt_count = attempt_ordinal,
+                attempt_count,
                 error = %error,
                 error_chain = ?error,
                 "Nomad execution failed"
@@ -664,7 +706,7 @@ impl NomadClient {
             backend = self.config.target().name(),
             namespace = self.config.namespace(),
             result = result_name,
-            attempt_count = attempt_ordinal,
+            attempt_count,
             duration_ms = started.elapsed().as_millis(),
             "Nomad execution completed"
         );
@@ -825,6 +867,25 @@ impl NomadClient {
                         .map_err(NomadAttemptFailure::Terminal);
                     }
                     crate::persistence::SharedBuildState::Failed => {
+                        let cleanup_deadline =
+                            deadline.min(Instant::now() + self.config.cleanup_timeout());
+                        match self.await_execution_cleanup(submission.job_id(), cleanup_deadline) {
+                            Ok(()) => {
+                                crate::persistence::resolve_nomad_execution_obligation(
+                                    database, obligation,
+                                )
+                                .map_err(|error| {
+                                    NomadAttemptFailure::Terminal(super::diagnostics::failure(
+                                        "Nomad execution obligation could not be resolved",
+                                        error,
+                                    ))
+                                })?;
+                            }
+                            Err(error) => {
+                                tracing::warn!(event = "nomad.execution.cleanup.pending", error = %error,
+                                    "terminal build result retains unresolved execution obligation");
+                            }
+                        }
                         if let Some(failure) = build
                             .result_metadata
                             .as_ref()
@@ -879,17 +940,21 @@ impl NomadClient {
                             }
                         }
                         NomadExecutionState::Failed | NomadExecutionState::Missing => {
-                            if status.state == NomadExecutionState::Missing {
-                                crate::persistence::resolve_nomad_execution_obligation(
-                                    database, obligation,
-                                )
-                                .map_err(|error| {
-                                    NomadAttemptFailure::Terminal(super::diagnostics::failure(
-                                        "Nomad execution obligation could not be resolved",
-                                        error,
-                                    ))
-                                })?;
+                            let cleanup_deadline =
+                                deadline.min(Instant::now() + self.config.cleanup_timeout());
+                            if !status.cleanup_complete {
+                                self.await_execution_cleanup(submission.job_id(), cleanup_deadline)
+                                    .map_err(NomadAttemptFailure::Terminal)?;
                             }
+                            crate::persistence::resolve_nomad_execution_obligation(
+                                database, obligation,
+                            )
+                            .map_err(|error| {
+                                NomadAttemptFailure::Terminal(super::diagnostics::failure(
+                                    "Nomad execution obligation could not be resolved",
+                                    error,
+                                ))
+                            })?;
                             tracing::warn!(
                                 event = "nomad.job.unavailable",
                                 job_id = submission.job_id(),

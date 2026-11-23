@@ -3,6 +3,198 @@
 use super::*;
 
 #[test]
+fn independent_daemon_requests_resubmit_after_failed_nomad_cleanup() {
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Daemon(std::process::Child);
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let root = fixture_root();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    load_service_config(&root, &endpoint, None);
+    let finished = Arc::new(AtomicBool::new(false));
+    let server_finished = Arc::clone(&finished);
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut jobs = std::collections::BTreeMap::<String, serde_json::Value>::new();
+        let mut submissions = Vec::new();
+        while !server_finished.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "Nomad fixture exceeded deadline");
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("Nomad fixture accept: {error}"),
+            };
+            let request = read_http_request(&mut stream);
+            let line = request.lines().next().unwrap();
+            if line.starts_with("POST ") {
+                let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .map(str::to_owned)
+                    })
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let mut body = body.as_bytes().to_vec();
+                while body.len() < length {
+                    let mut bytes = [0; 4096];
+                    let count = stream.read(&mut bytes).unwrap();
+                    assert_ne!(count, 0);
+                    body.extend_from_slice(&bytes[..count]);
+                }
+                let submitted: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let mut job = submitted["Job"].clone();
+                let id = job["ID"].as_str().unwrap().to_owned();
+                job["Version"] = serde_json::json!(0);
+                job["Stop"] = serde_json::json!(false);
+                submissions.push(id.clone());
+                jobs.insert(id, job);
+                write_json_response(&mut stream, 200, r#"{"EvalID":"evaluation"}"#);
+            } else {
+                let path = line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .split('?')
+                    .next()
+                    .unwrap();
+                let rest = path.strip_prefix("/v1/job/").expect("exact job endpoint");
+                let id = rest.strip_suffix("/allocations").unwrap_or(rest);
+                let job = jobs.get_mut(id).expect("only submitted jobs are inspected");
+                if line.starts_with("DELETE ") {
+                    job["Stop"] = serde_json::json!(true);
+                    write_json_response(&mut stream, 200, "{}");
+                } else if rest.ends_with("/allocations") {
+                    write_json_response(
+                        &mut stream,
+                        200,
+                        r#"[{"ID":"allocation","JobVersion":0,"ClientStatus":"failed"}]"#,
+                    );
+                } else {
+                    write_json_response(&mut stream, 200, &job.to_string());
+                }
+            }
+        }
+        submissions
+    });
+    let database = telchar_test_support::postgres::PostgresFixture::start();
+    telchar::persistence::migrate(database.url()).unwrap();
+    let socket = root.join("daemon.sock");
+    fs::create_dir(root.join("gc-roots")).unwrap();
+    let stderr_path = root.join("daemon.stderr");
+    let mut daemon = Daemon(
+        Command::new(env!("CARGO_BIN_EXE_telchar"))
+            .args([
+                "daemon",
+                "--socket",
+                socket.to_str().unwrap(),
+                "--frontend-uid",
+                &rustix::process::getuid().as_raw().to_string(),
+            ])
+            .env("TELCHAR_CONFIG", root.join("client.toml"))
+            .env("TELCHAR_DATABASE_URL", database.url())
+            .env(
+                "TELCHAR_GATEWAY_STORE_URI",
+                "unix:///nix/var/nix/daemon-socket/socket",
+            )
+            .env("TELCHAR_GATEWAY_GC_ROOT_DIRECTORY", root.join("gc-roots"))
+            .env("TELCHAR_GATEWAY_DISK_RESERVE_BYTES", "67108864")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(&stderr_path).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "{}",
+            fs::read_to_string(&stderr_path).unwrap()
+        );
+        assert!(Instant::now() < deadline, "daemon did not bind");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let ssh = root.join("ssh");
+    fs::write(&ssh, "#!/bin/sh\nexec \"$TELCHAR_STDIO_BIN\" serve-stdio\n").unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    let instantiated = Command::new("nix-instantiate").args(["--store", "local", "--expr", "derivation { name = \"telchar-nomad-independent-failure\"; system = builtins.currentSystem; builder = \"/bin/sh\"; args = [ \"-c\" \"exit 3\" ]; }"]).output().unwrap();
+    assert!(instantiated.status.success(), "{instantiated:?}");
+    let drv = String::from_utf8(instantiated.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let mut failures = Vec::new();
+    for _ in 0..2 {
+        let result = Command::new("timeout")
+            .args([
+                "15",
+                "nix",
+                "--extra-experimental-features",
+                "nix-command",
+                "build",
+                "--store",
+                "ssh-ng://fixture",
+                "--no-link",
+                &format!("{drv}^*"),
+            ])
+            .env(
+                "PATH",
+                format!("{}:{}", root.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("TELCHAR_STDIO_BIN", env!("CARGO_BIN_EXE_telchar"))
+            .env("TELCHAR_IPC_SOCKET", &socket)
+            .env("TELCHAR_AUTHENTICATED_KEY", "SHA256:fixture")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert_ne!(result.status.code(), Some(124), "client timed out");
+        failures.push(String::from_utf8_lossy(&result.stderr).into_owned());
+    }
+    drop(daemon);
+    finished.store(true, Ordering::SeqCst);
+    let submissions = server.join().unwrap();
+    assert_eq!(
+        submissions.len(),
+        4,
+        "each request gets two attempts: {failures:?}; {}",
+        fs::read_to_string(&stderr_path).unwrap()
+    );
+    assert_eq!(
+        submissions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+        "attempt job identities must be distinct"
+    );
+    for failure in failures {
+        assert!(
+            failure.contains("BuildDerivation execution failed"),
+            "{failure}"
+        );
+        assert!(!failure.contains("shared build retry failed"), "{failure}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cancellation_stops_only_the_exact_submitted_nomad_job() {
     cancelled_execution(false);
 }
@@ -302,15 +494,20 @@ fn timeout_stops_only_the_exact_submitted_nomad_job() {
 
 #[test]
 fn configured_backend_does_not_retry_callback_recorded_build_failure() {
-    callback_recorded_failure(true);
+    callback_recorded_failure(true, true);
 }
 
 #[test]
 fn configured_backend_keeps_callback_infrastructure_failure_distinct() {
-    callback_recorded_failure(false);
+    callback_recorded_failure(false, true);
 }
 
-fn callback_recorded_failure(ordinary: bool) {
+#[test]
+fn callback_failure_retains_obligation_when_cleanup_is_uncertain() {
+    callback_recorded_failure(true, false);
+}
+
+fn callback_recorded_failure(ordinary: bool, cleanup_confirmed: bool) {
     let root = fixture_root();
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
     let endpoint = format!(
@@ -345,6 +542,45 @@ fn callback_recorded_failure(ordinary: bool) {
             r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#,
         );
         status_tx.send(()).expect("status reports");
+        if !cleanup_confirmed {
+            let (mut status, _) = listener.accept().unwrap();
+            assert!(
+                read_http_request(&mut status).starts_with(&format!("GET /v1/job/{served_job}?"))
+            );
+            write_json_response(&mut status, 500, r#"{}"#);
+        }
+        for stopped in [false, true].into_iter().filter(|_| cleanup_confirmed) {
+            let (mut status, _) = listener.accept().unwrap();
+            assert!(
+                read_http_request(&mut status).starts_with(&format!("GET /v1/job/{served_job}?"))
+            );
+            write_json_response(
+                &mut status,
+                200,
+                &format!(
+                    r#"{{"ID":"{served_job}","Stop":{stopped},"Namespace":"telchar","Type":"batch","Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                ),
+            );
+            let (mut allocations, _) = listener.accept().unwrap();
+            assert!(read_http_request(&mut allocations).contains("/allocations?"));
+            write_json_response(
+                &mut allocations,
+                200,
+                if stopped {
+                    r#"[{"ID":"allocation-1","ClientStatus":"complete"}]"#
+                } else {
+                    r#"[{"ID":"allocation-1","ClientStatus":"running"}]"#
+                },
+            );
+            if !stopped {
+                let (mut stop, _) = listener.accept().unwrap();
+                assert!(
+                    read_http_request(&mut stop)
+                        .starts_with(&format!("DELETE /v1/job/{served_job}?"))
+                );
+                write_json_response(&mut stop, 200, r#"{}"#);
+            }
+        }
         listener
             .set_nonblocking(true)
             .expect("listener becomes nonblocking");
@@ -426,6 +662,39 @@ fn callback_recorded_failure(ordinary: bool) {
             .ordinal,
         1
     );
+    let obligations =
+        telchar::persistence::read_nomad_execution_obligations(database.url()).unwrap();
+    assert_eq!(obligations.len(), usize::from(!cleanup_confirmed));
+    let reclaimed = telchar::persistence::claim_shared_build_with_request(
+        database.url(),
+        derivation,
+        &admitted.shared_build_digest(),
+        "nomad-test",
+        BackendKind::Nomad,
+        BackendKind::Nomad.capabilities(),
+        Some(&job_id),
+        &admitted
+            .expected_outputs()
+            .iter()
+            .map(|(_, path)| std::str::from_utf8(path).unwrap())
+            .collect::<Vec<_>>(),
+        &admitted,
+    )
+    .unwrap();
+    assert_eq!(
+        reclaimed.ownership,
+        if cleanup_confirmed {
+            telchar::persistence::SharedBuildOwnership::Claimed
+        } else {
+            telchar::persistence::SharedBuildOwnership::Joined
+        }
+    );
+    if !cleanup_confirmed {
+        assert_eq!(
+            reclaimed.build.state,
+            telchar::persistence::SharedBuildState::Failed
+        );
+    }
     drop(leader);
     failure.join().expect("failure joins");
     server.join().expect("server joins");
@@ -435,6 +704,11 @@ fn callback_recorded_failure(ordinary: bool) {
 #[test]
 fn configured_backend_stops_after_nomad_retry_budget_is_exhausted() {
     retry_after_status(404, 2, false);
+}
+
+#[test]
+fn configured_backend_retries_failed_nomad_execution() {
+    retry_after_status(200, 2, false);
 }
 
 #[test]
@@ -493,6 +767,52 @@ fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure:
                         "ALTER TABLE nomad_execution_obligations RENAME TO hidden_obligations",
                     )
                     .unwrap();
+            }
+            if status_code == 200 {
+                write_json_response(
+                    &mut status,
+                    200,
+                    &format!(
+                        r#"{{"ID":"{job_id}","Namespace":"telchar","Type":"batch","Version":1,"Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                    ),
+                );
+                let (mut allocations, _) = listener.accept().unwrap();
+                assert!(read_http_request(&mut allocations).contains("/allocations?"));
+                write_json_response(
+                    &mut allocations,
+                    200,
+                    r#"[{"ID":"failed-allocation","JobVersion":1,"ClientStatus":"failed"}]"#,
+                );
+                for stopped in [false, true] {
+                    let (mut cleanup, _) = listener.accept().unwrap();
+                    assert!(
+                        read_http_request(&mut cleanup)
+                            .starts_with(&format!("GET /v1/job/{job_id}?"))
+                    );
+                    write_json_response(
+                        &mut cleanup,
+                        200,
+                        &format!(
+                            r#"{{"ID":"{job_id}","Stop":{stopped},"Namespace":"telchar","Type":"batch","Version":1,"Meta":{{"telchar_backend":"nomad-test","telchar_system":"x86_64-linux"}}}}"#
+                        ),
+                    );
+                    let (mut allocations, _) = listener.accept().unwrap();
+                    assert!(read_http_request(&mut allocations).contains("/allocations?"));
+                    write_json_response(
+                        &mut allocations,
+                        200,
+                        r#"[{"ID":"failed-allocation","JobVersion":1,"ClientStatus":"failed"}]"#,
+                    );
+                    if !stopped {
+                        let (mut stop, _) = listener.accept().unwrap();
+                        assert!(
+                            read_http_request(&mut stop)
+                                .starts_with(&format!("DELETE /v1/job/{job_id}?"))
+                        );
+                        write_json_response(&mut stop, 200, r#"{}"#);
+                    }
+                }
+                continue;
             }
             write_json_response(&mut status, status_code, r#"{}"#);
             if status_code == 500 {
@@ -557,9 +877,15 @@ fn retry_after_status(status_code: u16, expected_ordinal: i32, database_failure:
         )
         .unwrap();
 
-    executor
+    let execution_error = executor
         .execute(&execution)
         .expect_err("unavailable execution rejects");
+    assert!(
+        !execution_error
+            .to_string()
+            .contains("shared build retry failed"),
+        "{execution_error}"
+    );
 
     assert_eq!(
         telchar::persistence::read_shared_build_attempt(database.url(), derivation)
