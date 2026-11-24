@@ -33,7 +33,9 @@ fn reload_during_admission(shutdown: bool) {
     fs::write(
         &ssh,
         format!(
-            "#!/bin/sh\nprintf '%s' $$ > '{}'\nsleep {}\nexit 1\n",
+            "#!/bin/sh\nprintf '%s' $$ > '{}.pending'\nmv '{}.pending' '{}'\nsleep {}\nexit 1\n",
+            marker.display(),
+            marker.display(),
             marker.display(),
             if shutdown { 10 } else { 2 }
         ),

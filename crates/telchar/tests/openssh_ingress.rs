@@ -623,10 +623,17 @@ fn wait_for_path(path: &Path, child: &mut Child) {
             Instant::now() < deadline,
             "fixture path did not appear: {path:?}"
         );
-        assert!(
-            child.try_wait().expect("child status").is_none(),
-            "child exited before fixture was ready"
-        );
+        if let Some(status) = child.try_wait().expect("child status") {
+            let mut diagnostic = String::new();
+            if let Some(stderr) = child.stderr.as_mut() {
+                use std::io::Read;
+                stderr
+                    .take(8192)
+                    .read_to_string(&mut diagnostic)
+                    .expect("child diagnostic reads");
+            }
+            panic!("child exited before fixture was ready: {path:?}, {status}, {diagnostic}");
+        }
         thread::sleep(Duration::from_millis(5));
     }
 }
