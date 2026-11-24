@@ -630,6 +630,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
          DROP INDEX store_leases_active_retained_paths_idx;
          DROP INDEX store_leases_request_owner_idx;
          DROP INDEX protocol_sessions_closed_history_idx;
+         DROP INDEX store_leases_session_owner_idx;
          DELETE FROM telchar_schema_migrations WHERE version >= 21;",
         )
         .unwrap();
@@ -637,7 +638,7 @@ fn termination_migration_preserves_observation_and_ownership_fence() {
         telchar::persistence::migrate(&database)
             .unwrap()
             .applied_this_run,
-        13
+        14
     );
     fixture.restart();
     let row = fixture.connect().query_one(

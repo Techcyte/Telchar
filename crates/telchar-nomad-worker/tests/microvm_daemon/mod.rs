@@ -485,6 +485,22 @@ chunk_bytes = 262144
         }
     }
     provider.join().unwrap();
+    if case == "configured-daemon-multiple" {
+        let mut control = postgres::Client::connect(database, postgres::NoTls).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while control
+            .query_one("SELECT phase FROM microvm_launches", &[])
+            .unwrap()
+            .get::<_, String>(0)
+            != "closed"
+        {
+            assert!(
+                Instant::now() < deadline,
+                "completed launch maintenance deadline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     let signal = Command::new("kill")
         .args(["-TERM", &daemon.0.id().to_string()])
         .output()?;
